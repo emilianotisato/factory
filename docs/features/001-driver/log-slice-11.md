@@ -12,7 +12,7 @@
 **Over:** the slice's rule read literally ("up to the first line whose indentation returns to the match's"): on the PHP fixture `final class UserService` is followed by `{` at the same indentation, so the body would be empty or the lone `{`, and a PSR-12 signature spread over lines (`): User` then `{`) would stop at the `)`.
 **Because:** task 2 gives the rule in one line and its own fixture breaks it; bracket depth plus indentation keeps the rule's intent on all four stacks. Slice 12 replaces the body with the tree-sitter node range.
 **Undo:** one function in `src/ctx/def.rs` and the def snapshots.
-**Review:** fyi
+**Review:** decide — deviates from the slice's literal body rule (orchestrator regrade, autonomy.md)
 
 ### AD-1102 — What does a `refs` hit print, and what does the trailer say when nothing was cut? · slice-11 · 2026-10-10
 
