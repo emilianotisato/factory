@@ -300,7 +300,14 @@ fn drive_inner(
                 }
                 continue;
             }
-            Orphans::Settled => board = docs.status(&feature)?,
+            Orphans::Settled => {
+                // A settled orphan can pause the run (its limit) or spend
+                // the budget (its tokens): the hold is checked again first.
+                if quota::hold(run)?.is_some() {
+                    continue;
+                }
+                board = docs.status(&feature)?;
+            }
         }
 
         let mut free = free_lanes(&board, table);

@@ -550,3 +550,57 @@ fn a_spent_budget_parks_the_run_and_a_higher_budget_resumes_it() {
     assert_eq!(state(&dir)["budget_weighted_tokens"], 100_000_000);
     assert_eq!(outcomes(&fx, &dir, "build"), ["done", "done", "done"]);
 }
+
+#[test]
+fn a_resumed_driver_holds_on_an_orphans_rate_limit() {
+    let fx = Fixture::with_index("quota-orphan-limit", &[("checkpoint_every", "10")]);
+    fx.chain();
+    fx.write_plan(&[
+        json!({"outcome": "done", "delay_ms": 30000}),
+        done(),
+        done(),
+        done(),
+    ]);
+    let clk = Clock::new(1);
+    let dir = start(&fx, &clk);
+    let driver = state(&dir)["pid"].as_u64().unwrap() as u32;
+    wait_until(&fx, &dir, "slice 01's worker", 20, || {
+        state(&dir)["workers"]
+            .as_array()
+            .is_some_and(|w| w.len() == 1)
+    });
+    let w = state(&dir)["workers"][0].clone();
+    let worker = w["pid"].as_u64().unwrap() as u32;
+    let session = w["session_id"].as_str().unwrap();
+    // Driver and worker gone; the worker's last word was a usage limit.
+    assert_eq!(unsafe { libc::kill(driver as i32, libc::SIGKILL) }, 0);
+    assert_eq!(unsafe { libc::kill(worker as i32, libc::SIGKILL) }, 0);
+    wait_until(&fx, &dir, "both to die", 10, || {
+        !pid_alive(driver) && !pid_alive(worker)
+    });
+    let stream = dir.join("workers").join(format!("{session}.jsonl"));
+    let mut text = fs::read_to_string(&stream).unwrap_or_default();
+    text.push_str(&format!(
+        "{}\n",
+        json!({"type": "rate_limit_event", "session_id": session,
+            "rate_limit_info": {"status": "rejected", "resetsAt": clock::wall_now() + 600}})
+    ));
+    fs::write(&stream, text).unwrap();
+
+    // The resumed driver settles the orphan, which pauses the run: nothing
+    // spawns until the reset.
+    let out = factory(&fx, &clk, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    wait_phase(&fx, &dir, "paused", 10);
+    assert_eq!(state(&dir)["workers"][0]["outcome"], "rate_limited");
+    std::thread::sleep(Duration::from_secs(2));
+    let spawned = || state(&dir)["workers"].as_array().unwrap().len();
+    assert_eq!(spawned(), 1, "{}", driver_log(&dir));
+    assert_eq!(fx.slice_status(1), "pending");
+    assert!(state(&dir)["paused_until"].as_u64().is_some());
+
+    let out = factory(&fx, &clk, &["stop", &run_id(&dir)]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    wait_phase(&fx, &dir, "finished", 20);
+    assert_eq!(spawned(), 1);
+}
