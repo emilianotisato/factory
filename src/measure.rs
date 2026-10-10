@@ -27,8 +27,9 @@ pub struct Measure {
     pub out_tokens: u64,
     pub cache_write_tokens: u64,
     pub cache_read_tokens: u64,
-    /// The first message's context at or after the `skills/deliver` prompt
-    /// (`measure.py:148`), else the first message's; 0 with no messages.
+    /// The first message's context at or after the `skills/deliver` or
+    /// `skills/factory-deliver` prompt (`measure.py:148`), else the first
+    /// message's; 0 with no messages.
     pub start_context: u64,
     pub peak_context: u64,
 }
@@ -134,6 +135,14 @@ fn assistant_msgs(rows: &[Value]) -> Vec<Msg> {
     msgs
 }
 
+/// The prompt that starts a delivery: `measure.py`'s `skills/deliver`, or
+/// this repo's cockpit skill, `skills/factory-deliver`.
+fn is_deliver_prompt(text: &str) -> bool {
+    ["skills/deliver", "skills/factory-deliver"]
+        .iter()
+        .any(|s| text.contains(s))
+}
+
 /// A user row's text, string or text blocks.
 fn user_text(r: &Value) -> String {
     match r.get("message").and_then(|m| m.get("content")) {
@@ -164,7 +173,7 @@ pub fn measure(path: &Path) -> Result<Measure> {
     let deliver = rows
         .iter()
         .filter(|r| r.get("type").and_then(Value::as_str) == Some("user"))
-        .filter(|r| user_text(r).contains("skills/deliver"))
+        .filter(|r| is_deliver_prompt(&user_text(r)))
         .find_map(|r| {
             r.get("timestamp")
                 .and_then(Value::as_str)
@@ -267,6 +276,35 @@ mod tests {
         assert_eq!(two.start_context, one.start_context);
         assert_eq!(two.peak_context, one.peak_context);
         assert_eq!(combine(&[]).unwrap(), Measure::default());
+    }
+
+    #[test]
+    fn the_start_is_the_deliver_or_factory_deliver_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let msg = |id: &str, ts: &str, ctx: u64| {
+            format!(
+                r#"{{"type":"assistant","timestamp":"{ts}","message":{{"id":"{id}","usage":{{"input_tokens":{ctx},"output_tokens":1}}}}}}"#
+            )
+        };
+        let prompt = |ts: &str, skill: &str| {
+            format!(
+                r#"{{"type":"user","timestamp":"{ts}","message":{{"content":[{{"type":"text","text":"Base directory for this skill: /h/.claude/{skill}"}}]}}}}"#
+            )
+        };
+        for (skill, start) in [
+            ("skills/factory-deliver", 300),
+            ("skills/deliver", 300),
+            ("skills/other", 100),
+        ] {
+            let path = dir.path().join("s.jsonl");
+            let lines = [
+                msg("a", "2026-10-10T10:00:00Z", 100),
+                prompt("2026-10-10T10:00:05Z", skill),
+                msg("b", "2026-10-10T10:00:09Z", 300),
+            ];
+            fs::write(&path, lines.join("\n")).unwrap();
+            assert_eq!(measure(&path).unwrap().start_context, start, "{skill}");
+        }
     }
 
     #[test]
