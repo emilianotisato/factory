@@ -631,7 +631,7 @@ fn a_red_check_gets_one_fix_round_then_green() {
         "Gate command: `./gate.sh`",
         "FAIL test: expected 2 got 3",
         "# Contract",
-        "fix round 1 of three",
+        "fix round 1, unattended",
         "**Your AD numbers start at AD-8101**",
         "# Autonomy",
         "# Inner loop",

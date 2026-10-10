@@ -1,4 +1,4 @@
-You are fixing a red CI check on the draft PR of PRD-{NNN}, fix round {round} of three, unattended, inside a `factory` run. Nobody will answer a question. You are the only worker running.
+You are fixing a red CI check on the draft PR of PRD-{NNN}, fix round {round}, unattended, inside a `factory` run. Nobody will answer a question. You are the only worker running.
 
 Read first, in order:
 1. the `# Autonomy` section below — what you decide, what you log, when you block, what you never do
