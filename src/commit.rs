@@ -185,7 +185,8 @@ pub struct Committed {
     pub files: Vec<String>,
 }
 
-/// `git add -- <paths>` and `git commit -m <message>` in the repo root: no
+/// `git add -- <paths>` and `git commit -m <message> -- <paths>` in the
+/// repo root, so nothing else staged rides along: no
 /// author set, no body, hooks on. Paths that are neither in the index nor in
 /// the tree (never written, or written and removed again) and untracked
 /// paths the repo ignores are dropped first — `git add` refuses either. A
@@ -217,10 +218,17 @@ pub fn commit(repo: &Path, paths: &[String], message: &str) -> Result<Option<Com
     let mut add = vec!["add", "--"];
     add.extend(files.iter().map(String::as_str));
     git(repo, &add)?;
-    if git_code(repo, &["diff", "--cached", "--quiet"])? == 0 {
+    // Check and commit by the same pathspec: whatever else sits in the index
+    // (an owner's `git add`, a sibling lane's stage) is neither counted nor
+    // swept in, and stays staged.
+    let mut staged = vec!["diff", "--cached", "--quiet", "--"];
+    staged.extend(files.iter().map(String::as_str));
+    if git_code(repo, &staged)? == 0 {
         return Ok(None);
     }
-    git(repo, &["commit", "-q", "-m", message])?;
+    let mut commit = vec!["commit", "-q", "-m", message, "--"];
+    commit.extend(files.iter().map(String::as_str));
+    git(repo, &commit)?;
     let sha = git(repo, &["rev-parse", "HEAD"])?.trim().to_string();
     Ok(Some(Committed { sha, files }))
 }
@@ -505,5 +513,28 @@ mod tests {
         // Nothing changed: no commit.
         assert_eq!(commit(r, &paths, "feat: again").unwrap(), None);
         assert_eq!(commit(r, &[], "feat: none").unwrap(), None);
+    }
+
+    #[test]
+    fn commit_leaves_what_else_is_staged_out_and_staged() {
+        let dir = repo();
+        let r = dir.path();
+        fs::write(r.join("owner.txt"), "o\n").unwrap();
+        git(r, &["add", "--", "owner.txt"]).unwrap();
+        // The worker's path is unchanged, the owner's is staged: no commit.
+        let mine = vec!["kept.txt".to_string()];
+        assert_eq!(commit(r, &mine, "feat: nothing").unwrap(), None);
+        assert_eq!(git(r, &["rev-list", "--count", "HEAD"]).unwrap().trim(), "1");
+
+        fs::write(r.join("kept.txt"), "k2\n").unwrap();
+        let c = commit(r, &mine, "feat: mine").unwrap().unwrap();
+        assert_eq!(
+            git(r, &["show", "--format=", "--name-only", &c.sha]).unwrap(),
+            "kept.txt\n"
+        );
+        assert_eq!(
+            git(r, &["status", "--porcelain"]).unwrap(),
+            "A  owner.txt\n"
+        );
     }
 }
