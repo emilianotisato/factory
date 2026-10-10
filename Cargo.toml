@@ -1,0 +1,16 @@
+[package]
+name = "factory"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Drives unattended feature delivery: spawns coding-agent workers with context packs and runs the gate itself"
+
+[lib]
+name = "factory"
+path = "src/lib.rs"
+
+[[bin]]
+name = "factory"
+path = "src/main.rs"
+
+[dependencies]
