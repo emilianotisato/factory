@@ -6,7 +6,7 @@ depends_on: [3]
 
 # Slice 04 — Lanes and parking (FR-3)
 
-**Source**: [`prd.md`](prd.md) → §5 FR-3 (all bullets and acceptance); §3 FR-1 bullet 2 ("`ask[]` and `judge[]` go to the cockpit … a run never starts on an unanswered one"). **Depends on**: 03 (the serial loop and the worker spawn this slice widens to N lanes).
+**Source**: [`prd.md`](prd.md) → §5 FR-3 (all bullets and acceptance); §3 FR-1 bullet 2 ("`ask[]` and `judge[]` go to the cockpit … a run never starts on an unanswered one") *(FR-1 corrected 2026-10-09 by the owner, BLOCK-201: only `ask[]` parks; `judge[]` is logged as `judge_noted` and never waited on.)*. **Depends on**: 03 (the serial loop and the worker spawn this slice widens to N lanes).
 **Created**: 2026-10-09 · **Status**: pending
 
 **Progress**: _(written as it lands)_
@@ -49,7 +49,7 @@ Trap: slice 03's dead-worker path fires on "`building` with no live worker". Dis
 **Acceptance:** continuing the task 2 run: `factory answer BLOCK-101 "Pick the Recommended option"` → the fragment heading reads `resolved`, a `**Resolution (2026-…)**` line follows the entry, slice 01 is `building`, within 5 s a new stub call exists whose recorded pack contains both the `BLOCK-101` question and the resolution text, the stub (plan step `done`) builds it, and the run finishes with three `done` slices and `workers.outcome` = `dead` count 0.
 
 ### 4. `factory answer ASK-n` clears a preflight ask — medium — blocked by: 3
-**Source**: §3 FR-1: "`ask[]` and `judge[]` go to the cockpit (FR-7) as one question each; a run never starts on an unanswered one." `deliver/SKILL.md:34`: "'proceed as-is' always an option."
+**Source**: §3 FR-1: "`ask[]` and `judge[]` go to the cockpit (FR-7) as one question each; a run never starts on an unanswered one." *(FR-1 corrected 2026-10-09 by the owner, BLOCK-201: only `ask[]` parks; `judge[]` is logged as `judge_noted` and never waited on.)* `deliver/SKILL.md:34`: "'proceed as-is' always an option."
 
 Same command, `ASK-n` ids from slice 02: record the text in `runs/<id>/answers/ASK-n.json`, append a `DEC` line to `agent-log.md` (`- **DEC ({date})**: preflight ask "<item>" answered: <text>`), emit `ask_answered`; when every `ASK-n` has an answer, the driver (slow tick) proceeds to branch and board as slice 02 task 3 does for `pass`. A judge item is the same path.
 
