@@ -48,7 +48,10 @@ pub fn parse(n: u32, text: &str) -> Lane {
         n,
         ..Lane::default()
     };
-    let Some(rest) = text.strip_prefix("---\n") else {
+    let Some(rest) = text
+        .strip_prefix("---\n")
+        .or_else(|| text.strip_prefix("---\r\n"))
+    else {
         return lane;
     };
     let Some(end) = rest.find("\n---") else {
@@ -126,6 +129,16 @@ impl Lane {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_crlf_lane_file_keeps_its_env_and_setup() {
+        let lane = parse(
+            2,
+            "---\r\nlane: 2\r\nenv: [PORT=8002]\r\nsetup: make db\r\n---\r\n\r\nProse.\r\n",
+        );
+        assert_eq!(lane.env, vec![("PORT".to_string(), "8002".to_string())]);
+        assert_eq!(lane.setup.as_deref(), Some("make db"));
+    }
 
     #[test]
     fn parse_reads_env_and_setup_and_tolerates_the_rest() {

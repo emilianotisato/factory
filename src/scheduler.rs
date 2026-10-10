@@ -1778,18 +1778,27 @@ pub fn remove_frontmatter_keys(path: &Path, keys: &[&str]) -> Result<()> {
     })
 }
 
+/// The file keeps its line endings: a CRLF file's edited lines are CRLF.
 fn edit_frontmatter(path: &Path, edit: impl FnOnce(&mut Vec<String>)) -> Result<()> {
     let text = fs::read_to_string(path).map_err(io(format!("read {}", path.display())))?;
+    let nl = if text.starts_with("---\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
     let rest = text
-        .strip_prefix("---\n")
+        .strip_prefix(&format!("---{nl}"))
         .ok_or_else(|| crate::Error::Msg(format!("{} has no frontmatter", path.display())))?;
     let end = rest
-        .find("\n---")
+        .find(&format!("{nl}---"))
         .ok_or_else(|| crate::Error::Msg(format!("{} has no frontmatter end", path.display())))?;
     let fm = &rest[..end];
-    let mut lines: Vec<String> = fm.lines().map(str::to_string).collect();
+    let mut lines: Vec<String> = fm
+        .lines()
+        .map(|l| l.trim_end_matches('\r').to_string())
+        .collect();
     edit(&mut lines);
-    let out = format!("---\n{}{}", lines.join("\n"), &rest[end..]);
+    let out = format!("---{nl}{}{}", lines.join(nl), &rest[end..]);
     fs::write(path, out).map_err(io(format!("write {}", path.display())))
 }
 
@@ -1889,5 +1898,27 @@ mod tests {
             "---\nslice: 02\nstatus: building\ndepends_on: []\nlane: 1\n---\n\n# B\n"
         );
         assert!(set_frontmatter(&dir.path().join("none.md"), &[("lane", "1")]).is_err());
+    }
+
+    #[test]
+    fn a_crlf_slice_file_is_edited_and_stays_crlf() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("slice-02-b.md");
+        fs::write(
+            &p,
+            "---\r\nslice: 02\r\nstatus: pending\r\nlane: 2\r\n---\r\n\r\n# B\r\n",
+        )
+        .unwrap();
+        set_frontmatter(&p, &[("status", "building"), ("lane", "1")]).unwrap();
+        assert_eq!(
+            fs::read_to_string(&p).unwrap(),
+            "---\r\nslice: 02\r\nstatus: building\r\nlane: 1\r\n---\r\n\r\n# B\r\n"
+        );
+        remove_frontmatter_keys(&p, &["lane"]).unwrap();
+        set_frontmatter(&p, &[("owner", "x")]).unwrap();
+        assert_eq!(
+            fs::read_to_string(&p).unwrap(),
+            "---\r\nslice: 02\r\nstatus: building\r\nowner: x\r\n---\r\n\r\n# B\r\n"
+        );
     }
 }
