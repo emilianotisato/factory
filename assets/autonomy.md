@@ -55,7 +55,7 @@ An agent alone under pressure reaches for every one of these. All are forbidden.
 - skip, delete or weaken a test this run did not write
 - edit a CI workflow
 - record a checkpoint, or a Prove row, without an artifact that exists on disk
-- force-push, push to the default branch, merge, close the PR, delete a branch
+- force-push, push to the default branch, merge, close the PR, delete a branch. In a `factory` run a worker runs no `git push` and no `gh` at all: the driver pushes and talks to GitHub, and the hook refuses both
 
 **Two narrow exceptions, each with an `AD` marked `Review: fyi`:** an inline suppression where the real fix is impossible (a third-party type, a generated file), naming why; and extending gate configuration to *cover* new code the feature adds, such as a new source path. Extending, never loosening. When that extension makes CI need a toolchain it lacks, adding the setup step to the workflow is part of the same extension, with the `AD` marked `decide`. Never remove, skip or weaken a CI step.
 
@@ -64,7 +64,7 @@ An agent alone under pressure reaches for every one of these. All are forbidden.
 Two thirds of a run's cost is the model re-reading its own context on every call. At 300k of context, a `grep | head` costs about what reading a novel does. The call count is what you control:
 
 - **Batch independent lookups into one message.** Several Read, Grep or Bash calls side by side are one model call. One after another, they are N calls.
-- **Read a file once with Read**, whole when it fits and in a few large ranges when it does not. Paging it through five `sed -n` calls pays for your context five times. Do not re-read a file only to confirm an edit landed; Edit fails loudly when it misses. The pre-commit re-read a skill requires is a different thing: keep it.
+- **Read a file once with Read**, whole when it fits and in a few large ranges when it does not, unless your pack already holds it: then read only the range you need, because a whole read of a file in your pack is refused and pointed at its section. Paging it through five `sed -n` calls pays for your context five times. Do not re-read a file only to confirm an edit landed; Edit fails loudly when it misses. The pre-commit re-read a skill requires is a different thing: keep it.
 - **Keep command output to what you act on**: each failing test's own output (the assertion and its diff) and the summary line, not the passing transcript. A log you may need later goes to a file in your scratchpad, outside the repository, searched with `grep`.
 - **Your map is the slice's Current code section plus `git log --stat` of the slices before yours**, which shows what moved since slicing. Re-verify the facts you rely on; do not re-explore the codebase to rebuild the map.
 
@@ -75,14 +75,14 @@ Starting values. The retro records the numbers that will say whether they are ri
 - **Gate:** per slice, the inner loop (`docs gate --inner`); the full gate at a checkpoint. 3 fix attempts on the same failure, then block. A red checkpoint is fixed in place; when the cause is unclear, bisect over the slice commits first.
 - **Slice hand-back:** a subagent that reports done with a gap — no commit, inner loop not green, `docs check` errors — is sent back once, then blocked. A checkpoint that returns without evidence for a row it was asked to prove, same rule.
 - **CI:** 3 fix rounds, then block.
-- **Flaky:** a CI failure unrelated to the diff is re-run once (`gh run rerun <id> --failed`). Passes → name the job in the PR body's CI section, not in `agent-log.md`: a docs-only commit would start CI all over again. Fails again → block.
+- **Flaky:** a CI failure unrelated to the diff is re-run once (`gh run rerun <id> --failed`; in a `factory` run the driver does it, never a worker). Passes → name the job in the PR body's CI section, not in `agent-log.md`: a docs-only commit would start CI all over again. Fails again → block.
 - **Not this branch's:** CI red on something the branch did not touch, or an infrastructure fault (a missing secret, runner or quota) → block at once.
 
 ## Blocker protocol
 
 1. **Write a `BLOCK-n` entry**, shape in [templates/agent-log.md](templates/agent-log.md): what happened, with the `file:line` or command output that proves it; 2-4 options, each with its cost; the recommendation. It goes in the feature's `agent-log.md` — unless you were given a `log-*.md` fragment of your own, which means siblings are running and a direct append would lose somebody's work. Then it goes in your fragment, under `## Blockers`, and the orchestrator merges before it pushes.
 2. **A slice's blocker → set that slice `status: blocked`**, then `docs render --write` — skip the render if you were given a fragment; whoever merges it also renders. A blocker outside a slice names its phase in the heading instead: `preflight`, `slicing`, `polish`, `pr`, `ci`.
-3. **Commit it** — `docs(NNN): block <where>` — and push the branch (`git push -u origin feat/{slug}`), so the entry is readable away from this machine.
+3. **Commit it** — `docs(NNN): block <where>` — and push the branch (`git push -u origin feat/{slug}`), so the entry is readable away from this machine. In a `factory` run the driver commits and pushes; a worker stops after step 2.
 4. **Notify** with the PushNotification tool. One line, under 200 characters, leading with what to act on: `PRD-013 blocked at slice-02: unique index prevents soft-delete. 3 options in agent-log BLOCK-1`.
 5. **Stop.** The final message says the same and gives the entry's path. Start nothing else.
 
