@@ -202,9 +202,14 @@ fn drive_inner(
             )));
         }
         // HEAD off the run's branch: nothing is reaped (a reap commits),
-        // nothing spawns; the run parks until the owner switches back.
+        // nothing spawns; the run parks until the owner switches back. Once
+        // the closeout owns the run, its own guard blocks instead, with a
+        // `BLOCK-n` the owner answers (AD-50001).
         if let Some(b) = run.state().branch.clone() {
-            if let Some(why) = commit::branch_refusal(&repo, &b, default.as_deref())? {
+            let refusal = commit::branch_refusal(&repo, &b, default.as_deref())?;
+            if let Some(why) = &refusal
+                && !closeout_owns(run, docs, &feature, table)?
+            {
                 if run.state().stop_requested && table.values().all(|r| r.exit.is_some()) {
                     return stopped(run, out);
                 }
@@ -213,7 +218,7 @@ fn drive_inner(
                     announced = false;
                     off_branch = true;
                 }
-                park_with(run, &mut parked, &mut announced, &[], &[], &why, out)?;
+                park_with(run, &mut parked, &mut announced, &[], &[], why, out)?;
                 if table.is_empty() {
                     slow_tick(run)?;
                 } else {
@@ -221,7 +226,7 @@ fn drive_inner(
                 }
                 continue;
             }
-            if off_branch {
+            if off_branch && refusal.is_none() {
                 say(out, &format!("HEAD is back on {b} — the run goes on"))?;
                 off_branch = false;
                 announced = false;
@@ -470,6 +475,18 @@ fn drive_inner(
         }
         return finish(run, out, "nothing ready");
     }
+}
+
+/// Whether the closeout owns a HEAD off the run's branch: nothing is in
+/// flight, every worker is settled, and every slice is done and checked.
+/// Nothing between here and `closeout::run` then commits, and the closeout
+/// checks the branch before it polishes, ships, pushes or fixes CI.
+fn closeout_owns(run: &Run, docs: &Docs, feature: &str, table: &Table) -> Result<bool> {
+    if !table.is_empty() || run.state().workers.iter().any(|w| w.outcome.is_none()) {
+        return Ok(false);
+    }
+    let board = docs.status(feature)?;
+    Ok(board.all_done && board.unverified.is_empty())
 }
 
 /// Route every worker in the table that has exited.

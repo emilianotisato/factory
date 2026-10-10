@@ -123,6 +123,17 @@ pub fn run(
         .iter()
         .any(|e| matches!(e.kind, EventKind::Shipped { .. }));
     let shipped = ship_committed || ship_event;
+    // The closeout owns a HEAD off the run's branch (the driver's tick
+    // leaves it here, AD-50001): it blocks before the next step runs.
+    let (phase, what) = match (polished, shipped, run.state().pr_url.is_some()) {
+        (false, _, _) => ("polish", "polish"),
+        (true, false, _) => ("polish", "ship"),
+        (true, true, false) => ("pr", "push"),
+        (true, true, true) => ("ci", "CI watch"),
+    };
+    if let Some(o) = branch_guard(run, docs, &feature_dir, phase, what, out)? {
+        return Ok(o);
+    }
     if run.state().phase != Phase::Closeout {
         run.set_phase(Phase::Closeout)?;
     }
@@ -669,9 +680,10 @@ fn push(
     }
 }
 
-/// Ship and push only from the run's feature branch: never from the default
-/// branch, a detached HEAD or another branch (`ci::branch_problem`). A
-/// problem blocks with `phase`; `None` when HEAD is where it should be.
+/// Polish, ship, push and fix CI only from the run's feature branch: never
+/// from the default branch, a detached HEAD or another branch
+/// (`ci::branch_problem`). A problem blocks with `phase`; `None` when HEAD is
+/// where it should be.
 fn branch_guard(
     run: &mut Run,
     docs: &Docs,
@@ -688,8 +700,8 @@ fn branch_guard(
         return Ok(None);
     };
     let body = format!(
-        "**Happened:** the driver was about to {what} and stopped: {problem}. \
-         It ships and pushes only from the run's feature branch, and never pushes `{default}`.\n\
+        "**Happened:** the {what} did not start: {problem}. \
+         The driver polishes, ships, pushes and fixes CI only from the run's feature branch, and never pushes `{default}`.\n\
          **Options:**\n\
          1. put HEAD back on the feature branch (`git switch {branch}`, carrying over any commit made elsewhere) and answer this block — the {what} runs again\n\
          2. if the run's branch itself is wrong, `factory stop` the run and start it again from the right branch\n\
@@ -1385,6 +1397,11 @@ fn fix_round(
     let repo = run.state().repo.clone();
     let feature_dir = repo.join(&board.dir);
     let agent_log = feature_dir.join("agent-log.md");
+    // The fix commits: a HEAD moved during the watch blocks before a worker
+    // spends the round on another branch.
+    if let Some(o) = branch_guard(run, docs, &feature_dir, "ci", "CI fix", out)? {
+        return Ok(Some(o));
+    }
     loop {
         if let Some(o) = await_quota(run, out)? {
             return Ok(Some(o));

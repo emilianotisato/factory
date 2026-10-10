@@ -1356,6 +1356,48 @@ fn the_push_refuses_a_head_off_the_feature_branch_and_the_pr_names_its_head() {
 }
 
 #[test]
+fn a_head_off_the_feature_branch_blocks_the_polish_before_a_worker_runs() {
+    let fx = Fixture::new("closeout-polish-off-branch");
+    fx.chain();
+    fx.write_plan(&plan_with(&[step("dead"), step("dead"), step("polish")]));
+    let dir = start(&fx);
+    let first = wait_block_id(&fx, &dir, "BLOCK-1", 90);
+    assert_eq!(first["question"], "Two polish workers died");
+    wait_parked(&fx, &dir, 1, 30);
+
+    // The owner answers from another branch: the closeout, not the
+    // driver's tick, owns the check and asks with a block (AD-50001).
+    let branched = head(&fx);
+    fx.git(&["switch", "-c", "stray"]);
+    answer(&fx, "BLOCK-1", "login fixed");
+    let second = wait_block_id(&fx, &dir, "BLOCK-2", 60);
+    assert_eq!(second["phase"], "polish");
+    assert_eq!(
+        second["question"],
+        "polish stopped: HEAD is on `stray`, not the feature branch `feat/fixture`"
+    );
+    block_heading(&fx, "BLOCK-2", "polish");
+    wait_parked(&fx, &dir, 2, 30);
+    assert_eq!(
+        roles(&fx, &dir)[5..],
+        ["polish", "polish"],
+        "no polish worker on stray"
+    );
+
+    fx.git(&["switch", "feat/fixture"]);
+    answer(&fx, "BLOCK-2", "back on the branch");
+    wait_phase(&fx, &dir, "finished", 90);
+    assert_eq!(roles(&fx, &dir)[5..], ["polish", "polish", "polish"]);
+    assert_eq!(
+        fx.git(&["rev-parse", "stray"]).trim(),
+        branched,
+        "nothing committed on stray"
+    );
+    assert_eq!(origin_head(&fx, "feat/fixture"), Some(head(&fx)));
+    assert_eq!(origin_head(&fx, "stray"), None);
+}
+
+#[test]
 fn a_shipped_board_without_its_ship_commit_ships_again() {
     let fx = Fixture::new("closeout-ship-uncommitted");
     fx.chain();
