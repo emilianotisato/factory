@@ -38,7 +38,7 @@
 **Over:** the slice's "the first events after `run_resumed` are `checkpoint_resumed` and `gate_cached`", which would mean deferring the checkpoint orphan into `checkpoint::run` — two places that settle orphans.
 **Because:** one orphan path; and the cockpit sees the death before the retry, the order it happened in.
 **Undo:** move `scheduler::settle_checkpoint_orphan` behind `checkpoint::run`'s resume branch; the `k[16..]` tail in `tests/run.rs`.
-**Review:** fyi
+**Review:** decide
 
 ### AD-605 — What does the checkpoint commit stage? · slice-06 · 2026-10-10
 
@@ -62,7 +62,7 @@
 **Over:** the slice's `read-tree HEAD` first, which keeps HEAD's `docs/` blobs in the index, so every checkpoint commit (docs only) would change the key and defeat the cache at the next checkpoint.
 **Because:** PRD §6: "hash of the tree minus `docs/**`".
 **Undo:** `gatecache::tree_id`.
-**Review:** no
+**Review:** decide
 
 ### AD-608 — How do the checkpoint's workers fit the schema? · slice-06 · 2026-10-10
 
