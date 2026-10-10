@@ -147,17 +147,30 @@ pub fn can_spawn(run: &Run) -> Result<bool> {
 
 /// Pause on a limit; returns the epoch second spawning may resume. One
 /// `run_paused` per pause: a second limited worker that was already in
-/// flight only extends the pause, it does not announce again.
+/// flight only moves the pause, it does not announce again. A reported
+/// `resetsAt` is when the quota lifts, so it replaces a 15-minute guess —
+/// earlier or later — and a guess never pushes past it; two of a kind keep
+/// the later.
 pub fn pause(run: &mut Run, limit: &Limit, out: &mut dyn Write) -> Result<u64> {
     let now = clock::unix_now();
-    let until = limit.until.filter(|u| *u > now).unwrap_or(now + RETRY_SECS);
+    let (until, guessed) = match limit.until.filter(|u| *u > now) {
+        Some(u) => (u, false),
+        None => (now + RETRY_SECS, true),
+    };
     if let Some(current) = run.state().paused_until.filter(|c| *c > now) {
-        if until > current {
-            run.set_paused_until(Some(until))?;
+        let was_guessed = run.state().paused_guessed;
+        let next = match (was_guessed, guessed) {
+            (true, false) => until,
+            (false, true) => current,
+            _ => until.max(current),
+        };
+        let next_guessed = was_guessed && guessed;
+        if (next, next_guessed) != (current, was_guessed) {
+            run.set_pause(next, next_guessed)?;
         }
-        return Ok(until.max(current));
+        return Ok(next);
     }
-    run.set_paused_until(Some(until))?;
+    run.set_pause(until, guessed)?;
     run.set_phase(Phase::Paused)?;
     run.emit(EventKind::RunPaused {
         literal: limit.literal.clone(),
@@ -177,7 +190,7 @@ pub fn pause(run: &mut Run, limit: &Limit, out: &mut dyn Write) -> Result<u64> {
 /// The pause passed: back to `after` (building, or checkpoint when the
 /// limited worker was a fix or checkpoint worker).
 pub fn resume(run: &mut Run, after: Phase, out: &mut dyn Write) -> Result<()> {
-    run.set_paused_until(None)?;
+    run.clear_pause()?;
     run.set_phase(after)?;
     run.emit(EventKind::RunResumedFromPause)?;
     say(out, "resumed from pause")
@@ -226,6 +239,57 @@ pub fn park_budget(
 mod tests {
     use super::*;
     use crate::stream::RateLimit;
+
+    fn limit(until: Option<u64>) -> Limit {
+        Limit {
+            until,
+            literal: "rejected".to_string(),
+        }
+    }
+
+    #[test]
+    fn a_reported_reset_replaces_a_guess_and_a_guess_never_passes_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let mut run = Run::create(&tmp.path().join("data"), &repo, "001", None, 1).unwrap();
+        let mut out: Vec<u8> = Vec::new();
+        let now = clock::unix_now();
+
+        // A guess, then a report that lifts sooner: the report wins.
+        let guess = pause(&mut run, &limit(None), &mut out).unwrap();
+        assert!(guess >= now + RETRY_SECS);
+        assert!(run.state().paused_guessed);
+        let soon = now + 120;
+        assert_eq!(pause(&mut run, &limit(Some(soon)), &mut out).unwrap(), soon);
+        assert_eq!(run.state().paused_until, Some(soon));
+        assert!(!run.state().paused_guessed);
+
+        // A guess after a report does not push past it.
+        assert_eq!(pause(&mut run, &limit(None), &mut out).unwrap(), soon);
+        assert_eq!(run.state().paused_until, Some(soon));
+        assert!(!run.state().paused_guessed);
+
+        // Two reports: the later.
+        let later = now + 3600;
+        assert_eq!(
+            pause(&mut run, &limit(Some(later)), &mut out).unwrap(),
+            later
+        );
+        assert_eq!(
+            pause(&mut run, &limit(Some(soon)), &mut out).unwrap(),
+            later
+        );
+        assert_eq!(run.state().paused_until, Some(later));
+
+        // One announcement for the whole pause; resuming clears both fields.
+        let text = String::from_utf8(out).unwrap();
+        assert_eq!(text.matches("paused: ").count(), 1, "{text}");
+        let mut out: Vec<u8> = Vec::new();
+        resume(&mut run, Phase::Building, &mut out).unwrap();
+        assert_eq!(run.state().paused_until, None);
+        assert!(!run.state().paused_guessed);
+    }
 
     fn limited(status: &str, resets_at: Option<u64>) -> Summary {
         Summary {

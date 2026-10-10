@@ -125,6 +125,10 @@ pub struct RunState {
     /// in `state.json` so a resumed driver honours a pause it did not see.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paused_until: Option<u64>,
+    /// FR-9: `paused_until` is the 15-minute retry of a limit that gave no
+    /// `resetsAt`, so a limit that does give one replaces it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub paused_guessed: bool,
     /// FR-6: the draft PR once `gh pr create` returned it; a resume edits
     /// the PR instead of opening a second one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -301,6 +305,7 @@ impl Run {
             stop_requested: false,
             stopped: false,
             paused_until: None,
+            paused_guessed: false,
             pr_url: None,
             workers: Vec::new(),
             lanes_set_up: Vec::new(),
@@ -425,9 +430,20 @@ impl Run {
         })
     }
 
-    /// FR-9: set or clear the pause.
-    pub fn set_paused_until(&mut self, until: Option<u64>) -> Result<()> {
-        self.update(|s| s.paused_until = until)
+    /// FR-9: set the pause; `guessed` when no `resetsAt` gave `until`.
+    pub fn set_pause(&mut self, until: u64, guessed: bool) -> Result<()> {
+        self.update(|s| {
+            s.paused_until = Some(until);
+            s.paused_guessed = guessed;
+        })
+    }
+
+    /// FR-9: clear the pause.
+    pub fn clear_pause(&mut self) -> Result<()> {
+        self.update(|s| {
+            s.paused_until = None;
+            s.paused_guessed = false;
+        })
     }
 
     pub fn add_worker(&mut self, w: WorkerRef) -> Result<()> {
