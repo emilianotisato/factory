@@ -18,8 +18,11 @@
 //!
 //! Dead workers (FR-1, autonomy.md:76): the first death on a slice is a note
 //! in that slice's `log-slice-NN.md` and a fresh worker with a new session;
-//! the second blocks the slice with `BLOCK-NN02`. The count lives in
-//! `state.json` `workers[]`, so a resume after a kill counts the killed worker.
+//! the second since the owner last answered a block on it blocks the slice
+//! with the lowest free `BLOCK-NNkk` from `NN02`. The count lives in
+//! `state.json` `workers[]` and `events.jsonl`, so a resume after a kill
+//! counts the killed worker, and the spawn loop blocks a capped slice
+//! instead of giving it a third worker.
 //!
 //! FR-5: a worker whose slice reads `done` has its slice committed by
 //! pathspec before the next board read — the paths its stream named, the
@@ -196,8 +199,27 @@ fn drive_inner(run: &mut Run, docs: &Docs, cfg: &Config, out: &mut dyn Write) ->
         // A `building` slice with nothing alive on it is either answered
         // (an `answers/BLOCK-n.json` names it) or a worker that died below
         // the cap: either way it gets a fresh worker, on the lane it holds.
+        // One whose deaths since the last answer reached the cap is a kill
+        // between the second death and the flip: it blocks, it never gets a
+        // third worker.
+        let mut capped = false;
         for b in board.building.clone() {
             if table.contains_key(&b.number) || has_unsettled(run, b.number) {
+                continue;
+            }
+            let dead = deaths_since_answer(run, b.number)?;
+            if dead.len() >= DEATH_CAP {
+                let block = dead_block_id(run, &board, b.number)?;
+                block_dead_slice(run, &board, b.number, &block, &dead, "")?;
+                say(
+                    out,
+                    &format!(
+                        "slice {:02}: {} deaths since the last answer — slice blocked ({block})",
+                        b.number,
+                        dead.len()
+                    ),
+                )?;
+                capped = true;
                 continue;
             }
             let lane = match b.lane {
@@ -227,6 +249,9 @@ fn drive_inner(run: &mut Run, docs: &Docs, cfg: &Config, out: &mut dyn Write) ->
                 &mut set_up,
                 out,
             )?;
+        }
+        if capped {
+            continue;
         }
         // Then the ready slices, first `spawnable` of them (FR-3). A due
         // checkpoint drains first: the tool says `spawnable: 0` and so do we.
@@ -1084,12 +1109,7 @@ fn settle_dead(
         session_id: w.session_id.clone(),
         exit_code,
     })?;
-    let deaths = run
-        .state()
-        .workers
-        .iter()
-        .filter(|x| x.slice == Some(slice) && x.died())
-        .count();
+    let dead = deaths_since_answer(run, slice)?;
     let repo = run.state().repo.clone();
     let fragment = repo
         .join(&board.dir)
@@ -1103,9 +1123,8 @@ fn settle_dead(
         "with a result but the slice neither done nor blocked"
     };
     let date = clock::now_rfc3339()[..10].to_string();
-    if deaths >= DEATH_CAP {
-        let block = format!("BLOCK-{}02", slice);
-        let title = format!("Two workers died on slice {:02}", slice);
+    if dead.len() >= DEATH_CAP {
+        let block = dead_block_id(run, board, slice)?;
         append_under(
             &fragment,
             "## Traps",
@@ -1114,37 +1133,14 @@ fn settle_dead(
                 w.session_id
             ),
         )?;
-        let sessions: Vec<String> = run
-            .state()
-            .workers
-            .iter()
-            .filter(|x| x.slice == Some(slice) && x.died())
-            .map(|x| {
-                format!(
-                    "`{}` ({})",
-                    x.session_id,
-                    x.outcome.as_deref().unwrap_or("?")
-                )
-            })
-            .collect();
-        let entry = format!(
-            "### {block} — {title} · slice-{nn} · open\n\n\
-             **Happened:** {n} workers on slice {nn} exited without leaving it `done` or `blocked`: {sessions}. \
-             The last one {code} {what}. The slice sits at `building` on the board with nothing alive on it; \
-             the driver's once-only respawn (autonomy.md § Caps, hand-back once) is spent. \
-             Streams and stderr are under `{dir}/`.\n\
-             **Options:** 1. read the last worker's `.stderr` and `.jsonl`, fix the environment (login, PATH, quota) and set the slice back to `pending`; \
-             2. build the slice by hand and set it `done`; \
-             3. drop the slice from the plan if it no longer applies.\n\
-             **Recommended:** 1 — a worker that dies before its first tool call is the environment's fault, not the slice's.\n",
-            nn = format!("{:02}", slice),
-            n = deaths,
-            sessions = sessions.join(", "),
-            dir = worker::dir(run.dir()).display(),
-        );
-        append_under(&fragment, "## Blockers", &entry)?;
-        set_slice_status(&slice_file(run, board, slice)?, "blocked")?;
-        emit_blocked(run, slice, Some(&(block.clone(), title)))?;
+        block_dead_slice(
+            run,
+            board,
+            slice,
+            &block,
+            &dead,
+            &format!("The last one {code} {what}. "),
+        )?;
         say(
             out,
             &format!(
@@ -1171,6 +1167,127 @@ fn settle_dead(
         )?;
         Ok(false)
     }
+}
+
+/// The title of the driver's block on a slice whose workers kept dying.
+fn dead_title(slice: u32) -> String {
+    format!("Two workers died on slice {:02}", slice)
+}
+
+/// The slice's workers that died since the owner last answered a block on
+/// it: what the once-only respawn (FR-1) counts. A `block_answered` naming
+/// the slice starts the count again; a worker whose `slice_spawned` comes
+/// before it is behind the answer. A worker with no `slice_spawned` (a kill
+/// inside the spawn) counts: the cap errs toward the owner.
+pub fn deaths_since_answer(run: &Run, slice: u32) -> Result<Vec<WorkerRef>> {
+    let events = run.events()?;
+    let from = events
+        .iter()
+        .rposition(
+            |e| matches!(&e.kind, EventKind::BlockAnswered { slice: Some(s), .. } if *s == slice),
+        )
+        .map_or(0, |i| i + 1);
+    let before: HashSet<&str> = events[..from]
+        .iter()
+        .filter_map(|e| match &e.kind {
+            EventKind::SliceSpawned {
+                slice: s,
+                session_id,
+                ..
+            } if *s == slice => Some(session_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    Ok(run
+        .state()
+        .workers
+        .iter()
+        .filter(|w| w.slice == Some(slice) && w.died() && !before.contains(w.session_id.as_str()))
+        .cloned()
+        .collect())
+}
+
+/// The id of the death block on `slice`: one already open under the death
+/// title (a kill after it was written, before the slice flipped), else the
+/// lowest free `BLOCK-NNkk` from `kk = 02` — the slice's own range, so the
+/// merge keeps it, and never a number a builder of the slice already used.
+fn dead_block_id(run: &Run, board: &Status, slice: u32) -> Result<String> {
+    let feature_dir = run.state().repo.join(&board.dir);
+    if let Some(e) = open_dead_block(&feature_dir, slice)? {
+        return Ok(e.id);
+    }
+    let mut used: HashSet<u32> = HashSet::new();
+    for path in answers::log_files(&feature_dir)? {
+        used.extend(answers::entries(&path)?.into_iter().map(|e| e.n));
+    }
+    let k = (2..100)
+        .find(|k| !used.contains(&(slice * 100 + k)))
+        .ok_or_else(|| {
+            crate::Error::Msg(format!("slice {slice:02} has used every BLOCK-{slice}NN"))
+        })?;
+    Ok(format!("BLOCK-{}", slice * 100 + k))
+}
+
+fn open_dead_block(feature_dir: &Path, slice: u32) -> Result<Option<answers::BlockEntry>> {
+    let title = dead_title(slice);
+    let mut hit = None;
+    for path in answers::log_files(feature_dir)? {
+        if let Some(e) = answers::entries(&path)?
+            .into_iter()
+            .find(|e| !e.resolved && e.slice == Some(slice) && e.title == title)
+        {
+            hit = Some(e);
+        }
+    }
+    Ok(hit)
+}
+
+/// Block `slice` on its dead workers: the entry under `## Blockers` (unless
+/// a kill left it written), the slice `blocked`, `slice_blocked`. `last` is
+/// what the latest death adds to the entry, empty when the driver came back
+/// to a cap reached before it died.
+fn block_dead_slice(
+    run: &mut Run,
+    board: &Status,
+    slice: u32,
+    block: &str,
+    dead: &[WorkerRef],
+    last: &str,
+) -> Result<()> {
+    let repo = run.state().repo.clone();
+    let feature_dir = repo.join(&board.dir);
+    let title = dead_title(slice);
+    if open_dead_block(&feature_dir, slice)?.is_none_or(|e| e.id != block) {
+        let fragment = feature_dir.join(format!("log-slice-{:02}.md", slice));
+        let sessions: Vec<String> = dead
+            .iter()
+            .map(|x| {
+                format!(
+                    "`{}` ({})",
+                    x.session_id,
+                    x.outcome.as_deref().unwrap_or("?")
+                )
+            })
+            .collect();
+        let entry = format!(
+            "### {block} — {title} · slice-{nn} · open\n\n\
+             **Happened:** {n} workers on slice {nn} exited without leaving it `done` or `blocked`: {sessions}. \
+             {last}The slice sits at `building` on the board with nothing alive on it; \
+             the driver's once-only respawn (autonomy.md § Caps, hand-back once) is spent. \
+             Streams and stderr are under `{dir}/`.\n\
+             **Options:** 1. read the last worker's `.stderr` and `.jsonl`, fix the environment (login, PATH, quota) and set the slice back to `pending`; \
+             2. build the slice by hand and set it `done`; \
+             3. drop the slice from the plan if it no longer applies.\n\
+             **Recommended:** 1 — a worker that dies before its first tool call is the environment's fault, not the slice's.\n",
+            nn = format!("{:02}", slice),
+            n = dead.len(),
+            sessions = sessions.join(", "),
+            dir = worker::dir(run.dir()).display(),
+        );
+        append_under(&fragment, "## Blockers", &entry)?;
+    }
+    set_slice_status(&slice_file(run, board, slice)?, "blocked")?;
+    emit_blocked(run, slice, Some(&(block.to_string(), title)))
 }
 
 fn find_ref(run: &Run, session_id: &str) -> WorkerRef {

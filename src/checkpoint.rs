@@ -27,7 +27,7 @@ use crate::config::Config;
 use crate::db::GateInsert;
 use crate::docs::{Docs, Status};
 use crate::error::io;
-use crate::events::EventKind;
+use crate::events::{Event, EventKind};
 use crate::gatecache::{self, Entry, GateCache};
 use crate::pack::Pack;
 use crate::quota::{self, Hold, Limit};
@@ -227,11 +227,11 @@ pub fn run(
         if let Some(o) = await_quota(run, out)? {
             return Ok(o);
         }
-        let since = last_checkpoint_answer(run)?;
+        let before = spawned_before_answer(&run.events()?, n);
         let mine = |w: &crate::run::WorkerRef| {
             w.role == "checkpoint"
                 && w.checkpoint == Some(n)
-                && since.as_ref().is_none_or(|at| w.spawned_at > *at)
+                && !before.contains(w.session_id.as_str())
         };
         let deaths = run
             .state()
@@ -822,13 +822,45 @@ pub fn open_checkpoint_blocks(agent_log: &Path) -> Result<Vec<(String, String)>>
         .collect())
 }
 
-/// `at` of the latest answer to a checkpoint block (one naming no slice).
-fn last_checkpoint_answer(run: &Run) -> Result<Option<String>> {
-    Ok(answers::all(run.dir())?
-        .into_iter()
-        .filter(|a| a.slice.is_none() && a.id.starts_with("BLOCK-"))
-        .map(|a| a.at)
-        .max())
+/// The index into `events` just past the latest `block_answered` for one of
+/// checkpoint `n`'s own blocks (its `checkpoint_blocked` ids); 0 when the
+/// owner answered none. The death cap and the red count start there: an
+/// answer to another block naming no slice (a refused merge, a closeout
+/// block, another checkpoint's) resets neither.
+fn since_answer(events: &[Event], n: u32) -> usize {
+    let mut mine: HashSet<&str> = HashSet::new();
+    let mut from = 0;
+    for (i, e) in events.iter().enumerate() {
+        match &e.kind {
+            EventKind::CheckpointBlocked { n: m, block_id, .. } if *m == n => {
+                mine.insert(block_id.as_str());
+            }
+            EventKind::BlockAnswered {
+                id, slice: None, ..
+            } if mine.contains(id.as_str()) => from = i + 1,
+            _ => {}
+        }
+    }
+    from
+}
+
+/// The sessions of checkpoint `n`'s workers (fix and checkpoint) spawned
+/// before the owner's latest answer to one of its blocks: spent, they count
+/// toward no cap. A worker with no spawn event (a kill inside the spawn) is
+/// not among them, so it counts.
+fn spawned_before_answer(events: &[Event], n: u32) -> HashSet<String> {
+    events[..since_answer(events, n)]
+        .iter()
+        .filter_map(|e| match &e.kind {
+            EventKind::CheckpointSpawned {
+                n: m, session_id, ..
+            }
+            | EventKind::FixSpawned {
+                n: m, session_id, ..
+            } if *m == n => Some(session_id.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 fn park_line(id: &str, title: &str) -> String {
@@ -847,4 +879,74 @@ pub fn lowest_free_block(feature_dir: &Path) -> Result<u32> {
     Ok((1..)
         .find(|n| !used.contains(n))
         .expect("an unused block number"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ev(kind: EventKind) -> Event {
+        Event {
+            seq: 0,
+            ts: String::new(),
+            kind,
+        }
+    }
+
+    fn spawned(n: u32, session: &str) -> Event {
+        ev(EventKind::CheckpointSpawned {
+            n,
+            attempt: 1,
+            session_id: session.to_string(),
+            pid: 1,
+        })
+    }
+
+    fn blocked(n: u32, id: &str) -> Event {
+        ev(EventKind::CheckpointBlocked {
+            n,
+            block_id: id.to_string(),
+            question: "q".to_string(),
+        })
+    }
+
+    fn answered(id: &str) -> Event {
+        ev(EventKind::BlockAnswered {
+            id: id.to_string(),
+            slice: None,
+            text: "a".to_string(),
+        })
+    }
+
+    #[test]
+    fn only_an_answer_to_this_checkpoints_block_spends_its_workers() {
+        let mut events = vec![
+            spawned(1, "a"),
+            ev(EventKind::MergeRefused {
+                block_id: "BLOCK-1".to_string(),
+                detail: String::new(),
+            }),
+            answered("BLOCK-1"),
+        ];
+        // A refused merge's answer names no slice, but it is not this
+        // checkpoint's block: worker `a` still counts.
+        assert_eq!(since_answer(&events, 1), 0);
+        assert!(spawned_before_answer(&events, 1).is_empty());
+
+        events.extend([blocked(1, "BLOCK-2"), answered("BLOCK-2")]);
+        assert_eq!(since_answer(&events, 1), 5);
+        assert_eq!(
+            spawned_before_answer(&events, 1),
+            HashSet::from(["a".to_string()])
+        );
+
+        // Checkpoint 2's block, answered, spends none of checkpoint 1's.
+        events.extend([spawned(1, "b"), blocked(2, "BLOCK-3"), answered("BLOCK-3")]);
+        assert_eq!(since_answer(&events, 1), 5);
+        assert_eq!(
+            spawned_before_answer(&events, 1),
+            HashSet::from(["a".to_string()])
+        );
+        assert_eq!(since_answer(&events, 2), 8);
+    }
 }

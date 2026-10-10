@@ -1056,3 +1056,136 @@ fn the_driver_killed_mid_slice_resumes_and_finishes() {
     assert_eq!(ws[0]["outcome"], "dead");
     assert!(ws[1..].iter().all(|w| w["outcome"] == "done"));
 }
+
+// ── polish: the death cap counts from the last answer and survives a kill ───
+
+/// `slice_blocked` block ids, in order.
+fn blocked_ids(dir: &Path) -> Vec<String> {
+    events(dir)
+        .iter()
+        .filter(|e| e["kind"] == "slice_blocked")
+        .map(|e| e["block_id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+fn parks(dir: &Path) -> usize {
+    fs::read_to_string(dir.join("driver.log"))
+        .unwrap_or_default()
+        .matches("parked (waiting-owner)")
+        .count()
+}
+
+fn stop_and_wait(fx: &Fixture, dir: &Path) {
+    let driver = state(dir)["pid"].as_u64().unwrap() as u32;
+    let out = factory(fx, &["stop", &run_id(dir)]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    wait_until("the stopped driver to exit", 15, || !pid_alive(driver));
+}
+
+#[test]
+fn deaths_count_from_the_last_answer_and_each_block_takes_a_free_id() {
+    let fx = Fixture::with_index("dead-answered", &[("checkpoint_every", "10")]);
+    fx.chain();
+    // A builder of slice 01 already used BLOCK-102: the driver's death
+    // block must not take that number again.
+    fs::write(
+        fx.path().join(FRAGMENT),
+        "## Blockers\n\n### BLOCK-102 — Which store? · slice-01 · resolved\n\n**Happened:** x\n**Resolution (2026-10-01):** sqlite\n",
+    )
+    .unwrap();
+    fx.git(&["add", "-A"]);
+    fx.git(&["commit", "-q", "-m", "chore: an earlier block"]);
+    fx.write_plan(&[dead(), dead(), dead(), dead()]);
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let dir = only_run_dir(&fx);
+    wait_until("the run to park", 40, || parks(&dir) >= 1);
+    assert_eq!(blocked_ids(&dir), ["BLOCK-103"]);
+    assert_eq!(fx.calls().len(), 2);
+
+    // The owner answers: the two deaths before it are spent. One more death
+    // is a respawn, not a block; the second after the answer blocks again,
+    // under the next free number.
+    let out = factory(&fx, &["answer", "BLOCK-103", "the login is fixed"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    wait_until("the run to park again", 40, || {
+        blocked_ids(&dir).len() == 2 && state(&dir)["phase"] == "waiting-owner"
+    });
+    assert_eq!(
+        fx.calls().len(),
+        4,
+        "a death after the answer respawns once"
+    );
+    assert_eq!(blocked_ids(&dir), ["BLOCK-103", "BLOCK-104"]);
+    let k = kinds(&dir);
+    let answered = k.iter().position(|k| k == "block_answered").unwrap();
+    assert_eq!(
+        k[answered..]
+            .iter()
+            .filter(|k| *k == "slice_spawned" || *k == "worker_dead" || *k == "slice_blocked")
+            .collect::<Vec<_>>(),
+        [
+            "slice_spawned",
+            "worker_dead",
+            "slice_spawned",
+            "worker_dead",
+            "slice_blocked"
+        ],
+        "{k:?}"
+    );
+    let frag = fx.read(FRAGMENT);
+    assert!(
+        frag.contains("### BLOCK-104 — Two workers died on slice 01 · slice-01 · open\n"),
+        "{frag}"
+    );
+    assert!(
+        frag.contains("**Happened:** 2 workers on slice 01 exited"),
+        "the count is since the answer: {frag}"
+    );
+    assert_eq!(frag.matches("### BLOCK-102 ").count(), 1, "{frag}");
+    stop_and_wait(&fx, &dir);
+}
+
+#[test]
+fn a_kill_between_the_second_death_and_the_block_never_spawns_a_third_worker() {
+    let fx = Fixture::with_index("dead-killed", &[("checkpoint_every", "10")]);
+    fx.chain();
+    fx.write_plan(&[dead(), dead()]);
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let dir = only_run_dir(&fx);
+    let driver = state(&dir)["pid"].as_u64().unwrap() as u32;
+    wait_until("the run to park", 40, || parks(&dir) >= 1);
+    // SAFETY: a plain kill(2) on the test's own detached driver.
+    assert_eq!(unsafe { libc::kill(driver as i32, libc::SIGKILL) }, 0);
+    wait_until("the driver to die", 5, || !pid_alive(driver));
+    // Back to the moment after the second death was saved and before the
+    // block was written: both outcomes `dead`, the slice still `building`,
+    // no entry under `## Blockers`.
+    let frag = fx.read(FRAGMENT);
+    let traps = &frag[..frag.find("\n## Blockers").unwrap() + 1];
+    fs::write(fx.path().join(FRAGMENT), traps).unwrap();
+    let slice = fx.slice_path(1);
+    let text = fs::read_to_string(&slice).unwrap();
+    fs::write(
+        &slice,
+        text.replacen("status: blocked", "status: building", 1),
+    )
+    .unwrap();
+    assert_eq!(fx.slice_status(1), "building");
+
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    wait_until("the resumed driver to park", 30, || parks(&dir) >= 2);
+    assert_eq!(fx.calls().len(), 2, "no third worker on a capped slice");
+    assert_eq!(fx.slice_status(1), "blocked");
+    assert_eq!(blocked_ids(&dir), ["BLOCK-102", "BLOCK-102"]);
+    let frag = fx.read(FRAGMENT);
+    assert_eq!(
+        frag.matches("### BLOCK-102 — Two workers died on slice 01 · slice-01 · open\n")
+            .count(),
+        1,
+        "{frag}"
+    );
+    stop_and_wait(&fx, &dir);
+}
