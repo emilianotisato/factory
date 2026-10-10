@@ -95,3 +95,11 @@
 **Because:** one bad file in `answers/` stopped every slice of the run, though the other answers were fine. Deleting it would lose what the owner can still read by hand.
 **Undo:** make `answers::scan` return the parse error again.
 **Review:** no
+
+### AD-20013 — Where does an unclosed fence in a log file end? · polish · 2026-10-10
+
+**Chose:** fences pair from the top. With an odd count, the driver does not treat the last fence line as a fence, so the entries after it are still found. `answers::resolve` repairs the file: it adds the missing closing fence before the next heading after the opener, then writes the resolution.
+**Over:** reading it as docs.mjs `parseAgentLog` does, where the fence runs to the end of the file; or closing the fence at the next heading even when the count is even.
+**Because:** the old behaviour hid a worker's later `BLOCK-n` from `slice_blocked` and `factory answer`, and wrote the resolution as code. After the repair, the driver and docs.mjs read the same entries. Closing at a heading when the count is even would break the template's fenced examples, which hold BLOCK headings.
+**Undo:** in `answers.rs`, make `dangling_fence` return `None`.
+**Review:** fyi

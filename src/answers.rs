@@ -182,8 +182,30 @@ fn block_heading(line: &str) -> Option<(u32, &str)> {
     Some((digits.parse().ok()?, rest.trim()))
 }
 
+fn is_fence(line: &str) -> bool {
+    line.trim_start().starts_with("```")
+}
+
+fn is_heading(line: &str) -> bool {
+    line.starts_with("## ") || line.starts_with("### ")
+}
+
+/// The fence line no later one closes. Fences pair from the top, so with an
+/// odd count it is the last one; read as a fence, it would hide every heading
+/// after it.
+fn dangling_fence<S: AsRef<str>>(lines: &[S]) -> Option<usize> {
+    let fences: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| is_fence(l.as_ref()))
+        .map(|(i, _)| i)
+        .collect();
+    (fences.len() % 2 == 1).then(|| fences[fences.len() - 1])
+}
+
 /// Every BLOCK entry in one log file, in order. Fenced blocks are skipped as
-/// the tool skips them (the template's examples live in one).
+/// the tool skips them (the template's examples live in one); a fence nothing
+/// closes is not one, so the entries after it are still found.
 pub fn entries(path: &Path) -> Result<Vec<BlockEntry>> {
     let text = match fs::read_to_string(path) {
         Ok(t) => t,
@@ -191,17 +213,17 @@ pub fn entries(path: &Path) -> Result<Vec<BlockEntry>> {
         Err(e) => return Err(io(format!("read {}", path.display()))(e)),
     };
     let lines: Vec<&str> = text.lines().collect();
+    let dangling = dangling_fence(&lines);
     let mut out: Vec<BlockEntry> = Vec::new();
     let mut fenced = false;
     for (i, line) in lines.iter().enumerate() {
-        if line.trim_start().starts_with("```") {
+        if is_fence(line) && dangling != Some(i) {
             fenced = !fenced;
         }
         if fenced {
             continue;
         }
-        let is_heading = line.starts_with("## ") || line.starts_with("### ");
-        if is_heading
+        if is_heading(line)
             && let Some(last) = out.last_mut()
             && last.end == 0
         {
@@ -319,6 +341,8 @@ pub fn entry_text(entry: &BlockEntry) -> Result<String> {
 
 /// `autonomy.md` § Resuming step 1: append `**Resolution ({date}):** {text}`
 /// under the entry and turn the heading's last field `open` into `resolved`.
+/// A fence nothing closes is closed first, at the end of its entry, so the
+/// resolution and the headings after it are not code to the tool.
 pub fn resolve(entry: &BlockEntry, text: &str, date: &str) -> Result<()> {
     let content =
         fs::read_to_string(&entry.path).map_err(io(format!("read {}", entry.path.display())))?;
@@ -335,9 +359,20 @@ pub fn resolve(entry: &BlockEntry, text: &str, date: &str) -> Result<()> {
         }
     };
     lines[entry.start] = flipped;
-    let line = format!("**Resolution ({date}):** {text}");
-    let end = entry.end.min(lines.len());
-    lines.insert(end, line);
+    let mut end = entry.end.min(lines.len());
+    if let Some(f) = dangling_fence(&lines) {
+        let mut close = (f + 1..lines.len())
+            .find(|&i| is_heading(&lines[i]))
+            .unwrap_or(lines.len());
+        while close > f + 1 && lines[close - 1].trim().is_empty() {
+            close -= 1;
+        }
+        lines.insert(close, "```".to_string());
+        if close <= end {
+            end += 1;
+        }
+    }
+    lines.insert(end, format!("**Resolution ({date}):** {text}"));
     fs::write(&entry.path, lines.join("\n") + "\n")
         .map_err(io(format!("write {}", entry.path.display())))
 }
@@ -438,6 +473,48 @@ mod tests {
         let files = log_files(dir.path()).unwrap();
         assert_eq!(files.len(), 2);
         assert_eq!(files[1], log);
+    }
+
+    #[test]
+    fn a_fence_nothing_closes_hides_no_entry_and_is_closed_on_resolve() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("log-slice-01.md");
+        let text = "## Blockers\n\n### BLOCK-101 — gate red · slice-01 · open\n\n**Happened:**\n```\nerror: x\n\n### BLOCK-102 — Which option? · slice-01 · open\n\n**Happened:** y\n\n## Decisions\n";
+        fs::write(&log, text).unwrap();
+        let es = entries(&log).unwrap();
+        assert_eq!(
+            es.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
+            ["BLOCK-101", "BLOCK-102"]
+        );
+        assert_eq!((es[0].start, es[0].end), (2, 7));
+        assert_eq!(
+            open_block_of_slice(dir.path(), 1).unwrap().unwrap().id,
+            "BLOCK-102"
+        );
+
+        // Resolving the entry that holds the fence closes it before the
+        // resolution, which is then outside any fence.
+        resolve(&es[0], "Fix it", "2026-10-10").unwrap();
+        let after = fs::read_to_string(&log).unwrap();
+        assert_eq!(
+            after,
+            "## Blockers\n\n### BLOCK-101 — gate red · slice-01 · resolved\n\n**Happened:**\n```\nerror: x\n```\n**Resolution (2026-10-10):** Fix it\n\n### BLOCK-102 — Which option? · slice-01 · open\n\n**Happened:** y\n\n## Decisions\n"
+        );
+        assert_eq!(dangling_fence(&after.lines().collect::<Vec<_>>()), None);
+
+        // Resolving a later entry closes the earlier fence where its entry
+        // ends, not around the new resolution.
+        fs::write(&log, text).unwrap();
+        let es = entries(&log).unwrap();
+        resolve(&es[1], "Pick 1", "2026-10-10").unwrap();
+        let after = fs::read_to_string(&log).unwrap();
+        assert_eq!(
+            after,
+            "## Blockers\n\n### BLOCK-101 — gate red · slice-01 · open\n\n**Happened:**\n```\nerror: x\n```\n\n### BLOCK-102 — Which option? · slice-01 · resolved\n\n**Happened:** y\n**Resolution (2026-10-10):** Pick 1\n\n## Decisions\n"
+        );
+        let es = entries(&log).unwrap();
+        assert_eq!(es.len(), 2);
+        assert!(!es[0].resolved && es[1].resolved);
     }
 
     #[test]
