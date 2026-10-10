@@ -275,9 +275,18 @@ fn run_refuses_a_dirty_tree_with_no_run_dir_and_no_spawn() {
 #[test]
 fn run_on_the_clean_fixture_starts_notes_the_judge_lines_then_resumes() {
     // The default `checkpoint_every: 2`: the loop builds slices 01 and 02,
-    // then stops at `checkpoint` for slice 06's checkpoint.
+    // then the driver runs checkpoint 1 itself (slice 06); its checkpoint
+    // worker is slow enough to kill the driver under, and the resumed run
+    // spawns another (the fourth step).
     let fx = Fixture::new("run-start");
-    fx.write_plan(&[json!({"outcome": "done"}), json!({"outcome": "done"})]);
+    fx.write_plan(&[
+        json!({"outcome": "done"}),
+        json!({"outcome": "done"}),
+        json!({"outcome": "checkpoint", "delay_ms": 3000}),
+        json!({"outcome": "checkpoint"}),
+        json!({"outcome": "done"}),
+        json!({"outcome": "checkpoint"}),
+    ]);
     let out = factory(&fx, &["run", "1"]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     let text = stdout(&out);
@@ -321,12 +330,19 @@ fn run_on_the_clean_fixture_starts_notes_the_judge_lines_then_resumes() {
     assert!(!text.contains("ASK-"), "{text}");
     assert!(text.contains("driver pid "), "{text}");
 
-    // The detached driver builds to the checkpoint and stops there. 01 and
-    // 02 are independent and the index has two lanes: both spawn in the same
-    // tick and finish in either order (slice 04).
-    wait_until("the checkpoint", 40, || state(dir)["phase"] == "checkpoint");
+    // The detached driver builds 01 and 02 — independent, and the index has
+    // two lanes: both spawn in the same tick and finish in either order
+    // (slice 04) — then runs the gate and hands checkpoint 1 to a worker.
+    // (The stub records its call a beat after the spawn event.)
+    wait_until("the checkpoint worker", 40, || {
+        kinds(dir).last().map(String::as_str) == Some("checkpoint_spawned")
+            && state(dir)["workers"]
+                .as_array()
+                .is_some_and(|w| w.len() == 3)
+            && fx.calls().len() == 3
+    });
     let k = kinds(dir);
-    assert_eq!(k.len(), 12, "{k:?}");
+    assert_eq!(k.len(), 15, "{k:?}");
     assert!(k[5..7].iter().all(|k| k == "slice_spawned"), "{k:?}");
     // Each reap commits the slice right after `slice_done` (slice 05).
     assert_eq!(
@@ -339,24 +355,34 @@ fn run_on_the_clean_fixture_starts_notes_the_judge_lines_then_resumes() {
         ],
         "{k:?}"
     );
-    assert_eq!(k[11], "checkpoint_due", "{k:?}");
+    assert_eq!(
+        k[11..],
+        [
+            "checkpoint_started",
+            "gate_run",
+            "log_merged",
+            "checkpoint_spawned"
+        ],
+        "{k:?}"
+    );
     assert_eq!(fx.slice_status(1), "done");
     assert_eq!(fx.slice_status(2), "done");
     assert_eq!(fx.slice_status(3), "pending");
-    assert_eq!(fx.calls().len(), 2);
-    let due = events(dir)
+    assert_eq!(fx.calls().len(), 3);
+    let started = events(dir)
         .into_iter()
-        .find(|e| e["kind"] == "checkpoint_due")
+        .find(|e| e["kind"] == "checkpoint_started")
         .unwrap();
-    assert_eq!(due["unverified"], json!([1, 2]));
+    assert_eq!(started["covers"], json!([1, 2]));
     let db = Db::open(&data_dir(&fx).join("factory.db")).unwrap();
     let row = db.run_row(&id).unwrap().unwrap();
     assert_eq!(row.phase, "checkpoint");
     assert_eq!(row.branch.as_deref(), Some("feat/fixture"));
-    assert_eq!(db.events(&id).unwrap().len(), 12);
+    assert_eq!(db.events(&id).unwrap().len(), 15);
 
-    // A live pid: refused, naming the run and `factory stop`.
-    set_pid(dir, std::process::id());
+    // A live driver: refused, naming the run and `factory stop`.
+    let driver = state(dir)["pid"].as_u64().unwrap() as u32;
+    assert!(pid_alive(driver));
     let out = factory(&fx, &["run", "001"]);
     assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
     let text = stdout(&out);
@@ -364,11 +390,19 @@ fn run_on_the_clean_fixture_starts_notes_the_judge_lines_then_resumes() {
     assert!(text.contains(&format!("factory stop {id}")), "{text}");
     assert_eq!(run_dirs(&fx).len(), 1);
 
-    // The pid gone: the same run resumes, no preflight, the board printed,
-    // and the driver finds the checkpoint still due — no worker spawned.
-    let planted = dead_pid();
-    set_pid(dir, planted);
-    let out = factory(&fx, &["run", "001"]);
+    // The driver gone (its session killed under the checkpoint worker): the
+    // same run resumes — no preflight, the board printed, the flag taken —
+    // and runs the unverified checkpoint first (FR-1) on the cached gate,
+    // before anything spawns.
+    let worker = state(dir)["workers"][2]["pid"].as_u64().unwrap() as u32;
+    // SAFETY: a plain kill(2) on the detached driver's own session group.
+    let rc = unsafe { libc::kill(-(driver as i32), libc::SIGKILL) };
+    assert_eq!(rc, 0);
+    wait_until("the driver and its worker to be gone", 5, || {
+        !pid_alive(driver) && !pid_alive(worker)
+    });
+    assert_eq!(state(dir)["phase"], "checkpoint");
+    let out = factory(&fx, &["run", "001", "--budget", "9"]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     let text = stdout(&out);
     assert_eq!(run_dirs(&fx).len(), 1);
@@ -380,14 +414,42 @@ fn run_on_the_clean_fixture_starts_notes_the_judge_lines_then_resumes() {
         !text.contains("judge_noted") && !text.contains("  · "),
         "{text}"
     );
-    wait_until("the resumed driver to stop at the checkpoint", 20, || {
-        kinds(dir).len() == 14 && state(dir)["phase"] == "checkpoint"
+    assert_eq!(state(dir)["budget_weighted_tokens"], 9);
+    wait_until("the resumed run to finish", 40, || {
+        state(dir)["phase"] == "finished"
     });
     let k = kinds(dir);
-    assert_eq!(k[12..], ["run_resumed", "checkpoint_due"], "{k:?}");
-    assert_eq!(fx.calls().len(), 2);
-    // The resumer adopted the run: the planted pid is gone from the state file.
-    assert_ne!(state(dir)["pid"], Value::from(planted));
+    assert_eq!(k[15], "run_resumed", "{k:?}");
+    assert_eq!(
+        k[16..],
+        [
+            "worker_dead",
+            "checkpoint_resumed",
+            "gate_cached",
+            "checkpoint_spawned",
+            "checkpoint_done",
+            "slice_spawned",
+            "slice_done",
+            "slice_committed",
+            "checkpoint_started",
+            "gate_run",
+            "log_merged",
+            "checkpoint_spawned",
+            "checkpoint_done",
+            "run_finished"
+        ],
+        "{k:?}"
+    );
+    assert_eq!(
+        fx.calls().len(),
+        6,
+        "two checkpoint-1 workers among the six"
+    );
+    assert_eq!(fx.slice_status(3), "done");
+    assert_eq!(db.run_row(&id).unwrap().unwrap().phase, "finished");
+    // The resumer adopted the run: the killed driver's pid is gone from the
+    // state file.
+    assert_ne!(state(dir)["pid"], Value::from(driver));
 }
 
 #[test]
@@ -517,12 +579,14 @@ fn budget_comes_from_the_flag_then_the_config_then_the_default() {
         "budget_weighted_tokens = 5\nextra = true\n",
     )
     .unwrap();
-    // In the foreground the loop runs to the checkpoint before `run` returns,
-    // so every step below sees a settled run.
+    // In the foreground the loop runs through both checkpoints before `run`
+    // returns, so every step below sees a finished run.
     fx.write_plan(&[
         json!({"outcome": "done"}),
         json!({"outcome": "done"}),
+        json!({"outcome": "checkpoint"}),
         json!({"outcome": "done"}),
+        json!({"outcome": "checkpoint"}),
     ]);
     let out = factory(&fx, &["run", "001", "--budget", "7", "--foreground"]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
@@ -531,54 +595,49 @@ fn budget_comes_from_the_flag_then_the_config_then_the_default() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let dirs = run_dirs(&fx);
-    assert_eq!(state(&dirs[0])["budget_weighted_tokens"], 7);
-    assert_eq!(state(&dirs[0])["phase"], "checkpoint");
+    let first = run_dirs(&fx);
+    assert_eq!(first.len(), 1, "{first:?}");
+    assert_eq!(state(&first[0])["budget_weighted_tokens"], 7);
+    assert_eq!(state(&first[0])["phase"], "finished");
+    assert_eq!(fx.calls().len(), 5);
 
-    // A resume without the flag keeps the stored budget; with it, overrides.
-    factory(&fx, &["run", "001", "--foreground"]);
-    assert_eq!(state(&dirs[0])["budget_weighted_tokens"], 7);
-    factory(&fx, &["run", "001", "--budget", "9", "--foreground"]);
-    assert_eq!(state(&dirs[0])["budget_weighted_tokens"], 9);
-    assert_eq!(
-        fx.calls().len(),
-        2,
-        "checkpoint_every 2: two slices, then nothing on a resume"
-    );
-
-    // A new run (the old one finished) reads the config file. The driver
-    // committed each slice as it finished (slice 05), so the tree is clean
-    // for the preflight.
-    factory(
-        &fx,
-        &["stop", dirs[0].file_name().unwrap().to_str().unwrap()],
-    );
+    // A finished run is never resumed: the next `run` is a new one, which
+    // reads the config file. The driver committed every slice and checkpoint
+    // (slices 05, 06), so the tree is clean for the preflight; with every
+    // slice done and verified the new run finishes at once, spawning nothing.
+    let newest = |before: &[PathBuf]| {
+        let dirs = run_dirs(&fx);
+        assert_eq!(dirs.len(), before.len() + 1, "{dirs:?}");
+        dirs.into_iter().find(|d| !before.contains(d)).unwrap()
+    };
     assert_eq!(fx.git(&["status", "--porcelain"]), "");
     let out = factory(&fx, &["run", "001", "--foreground"]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
-    let dirs = run_dirs(&fx);
-    assert_eq!(dirs.len(), 2, "{dirs:?}");
-    let newest = dirs
-        .iter()
-        .find(|d| state(d)["phase"] != "finished")
-        .unwrap();
-    assert_eq!(state(newest)["budget_weighted_tokens"], 5);
+    let second = newest(&first);
+    assert_eq!(state(&second)["budget_weighted_tokens"], 5);
+    assert_eq!(state(&second)["phase"], "finished");
+    assert_eq!(state(&first[0])["budget_weighted_tokens"], 7);
+
+    // The flag over the config file, on a new run too.
+    let out = factory(&fx, &["run", "001", "--budget", "9", "--foreground"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let third = newest(&[first[0].clone(), second]);
+    assert_eq!(state(&third)["budget_weighted_tokens"], 9);
+    assert_eq!(fx.calls().len(), 5, "a delivered feature spawns nothing");
 }
 
 // ── task 6: factory stop ─────────────────────────────────────────────────────
 
 #[test]
 fn stop_finishes_a_dead_run_and_only_flags_a_live_one() {
-    let fx = Fixture::new("stop");
-    fx.write_plan(&[
-        json!({"outcome": "done"}),
-        json!({"outcome": "done"}),
-        json!({"outcome": "done"}),
-    ]);
-    factory(&fx, &["run", "001", "--foreground"]);
+    // A run parked on a preflight ask has no driver process: an unfinished
+    // run whose pid is dead, which is what `stop` tells apart.
+    let fx = Fixture::with_index("stop", &[("lanes", "1")]);
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     let dir = run_dirs(&fx).remove(0);
     let id = dir.file_name().unwrap().to_str().unwrap().to_string();
-    assert_eq!(state(&dir)["phase"], "checkpoint");
+    assert_eq!(state(&dir)["phase"], "waiting-owner");
 
     // Live: the flag is set, the phase is not.
     set_pid(&dir, std::process::id());
@@ -591,7 +650,7 @@ fn stop_finishes_a_dead_run_and_only_flags_a_live_one() {
     );
     let s = state(&dir);
     assert_eq!(s["stop_requested"], true);
-    assert_eq!(s["phase"], "checkpoint");
+    assert_eq!(s["phase"], "waiting-owner");
     assert_eq!(
         kinds(&dir).last().map(String::as_str),
         Some("stop_requested")

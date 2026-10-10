@@ -101,6 +101,11 @@ fn dead() -> Value {
     json!({"outcome": "dead"})
 }
 
+/// A checkpoint worker's step (slice 06): writes `CP-n` and returns done.
+fn checkpoint() -> Value {
+    json!({"outcome": "checkpoint"})
+}
+
 fn wait_until(what: &str, secs: u64, mut ok: impl FnMut() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(secs);
     while !ok() {
@@ -343,7 +348,7 @@ fn stream_recording_parses_into_the_workers_row_fields() {
 fn run_drives_three_slices_through_the_detached_driver() {
     let fx = Fixture::with_index("loop", &[("checkpoint_every", "10")]);
     fx.chain();
-    fx.write_plan(&[done(), done(), done()]);
+    fx.write_plan(&[done(), done(), done(), checkpoint()]);
     let t0 = Instant::now();
     let out = factory(&fx, &["run", "001"]);
     let took = t0.elapsed();
@@ -360,17 +365,21 @@ fn run_drives_three_slices_through_the_detached_driver() {
     assert!(text.contains(&format!("driver pid {driver}")), "{text}");
     assert!(text.contains("driver.log"), "{text}");
 
-    // With every slice done the tool says a checkpoint is due (`allDone`),
-    // so the loop stops at `checkpoint` — slice 06 runs it.
-    wait_until("the checkpoint", 40, || {
-        state(&dir)["phase"] == "checkpoint"
+    // With every slice done the board says a checkpoint is due (`allDone`);
+    // the driver runs it (slice 06) and the run finishes.
+    wait_until("the run to finish", 40, || {
+        state(&dir)["phase"] == "finished"
     });
     wait_until("the driver to exit", 5, || !pid_alive(driver));
     for n in 1..=3 {
         assert_eq!(fx.slice_status(n), "done", "slice {n:02}");
     }
     let calls = fx.calls();
-    assert_eq!(calls.len(), 3, "{calls:?}");
+    assert_eq!(
+        calls.len(),
+        4,
+        "three builds and a checkpoint worker: {calls:?}"
+    );
     let sids: Vec<String> = (1..=3u32)
         .map(|n| check_worker_argv(&fx, &calls[n as usize - 1], n, &dir))
         .collect();
@@ -394,15 +403,19 @@ fn run_drives_three_slices_through_the_detached_driver() {
             "slice_spawned",
             "slice_done",
             "slice_committed",
+            "checkpoint_started",
+            "gate_run",
             "log_merged",
-            "checkpoint_due"
+            "checkpoint_spawned",
+            "checkpoint_done",
+            "run_finished"
         ]
     );
-    let due = events(&dir)
+    let started = events(&dir)
         .into_iter()
-        .find(|e| e["kind"] == "checkpoint_due")
+        .find(|e| e["kind"] == "checkpoint_started")
         .unwrap();
-    assert_eq!(due["unverified"], json!([1, 2, 3]));
+    assert_eq!(started["covers"], json!([1, 2, 3]));
     assert_eq!(slices_of(&dir, "slice_spawned"), [1, 2, 3]);
     assert_eq!(slices_of(&dir, "slice_done"), [1, 2, 3]);
     let spawned_sids: Vec<String> = events(&dir)
@@ -413,8 +426,8 @@ fn run_drives_three_slices_through_the_detached_driver() {
     assert_eq!(spawned_sids, sids);
 
     let ws = state(&dir)["workers"].as_array().unwrap().clone();
-    assert_eq!(ws.len(), 3);
-    for (i, w) in ws.iter().enumerate() {
+    assert_eq!(ws.len(), 4, "three builds and the checkpoint worker");
+    for (i, w) in ws[..3].iter().enumerate() {
         assert_eq!(w["slice"], i as u64 + 1);
         assert_eq!(w["session_id"], sids[i].as_str());
         assert_eq!(w["outcome"], "done");
@@ -423,8 +436,8 @@ fn run_drives_three_slices_through_the_detached_driver() {
 
     let db = db(&fx);
     let rows = db.workers(&id).unwrap();
-    assert_eq!(rows.len(), 3);
-    for (i, r) in rows.iter().enumerate() {
+    assert_eq!(rows.len(), 4);
+    for (i, r) in rows[..3].iter().enumerate() {
         assert_eq!(r.slice, Some(i as u32 + 1));
         assert_eq!(r.role, "build");
         assert_eq!(r.session_id.as_deref(), Some(sids[i].as_str()));
@@ -441,14 +454,14 @@ fn run_drives_three_slices_through_the_detached_driver() {
         assert!(r.cost_usd.is_some(), "{r:?}");
         assert!(r.ended_at.is_some(), "{r:?}");
     }
-    assert_eq!(db.run_row(&id).unwrap().unwrap().phase, "checkpoint");
+    assert_eq!(db.run_row(&id).unwrap().unwrap().phase, "finished");
     assert_eq!(db.events(&id).unwrap().len(), k.len());
 
     let log = fs::read_to_string(dir.join("driver.log")).unwrap();
     assert!(log.contains(&format!("took run {id}")), "{log}");
     assert!(log.contains("slice 01 → worker "), "{log}");
     assert!(
-        log.contains("checkpoint due (unverified: 01, 02, 03)"),
+        log.contains("checkpoint 1 (covers 01, 02, 03) — started"),
         "{log}"
     );
     for (i, sid) in sids.iter().enumerate() {
@@ -468,7 +481,7 @@ fn run_drives_three_slices_through_the_detached_driver() {
 #[test]
 fn run_foreground_drives_the_same_loop_in_this_process() {
     let fx = Fixture::with_index("loop-fg", &[("checkpoint_every", "10")]);
-    fx.write_plan(&[done(), done(), done()]);
+    fx.write_plan(&[done(), done(), done(), checkpoint()]);
     let out = factory(&fx, &["run", "001", "--foreground"]);
     let text = stdout(&out);
     assert_eq!(out.status.code(), Some(0), "{text}");
@@ -478,19 +491,19 @@ fn run_foreground_drives_the_same_loop_in_this_process() {
     assert!(text.contains("slice 01 → worker "), "{text}");
     assert!(text.contains("slice 03 done"), "{text}");
     assert!(
-        text.contains("checkpoint due (unverified: 01, 02, 03)"),
+        text.contains("checkpoint 1 (covers 01, 02, 03) — started"),
         "{text}"
     );
-    assert_eq!(state(&dir)["phase"], "checkpoint");
-    assert_eq!(db(&fx).run_row(&id).unwrap().unwrap().phase, "checkpoint");
+    assert_eq!(state(&dir)["phase"], "finished");
+    assert_eq!(db(&fx).run_row(&id).unwrap().unwrap().phase, "finished");
     for n in 1..=3 {
         assert_eq!(fx.slice_status(n), "done");
     }
-    assert_eq!(fx.calls().len(), 3);
+    assert_eq!(fx.calls().len(), 4);
     let k = kinds(&dir);
     assert_eq!(count(&k, "slice_spawned"), 3);
     assert_eq!(count(&k, "slice_done"), 3);
-    assert_eq!(k.last().map(String::as_str), Some("checkpoint_due"));
+    assert_eq!(k.last().map(String::as_str), Some("run_finished"));
     assert!(!dir.join("driver.log").exists());
 }
 
@@ -498,7 +511,7 @@ fn run_foreground_drives_the_same_loop_in_this_process() {
 fn a_dead_worker_is_noted_and_respawned_once() {
     let fx = Fixture::with_index("dead-once", &[("checkpoint_every", "10")]);
     fx.chain();
-    fx.write_plan(&[dead(), done(), done(), done()]);
+    fx.write_plan(&[dead(), done(), done(), done(), checkpoint()]);
     let out = factory(&fx, &["run", "001", "--foreground"]);
     let text = stdout(&out);
     assert_eq!(out.status.code(), Some(0), "{text}");
@@ -508,12 +521,12 @@ fn a_dead_worker_is_noted_and_respawned_once() {
     );
     let dir = only_run_dir(&fx);
     let id = run_id(&dir);
-    assert_eq!(state(&dir)["phase"], "checkpoint");
+    assert_eq!(state(&dir)["phase"], "finished");
     for n in 1..=3 {
         assert_eq!(fx.slice_status(n), "done");
     }
     let calls = fx.calls();
-    assert_eq!(calls.len(), 4);
+    assert_eq!(calls.len(), 5);
     let sid0 = check_worker_argv(&fx, &calls[0], 1, &dir);
     let sid1 = check_worker_argv(&fx, &calls[1], 1, &dir);
     assert_ne!(sid0, sid1, "a respawn is a new session");
@@ -535,8 +548,12 @@ fn a_dead_worker_is_noted_and_respawned_once() {
             "slice_spawned",
             "slice_done",
             "slice_committed",
+            "checkpoint_started",
+            "gate_run",
             "log_merged",
-            "checkpoint_due"
+            "checkpoint_spawned",
+            "checkpoint_done",
+            "run_finished"
         ]
     );
     let dead_ev = events(&dir)
@@ -566,7 +583,7 @@ fn a_dead_worker_is_noted_and_respawned_once() {
     assert!(frag.contains("### AD-101 "), "{frag}");
 
     let rows = db(&fx).workers(&id).unwrap();
-    assert_eq!(rows.len(), 4);
+    assert_eq!(rows.len(), 5);
     assert_eq!(rows[0].outcome.as_deref(), Some("dead"));
     assert_eq!(rows[0].slice, Some(1));
     assert_eq!(rows[0].session_id.as_deref(), Some(sid0.as_str()));
@@ -581,7 +598,7 @@ fn a_dead_worker_is_noted_and_respawned_once() {
         assert!(r.input.is_some(), "{r:?}");
     }
     let ws = state(&dir)["workers"].as_array().unwrap().clone();
-    assert_eq!(ws.len(), 4);
+    assert_eq!(ws.len(), 5);
     assert_eq!(ws[0]["outcome"], "dead");
     let s0 = fs::read_to_string(dir.join("workers").join(format!("{sid0}.jsonl"))).unwrap();
     assert_eq!(
@@ -730,7 +747,15 @@ fn two_dead_workers_block_the_slice_and_park_the_run() {
 fn the_driver_killed_mid_slice_resumes_and_finishes() {
     let fx = Fixture::with_index("resume", &[("checkpoint_every", "10")]);
     fx.chain();
-    fx.write_plan(&[json!({"outcome": "done", "delay_ms": 4000}), done(), done()]);
+    // Five steps for five spawns: the killed worker's, its respawn's, slices
+    // 02 and 03, and the checkpoint worker's.
+    fx.write_plan(&[
+        json!({"outcome": "done", "delay_ms": 4000}),
+        done(),
+        done(),
+        done(),
+        checkpoint(),
+    ]);
     let out_path = fx.path().join("scenario/driver.out");
     let err_path = fx.path().join("scenario/driver.err");
     let mut cmd = fx.command(BIN);
@@ -793,14 +818,14 @@ fn the_driver_killed_mid_slice_resumes_and_finishes() {
     );
     assert!(text.contains("driver pid "), "{text}");
     assert_eq!(run_dirs(&fx).len(), 1);
-    wait_until("the resumed run to reach the checkpoint", 40, || {
-        state(&dir)["phase"] == "checkpoint"
+    wait_until("the resumed run to finish", 40, || {
+        state(&dir)["phase"] == "finished"
     });
     for n in 1..=3 {
         assert_eq!(fx.slice_status(n), "done", "slice {n:02}");
     }
     let calls = fx.calls();
-    assert_eq!(calls.len(), 4);
+    assert_eq!(calls.len(), 5);
     assert_eq!(check_worker_argv(&fx, &calls[0], 1, &dir), sid0);
     let sid1 = check_worker_argv(&fx, &calls[1], 1, &dir);
     assert_ne!(sid1, sid0);
@@ -813,8 +838,8 @@ fn the_driver_killed_mid_slice_resumes_and_finishes() {
     assert_eq!(count(&k, "worker_dead"), 1, "{k:?}");
     assert_eq!(count(&k, "slice_spawned"), 4, "{k:?}");
     assert_eq!(count(&k, "slice_done"), 3, "{k:?}");
-    assert_eq!(count(&k, "checkpoint_due"), 1, "{k:?}");
-    assert_eq!(k.last().map(String::as_str), Some("checkpoint_due"));
+    assert_eq!(count(&k, "checkpoint_started"), 1, "{k:?}");
+    assert_eq!(k.last().map(String::as_str), Some("run_finished"));
     assert_eq!(slices_of(&dir, "slice_done"), [1, 2, 3]);
     assert_eq!(slices_of(&dir, "slice_spawned"), [1, 1, 2, 3]);
     let dead_ev = events(&dir)
@@ -839,7 +864,7 @@ fn the_driver_killed_mid_slice_resumes_and_finishes() {
         "{frag}"
     );
     let rows = db(&fx).workers(&id).unwrap();
-    assert_eq!(rows.len(), 4);
+    assert_eq!(rows.len(), 5);
     assert_eq!(rows[0].outcome.as_deref(), Some("dead"));
     assert!(rows[0].ended_at.is_some());
     assert!(
@@ -849,7 +874,7 @@ fn the_driver_killed_mid_slice_resumes_and_finishes() {
         "{rows:?}"
     );
     let ws = state(&dir)["workers"].as_array().unwrap().clone();
-    assert_eq!(ws.len(), 4);
+    assert_eq!(ws.len(), 5);
     assert_eq!(ws[0]["outcome"], "dead");
     assert!(ws[1..].iter().all(|w| w["outcome"] == "done"));
 }

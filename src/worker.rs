@@ -1,4 +1,5 @@
-//! One worker: `claude -p` with a context pack (PRD §4 FR-2). The stream is
+//! One worker: `claude -p` with a context pack (PRD §4 FR-2) — a build
+//! worker per slice, a fix or checkpoint worker per checkpoint (FR-4). The stream is
 //! tee'd line by line into `runs/<id>/workers/<session>.jsonl` and into the
 //! parser, stderr goes to `<session>.stderr`, the pid lands in `state.json`
 //! and a `workers` row is opened at spawn and closed at exit.
@@ -26,10 +27,47 @@ use crate::{Error, Result};
 
 pub const DIR: &str = "workers";
 
+/// What a worker is spawned for: a slice (FR-2), or a checkpoint's red gate
+/// or green transcript (FR-4). The role is the `workers.role` column and
+/// the config key under `[workers]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Job {
+    Build { slice: u32 },
+    Fix { checkpoint: u32, attempt: u32 },
+    Checkpoint { n: u32, attempt: u32 },
+}
+
+impl Job {
+    pub fn role(&self) -> &'static str {
+        match self {
+            Job::Build { .. } => "build",
+            Job::Fix { .. } => "fix",
+            Job::Checkpoint { .. } => "checkpoint",
+        }
+    }
+
+    pub fn slice(&self) -> Option<u32> {
+        match self {
+            Job::Build { slice } => Some(*slice),
+            _ => None,
+        }
+    }
+
+    pub fn checkpoint(&self) -> Option<u32> {
+        match self {
+            Job::Build { .. } => None,
+            Job::Fix { checkpoint, .. } => Some(*checkpoint),
+            Job::Checkpoint { n, .. } => Some(*n),
+        }
+    }
+}
+
 /// A running worker; `wait` or a `try_wait` that returns `Some` turns it
 /// into an [`Exit`].
 pub struct Worker {
-    pub slice: u32,
+    pub job: Job,
+    /// The slice of a build worker; `None` for a fix or checkpoint worker.
+    pub slice: Option<u32>,
     pub role: String,
     pub session_id: String,
     pub pid: u32,
@@ -59,16 +97,17 @@ pub fn stream_path(run_dir: &Path, session_id: &str) -> PathBuf {
 }
 
 impl Worker {
-    /// Spawn `claude -p` for `slice` with FR-2's flags and `env` on top of the
+    /// Spawn `claude -p` for `job` with FR-2's flags and `env` on top of the
     /// driver's environment, record it in the run.
     pub fn spawn(
         run: &mut Run,
-        role: &str,
-        slice: u32,
+        job: Job,
         pack: &Pack,
         cfg: &config::Worker,
         env: &[(String, String)],
     ) -> Result<Worker> {
+        let role = job.role();
+        let slice = job.slice();
         let session_id = uuid_v4()?;
         let wdir = dir(run.dir());
         fs::create_dir_all(&wdir).map_err(io(format!("mkdir {}", wdir.display())))?;
@@ -118,6 +157,7 @@ impl Worker {
             run.id().as_str(),
             role,
             slice,
+            job.checkpoint(),
             &session_id,
             &cfg.model,
             &cfg.effort,
@@ -125,6 +165,7 @@ impl Worker {
         )?;
         run.add_worker(WorkerRef {
             slice,
+            checkpoint: job.checkpoint(),
             role: role.to_string(),
             session_id: session_id.clone(),
             pid,
@@ -132,12 +173,30 @@ impl Worker {
             spawned_at: started_at,
             outcome: None,
         })?;
-        run.emit(EventKind::SliceSpawned {
-            slice,
-            session_id: session_id.clone(),
-            pid,
+        run.emit(match job {
+            Job::Build { slice } => EventKind::SliceSpawned {
+                slice,
+                session_id: session_id.clone(),
+                pid,
+            },
+            Job::Fix {
+                checkpoint,
+                attempt,
+            } => EventKind::FixSpawned {
+                n: checkpoint,
+                attempt,
+                session_id: session_id.clone(),
+                pid,
+            },
+            Job::Checkpoint { n, attempt } => EventKind::CheckpointSpawned {
+                n,
+                attempt,
+                session_id: session_id.clone(),
+                pid,
+            },
         })?;
         Ok(Worker {
+            job,
             slice,
             role: role.to_string(),
             session_id,

@@ -8,6 +8,7 @@
 //! `config.toml`. The driver itself lands slice by slice
 //! (`docs/features/001-driver`).
 pub mod answers;
+pub mod checkpoint;
 pub mod cli;
 pub mod clock;
 pub mod commit;
@@ -17,6 +18,7 @@ pub mod db;
 pub mod docs;
 pub mod error;
 pub mod events;
+pub mod gatecache;
 pub mod lanes;
 pub mod pack;
 pub mod paths;

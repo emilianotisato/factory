@@ -216,9 +216,10 @@ fn each_done_slice_is_committed_by_pathspec_and_the_logs_merge_at_the_end() {
         json!({"outcome": "done", "touch": ["src/lib.txt"], "stray": ["notes.txt"]}),
         json!({"outcome": "done"}),
         json!({"outcome": "done"}),
+        json!({"outcome": "checkpoint"}),
     ]);
     let dir = start(&fx);
-    wait_phase(&fx, &dir, "checkpoint", 40);
+    wait_phase(&fx, &dir, "finished", 40);
 
     assert_eq!(
         subjects(&fx),
@@ -228,7 +229,7 @@ fn each_done_slice_is_committed_by_pathspec_and_the_logs_merge_at_the_end() {
             "feat: A",
             "feat: B",
             "feat: C",
-            "docs: merge slice logs"
+            "docs: checkpoint 1"
         ]
     );
     assert_slice_commit(&fx, &dir, 1, "A", &["src/lib.txt"]);
@@ -266,13 +267,13 @@ fn each_done_slice_is_committed_by_pathspec_and_the_logs_merge_at_the_end() {
         );
     }
 
-    // The merge commit: agent-log.md, what `render --write` changed (here
-    // prd.md's slice table; the index was already current) and the
-    // fragments' removal; the event names the same sha.
+    // The merge lands in the checkpoint commit (slice 06): agent-log.md,
+    // what `render --write` changed (here prd.md's slice table; the index
+    // was already current) and the fragments' removal.
     let merge = fx.git(&["rev-parse", "HEAD"]).trim().to_string();
     assert_eq!(
         fx.git(&["log", "-1", "--format=%s", &merge]).trim(),
-        "docs: merge slice logs"
+        "docs: checkpoint 1"
     );
     let merged_files = files_of(&fx, &merge);
     for f in [
@@ -291,7 +292,10 @@ fn each_done_slice_is_committed_by_pathspec_and_the_logs_merge_at_the_end() {
         .into_iter()
         .find(|e| e["kind"] == "log_merged")
         .expect("log_merged");
-    assert_eq!(ev["sha"], merge);
+    assert!(
+        ev.get("sha").is_none(),
+        "the sha is the checkpoint commit's (`checkpoint_done`): {ev}"
+    );
     assert_eq!(
         ev["fragments"],
         json!([fragment(1), fragment(2), fragment(3)])
@@ -316,8 +320,12 @@ fn each_done_slice_is_committed_by_pathspec_and_the_logs_merge_at_the_end() {
             "slice_spawned",
             "slice_done",
             "slice_committed",
+            "checkpoint_started",
+            "gate_run",
             "log_merged",
-            "checkpoint_due",
+            "checkpoint_spawned",
+            "checkpoint_done",
+            "run_finished",
         ]
     );
 }
@@ -333,9 +341,10 @@ fn two_lanes_commit_out_of_order_and_each_commit_takes_only_its_own_files() {
         json!({"outcome": "done", "delay_ms": 800, "touch": ["src/a.txt"]}),
         json!({"outcome": "done", "delay_ms": 200, "touch": ["src/b.txt"]}),
         json!({"outcome": "done", "touch": ["src/c.txt"]}),
+        json!({"outcome": "checkpoint"}),
     ]);
     let dir = start(&fx);
-    wait_phase(&fx, &dir, "checkpoint", 40);
+    wait_phase(&fx, &dir, "finished", 40);
 
     let subjects = subjects(&fx);
     let at = |s: &str| {
@@ -347,7 +356,7 @@ fn two_lanes_commit_out_of_order_and_each_commit_takes_only_its_own_files() {
     assert!(at("feat: B") < at("feat: A"), "{subjects:?}");
     assert_eq!(
         subjects.last().map(String::as_str),
-        Some("docs: merge slice logs")
+        Some("docs: checkpoint 1")
     );
     assert_eq!(subjects.len(), 5, "{subjects:?}");
     assert_slice_commit(&fx, &dir, 1, "A", &["src/a.txt"]);
@@ -358,7 +367,7 @@ fn two_lanes_commit_out_of_order_and_each_commit_takes_only_its_own_files() {
     let k = kinds(&dir);
     assert_eq!(count(&k, "slice_committed"), 3);
     assert_eq!(count(&k, "log_merged"), 1);
-    assert_eq!(k.last().map(String::as_str), Some("checkpoint_due"));
+    assert_eq!(k.last().map(String::as_str), Some("run_finished"));
 }
 
 // ── task 4: a refused merge parks the run on a BLOCK in agent-log.md ────────
@@ -371,11 +380,13 @@ fn a_refused_merge_blocks_in_agent_log_and_the_answer_retries_it() {
         json!({"outcome": "done"}),
         json!({"outcome": "done", "ad": "AD-101"}),
         json!({"outcome": "done"}),
+        json!({"outcome": "checkpoint"}),
     ]);
     let dir = start(&fx);
     wait_phase(&fx, &dir, "waiting-owner", 40);
 
-    // Three slice commits, no merge; the fragments are still there.
+    // Three slice commits, a green gate, then the merge refuses (slice 06
+    // runs it inside the checkpoint); the fragments are still there.
     assert_eq!(
         sorted(subjects(&fx)),
         sorted(
@@ -412,7 +423,10 @@ fn a_refused_merge_blocks_in_agent_log_and_the_answer_retries_it() {
     let driver = state(&dir)["pid"].as_u64().unwrap() as u32;
     assert!(pid_alive(driver), "driver gone");
     assert!(
-        driver_log(&dir).contains("parked (waiting-owner): log merge refused — BLOCK-1"),
+        driver_log(&dir).contains(
+            "parked (waiting-owner): checkpoint blocked — log merge refused: \
+             AD-101 in log-slice-02.md is already in log-slice-01.md: BLOCK-1 in agent-log.md"
+        ),
         "{}",
         driver_log(&dir)
     );
@@ -421,7 +435,9 @@ fn a_refused_merge_blocks_in_agent_log_and_the_answer_retries_it() {
     assert_eq!(open[0]["n"], 1);
     assert_eq!(open[0]["phase"], "checkpoint");
 
-    // The owner renumbers the clashing entry and answers; the merge runs again.
+    // The owner renumbers the clashing entry and answers; the checkpoint
+    // resumes (the green gate is cached), the merge runs again and the
+    // checkpoint commit lands.
     let frag = fx.path().join(fragment(2));
     let fixed = fs::read_to_string(&frag)
         .unwrap()
@@ -434,11 +450,11 @@ fn a_refused_merge_blocks_in_agent_log_and_the_answer_retries_it() {
         text.starts_with("BLOCK-1 resolved (docs/features/001-fixture/agent-log.md line "),
         "{text}"
     );
-    wait_phase(&fx, &dir, "checkpoint", 40);
+    wait_phase(&fx, &dir, "finished", 40);
 
     assert_eq!(
         fx.git(&["log", "-1", "--format=%s"]).trim(),
-        "docs: merge slice logs"
+        "docs: checkpoint 1"
     );
     let merged_files = files_of(&fx, "HEAD");
     assert!(merged_files.contains(&fragment(2)), "{merged_files:?}");
@@ -466,8 +482,8 @@ fn a_refused_merge_blocks_in_agent_log_and_the_answer_retries_it() {
 
     let k = kinds(&dir);
     assert!(seq_first(&dir, "block_answered") < seq_first(&dir, "log_merged"));
-    assert!(seq_first(&dir, "log_merged") < seq_first(&dir, "checkpoint_due"));
+    assert!(seq_first(&dir, "log_merged") < seq_first(&dir, "checkpoint_done"));
     assert_eq!(count(&k, "run_waiting"), 1);
     assert_eq!(count(&k, "merge_refused"), 1);
-    assert_eq!(k.last().map(String::as_str), Some("checkpoint_due"));
+    assert_eq!(k.last().map(String::as_str), Some("run_finished"));
 }

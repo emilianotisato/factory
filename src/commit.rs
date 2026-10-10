@@ -6,8 +6,10 @@
 //! mid-write in the same tree, and only named paths move. What the worker
 //! wrote without naming it (a `Bash` heredoc, a generator) is listed in the
 //! fragment under `## Untracked leftovers` and stays in the tree for the
-//! owner. When the lanes drain, [`merge_logs`] folds the fragments into
-//! `agent-log.md` with `docs log merge` and commits the result the same way.
+//! owner. At a checkpoint (FR-4) the same path commits a fix worker's files
+//! (`fix: gate red at checkpoint n`, [`Pathspec::from_stream`]) and, after
+//! [`fold_logs`] merged the fragments into `agent-log.md`, the feature folder
+//! and the checkpoint worker's files as `docs: checkpoint n`.
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Component, Path};
@@ -20,9 +22,6 @@ use crate::{Error, Result};
 
 /// The tools whose `input.file_path` names a file the worker wrote.
 pub const WRITING_TOOLS: &[&str] = &["Edit", "Write", "NotebookEdit"];
-
-/// The merge commit's subject.
-pub const MERGE_SUBJECT: &str = "docs: merge slice logs";
 
 /// The three files no worker may write (`deliver/SKILL.md`): they are the
 /// orchestrator's, and a worker's edit of `agent-log.md` races the merge.
@@ -81,6 +80,28 @@ impl Pathspec {
             push_once(&mut spec.paths, p);
         }
         push_once(&mut spec.paths, fragment_path(board, slice));
+        spec
+    }
+
+    /// The paths a worker's stream names and nothing else: a fix or checkpoint
+    /// worker (FR-4) has no slice file and no fragment of its own. The
+    /// checkpoint worker may write `agent-log.md`; its caller stages the
+    /// feature folder whole, so the protected split is only informative here.
+    pub fn from_stream(summary: &Summary, board: &Status, repo: &Path) -> Pathspec {
+        let canon = repo.canonicalize().unwrap_or_else(|_| repo.to_path_buf());
+        let protected = protected_files(board);
+        let mut spec = Pathspec::default();
+        for raw in written_paths(summary) {
+            let Some(rel) = relativize(repo, &canon, raw) else {
+                push_once(&mut spec.outside, raw.to_string());
+                continue;
+            };
+            if protected.contains(&rel) {
+                push_once(&mut spec.protected, rel);
+            } else {
+                push_once(&mut spec.paths, rel);
+            }
+        }
         spec
     }
 }
@@ -204,26 +225,51 @@ pub fn commit(repo: &Path, paths: &[String], message: &str) -> Result<Option<Com
     Ok(Some(Committed { sha, files }))
 }
 
-/// How the drained-lanes merge went.
+/// What `git` knows under `paths`: tracked files and untracked files it does
+/// not ignore, each directory expanded to its files, so [`commit`] (which
+/// stages exact names only) can take a folder.
+pub fn expand(repo: &Path, paths: &[String]) -> Result<Vec<String>> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut ls = vec![
+        "ls-files",
+        "-z",
+        "--cached",
+        "--others",
+        "--exclude-standard",
+        "--",
+    ];
+    ls.extend(paths.iter().map(String::as_str));
+    let listed = git(repo, &ls)?;
+    let mut out = Vec::new();
+    for p in listed.split('\0').filter(|s| !s.is_empty()) {
+        push_once(&mut out, p.to_string());
+    }
+    Ok(out)
+}
+
+/// How the checkpoint's log merge went.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Merge {
-    /// Fragments folded, `render --write` run, the result committed.
-    Merged { sha: String, fragments: Vec<String> },
-    /// No fragment to fold, or nothing left to commit.
+pub enum Fold {
+    /// `docs log merge` folded these fragments (repo-relative) into
+    /// `agent-log.md` and removed them; nothing is committed yet.
+    Folded { fragments: Vec<String> },
+    /// No fragment to fold.
     Nothing,
     /// `docs log merge` refused — an AD clash; `detail` is what it said.
     Refused { detail: String },
 }
 
-/// `docs log merge <feature>`, `docs render --write`, then one commit of
-/// `agent-log.md`, `prd.md`, `docs/index.md` and the fragments the merge
-/// removed: [`MERGE_SUBJECT`]. A missing `agent-log.md` is created with its
-/// header first — the tool merges into an existing file only.
-pub fn merge_logs(docs: &Docs, repo: &Path, board: &Status, feature: &str) -> Result<Merge> {
+/// `docs log merge <feature>` at a checkpoint (FR-5), before the checkpoint
+/// worker reads `agent-log.md`. A missing `agent-log.md` is created with its
+/// header first — the tool merges into an existing file only. The render
+/// and the commit are the checkpoint's, once the worker has written `CP-n`.
+pub fn fold_logs(docs: &Docs, repo: &Path, board: &Status, feature: &str) -> Result<Fold> {
     let dir = repo.join(&board.dir);
     let names = fragments_in(&dir)?;
     if names.is_empty() {
-        return Ok(Merge::Nothing);
+        return Ok(Fold::Nothing);
     }
     let log = dir.join("agent-log.md");
     if !log.exists() {
@@ -237,24 +283,12 @@ pub fn merge_logs(docs: &Docs, repo: &Path, board: &Status, feature: &str) -> Re
         } else {
             out.stderr
         };
-        return Ok(Merge::Refused {
+        return Ok(Fold::Refused {
             detail: detail.trim().to_string(),
         });
     }
-    docs.render_write()?;
-    let fragments: Vec<String> = names.iter().map(|n| format!("{}/{n}", board.dir)).collect();
-    let mut paths = vec![
-        format!("{}/agent-log.md", board.dir),
-        format!("{}/prd.md", board.dir),
-        "docs/index.md".to_string(),
-    ];
-    paths.extend(fragments.iter().cloned());
-    Ok(match commit(repo, &paths, MERGE_SUBJECT)? {
-        Some(c) => Merge::Merged {
-            sha: c.sha,
-            fragments,
-        },
-        None => Merge::Nothing,
+    Ok(Fold::Folded {
+        fragments: names.iter().map(|n| format!("{}/{n}", board.dir)).collect(),
     })
 }
 

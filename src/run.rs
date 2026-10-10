@@ -112,10 +112,14 @@ pub struct RunState {
     pub workers: Vec<WorkerRef>,
 }
 
-/// One spawned worker as `state.json` remembers it.
+/// One spawned worker as `state.json` remembers it. A build worker has a
+/// `slice`; a fix or checkpoint worker (FR-4) has the `checkpoint` it served.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkerRef {
-    pub slice: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slice: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<u32>,
     pub role: String,
     pub session_id: String,
     pub pid: u32,

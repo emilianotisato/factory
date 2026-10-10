@@ -15,8 +15,9 @@ use crate::{Result, clock};
 pub const FILE: &str = "events.jsonl";
 
 /// The event kinds, serialized `snake_case` under `kind` with the payload
-/// flattened beside it. Later slices add theirs (`checkpoint_*`, `gate_*`, …).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// flattened beside it. Later slices add theirs (`rate_limit_*`, `pr_*`, …).
+/// No `Eq`: `gate_run` carries the gate's minutes as a float.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EventKind {
     RunStarted,
@@ -73,9 +74,11 @@ pub enum EventKind {
         text: String,
     },
     /// Process gone with no `result` line, or with one and the slice neither
-    /// `done` nor `blocked` (FR-1: "a dead worker is treated as today").
+    /// `done` nor `blocked` (FR-1: "a dead worker is treated as today"). A
+    /// fix or checkpoint worker has no slice (FR-4).
     WorkerDead {
-        slice: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        slice: Option<u32>,
         session_id: String,
         exit_code: Option<i32>,
     },
@@ -104,10 +107,9 @@ pub enum EventKind {
         slice: u32,
         path: String,
     },
-    /// The lanes drained: `docs log merge` folded the fragments and the
-    /// merged `agent-log.md` is committed (FR-5).
+    /// The gate is green at a checkpoint: `docs log merge` folded the
+    /// fragments into `agent-log.md` (FR-5); the checkpoint commit lands them.
     LogMerged {
-        sha: String,
         fragments: Vec<String>,
     },
     /// `docs log merge` refused (an AD clash): `block_id` is the `BLOCK-n`
@@ -116,9 +118,70 @@ pub enum EventKind {
         block_id: String,
         detail: String,
     },
-    /// The board says a checkpoint is due; slice 06 runs it, this slice stops.
-    CheckpointDue {
-        unverified: Vec<u32>,
+    /// FR-4: the board says a checkpoint is due and the lanes are drained.
+    /// `n` is the `CP-n` this checkpoint writes, `covers` the unverified
+    /// slices (`unverified[]` on the board).
+    CheckpointStarted {
+        n: u32,
+        covers: Vec<u32>,
+    },
+    /// FR-1 resume: the run died inside checkpoint `n` (or parked on it);
+    /// the checkpoint runs again before any spawn.
+    CheckpointResumed {
+        n: u32,
+        covers: Vec<u32>,
+    },
+    /// The driver ran the gate (FR-4): `log` is `runs/<id>/gates/<n>-<attempt>.log`.
+    GateRun {
+        n: u32,
+        attempt: u32,
+        red: bool,
+        minutes: f64,
+        log: String,
+    },
+    /// The gate cache answered for this code tree: no process ran, the
+    /// `gates` row says `cached`; `log` is the earlier run's transcript.
+    GateCached {
+        n: u32,
+        attempt: u32,
+        red: bool,
+        log: String,
+    },
+    /// A fix worker on a red gate (FR-4), with the failing output in its pack.
+    FixSpawned {
+        n: u32,
+        attempt: u32,
+        session_id: String,
+        pid: u32,
+    },
+    /// The fix worker's files, committed by pathspec: `fix: gate red at checkpoint n`.
+    FixCommitted {
+        n: u32,
+        attempt: u32,
+        sha: String,
+        files: Vec<String>,
+    },
+    /// A checkpoint worker on a green gate: it drives the Prove rows and
+    /// writes `CP-n` (FR-4).
+    CheckpointSpawned {
+        n: u32,
+        attempt: u32,
+        session_id: String,
+        pid: u32,
+    },
+    /// The checkpoint stopped on the owner: three reds in a row, a refused
+    /// merge, two dead checkpoint workers or the worker's own block.
+    /// `block_id` is the `BLOCK-n` in `agent-log.md`.
+    CheckpointBlocked {
+        n: u32,
+        block_id: String,
+        question: String,
+    },
+    /// `CP-n` is on the board and the checkpoint commit (`docs: checkpoint n`)
+    /// landed; `None` when the render changed nothing to commit.
+    CheckpointDone {
+        n: u32,
+        sha: Option<String>,
     },
     RunFinished,
     RunFailed {
@@ -141,7 +204,7 @@ impl EventKind {
 }
 
 /// One line of `events.jsonl`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Event {
     pub seq: u64,
     pub ts: String,

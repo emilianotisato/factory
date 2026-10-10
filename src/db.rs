@@ -1,6 +1,7 @@
 //! The SQLite store at `<data_dir>/factory.db` (PRD §10 FR-8): `runs`,
 //! `workers`, `gates`, `events`, written as events happen. Migrations are
-//! idempotent: `CREATE TABLE IF NOT EXISTS` plus a `schema_version` row.
+//! idempotent: `CREATE TABLE IF NOT EXISTS` plus a `schema_version` row, and
+//! a guarded `ALTER TABLE` per column added after a table shipped.
 //! `tool_calls` is slice 08's.
 use std::path::Path;
 use std::time::Duration;
@@ -49,18 +50,22 @@ CREATE TABLE IF NOT EXISTS workers (
   peak_context    INTEGER,
   started_at      TEXT NOT NULL,
   ended_at        TEXT,
-  commit_sha      TEXT
+  commit_sha      TEXT,
+  checkpoint      INTEGER
 );
 CREATE TABLE IF NOT EXISTS gates (
-  id        INTEGER PRIMARY KEY AUTOINCREMENT,
-  run_id    TEXT NOT NULL REFERENCES runs(id),
-  source    TEXT NOT NULL,
-  kind      TEXT NOT NULL,
-  cmd       TEXT NOT NULL,
-  red       INTEGER NOT NULL,
-  minutes   REAL NOT NULL,
-  at        TEXT NOT NULL,
-  worker_id INTEGER
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id     TEXT NOT NULL REFERENCES runs(id),
+  source     TEXT NOT NULL,
+  kind       TEXT NOT NULL,
+  cmd        TEXT NOT NULL,
+  red        INTEGER NOT NULL,
+  minutes    REAL NOT NULL,
+  at         TEXT NOT NULL,
+  worker_id  INTEGER,
+  cached     INTEGER NOT NULL DEFAULT 0,
+  checkpoint INTEGER,
+  attempt    INTEGER
 );
 CREATE TABLE IF NOT EXISTS events (
   id      INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -123,6 +128,44 @@ pub struct WorkerRow {
     pub ended_at: Option<String>,
     /// The slice's commit (FR-5), once the driver made it.
     pub commit_sha: Option<String>,
+    /// The checkpoint a `fix` or `checkpoint` worker served (FR-4).
+    pub checkpoint: Option<u32>,
+}
+
+/// One `gates` row to insert (FR-4, FR-8).
+#[derive(Debug, Clone, PartialEq)]
+pub struct GateInsert<'a> {
+    pub run_id: &'a str,
+    /// `driver` for the checkpoint gate; slice 08 adds the workers' inner runs.
+    pub source: &'a str,
+    /// `checkpoint`, later `inner`, `ci`.
+    pub kind: &'a str,
+    pub cmd: &'a str,
+    pub red: bool,
+    pub minutes: f64,
+    pub at: &'a str,
+    pub worker_id: Option<i64>,
+    /// The cache answered: no process ran, `minutes` is 0.
+    pub cached: bool,
+    pub checkpoint: Option<u32>,
+    pub attempt: Option<u32>,
+}
+
+/// One `gates` row, as tests and the report read it back.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GateRow {
+    pub id: i64,
+    pub run_id: String,
+    pub source: String,
+    pub kind: String,
+    pub cmd: String,
+    pub red: bool,
+    pub minutes: f64,
+    pub at: String,
+    pub worker_id: Option<i64>,
+    pub cached: bool,
+    pub checkpoint: Option<u32>,
+    pub attempt: Option<u32>,
 }
 
 impl Db {
@@ -143,9 +186,19 @@ impl Db {
         self.conn.execute_batch(SCHEMA)?;
         // Columns added after a table shipped: `ALTER TABLE` is not
         // `IF NOT EXISTS`, so each is guarded by the live column list.
-        if !self.has_column("workers", "commit_sha")? {
-            self.conn
-                .execute("ALTER TABLE workers ADD COLUMN commit_sha TEXT", [])?;
+        for (table, column, decl) in [
+            ("workers", "commit_sha", "TEXT"),
+            ("workers", "checkpoint", "INTEGER"),
+            ("gates", "cached", "INTEGER NOT NULL DEFAULT 0"),
+            ("gates", "checkpoint", "INTEGER"),
+            ("gates", "attempt", "INTEGER"),
+        ] {
+            if !self.has_column(table, column)? {
+                self.conn.execute(
+                    &format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"),
+                    [],
+                )?;
+            }
         }
         self.conn.execute(
             "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (?1, ?2)",
@@ -269,22 +322,34 @@ impl Db {
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
-    /// A worker at spawn: `outcome = running`, usage still null. Returns the row id.
+    /// A worker at spawn: `outcome = running`, usage still null. A build
+    /// worker has a `slice`, a fix or checkpoint worker a `checkpoint`.
+    /// Returns the row id.
     #[allow(clippy::too_many_arguments)]
     pub fn insert_worker(
         &self,
         run_id: &str,
         role: &str,
-        slice: u32,
+        slice: Option<u32>,
+        checkpoint: Option<u32>,
         session_id: &str,
         model: &str,
         effort: &str,
         started_at: &str,
     ) -> Result<i64> {
         self.conn.execute(
-            "INSERT INTO workers (run_id, role, slice, session_id, model, effort, outcome, started_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'running', ?7)",
-            params![run_id, role, slice as i64, session_id, model, effort, started_at],
+            "INSERT INTO workers (run_id, role, slice, checkpoint, session_id, model, effort, outcome, started_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'running', ?8)",
+            params![
+                run_id,
+                role,
+                slice.map(i64::from),
+                checkpoint.map(i64::from),
+                session_id,
+                model,
+                effort,
+                started_at
+            ],
         )?;
         Ok(self.conn.last_insert_rowid())
     }
@@ -338,7 +403,7 @@ impl Db {
         let mut stmt = self.conn.prepare(
             "SELECT id, run_id, role, slice, session_id, model, effort, input, cache_write, cache_read,
                     output, thinking, cost_usd, num_turns, duration_ms, terminal_reason, outcome,
-                    peak_context, started_at, ended_at, commit_sha
+                    peak_context, started_at, ended_at, commit_sha, checkpoint
              FROM workers WHERE run_id = ?1 ORDER BY id",
         )?;
         let rows = stmt.query_map([run_id], |r| {
@@ -364,6 +429,54 @@ impl Db {
                 started_at: r.get(18)?,
                 ended_at: r.get(19)?,
                 commit_sha: r.get(20)?,
+                checkpoint: r.get::<_, Option<i64>>(21)?.map(|n| n as u32),
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// One gate run (or cache hit) as a row. Returns the row id.
+    pub fn insert_gate(&self, g: &GateInsert) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO gates (run_id, source, kind, cmd, red, minutes, at, worker_id, cached, checkpoint, attempt)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                g.run_id,
+                g.source,
+                g.kind,
+                g.cmd,
+                g.red as i64,
+                g.minutes,
+                g.at,
+                g.worker_id,
+                g.cached as i64,
+                g.checkpoint.map(i64::from),
+                g.attempt.map(i64::from),
+            ],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// A run's gate rows in insertion order.
+    pub fn gates(&self, run_id: &str) -> Result<Vec<GateRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, run_id, source, kind, cmd, red, minutes, at, worker_id, cached, checkpoint, attempt
+             FROM gates WHERE run_id = ?1 ORDER BY id",
+        )?;
+        let rows = stmt.query_map([run_id], |r| {
+            Ok(GateRow {
+                id: r.get(0)?,
+                run_id: r.get(1)?,
+                source: r.get(2)?,
+                kind: r.get(3)?,
+                cmd: r.get(4)?,
+                red: r.get::<_, i64>(5)? != 0,
+                minutes: r.get(6)?,
+                at: r.get(7)?,
+                worker_id: r.get(8)?,
+                cached: r.get::<_, i64>(9)? != 0,
+                checkpoint: r.get::<_, Option<i64>>(10)?.map(|n| n as u32),
+                attempt: r.get::<_, Option<i64>>(11)?.map(|n| n as u32),
             })
         })?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
