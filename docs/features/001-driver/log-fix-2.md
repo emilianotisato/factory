@@ -63,3 +63,27 @@
 **Because:** PRD §5 FR-4 says to drain the lanes on `checkpointDue`, and the board reports `spawnable: 0`. A respawn is a spawn. Respawning first also lets a checkpoint cover more than `checkpoint_every` slices. The cost is that the gate runs over the dead worker's half-written changes. The checkpoint commit leaves them out, because they are in its spawn baseline, so the respawned worker still owns them.
 **Undo:** drop the `board.checkpoint_due` skip in the building-respawn loop of `drive_inner`.
 **Review:** fyi
+
+### AD-20009 — When `factory answer BLOCK-n` fails partway, how does a retry finish it? · polish · 2026-10-10
+
+**Chose:** two changes. First, everything that can refuse runs before anything is written; a block naming a slice with no file is refused and nothing is written. Second, the steps run in this order: answer file, `block_answered`, then the heading and its `**Resolution**`, then the slice flip, then the wake. A retry that finds every `BLOCK-n` resolved finishes the answer when the feature's resumable run has it on file and is still stuck: either the slice is `blocked`, or the run is `waiting-owner` with no driver and is not parked on its budget. Otherwise it is refused as "already resolved", as before.
+**Over:** writing the heading last, after the flip.
+**Because:** a respawned worker's pack quotes the entry as the log holds it (`block_section`). If the flip happens before the heading, a live driver can respawn the slice in between, and the worker gets the open block without its resolution.
+**Undo:** in `cli/answer.rs`, call `answers::resolve` first again and drop `answer_resolved`.
+**Review:** no
+
+### AD-20010 — Two open runs wait on the same `ASK-n`: which does `factory answer` take? · polish · 2026-10-10
+
+**Chose:** neither. It refuses and names each run, with its feature and the ask's text. A new `--run <id>` option on `factory answer` picks one.
+**Over:** the newest run (what it did, silently); refusing with no way to answer; or matching on the feature number.
+**Because:** ask numbers start at 1 in every run, so two features parked at preflight in one repo both have an ASK-1. A refusal with no option would leave both runs unanswerable. The run id is what the refusal prints, so it is what the owner copies.
+**Undo:** remove `AnswerArgs::run`, and take the first run that waits.
+**Review:** fyi
+
+### AD-20011 — Does a run parked on its budget get its own phase? · polish · 2026-10-10
+
+**Chose:** no. It stays `waiting-owner`. `factory answer` does not start a driver for a run that `quota::hold` says is over budget. It prints the weighted tokens, the budget, and `factory run NNN --budget <higher>`.
+**Over:** a `parked-budget` phase.
+**Because:** the budget is read from the `workers` rows each time, so the hold check already tells the two parks apart. A new phase would touch the cockpit, `status`, the `runs` table and every match on `Phase`, and those files belong to other fixers.
+**Undo:** drop the `Hold::Budget` arm in `cli/answer.rs::wake`.
+**Review:** no

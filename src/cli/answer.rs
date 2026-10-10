@@ -8,11 +8,17 @@
 //! the block left `blocked` goes back to `building`, lane unchanged. The
 //! driver's slow tick sees a `building` slice with nothing alive on it and an
 //! answer naming it, and respawns it with the block and the answer in the
-//! pack. A retry of an answer that failed after the heading flipped finishes
-//! it. `ASK-n`: the answer file, a `DEC` line
-//! in `agent-log.md`, `ask_answered`; the run starts when the last ask is
-//! answered. Either way, a run with no live driver gets one here, so the
-//! owner's one command is the whole resume.
+//! pack. A retry of an answer that failed after the heading flipped
+//! finishes it.
+//!
+//! `ASK-n`: a `DEC` line in `agent-log.md`, `ask_answered`, then the answer
+//! file; the run starts when the last ask is answered. ASK numbers are per
+//! run: two open runs waiting on the same one are refused by name, and
+//! `--run <id>` picks one.
+//!
+//! Either way, a run with no live driver gets one here, so the owner's one
+//! command is the whole resume — unless it is parked on its budget, which
+//! `factory run NNN --budget` resumes.
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -33,6 +39,9 @@ pub struct AnswerArgs {
     /// The answer, as one argument or several words
     #[arg(required = true, trailing_var_arg = true)]
     pub text: Vec<String>,
+    /// The run an `ASK-n` belongs to, when more than one open run asked it
+    #[arg(long, value_name = "RUN")]
+    pub run: Option<String>,
 }
 
 pub fn answer(args: &AnswerArgs, out: &mut dyn Write) -> Result<i32> {
@@ -47,7 +56,7 @@ pub fn answer(args: &AnswerArgs, out: &mut dyn Write) -> Result<i32> {
     if id.starts_with("BLOCK-") {
         answer_block(&repo, &data_dir, &id, &text, out)
     } else if id.starts_with("ASK-") {
-        answer_ask(&repo, &data_dir, &id, &text, out)
+        answer_ask(&repo, &data_dir, &id, &text, args.run.as_deref(), out)
     } else {
         Err(Error::Msg(format!(
             "`{}` is neither BLOCK-n nor ASK-n",
@@ -247,26 +256,85 @@ fn answer_ask(
     data_dir: &Path,
     id: &str,
     text: &str,
+    only: Option<&str>,
     out: &mut dyn Write,
 ) -> Result<i32> {
-    // The newest open run of this repo that still waits on `id`.
-    let mut target: Option<(Run, String)> = None;
+    // `ASK-n` is numbered per run: every open run of this repo that asked
+    // it, newest first, with whether its answer is on file.
+    let mut asked: Vec<(Run, String, bool)> = Vec::new();
     for s in run::list_open(data_dir, repo)?.into_iter().rev() {
+        if only.is_some_and(|o| o != s.id.as_str()) {
+            continue;
+        }
         let run = Run::open(data_dir, s.id.as_str())?;
-        if let Some((_, item)) = answers::asks_pending(&run)?
-            .into_iter()
-            .find(|(i, _)| i == id)
-        {
-            target = Some((run, item));
-            break;
+        let item = run.events()?.into_iter().find_map(|e| match e.kind {
+            EventKind::AskOpened { id: i, text } if i == id => Some(text),
+            _ => None,
+        });
+        if let Some(item) = item {
+            let answered = answers::read(run.dir(), id)?.is_some();
+            asked.push((run, item, answered));
         }
     }
-    let Some((mut run, item)) = target else {
+    let waiting = asked.iter().filter(|(_, _, answered)| !answered).count();
+    if waiting > 1 {
+        writeln!(
+            out,
+            "{waiting} open runs wait on {id} — nothing answered; name one with `factory answer {id} --run <id> \"<text>\"`:"
+        )
+        .map_err(io("stdout"))?;
+        for (run, item, _) in asked.iter().filter(|(_, _, answered)| !answered) {
+            writeln!(out, "  {} (PRD-{}) — {item}", run.id(), run.state().feature)
+                .map_err(io("stdout"))?;
+        }
+        return Ok(1);
+    }
+    let Some(i) = asked.iter().position(|(_, _, answered)| !answered) else {
+        // A retry of an answer whose wake failed: every ask is on file and
+        // the parked run has no driver.
+        if let Some((run, _, _)) = asked.iter().find(|(run, _, _)| {
+            run.state().phase == Phase::WaitingOwner && !run.state().driver_alive()
+        }) && answers::asks_pending(run)?.is_empty()
+        {
+            writeln!(out, "{id} is answered and run {} has no driver", run.id())
+                .map_err(io("stdout"))?;
+            wake(run, out)?;
+            return Ok(0);
+        }
         writeln!(out, "no open run of this repo waits on {id}").map_err(io("stdout"))?;
         return Ok(1);
     };
+    let (mut run, item, _) = asked.swap_remove(i);
     let now = clock::now_rfc3339();
     let date = now[..10].to_string();
+    let feature = run.state().feature.clone();
+    let log = agent_log(repo, &feature)?;
+    // The `DEC` line and `ask_answered` before the answer file: the file is
+    // what the driver starts on and what takes the ask off the list, so a
+    // retry after a failure here still finds the ask open. Each step is
+    // skipped when a failed try already did it.
+    let dec = format!("- **DEC ({date})**: preflight ask \"{item}\" answered: {text}");
+    let logged = match fs::read_to_string(&log) {
+        Ok(t) => t.lines().any(|l| l == dec),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            fs::write(&log, format!("# Agent log — PRD-{feature}\n"))
+                .map_err(io(format!("write {}", log.display())))?;
+            false
+        }
+        Err(e) => return Err(io(format!("read {}", log.display()))(e)),
+    };
+    if !logged {
+        scheduler::append_under(&log, "## Decisions", &dec)?;
+    }
+    let emitted = run.events()?.into_iter().any(
+        |e| matches!(&e.kind, EventKind::AskAnswered { id: i, text: t } if i == id && t == text),
+    );
+    if !emitted {
+        run.emit(EventKind::AskAnswered {
+            id: id.to_string(),
+            text: text.to_string(),
+        })?;
+    }
     answers::write(
         run.dir(),
         &Answer {
@@ -276,21 +344,6 @@ fn answer_ask(
             at: now,
         },
     )?;
-    let feature = run.state().feature.clone();
-    let log = agent_log(repo, &feature)?;
-    if !log.is_file() {
-        fs::write(&log, format!("# Agent log — PRD-{feature}\n"))
-            .map_err(io(format!("write {}", log.display())))?;
-    }
-    scheduler::append_under(
-        &log,
-        "## Decisions",
-        &format!("- **DEC ({date})**: preflight ask \"{item}\" answered: {text}"),
-    )?;
-    run.emit(EventKind::AskAnswered {
-        id: id.to_string(),
-        text: text.to_string(),
-    })?;
     writeln!(out, "{id} answered: {text} — noted in {}", rel(repo, &log)).map_err(io("stdout"))?;
     let remaining = answers::asks_pending(&run)?;
     if remaining.is_empty() {

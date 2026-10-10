@@ -882,6 +882,89 @@ fn an_answer_flips_only_a_blocked_slice() {
     assert!(run.dir().join("answers/BLOCK-101.json").is_file());
 }
 
+/// A run of `feature` parked on `ASK-1`, its pid this test's.
+fn parked_on_ask(fx: &Fixture, feature: &str) -> factory::run::Run {
+    let mut run = factory::run::Run::create(&data_dir(fx), fx.path(), feature, None, 1).unwrap();
+    run.emit(factory::events::EventKind::AskOpened {
+        id: "ASK-1".into(),
+        text: format!("inner loop for {feature}?"),
+    })
+    .unwrap();
+    run.set_phase(factory::run::Phase::WaitingOwner).unwrap();
+    run
+}
+
+#[test]
+fn an_ask_two_runs_wait_on_is_refused_by_name_and_run_picks_one() {
+    let fx = Fixture::new("ask-two-runs");
+    fs::create_dir_all(fx.path().join("docs/features/002-other")).unwrap();
+    let one = parked_on_ask(&fx, "001");
+    let two = parked_on_ask(&fx, "002");
+    let out = factory(&fx, &["answer", "ASK-1", "proceed"]);
+    let text = stdout(&out);
+    assert_eq!(out.status.code(), Some(1), "{text}");
+    assert!(
+        text.contains("2 open runs wait on ASK-1 — nothing answered"),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!("{} (PRD-001) — inner loop for 001?", one.id())),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!("{} (PRD-002) — inner loop for 002?", two.id())),
+        "{text}"
+    );
+    for run in [&one, &two] {
+        assert!(!run.dir().join("answers/ASK-1.json").exists());
+        assert_eq!(count(&kinds(run.dir()), "ask_answered"), 0);
+    }
+
+    let out = factory(
+        &fx,
+        &["answer", "ASK-1", "--run", one.id().as_str(), "proceed"],
+    );
+    let text = stdout(&out);
+    assert_eq!(out.status.code(), Some(0), "{text}");
+    assert!(text.contains("ASK-1 answered: proceed"), "{text}");
+    assert!(one.dir().join("answers/ASK-1.json").is_file());
+    assert!(!two.dir().join("answers/ASK-1.json").exists());
+
+    // One run still waits: no ambiguity left.
+    let out = factory(&fx, &["answer", "ASK-1", "proceed"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    assert!(two.dir().join("answers/ASK-1.json").is_file());
+}
+
+#[test]
+fn an_ask_answer_that_failed_on_the_log_is_retried_whole() {
+    let fx = Fixture::new("ask-retry");
+    let run = parked_on_ask(&fx, "001");
+    let log = fx.path().join(AGENT_LOG);
+    fs::write(&log, "# Agent log — PRD-001\n").unwrap();
+    let mode = |m: u32| {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&log, fs::Permissions::from_mode(m)).unwrap();
+    };
+    mode(0o444);
+    let out = factory(&fx, &["answer", "ASK-1", "proceed"]);
+    mode(0o644);
+    assert_ne!(out.status.code(), Some(0), "{}", stdout(&out));
+    // The answer file is the last step: the ask is still open.
+    assert!(!run.dir().join("answers/ASK-1.json").exists());
+
+    let out = factory(&fx, &["answer", "ASK-1", "proceed"]);
+    let text = stdout(&out);
+    assert_eq!(out.status.code(), Some(0), "{text}");
+    assert!(
+        text.contains("every ask answered — the run proceeds"),
+        "{text}"
+    );
+    assert!(run.dir().join("answers/ASK-1.json").is_file());
+    assert_eq!(fx.read(AGENT_LOG).matches("- **DEC (").count(), 1);
+    assert_eq!(count(&kinds(run.dir()), "ask_answered"), 1);
+}
+
 /// A pid no process holds: a child that already exited.
 fn dead_pid() -> u32 {
     let mut child = std::process::Command::new("true").spawn().unwrap();
