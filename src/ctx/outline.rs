@@ -7,7 +7,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use super::lang::{Definition, Unit, line_of, line_starts};
+use super::lang::{Definition, Unit, definitions, line_of, line_starts};
 use super::walk::{self, Lang, MAX_FILE_BYTES};
 use super::{Searched, rel};
 
@@ -130,10 +130,8 @@ fn outline(path: String, file: &Path, lang: Lang, text: &str, max: usize) -> (Fi
         entries: Vec::new(),
         broken: false,
     };
-    let Some(unit) = Unit::of(file, lang, text) else {
-        return (out, 0);
-    };
-    let Some((defs, broken)) = unit.definitions() else {
+    let units = Unit::all(file, lang, text);
+    let Some((defs, broken)) = definitions(&units) else {
         out.broken = true;
         return (out, 0);
     };

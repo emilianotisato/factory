@@ -1,8 +1,8 @@
 //! The tree-sitter half of `factory ctx` (PRD §14 FR-12): one grammar per
 //! source language, each grammar's upstream `tags.scm` with a few patterns
 //! in front of it, and the node kinds that are comments or strings. Vue has
-//! no grammar here: its `<script>` block is cut out (`vue.rs`) and parsed
-//! with TypeScript's at an offset. Every call parses afresh; nothing is
+//! no grammar here: each `<script>` block is cut out (`vue.rs`) and parsed
+//! with TypeScript's at its offset. Every call parses afresh; nothing is
 //! cached across calls (§19).
 use std::cmp::Reverse;
 use std::ops::Range;
@@ -147,8 +147,8 @@ pub struct Definition {
     pub kind: &'static str,
 }
 
-/// The part of a file a grammar parses: the whole file, or a Vue file's
-/// `<script>` block `offset` bytes in.
+/// A part of a file a grammar parses: the whole file, or one of a Vue
+/// file's `<script>` blocks, `offset` bytes in.
 #[derive(Debug, Clone, Copy)]
 pub struct Unit<'a> {
     pub grammar: Grammar,
@@ -157,21 +157,25 @@ pub struct Unit<'a> {
 }
 
 impl<'a> Unit<'a> {
-    /// None for a Vue file with no `<script>` block: it has no definitions.
-    pub fn of(path: &Path, lang: Lang, text: &'a str) -> Option<Unit<'a>> {
+    /// Every part of `text` a grammar parses: the whole file, or each
+    /// `<script>` block of a Vue file, in file order (none without one: no
+    /// definitions).
+    pub fn all(path: &Path, lang: Lang, text: &'a str) -> Vec<Unit<'a>> {
         if lang == Lang::Vue {
-            let (offset, script) = vue::script_block(text)?;
-            return Some(Unit {
-                grammar: Grammar::Ts,
-                offset,
-                text: script,
-            });
+            return vue::script_blocks(text)
+                .into_iter()
+                .map(|(offset, script)| Unit {
+                    grammar: Grammar::Ts,
+                    offset,
+                    text: script,
+                })
+                .collect();
         }
-        Some(Unit {
+        vec![Unit {
             grammar: Grammar::of(path, lang),
             offset: 0,
             text,
-        })
+        }]
     }
 
     pub fn parse(&self) -> Option<Tree> {
@@ -223,6 +227,48 @@ impl<'a> Unit<'a> {
             node = n.parent();
         }
         false
+    }
+}
+
+/// The definition tags of every unit of a file in source order (outer
+/// before inner), and whether any unit's tree holds a syntax error; none
+/// when tagging failed.
+pub fn definitions(units: &[Unit]) -> Option<(Vec<Definition>, bool)> {
+    let mut all = Vec::new();
+    let mut broken = false;
+    for unit in units {
+        let (defs, error) = unit.definitions()?;
+        all.extend(defs);
+        broken |= error;
+    }
+    all.sort_by_key(|d| (d.range.start, Reverse(d.range.end), d.name.start));
+    Some((all, broken))
+}
+
+/// Every unit of a file with its tree, for the comment and string checks.
+pub struct Parsed<'a>(Vec<(Unit<'a>, Tree)>);
+
+impl<'a> Parsed<'a> {
+    /// None when a unit does not parse at all.
+    pub fn of(units: &[Unit<'a>]) -> Option<Parsed<'a>> {
+        units
+            .iter()
+            .map(|u| Some((*u, u.parse()?)))
+            .collect::<Option<Vec<_>>>()
+            .map(Parsed)
+    }
+
+    /// Whether any unit's tree holds a syntax error.
+    pub fn has_error(&self) -> bool {
+        self.0.iter().any(|(_, t)| t.root_node().has_error())
+    }
+
+    /// Whether the file bytes `at` lie inside a comment or a string; false
+    /// outside every unit (a Vue template).
+    pub fn in_comment_or_string(&self, at: Range<usize>) -> bool {
+        self.0
+            .iter()
+            .any(|(u, t)| u.in_comment_or_string(t, at.clone()))
     }
 }
 
@@ -279,7 +325,7 @@ mod tests {
             ("vue/UserCard.vue", Lang::Vue, "program"),
         ] {
             let text = fixture(rel);
-            let unit = Unit::of(Path::new(rel), lang, &text).unwrap();
+            let unit = Unit::all(Path::new(rel), lang, &text)[0];
             let tree = unit.parse().unwrap();
             assert_eq!(tree.root_node().kind(), root, "{rel}");
             assert!(!tree.root_node().has_error(), "{rel}");
@@ -300,7 +346,7 @@ mod tests {
     #[test]
     fn kinds_map_to_the_kind_vocabulary() {
         let text = fixture("php/UserService.php");
-        let unit = Unit::of(Path::new("a.php"), Lang::Php, &text).unwrap();
+        let unit = Unit::all(Path::new("a.php"), Lang::Php, &text)[0];
         let (defs, _) = unit.definitions().unwrap();
         let named = |n: &str| {
             defs.iter()
@@ -339,7 +385,7 @@ mod tests {
                 "// x\nconst A: &str = \"x\"; /* x */\nfn b() { x() }\n",
             ),
         ] {
-            let unit = Unit::of(Path::new(path), lang, src).unwrap();
+            let unit = Unit::all(Path::new(path), lang, src)[0];
             let tree = unit.parse().unwrap();
             let lines = line_starts(src);
             let marks: Vec<bool> = src
@@ -353,9 +399,29 @@ mod tests {
             assert_eq!(line_of(&lines, last), src[..last].matches('\n').count());
         }
         let src = "const b = `x ${x()}`;\n";
-        let unit = Unit::of(Path::new("a.ts"), Lang::Ts, src).unwrap();
+        let unit = Unit::all(Path::new("a.ts"), Lang::Ts, src)[0];
         let tree = unit.parse().unwrap();
         assert!(unit.in_comment_or_string(&tree, 11..12));
         assert!(!unit.in_comment_or_string(&tree, 15..16));
+    }
+
+    /// C4 (AD-40002): both `<script>` blocks of a Vue file are units, their
+    /// definitions at file offsets, and a template between them is code.
+    #[test]
+    fn a_vue_file_has_one_unit_per_script_block() {
+        let src = "<script lang=\"ts\">\nexport function one() {}\n</script>\n<template><p>'x'</p></template>\n<script setup lang=\"ts\">\n// x\nfunction two() {}\n</script>\n";
+        let units = Unit::all(Path::new("a.vue"), Lang::Vue, src);
+        assert_eq!(units.len(), 2);
+        let (defs, broken) = definitions(&units).unwrap();
+        let names: Vec<&str> = defs.iter().map(|d| &src[d.name.clone()]).collect();
+        assert_eq!((names, broken), (vec!["one", "two"], false));
+        let starts = line_starts(src);
+        assert_eq!(line_of(&starts, defs[1].name.start), 6);
+        let parsed = Parsed::of(&units).unwrap();
+        assert!(!parsed.has_error());
+        let comment = src.find("// x").unwrap() + 3;
+        assert!(parsed.in_comment_or_string(comment..comment + 1));
+        let template = src.find("'x'").unwrap() + 1;
+        assert!(!parsed.in_comment_or_string(template..template + 1));
     }
 }

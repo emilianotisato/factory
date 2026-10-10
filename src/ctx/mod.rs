@@ -151,6 +151,14 @@ pub(crate) fn matcher(pattern: &str) -> Result<RegexMatcher> {
         .map_err(|e| Error::Msg(format!("ctx: bad pattern `{pattern}`: {e}")))
 }
 
+/// A whole-word search for the escaped `name`, as `rg -w` builds one: the
+/// name between a line edge or a non-word character on each side. `\b`
+/// would need a word character inside the name's edge, so it never finds
+/// PHP's `$user`.
+pub(crate) fn whole_word(escaped: &str) -> String {
+    format!(r"(?:^|\W)(?:{escaped})(?:\W|$)")
+}
+
 /// The 1-based numbers of the lines of `bytes` that `m` matches.
 pub(crate) fn matching_lines(m: &RegexMatcher, bytes: &[u8]) -> Vec<u64> {
     let mut lines = Vec::new();

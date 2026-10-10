@@ -2,13 +2,15 @@
 //! through `grep-searcher` and `grep-regex` over the walk finds the
 //! candidates; each candidate file is then tagged with tree-sitter
 //! (`lang.rs`) and a hit is kept only when a definition's name sits on its
-//! line. The body is the definition node's exact range, the kind the tag's
-//! in the `--kind` vocabulary. A file whose tree holds a syntax error keeps
-//! its textual hits with slice 11's heuristic body, so a broken file never
-//! hides a definition.
+//! line. The regexes take modifiers in any order and a member whose
+//! parameters run onto the next line, so every shape `outline` lists is a
+//! candidate (AD-40001). The body is the definition node's exact range, the
+//! kind the tag's in the `--kind` vocabulary. A file whose tree holds a
+//! syntax error keeps its textual hits with slice 11's heuristic body, so a
+//! broken file never hides a definition.
 use std::path::Path;
 
-use super::lang::{Definition, Unit, kind_matches, line_of, line_starts};
+use super::lang::{Definition, Parsed, Unit, definitions, kind_matches, line_of, line_starts};
 use super::walk::{self, Lang, WalkOpts};
 use super::{Searched, matcher, matching_lines, rel};
 use crate::Result;
@@ -56,22 +58,30 @@ impl Table {
     }
 
     /// The definition regexes, `NAME` already escaped, each anchored at the
-    /// line start after whitespace and modifiers (slice 11 § Current code).
+    /// line start after whitespace and modifiers in any order (slice 11 §
+    /// Current code, widened by AD-40001). A TypeScript member whose
+    /// parameters run onto the next line matches on its name's line; a Go
+    /// type inside a `type ( … )` group matches as a name, then a type,
+    /// which a struct field does too, and the tree tells them apart.
     fn patterns(self, name: &str) -> Vec<String> {
         let p = match self {
             Table::Php => vec![
-                r"(abstract\s+|final\s+)?(class|interface|trait|enum)\s+NAME\b",
-                r"(public|protected|private|static|\s)*function\s+&?NAME\s*\(",
+                r"((abstract|final|readonly)\s+)*(class|interface|trait|enum)\s+NAME\b",
+                r"((public|protected|private|static|abstract|final)\s+)*function\s+&?NAME\s*\(",
             ],
             Table::Ts => vec![
-                r"(export\s+)?(default\s+)?(abstract\s+)?(class|interface|type|enum)\s+NAME\b",
-                r"(export\s+)?(async\s+)?function\s*\*?\s*NAME\s*[(<]",
+                r"((export|default|declare|abstract|const)\s+)*(class|interface|type|enum)\s+NAME\b",
+                r"((export|default|declare|async)\s+)*function\s*\*?\s*NAME\s*[(<]",
                 r"(export\s+)?(const|let|var)\s+NAME\s*(:[^=]+)?=\s*(async\s*)?(\(|[A-Za-z_$][\w$]*\s*=>)",
-                r"(public|private|protected|static|readonly|async|\s)*NAME\s*\([^)]*\)\s*(:[^{]+)?\{",
+                r"((public|private|protected|static|readonly|async|override|abstract|get|set)\s+)*\*?\s*NAME\s*(<[^>]*>)?\s*\(([^)]*\)\s*(:[^{]+)?\{|[^)]*$)",
             ],
-            Table::Go => vec![r"func\s+(\([^)]*\)\s*)?NAME\s*[(\[]", r"type\s+NAME\b"],
+            Table::Go => vec![
+                r"func\s+(\([^)]*\)\s*)?NAME\s*[(\[]",
+                r"type\s+NAME\b",
+                r"NAME(\[[^\]]*\])?\s+(=\s*)?[\w.*\[({]",
+            ],
             Table::Rust => vec![
-                r"(pub(\([^)]*\))?\s+)?(async\s+)?(unsafe\s+)?(fn|struct|enum|trait|type|mod|const|static)\s+NAME\b",
+                r#"(pub(\([^)]*\))?\s+)?((default|const|async|unsafe|extern(\s+"[^"]*")?)\s+)*(fn|struct|enum|union|trait|type|mod|const|static(\s+mut)?)\s+NAME\b"#,
                 r"macro_rules!\s+NAME",
             ],
         };
@@ -81,7 +91,7 @@ impl Table {
     }
 
     /// The keywords a match can carry, and the kind of a match with none
-    /// (only TypeScript's class-member regex has no keyword).
+    /// (TypeScript's class member, a Go type in a `type ( … )` group).
     fn keywords(self) -> (&'static [&'static str], &'static str) {
         match self {
             Table::Php => (
@@ -101,7 +111,7 @@ impl Table {
                 ],
                 "method",
             ),
-            Table::Go => (&["func", "type"], "func"),
+            Table::Go => (&["func", "type"], "type"),
             Table::Rust => (
                 &[
                     "fn",
@@ -112,6 +122,7 @@ impl Table {
                     "mod",
                     "const",
                     "static",
+                    "union",
                     "macro_rules",
                 ],
                 "fn",
@@ -211,20 +222,18 @@ struct File<'a> {
 
 impl File<'_> {
     /// The hits the file's definition tags confirm; none when its tree holds
-    /// a syntax error or tagging fails. A Vue file without a `<script>`
-    /// block has no definitions.
+    /// a syntax error or tagging fails. An `impl` block names a type it does
+    /// not define, so it confirms nothing. A Vue file is tagged block by
+    /// block; one without a `<script>` block has no definitions.
     fn confirmed(&self, path: &Path, lang: Lang) -> Option<InFile> {
         let text = self.text;
-        let unit = Unit::of(path, lang, text);
-        let (defs, broken) = match &unit {
-            Some(u) => u.definitions()?,
-            None => (Vec::new(), false),
-        };
+        let units = Unit::all(path, lang, text);
+        let (defs, broken) = definitions(&units)?;
         if broken {
             return None;
         }
         let starts = line_starts(text);
-        let mut tree = None;
+        let mut parsed = None;
         let mut f = InFile::default();
         for &n in self.numbers {
             let Some(at) = usize::try_from(n).ok().and_then(|n| n.checked_sub(1)) else {
@@ -235,7 +244,9 @@ impl File<'_> {
             };
             let to = starts.get(at + 1).copied().unwrap_or(text.len());
             let tag = defs.iter().find(|d| {
-                (from..to).contains(&d.name.start) && text.get(d.name.clone()) == Some(self.name)
+                d.kind != "impl"
+                    && (from..to).contains(&d.name.start)
+                    && text.get(d.name.clone()) == Some(self.name)
             });
             match tag {
                 Some(d) if kind_matches(self.want, d.kind) => {
@@ -243,13 +254,12 @@ impl File<'_> {
                 }
                 Some(_) => f.other_kind += 1,
                 None => {
-                    let inside = unit.as_ref().is_some_and(|u| {
-                        let tree = tree.get_or_insert_with(|| u.parse());
-                        let line = &text[from..to];
-                        word_at(line, self.name)
-                            .zip(tree.as_ref())
-                            .is_some_and(|(i, t)| {
-                                u.in_comment_or_string(t, from + i..from + i + self.name.len())
+                    let inside = word_at(&text[from..to], self.name).is_some_and(|i| {
+                        parsed
+                            .get_or_insert_with(|| Parsed::of(&units))
+                            .as_ref()
+                            .is_some_and(|p| {
+                                p.in_comment_or_string(from + i..from + i + self.name.len())
                             })
                     });
                     if inside {
@@ -346,7 +356,7 @@ impl File<'_> {
 /// A regex keyword in the `--kind` vocabulary, as close as a keyword gets.
 fn vocabulary(table: Table, keyword: &'static str) -> &'static str {
     match keyword {
-        "class" | "interface" | "trait" | "enum" | "struct" => "class",
+        "class" | "interface" | "trait" | "enum" | "struct" | "union" => "class",
         "const" | "static" if table == Table::Rust => "constant",
         "function" | "func" | "fn" | "const" | "let" | "var" => "fn",
         "mod" => "module",
@@ -506,6 +516,15 @@ mod tests {
             "func"
         );
         assert_eq!(kind_of(Table::Go, "type Config struct {", "Config"), "type");
+        assert_eq!(kind_of(Table::Go, "\tGrouped struct {", "Grouped"), "type");
+        assert_eq!(
+            kind_of(Table::Rust, r#"pub extern "C" fn ffi() {}"#, "ffi"),
+            "fn"
+        );
+        assert_eq!(
+            kind_of(Table::Php, "final readonly class Dto", "Dto"),
+            "class"
+        );
         assert_eq!(
             kind_of(Table::Rust, "pub(crate) async unsafe fn run(", "run"),
             "fn"

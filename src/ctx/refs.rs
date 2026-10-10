@@ -7,9 +7,9 @@
 use std::path::Path;
 
 use super::def::{dedent, escape, indent, words};
-use super::lang::{Unit, line_starts};
+use super::lang::{Parsed, Unit, line_starts};
 use super::walk::{self, Lang, WalkOpts};
-use super::{Searched, matcher, matching_lines, rel};
+use super::{Searched, matcher, matching_lines, rel, whole_word};
 use crate::Result;
 
 /// One reference shown.
@@ -59,7 +59,7 @@ struct InFile {
 
 /// The references to `name` under `root`, with paths relative to `base`.
 pub fn find(base: &Path, root: &Path, name: &str, caps: Caps, opts: &WalkOpts) -> Result<Found> {
-    let m = matcher(&format!(r"\b{}\b", escape(name)))?;
+    let m = matcher(&whole_word(&escape(name)))?;
     let walked = walk::walk(root, opts);
     let (per_file, binary) = walk::scan(&walked.files, |path, lang, bytes| {
         let numbers = matching_lines(&m, bytes);
@@ -138,8 +138,8 @@ pub fn find(base: &Path, root: &Path, name: &str, caps: Caps, opts: &WalkOpts) -
 
 /// The hit lines holding a whole-word `name` outside every comment and
 /// string, and whether the file's tree holds a syntax error (then every
-/// line is kept: a broken tree misplaces strings). A Vue hit outside the
-/// `<script>` block is kept.
+/// line is kept: a broken tree misplaces strings). A Vue hit outside its
+/// `<script>` blocks is kept.
 fn code_lines(
     path: &Path,
     lang: Lang,
@@ -147,10 +147,11 @@ fn code_lines(
     name: &str,
     numbers: Vec<u64>,
 ) -> (Vec<u64>, bool) {
-    let Some(unit) = Unit::of(path, lang, text) else {
+    let units = Unit::all(path, lang, text);
+    if units.is_empty() {
         return (numbers, false);
-    };
-    let Some(tree) = unit.parse().filter(|t| !t.root_node().has_error()) else {
+    }
+    let Some(parsed) = Parsed::of(&units).filter(|p| !p.has_error()) else {
         return (numbers, true);
     };
     let starts = line_starts(text);
@@ -166,18 +167,23 @@ fn code_lines(
                 .unwrap_or(text.len());
             let mut at = words(&text[from..to], name).peekable();
             at.peek().is_none()
-                || at.any(|i| !unit.in_comment_or_string(&tree, from + i..from + i + name.len()))
+                || at.any(|i| !parsed.in_comment_or_string(from + i..from + i + name.len()))
         })
         .collect();
     (kept, false)
 }
 
-/// A test path, relative to the search root: `tests?/|spec|_test\.go|\.test\.|\.spec\.`
-/// (slice 11 task 3).
+/// A test path, relative to the search root (AD-1106): a directory named
+/// `test`, `tests`, `spec`, `specs` or `__tests__` at any depth, or a file
+/// name holding `_test.go`, `.test.` or `.spec.` (slice 11 task 3's
+/// pattern, matched by path segment: AD-40003).
 pub fn is_test(path: &str) -> bool {
-    ["test/", "tests/", "spec", "_test.go", ".test."]
-        .iter()
-        .any(|p| path.contains(p))
+    let mut parts = path.split(['/', '\\']).filter(|p| !p.is_empty());
+    let file = parts.next_back().unwrap_or("");
+    parts.any(|d| matches!(d, "test" | "tests" | "spec" | "specs" | "__tests__"))
+        || file.ends_with("_test.go")
+        || file.contains(".test.")
+        || file.contains(".spec.")
 }
 
 #[cfg(test)]
@@ -193,10 +199,23 @@ mod tests {
             "a.test.ts",
             "a.spec.ts",
             "spec/models.ts",
+            "web/__tests__/a.ts",
+            "specs/a.ts",
+            "pkg/test/c.go",
         ] {
             assert!(is_test(p), "{p}");
         }
-        for p in ["src/user.ts", "app/Services/UserService.php", "contest.go"] {
+        for p in [
+            "src/user.ts",
+            "app/Services/UserService.php",
+            "contest.go",
+            "app/Services/Inspector.php",
+            "src/respect.rs",
+            "docs/specification/x.ts",
+            "latest/a.ts",
+            "contest/a.go",
+            "src/attest.go",
+        ] {
             assert!(!is_test(p), "{p}");
         }
     }

@@ -1,6 +1,6 @@
 //! The file walk every `ctx` verb starts from (PRD §14 FR-12): the `ignore`
 //! crate's walker, which honours `.gitignore` and skips hidden files, plus
-//! the vendor directories no lookup wants. `--vendor` lifts both, since a
+//! the vendor and build directories no lookup wants. `--vendor` lifts both, since a
 //! vendor tree is usually gitignored too. Only files of a known language
 //! come out, sorted by path so the output never depends on thread timing.
 use std::path::{Path, PathBuf};
@@ -9,16 +9,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ignore::{WalkBuilder, WalkState};
 
-/// Directories skipped unless `--vendor`, at any depth (`storage/` is
-/// Laravel's).
-pub const VENDOR_DIRS: [&str; 6] = [
-    "vendor",
-    "node_modules",
-    "target",
-    "dist",
-    "build",
-    "storage",
-];
+/// Dependency directories skipped unless `--vendor`, at any depth.
+pub const VENDOR_DIRS: [&str; 3] = ["vendor", "node_modules", "target"];
+
+/// Build output and Laravel's `storage/`, skipped unless `--vendor` only
+/// directly under the search root: deeper, a `build/` or `storage/` is as
+/// often source (`src/build/`, `app/storage/`), AD-40004.
+pub const ROOT_DIRS: [&str; 3] = ["dist", "build", "storage"];
 
 /// A file larger than this is skipped and counted in the trailer.
 pub const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
@@ -70,7 +67,9 @@ pub fn walk(root: &Path, opts: &WalkOpts) -> Walk {
         builder.filter_entry(|e| {
             let is_dir = e.file_type().is_some_and(|t| t.is_dir());
             let name = e.file_name().to_str().unwrap_or("");
-            e.depth() == 0 || !(is_dir && VENDOR_DIRS.contains(&name))
+            let skipped =
+                VENDOR_DIRS.contains(&name) || (e.depth() == 1 && ROOT_DIRS.contains(&name));
+            e.depth() == 0 || !(is_dir && skipped)
         });
     }
     let found = Mutex::new(Vec::new());

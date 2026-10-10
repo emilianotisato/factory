@@ -381,6 +381,151 @@ fn outline_prints_definitions_and_nothing_else() {
     );
 }
 
+/// C1 (AD-40001): every definition shape `outline` lists is found by `def`
+/// at the same line, whatever modifiers lead it or wherever its parameters
+/// end: default exports, a member whose parameters span lines, a getter, a
+/// generic method, PHP readonly, abstract and final in any order, Rust
+/// `const fn` and `extern "C" fn`, and a Go `type ( … )` group, whose
+/// struct field of the same name is not a definition.
+#[test]
+fn def_finds_every_shape_outline_lists() {
+    let tmp = tempfile::tempdir().unwrap();
+    let files = [
+        (
+            "page.ts",
+            "export default function Page() {\n  return 1\n}\n",
+        ),
+        (
+            "loader.ts",
+            "export default async function Loader() {\n  return 2\n}\n",
+        ),
+        (
+            "cart.ts",
+            "export class Cart {\n  async handle(\n    req: Request,\n  ): Promise<void> {\n    return\n  }\n  get total(): number {\n    return 0\n  }\n  map<T>(x: T): T {\n    return x\n  }\n}\n",
+        ),
+        (
+            "Dto.php",
+            "<?php\n\nfinal readonly class Dto\n{\n}\n\nreadonly class Dto2\n{\n}\n\nabstract class Base\n{\n    abstract protected function rules(): array;\n\n    final public function handle(): void\n    {\n    }\n\n    public final function run(): void\n    {\n    }\n}\n",
+        ),
+        (
+            "ffi.rs",
+            "pub struct Thing;\n\nimpl Thing {\n    pub const fn new() -> Self {\n        Thing\n    }\n}\n\nconst fn helper() -> u8 {\n    1\n}\n\npub extern \"C\" fn ffi() {}\n",
+        ),
+        (
+            "group.go",
+            "package shapes\n\ntype (\n\tGrouped struct {\n\t\tOther int\n\t}\n\tOther int\n)\n",
+        ),
+    ];
+    for (name, src) in files {
+        fs::write(tmp.path().join(name), src).unwrap();
+    }
+    type Where = (&'static str, u64, &'static str);
+    let shapes: [(&str, &[Where]); 13] = [
+        ("Page", &[("page.ts", 1, "fn")]),
+        ("Loader", &[("loader.ts", 1, "fn")]),
+        (
+            "handle",
+            &[("Dto.php", 15, "method"), ("cart.ts", 2, "method")],
+        ),
+        ("total", &[("cart.ts", 7, "method")]),
+        ("map", &[("cart.ts", 10, "method")]),
+        ("Dto", &[("Dto.php", 3, "class")]),
+        ("Dto2", &[("Dto.php", 7, "class")]),
+        ("rules", &[("Dto.php", 13, "method")]),
+        ("run", &[("Dto.php", 19, "method")]),
+        ("new", &[("ffi.rs", 4, "method")]),
+        ("helper", &[("ffi.rs", 9, "fn")]),
+        ("ffi", &[("ffi.rs", 13, "fn")]),
+        ("Grouped", &[("group.go", 4, "class")]),
+    ];
+    let names: Vec<&str> = files.iter().map(|(n, _)| *n).collect();
+    let (code, outline, _) = ctx_in(tmp.path(), &[&["outline"], &names[..]].concat());
+    assert_eq!(code, 0, "{outline}");
+    for (name, want) in shapes {
+        let (code, out, err) = ctx_in(tmp.path(), &["def", name, "--no-body"]);
+        assert_eq!((code, err.as_str()), (0, ""), "{name}");
+        let got: Vec<String> = hits(&out)
+            .iter()
+            .map(|l| l.split("  ").take(2).collect::<Vec<_>>().join("  "))
+            .collect();
+        let expected: Vec<String> = want
+            .iter()
+            .map(|(f, l, k)| format!("{f}:{l}  {k}"))
+            .collect();
+        assert_eq!(got, expected, "def {name}:\n{out}");
+        assert!(!out.contains("not parsed cleanly"), "{out}");
+        for (file, line, kind) in want {
+            let section = outline
+                .split(&format!("== {file} ==\n"))
+                .nth(1)
+                .unwrap()
+                .split("== ")
+                .next()
+                .unwrap();
+            assert!(
+                section
+                    .lines()
+                    .any(|l| l.trim_start().starts_with(&format!("{line}  {kind}  "))),
+                "outline of {file} lacks {line} {kind}:\n{outline}"
+            );
+        }
+    }
+    let (_, out, _) = ctx_in(tmp.path(), &["def", "Other", "--no-body"]);
+    assert_eq!(
+        out,
+        "group.go:7  type  Other int\n\n1 definition (searched 6 files); 1 textual match dropped: no definition node\n"
+    );
+}
+
+/// C4 (AD-40002): a Vue file with `<script>` and `<script setup>` is
+/// tagged block by block, at its real line numbers, by `outline`, `def` and
+/// the comment check of `refs`.
+#[test]
+fn every_vue_script_block_is_read() {
+    let tmp = tempfile::tempdir().unwrap();
+    let vue = "<script lang=\"ts\">\nexport function first() {\n  return 1\n}\n</script>\n\n<template>\n  <p>{{ second() }}</p>\n</template>\n\n<script setup lang=\"ts\">\n// second is set up below\nfunction second() {\n  return first()\n}\n</script>\n";
+    fs::write(tmp.path().join("Two.vue"), vue).unwrap();
+    let (code, out, _) = ctx_in(tmp.path(), &["outline", "Two.vue"]);
+    assert_eq!(
+        (code, out.as_str()),
+        (
+            0,
+            "== Two.vue ==\n2  fn  export function first() {\n13  fn  function second() {\n"
+        )
+    );
+    let (_, out, _) = ctx_in(tmp.path(), &["def", "second", "--no-body"]);
+    assert_eq!(
+        out,
+        "Two.vue:13  fn  function second() {\n\n1 definition (searched 1 file)\n"
+    );
+    let (_, out, _) = ctx_in(tmp.path(), &["refs", "second"]);
+    assert!(out.starts_with("Two.vue:8  ref  "), "{out}");
+    assert!(out.contains("\nTwo.vue:13  ref  "), "{out}");
+    assert!(out.contains("1 dropped (comments/strings)"), "{out}");
+}
+
+/// Cn6: a name that starts with `$` is found whole-word, as PHP writes a
+/// variable; a longer name holding it is not.
+#[test]
+fn refs_finds_a_dollar_name() {
+    let tmp = tempfile::tempdir().unwrap();
+    let php = "<?php\nfunction a($user) {\n    return $user->name . $username;\n}\n";
+    fs::write(tmp.path().join("a.php"), php).unwrap();
+    let (code, out, _) = ctx_in(tmp.path(), &["refs", "$user"]);
+    assert_eq!(code, 0);
+    assert_eq!(
+        hits(&out),
+        [
+            "a.php:2  ref  function a($user) {",
+            "a.php:3  ref  return $user->name . $username;"
+        ]
+    );
+    assert!(
+        out.ends_with("2 hits in 1 file (searched 1 file)\n"),
+        "{out}"
+    );
+}
+
 /// Slice 12 tasks 4 and 5: Go and Rust per language; the Vue `<script>`
 /// block at its real line numbers; an empty file and a template-only Vue
 /// file print their header alone.
@@ -501,6 +646,8 @@ fn source_files(dir: &Path, root: &Path, into: &mut BTreeSet<PathBuf>) {
 
 /// Task 1: the walker skips vendor directories and gitignored files unless
 /// `--vendor`; the trailer counts what it skipped for size or content.
+/// Cn5 (AD-40004): `build/`, `dist/` and `storage/` are skipped only at the
+/// root; `vendor/` and `node_modules/` at any depth.
 #[test]
 fn the_walk_skips_vendor_and_gitignored_paths_unless_vendor() {
     let tmp = tempfile::tempdir().unwrap();
@@ -519,12 +666,17 @@ fn the_walk_skips_vendor_and_gitignored_paths_unless_vendor() {
     let planted = [
         "vendor/laravel/Kernel.php",
         "node_modules/vue/index.js",
-        "php/build/Gen.php",
+        "build/Gen.php",
+        "storage/framework/Cache.php",
+        "php/vendor/Lib.php",
+        "php/node_modules/x/index.js",
     ];
-    for p in planted {
+    let nested = ["php/build/Gen.php", "app/storage/Disk.php", "web/dist/a.ts"];
+    for p in planted.iter().chain(&nested) {
         fs::create_dir_all(root.join(p).parent().unwrap()).unwrap();
         fs::write(root.join(p), "<?php class Planted {}\n").unwrap();
     }
+    expected.extend(nested.iter().map(PathBuf::from));
     fs::write(root.join(".gitignore"), "ignored.php\n").unwrap();
     fs::write(root.join("php/ignored.php"), "<?php class Ignored {}\n").unwrap();
 
@@ -548,6 +700,6 @@ fn the_walk_skips_vendor_and_gitignored_paths_unless_vendor() {
     assert_eq!(code, 0);
     assert_eq!(
         out,
-        "no definition of Blob found (searched 48 files); skipped 1 binary file, 1 file over 2 MB\n"
+        "no definition of Blob found (searched 51 files); skipped 1 binary file, 1 file over 2 MB\n"
     );
 }
