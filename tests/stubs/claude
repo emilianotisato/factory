@@ -31,6 +31,10 @@
 // slices add the outcomes they consume (PRD §17).
 // Slice 08 adds `inner: "red"`: the stream's one `Bash ./gate.sh --inner`
 // call (every `done` build and fix) returns the gate's failure text, exit 1.
+// Slice 13 adds `ctx: true` on a `done` build: after reading the slice, two
+// `Bash factory ctx …` calls with canned answers (not run) — a `refs` naming
+// src/lib.txt followed by a Read of it, and an `outline` naming
+// src/other.rs that nothing reads — so `followup_reads` is 1 of 2.
 const fs = require('node:fs')
 const path = require('node:path')
 const crypto = require('node:crypto')
@@ -410,6 +414,11 @@ setStatus(slicePath, 'done')
 emit(init)
 readFile(path.join(featureDir, 'prd.md'))
 readFile(slicePath)
+if (step.ctx) {
+  tool('Bash', { command: 'factory ctx refs fixture', description: 'ctx refs' }, { text: 'src/lib.txt:1  ref  fixture code file\n\n1 hit in 1 file (searched 1 file)\n' })
+  readFile(path.join(cwd, 'src/lib.txt'))
+  tool('Bash', { command: 'factory ctx outline src', description: 'ctx outline' }, { text: '== src/other.rs ==\n1  fn  fn other() {\n' })
+}
 for (const f of touched) tool('Write', { file_path: f, content: `touched by spawn ${n}\n` })
 tool('Write', { file_path: fragment, content: fs.readFileSync(fragment, 'utf8') })
 innerRun(step)

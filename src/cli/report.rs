@@ -5,6 +5,13 @@
 //! re-parsed from a transcript. `--cockpit <session.jsonl>...` adds the
 //! cockpit's own cost from its transcript (`measure`). `score` is the
 //! owner's and prints empty (§13).
+//!
+//! Slice 13 (§14 FR-12 decision 4) appends `followup_reads` and
+//! `pack_doc_read_chars`, turns `ctx_share` into the share of lookups that
+//! were `ctx` calls (the byte share slice 08 printed stays as
+//! `lookup_share_chars`), prints the three lines the reversal rule reads
+//! after the keys, and `--per-worker` adds `ctx_share` and `repeat_rate` for
+//! each worker.
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::PathBuf;
@@ -13,9 +20,10 @@ use clap::Args;
 use serde::Serialize;
 
 use crate::db::Db;
+use crate::db::{ToolCallRow, WorkerRow};
 use crate::error::{io, json};
 use crate::measure::{self, Measure};
-use crate::metrics::LOOKUP_KINDS;
+use crate::metrics::{CTX_KINDS, LOOKUP_KINDS};
 use crate::run::Run;
 use crate::{Result, paths, quota};
 
@@ -29,10 +37,13 @@ pub struct ReportArgs {
     /// The cockpit session transcript(s), for `cockpit_tokens`
     #[arg(long, value_name = "SESSION.jsonl", num_args = 1..)]
     pub cockpit: Vec<PathBuf>,
+    /// `ctx_share` and `repeat_rate` for each worker, after the run's keys
+    #[arg(long)]
+    pub per_worker: bool,
 }
 
 /// The retro keys (`retro.md:2-14`), in order, then the run keys (§10).
-pub const KEYS: [&str; 21] = [
+pub const KEYS: [&str; 23] = [
     "score",
     "gate_runs",
     "gate_red",
@@ -54,15 +65,159 @@ pub const KEYS: [&str; 21] = [
     "lookup_chars",
     "ctx_share",
     "repeat_rate",
+    "followup_reads",
+    "pack_doc_read_chars",
 ];
 
-/// The keys after the twenty-one: what the slice's task text names beyond
-/// §10's list (AD-802).
-pub const EXTRA_KEYS: [&str; 3] = [
+/// The keys after [`KEYS`]: what the slices' task texts name beyond §10's
+/// list (AD-802; `lookup_share_chars`, slice 13).
+pub const EXTRA_KEYS: [&str; 4] = [
     "worker_gate_runs",
     "worker_gate_red",
     "cockpit_peak_context",
+    "lookup_share_chars",
 ];
+
+// The reversal rule's constants, PRD §14 FR-12 decision 4: "`followup_reads`
+// above 30% of `ctx` calls after slice 3 means the answers are too thin";
+// "If, after slice 3, `ctx_share` stays under 10% of worker lookups or
+// `repeat_rate` does not fall from 26.7%, `ctx` shrinks to `outline` only".
+// The report prints the comparison; the reversal is the owner's call.
+/// `followup_reads` share above which the `ctx` answers are too thin.
+pub const FOLLOWUP_THRESHOLD: f64 = 0.30;
+/// `ctx_share` under which `ctx` is not taken up.
+pub const CTX_SHARE_THRESHOLD: f64 = 0.10;
+/// The `repeat_rate` baseline from the owner's transcripts (§20).
+pub const REPEAT_RATE_BASELINE: f64 = 0.267;
+
+/// `followup_reads`: the `ctx` calls a read of a file they named followed
+/// within two calls (`label_followup`), of all `ctx` calls.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Followups {
+    pub count: u64,
+    pub ctx_calls: u64,
+    pub share: f64,
+}
+
+impl Followups {
+    /// `1 of 2 ctx calls (50%)`.
+    fn text(&self) -> String {
+        format!(
+            "{} of {} ctx calls ({}%)",
+            self.count,
+            self.ctx_calls,
+            (self.share * 100.0).round()
+        )
+    }
+}
+
+/// The three lines the reversal rule reads (§14 FR-12 decision 4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Thresholds {
+    /// `ok` or `over`.
+    pub followup: &'static str,
+    /// `ok` or `under`.
+    pub ctx_share: &'static str,
+    /// `lower` or `not lower`.
+    pub repeat_rate: &'static str,
+}
+
+impl Default for Thresholds {
+    fn default() -> Self {
+        Thresholds::of(0.0, 0.0, 0.0)
+    }
+}
+
+impl Thresholds {
+    pub fn of(followup_share: f64, ctx_share: f64, repeat_rate: f64) -> Self {
+        Thresholds {
+            followup: if followup_share > FOLLOWUP_THRESHOLD {
+                "over"
+            } else {
+                "ok"
+            },
+            ctx_share: if ctx_share < CTX_SHARE_THRESHOLD {
+                "under"
+            } else {
+                "ok"
+            },
+            repeat_rate: if repeat_rate < REPEAT_RATE_BASELINE {
+                "lower"
+            } else {
+                "not lower"
+            },
+        }
+    }
+
+    pub fn lines(&self) -> Vec<String> {
+        vec![
+            format!("followup threshold 30%: {}", self.followup),
+            format!("ctx_share threshold 10%: {}", self.ctx_share),
+            format!("repeat_rate vs 26.7%: {}", self.repeat_rate),
+        ]
+    }
+}
+
+/// One worker's lookups, for `--per-worker`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct PerWorker {
+    pub id: i64,
+    pub role: String,
+    pub slice: Option<u32>,
+    pub session_id: Option<String>,
+    pub lookups: u64,
+    pub ctx_calls: u64,
+    pub ctx_share: f64,
+    pub repeat_rate: f64,
+}
+
+impl PerWorker {
+    /// `worker 3 build slice 02 (1a2b3c4d): lookups 6, ctx_share 0.333, repeat_rate 0.167`.
+    fn text(&self) -> String {
+        let slice = self
+            .slice
+            .map_or(String::new(), |n| format!(" slice {n:02}"));
+        let session = self.session_id.as_deref().map_or(String::new(), |s| {
+            format!(" ({})", s.chars().take(8).collect::<String>())
+        });
+        format!(
+            "worker {} {}{slice}{session}: lookups {}, ctx_share {:.3}, repeat_rate {:.3}",
+            self.id, self.role, self.lookups, self.ctx_share, self.repeat_rate
+        )
+    }
+}
+
+/// `(lookups, ctx calls, repeats)` among `calls`.
+fn lookup_counts<'a>(calls: impl Iterator<Item = &'a ToolCallRow>) -> (u64, u64, u64) {
+    let mut out = (0, 0, 0);
+    for c in calls.filter(|c| LOOKUP_KINDS.contains(&c.kind.as_str())) {
+        out.0 += 1;
+        out.1 += u64::from(CTX_KINDS.contains(&c.kind.as_str()));
+        out.2 += u64::from(c.repeat_in_worker);
+    }
+    out
+}
+
+/// `ctx_share` and `repeat_rate` of each worker, in spawn order.
+pub fn per_worker(workers: &[WorkerRow], calls: &[ToolCallRow]) -> Vec<PerWorker> {
+    workers
+        .iter()
+        .map(|w| {
+            let (lookups, ctx, repeats) =
+                lookup_counts(calls.iter().filter(|c| c.worker_id == w.id));
+            PerWorker {
+                id: w.id,
+                role: w.role.clone(),
+                slice: w.slice,
+                session_id: w.session_id.clone(),
+                lookups,
+                ctx_calls: ctx,
+                ctx_share: ratio(ctx, lookups),
+                repeat_rate: ratio(repeats, lookups),
+            }
+        })
+        .collect()
+}
 
 /// Worker rows by role.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -118,11 +273,21 @@ pub struct Report {
     pub cockpit_tokens: Option<u64>,
     pub workers: Workers,
     pub lookup_chars: u64,
+    /// `ctx-*` rows among lookup rows (§14 decision 4).
     pub ctx_share: f64,
     pub repeat_rate: f64,
+    pub followup_reads: Followups,
+    /// `result_chars` of `read`/`bash-cat` rows on a file the pack held (§4).
+    pub pack_doc_read_chars: u64,
     pub worker_gate_runs: u64,
     pub worker_gate_red: u64,
     pub cockpit_peak_context: Option<u64>,
+    /// Lookup bytes among all result bytes: slice 08's `ctx_share`.
+    pub lookup_share_chars: f64,
+    pub thresholds: Thresholds,
+    /// With `--per-worker` only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub per_worker: Option<Vec<PerWorker>>,
 }
 
 fn round(x: f64, places: i32) -> f64 {
@@ -167,7 +332,18 @@ pub fn compute(db: &Db, run_id: &str, cockpit: Option<&Measure>) -> Result<Repor
         .collect();
     let lookup_chars: u64 = lookup.iter().map(|c| n(c.result_chars)).sum();
     let all_chars: u64 = calls.iter().map(|c| n(c.result_chars)).sum();
-    let repeats = lookup.iter().filter(|c| c.repeat_in_worker).count() as u64;
+    let (lookups, ctx_calls, repeats) = lookup_counts(calls.iter());
+    let followed = calls
+        .iter()
+        .filter(|c| CTX_KINDS.contains(&c.kind.as_str()) && c.label_followup == Some(true))
+        .count() as u64;
+    let followup_reads = Followups {
+        count: followed,
+        ctx_calls,
+        share: ratio(followed, ctx_calls),
+    };
+    let ctx_share = ratio(ctx_calls, lookups);
+    let repeat_rate = ratio(repeats, lookups);
 
     Ok(Report {
         score: None,
@@ -200,11 +376,20 @@ pub fn compute(db: &Db, run_id: &str, cockpit: Option<&Measure>) -> Result<Repor
             by_role,
         },
         lookup_chars,
-        ctx_share: ratio(lookup_chars, all_chars),
-        repeat_rate: ratio(repeats, lookup.len() as u64),
+        ctx_share,
+        repeat_rate,
+        thresholds: Thresholds::of(followup_reads.share, ctx_share, repeat_rate),
+        followup_reads,
+        pack_doc_read_chars: calls
+            .iter()
+            .filter(|c| c.pack_doc)
+            .map(|c| n(c.result_chars))
+            .sum(),
         worker_gate_runs: worker_gates.len() as u64,
         worker_gate_red: worker_gates.iter().filter(|g| g.red).count() as u64,
         cockpit_peak_context: cockpit.map(|m| m.peak_context),
+        lookup_share_chars: ratio(lookup_chars, all_chars),
+        per_worker: None,
     })
 }
 
@@ -235,9 +420,12 @@ impl Report {
             format!("lookup_chars: {}", self.lookup_chars),
             format!("ctx_share: {:.3}", self.ctx_share),
             format!("repeat_rate: {:.3}", self.repeat_rate),
+            format!("followup_reads: {}", self.followup_reads.text()),
+            format!("pack_doc_read_chars: {}", self.pack_doc_read_chars),
             format!("worker_gate_runs: {}", self.worker_gate_runs),
             format!("worker_gate_red: {}", self.worker_gate_red),
             format!("cockpit_peak_context: {}", opt(self.cockpit_peak_context)),
+            format!("lookup_share_chars: {:.3}", self.lookup_share_chars),
         ]
     }
 }
@@ -249,12 +437,23 @@ pub fn report(args: &ReportArgs, out: &mut dyn Write) -> Result<i32> {
     } else {
         Some(measure::combine(&args.cockpit)?)
     };
-    let r = compute(run.db(), run.id().as_str(), cockpit.as_ref())?;
+    let mut r = compute(run.db(), run.id().as_str(), cockpit.as_ref())?;
+    if args.per_worker {
+        let db = run.db();
+        let id = run.id().as_str();
+        r.per_worker = Some(per_worker(&db.workers(id)?, &db.tool_calls(id)?));
+    }
     if args.json {
         let text = serde_json::to_string_pretty(&r).map_err(json("report"))?;
         writeln!(out, "{text}").map_err(io("stdout"))?;
     } else {
-        for line in r.lines() {
+        let workers = r.per_worker.iter().flatten().map(PerWorker::text);
+        for line in r
+            .lines()
+            .into_iter()
+            .chain(r.thresholds.lines())
+            .chain(workers)
+        {
             writeln!(out, "{line}").map_err(io("stdout"))?;
         }
     }
@@ -278,6 +477,33 @@ mod tests {
         assert_eq!(r.lines()[0], "score: ");
         assert_eq!(r.lines()[16], "cockpit_tokens: 0 (no --cockpit)");
         assert_eq!(r.lines()[17], "workers: 0 (none)");
+        assert_eq!(r.lines()[21], "followup_reads: 0 of 0 ctx calls (0%)");
+    }
+
+    #[test]
+    fn the_threshold_lines_compare_with_the_section_14_constants() {
+        assert_eq!(
+            Thresholds::of(0.5, 0.05, 0.267).lines(),
+            vec![
+                "followup threshold 30%: over",
+                "ctx_share threshold 10%: under",
+                "repeat_rate vs 26.7%: not lower",
+            ]
+        );
+        assert_eq!(
+            Thresholds::of(0.3, 0.1, 0.2).lines(),
+            vec![
+                "followup threshold 30%: ok",
+                "ctx_share threshold 10%: ok",
+                "repeat_rate vs 26.7%: lower",
+            ]
+        );
+        let f = Followups {
+            count: 1,
+            ctx_calls: 3,
+            share: ratio(1, 3),
+        };
+        assert_eq!(f.text(), "1 of 3 ctx calls (33%)");
     }
 
     #[test]

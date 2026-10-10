@@ -88,7 +88,8 @@ CREATE TABLE IF NOT EXISTS tool_calls (
   repeat_in_run    INTEGER NOT NULL DEFAULT 0,
   ts               TEXT,
   label_followup   INTEGER,
-  label_expanded   INTEGER
+  label_expanded   INTEGER,
+  pack_doc         INTEGER
 );
 ";
 
@@ -149,6 +150,9 @@ pub struct WorkerRow {
     pub checkpoint: Option<u32>,
     /// The first assistant message's context (FR-8 `start_context`).
     pub start_context: Option<i64>,
+    /// The repo-relative files the worker's pack held (slice 13), from the
+    /// pack header; empty for a worker spawned before slice 13.
+    pub pack_files: Vec<String>,
 }
 
 /// One `tool_calls` row to insert (FR-8).
@@ -164,6 +168,12 @@ pub struct ToolCallInsert<'a> {
     pub repeat_in_worker: bool,
     pub repeat_in_run: bool,
     pub ts: Option<&'a str>,
+    /// On a `ctx-*` row: a named file read within the next two calls.
+    pub label_followup: Option<bool>,
+    /// On a `read` or `ctx-refs` row: the same target widened within five.
+    pub label_expanded: Option<bool>,
+    /// A `read`/`bash-cat` of a file the worker's pack held (slice 13).
+    pub pack_doc: bool,
 }
 
 /// One `tool_calls` row, as tests and the report read it back.
@@ -180,6 +190,10 @@ pub struct ToolCallRow {
     pub repeat_in_worker: bool,
     pub repeat_in_run: bool,
     pub ts: Option<String>,
+    pub label_followup: Option<bool>,
+    pub label_expanded: Option<bool>,
+    /// Null (a row from before slice 13) reads as false.
+    pub pack_doc: bool,
 }
 
 /// One `gates` row to insert (FR-4, FR-8).
@@ -244,6 +258,8 @@ impl Db {
             ("gates", "attempt", "INTEGER"),
             ("workers", "start_context", "INTEGER"),
             ("runs", "pr_url", "TEXT"),
+            ("workers", "pack_files", "TEXT"),
+            ("tool_calls", "pack_doc", "INTEGER"),
         ] {
             if !self.has_column(table, column)? {
                 self.conn.execute(
@@ -445,6 +461,34 @@ impl Db {
         Ok(())
     }
 
+    /// The files the worker's pack holds, as JSON (slice 13): what
+    /// `pack_doc_read_chars` counts reads of.
+    pub fn set_worker_pack_files(&self, id: i64, files: &[String]) -> Result<()> {
+        let text = serde_json::to_string(files)
+            .map_err(|e| crate::Error::Msg(format!("pack files as JSON: {e}")))?;
+        self.conn.execute(
+            "UPDATE workers SET pack_files = ?2 WHERE id = ?1",
+            params![id, text],
+        )?;
+        Ok(())
+    }
+
+    /// The files the worker's pack held; empty when none was recorded.
+    pub fn worker_pack_files(&self, id: i64) -> Result<Vec<String>> {
+        let text: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT pack_files FROM workers WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+        Ok(text
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default())
+    }
+
     /// The slice's commit on the worker that built it (FR-5).
     pub fn set_worker_commit(&self, id: i64, sha: &str) -> Result<()> {
         self.conn.execute(
@@ -459,7 +503,8 @@ impl Db {
         let mut stmt = self.conn.prepare(
             "SELECT id, run_id, role, slice, session_id, model, effort, input, cache_write, cache_read,
                     output, thinking, cost_usd, num_turns, duration_ms, terminal_reason, outcome,
-                    peak_context, started_at, ended_at, commit_sha, checkpoint, start_context
+                    peak_context, started_at, ended_at, commit_sha, checkpoint, start_context,
+                    pack_files
              FROM workers WHERE run_id = ?1 ORDER BY id",
         )?;
         let rows = stmt.query_map([run_id], |r| {
@@ -487,6 +532,10 @@ impl Db {
                 commit_sha: r.get(20)?,
                 checkpoint: r.get::<_, Option<i64>>(21)?.map(|n| n as u32),
                 start_context: r.get(22)?,
+                pack_files: r
+                    .get::<_, Option<String>>(23)?
+                    .and_then(|t| serde_json::from_str(&t).ok())
+                    .unwrap_or_default(),
             })
         })?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
@@ -546,8 +595,9 @@ impl Db {
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO tool_calls (run_id, worker_id, seq, tool, kind, result_chars, target_hash,
-                                         repeat_in_worker, repeat_in_run, ts)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                                         repeat_in_worker, repeat_in_run, ts, label_followup,
+                                         label_expanded, pack_doc)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             )?;
             for t in rows {
                 stmt.execute(params![
@@ -561,6 +611,9 @@ impl Db {
                     t.repeat_in_worker as i64,
                     t.repeat_in_run as i64,
                     t.ts,
+                    t.label_followup.map(i64::from),
+                    t.label_expanded.map(i64::from),
+                    t.pack_doc as i64,
                 ])?;
             }
         }
@@ -572,7 +625,7 @@ impl Db {
     pub fn tool_calls(&self, run_id: &str) -> Result<Vec<ToolCallRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, run_id, worker_id, seq, tool, kind, result_chars, target_hash,
-                    repeat_in_worker, repeat_in_run, ts
+                    repeat_in_worker, repeat_in_run, ts, label_followup, label_expanded, pack_doc
              FROM tool_calls WHERE run_id = ?1 ORDER BY id",
         )?;
         let rows = stmt.query_map([run_id], |r| {
@@ -588,6 +641,9 @@ impl Db {
                 repeat_in_worker: r.get::<_, i64>(8)? != 0,
                 repeat_in_run: r.get::<_, i64>(9)? != 0,
                 ts: r.get(10)?,
+                label_followup: r.get::<_, Option<i64>>(11)?.map(|n| n != 0),
+                label_expanded: r.get::<_, Option<i64>>(12)?.map(|n| n != 0),
+                pack_doc: r.get::<_, Option<i64>>(13)?.is_some_and(|n| n != 0),
             })
         })?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)

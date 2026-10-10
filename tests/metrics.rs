@@ -1,7 +1,9 @@
 //! FR-8 (PRD §10) through the binary: after a fixture run every tool call is
 //! a `tool_calls` row with its kind, every worker inner-loop run a `gates`
 //! row with source `worker`, and `factory report <run>` prints the retro
-//! keys then the run keys, with `--json` and `--cockpit`.
+//! keys then the run keys, with `--json` and `--cockpit`. Slice 13: the
+//! `ctx-*` kinds and their follow-up labels, `pack_doc`, the two new keys,
+//! the three threshold lines and `--per-worker`.
 #[path = "harness/mod.rs"]
 mod harness;
 
@@ -16,7 +18,7 @@ use serde_json::{Value, json};
 
 const BIN: &str = env!("CARGO_BIN_EXE_factory");
 
-const KEYS: [&str; 21] = [
+const KEYS: [&str; 23] = [
     "score",
     "gate_runs",
     "gate_red",
@@ -38,6 +40,21 @@ const KEYS: [&str; 21] = [
     "lookup_chars",
     "ctx_share",
     "repeat_rate",
+    "followup_reads",
+    "pack_doc_read_chars",
+];
+
+const EXTRA_KEYS: [&str; 4] = [
+    "worker_gate_runs",
+    "worker_gate_red",
+    "cockpit_peak_context",
+    "lookup_share_chars",
+];
+
+const THRESHOLDS: [&str; 3] = [
+    "followup threshold 30%",
+    "ctx_share threshold 10%",
+    "repeat_rate vs 26.7%",
 ];
 
 fn factory(fx: &Fixture, args: &[&str]) -> Output {
@@ -189,6 +206,35 @@ fn every_tool_call_is_a_row_with_its_kind_and_repeat_flags() {
         workers.iter().all(|w| w.start_context.is_some()),
         "{workers:?}"
     );
+
+    // Slice 13: every read here is of a file the worker's pack held (the
+    // slice and prd.md for a build, prd.md for the polish worker); no ctx
+    // call, so no follow-up label; a read carries `label_expanded`.
+    for r in &rows {
+        assert_eq!(r.pack_doc, r.kind == "read", "{r:?}");
+        assert_eq!(r.label_followup, None, "{r:?}");
+        assert_eq!(r.label_expanded.is_some(), r.kind == "read", "{r:?}");
+    }
+    assert!(
+        workers.iter().all(|w| !w.pack_files.is_empty()),
+        "{workers:?}"
+    );
+    // Every role gets the settings file and FACTORY_PACK (slice 13 task 2).
+    for call in fx.calls() {
+        let argv: Vec<&str> = call["argv"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        let flag = |name: &str| argv[argv.iter().position(|a| *a == name).unwrap() + 1];
+        assert_eq!(call["settings"], flag("--settings"), "{argv:?}");
+        assert!(Path::new(flag("--settings")).is_file());
+        assert_eq!(
+            call["env"]["FACTORY_PACK"],
+            flag("--append-system-prompt-file")
+        );
+    }
 }
 
 #[test]
@@ -230,15 +276,9 @@ fn report_prints_the_retro_keys_then_the_run_keys() {
     let text = stdout(&out);
     let lines: Vec<&str> = text.lines().collect();
     let keys: Vec<&str> = lines.iter().map(|l| key(l)).collect();
-    assert_eq!(&keys[..21], &KEYS);
-    assert_eq!(
-        &keys[21..],
-        [
-            "worker_gate_runs",
-            "worker_gate_red",
-            "cockpit_peak_context"
-        ]
-    );
+    assert_eq!(&keys[..23], &KEYS);
+    assert_eq!(&keys[23..27], &EXTRA_KEYS);
+    assert_eq!(&keys[27..], &THRESHOLDS);
     assert_eq!(lines[0], "score: ");
     assert_eq!(value(&lines, "slices"), "3");
     assert_eq!(value(&lines, "checkpoints"), "1");
@@ -317,13 +357,25 @@ fn report_prints_the_retro_keys_then_the_run_keys() {
         value(&lines, "lookup_chars").parse::<u64>().unwrap(),
         lookup
     );
-    let share: f64 = value(&lines, "ctx_share").parse().unwrap();
+    // Slice 08's byte share is `lookup_share_chars` now; `ctx_share` counts
+    // ctx calls among lookups, none in this run.
+    let share: f64 = value(&lines, "lookup_share_chars").parse().unwrap();
     assert!((0.0..=1.0).contains(&share), "{share}");
     assert!(
         (share - lookup as f64 / all as f64).abs() < 0.001,
         "{share}"
     );
+    assert_eq!(value(&lines, "ctx_share"), "0.000");
     assert_eq!(value(&lines, "repeat_rate"), "0.000");
+    assert_eq!(value(&lines, "followup_reads"), "0 of 0 ctx calls (0%)");
+    // Every read was of a held file.
+    assert_eq!(
+        value(&lines, "pack_doc_read_chars").parse::<u64>().unwrap(),
+        lookup
+    );
+    assert_eq!(value(&lines, "followup threshold 30%"), "ok");
+    assert_eq!(value(&lines, "ctx_share threshold 10%"), "under");
+    assert_eq!(value(&lines, "repeat_rate vs 26.7%"), "lower");
     let minutes: f64 = value(&lines, "build_minutes").parse().unwrap();
     assert!(minutes >= 0.0);
 }
@@ -353,16 +405,12 @@ fn report_json_round_trips_and_cockpit_measures_the_transcript() {
         v["weighted_tokens"].as_u64().unwrap(),
         value(&lines, "weighted_tokens").parse::<u64>().unwrap()
     );
-    for k in KEYS.iter().chain(
-        [
-            "worker_gate_runs",
-            "worker_gate_red",
-            "cockpit_peak_context",
-        ]
-        .iter(),
-    ) {
+    for k in KEYS.iter().chain(EXTRA_KEYS.iter()) {
         assert!(v.get(k).is_some(), "{k} missing from {v}");
     }
+    assert_eq!(v["followup_reads"]["ctx_calls"], 0);
+    assert_eq!(v["thresholds"]["ctx_share"], "under");
+    assert!(v.get("per_worker").is_none(), "only with --per-worker");
 
     // The fixture transcript, pinned against `measure.py --retro`
     // (src/measure.rs): out 2524, cache read 181841, peak 58351; with input
@@ -391,4 +439,129 @@ fn report_json_round_trips_and_cockpit_measures_the_transcript() {
     let out = factory(&fx, &["report", &id, "--cockpit", "/nonexistent.jsonl"]);
     assert_ne!(out.status.code(), Some(0));
     assert!(String::from_utf8_lossy(&out.stderr).contains("nonexistent"));
+}
+
+/// Slice 13 tasks 4 and 5: a build whose stream carries two `factory ctx`
+/// calls, one followed by a read of the file it named.
+#[test]
+fn ctx_calls_are_labelled_and_the_report_reads_the_reversal_rule() {
+    let fx = Fixture::with_index("metrics-ctx", &[("checkpoint_every", "10")]);
+    fx.chain();
+    fx.write_plan(&[
+        json!({"outcome": "done", "ctx": true}),
+        json!({"outcome": "done"}),
+        json!({"outcome": "done"}),
+        json!({"outcome": "checkpoint"}),
+    ]);
+    let out = factory(&fx, &["run", "001", "--budget", "70000000", "--foreground"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let id = only_run_id(&fx);
+    let db = db(&fx);
+    let workers = db.workers(&id).unwrap();
+    let rows = db.tool_calls(&id).unwrap();
+    let first = workers.iter().find(|w| w.slice == Some(1)).unwrap();
+    let mine: Vec<&ToolCallRow> = rows.iter().filter(|r| r.worker_id == first.id).collect();
+    assert_eq!(
+        mine.iter().map(|r| r.kind.as_str()).collect::<Vec<_>>(),
+        [
+            "read",
+            "read",
+            "ctx-refs",
+            "read",
+            "ctx-outline",
+            "edit",
+            "edit",
+            "run-gate",
+            "edit"
+        ]
+    );
+    let labels: Vec<(Option<bool>, Option<bool>, bool)> = mine
+        .iter()
+        .map(|r| (r.label_followup, r.label_expanded, r.pack_doc))
+        .collect();
+    assert_eq!(
+        labels,
+        [
+            (None, Some(false), true),        // Read prd.md: held
+            (None, Some(false), true),        // Read the slice: held
+            (Some(true), Some(false), false), // ctx refs, then Read src/lib.txt
+            (None, Some(false), false),       // Read src/lib.txt: not held
+            (Some(false), None, false),       // ctx outline, then two Writes
+            (None, None, false),
+            (None, None, false),
+            (None, None, false),
+            (None, None, false),
+        ]
+    );
+
+    let out = factory(&fx, &["report", &id, "--per-worker"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = stdout(&out);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(value(&lines, "followup_reads"), "1 of 2 ctx calls (50%)");
+    assert_eq!(value(&lines, "followup threshold 30%"), "over");
+    // Lookups: two reads per build, the extra read and the two ctx calls,
+    // the polish worker's read of prd.md: 2 of 10.
+    assert_eq!(value(&lines, "ctx_share"), "0.200");
+    assert_eq!(value(&lines, "ctx_share threshold 10%"), "ok");
+    assert_eq!(value(&lines, "repeat_rate vs 26.7%"), "lower");
+    let held: u64 = rows
+        .iter()
+        .filter(|r| r.pack_doc)
+        .map(|r| r.result_chars.unwrap() as u64)
+        .sum();
+    assert!(held > 0);
+    assert_eq!(
+        value(&lines, "pack_doc_read_chars").parse::<u64>().unwrap(),
+        held
+    );
+    // One line per worker after the threshold lines, in spawn order.
+    let per: Vec<&str> = lines
+        .iter()
+        .copied()
+        .filter(|l| l.starts_with("worker "))
+        .collect();
+    assert_eq!(per.len(), workers.len(), "{text}");
+    let sid: String = first
+        .session_id
+        .as_deref()
+        .unwrap()
+        .chars()
+        .take(8)
+        .collect();
+    assert_eq!(
+        per[0],
+        format!(
+            "worker {} build slice 01 ({sid}): lookups 5, ctx_share 0.400, repeat_rate 0.000",
+            first.id
+        )
+    );
+    assert!(per[1].contains(" build slice 02 "), "{}", per[1]);
+    assert!(
+        per[1].ends_with("lookups 2, ctx_share 0.000, repeat_rate 0.000"),
+        "{}",
+        per[1]
+    );
+    assert!(text.find("repeat_rate vs 26.7%").unwrap() < text.find(per[0]).unwrap());
+
+    let out = factory(&fx, &["report", &id, "--json", "--per-worker"]);
+    let v: Value = serde_json::from_str(&stdout(&out)).expect("one JSON object");
+    assert_eq!(v["followup_reads"]["count"], 1);
+    assert_eq!(v["followup_reads"]["ctx_calls"], 2);
+    assert_eq!(v["followup_reads"]["share"], 0.5);
+    assert_eq!(v["pack_doc_read_chars"], held);
+    assert!(v["lookup_share_chars"].is_number());
+    assert_eq!(v["thresholds"]["followup"], "over");
+    assert_eq!(v["thresholds"]["repeat_rate"], "lower");
+    assert_eq!(v["per_worker"][0]["ctx_share"], 0.4);
+    assert_eq!(v["per_worker"][0]["ctx_calls"], 2);
+    assert_eq!(
+        v["per_worker"].as_array().map(Vec::len),
+        Some(workers.len())
+    );
 }

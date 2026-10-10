@@ -6,9 +6,16 @@
 //! the green transcript, the covered slices and their QA rows. All prose
 //! assets are this repo's own copies under `assets/`, so a pack never
 //! depends on what is installed under the owner's home (§19).
+//!
+//! Slice 13 (§14 FR-12 decision 3) adds `# Outline` and `# Lookup` to a
+//! slice's pack, after the PRD sections: the `factory ctx outline` of every
+//! file the slice's `Current code / environment` cites and the `def` of
+//! every symbol it cites, run in-process, and the three verbs with their
+//! one rule.
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::ctx::{def, outline, print, walk};
 use crate::docs::{Docs, Status};
 use crate::error::io;
 use crate::{Error, Result};
@@ -21,6 +28,13 @@ pub const CONTRACT_CI_FIX: &str = include_str!("../assets/contract-ci-fix.md");
 /// The PR body shape `/deliver` fills (`deliver/pr-body.md`), this repo's copy.
 pub const PR_BODY: &str = include_str!("../assets/pr-body.md");
 pub const AUTONOMY: &str = include_str!("../assets/autonomy.md");
+/// The `# Lookup` section: the three `ctx` verbs, an example each, the rule.
+pub const LOOKUP: &str = include_str!("../assets/lookup.md");
+
+/// The most characters of outlines `# Outline` carries (§14 decision 3).
+pub const OUTLINE_CAP: usize = 8000;
+/// The most characters of `def` answers `# Outline` carries.
+pub const DEF_CAP: usize = 6000;
 
 /// The most lines of a gate transcript a pack carries.
 pub const TAIL_LINES: usize = 200;
@@ -107,6 +121,12 @@ impl Pack {
         {
             files.push(b.source.clone());
         }
+        let recon = Recon::of(repo, &slice_text)?;
+        for f in &recon.outlined {
+            if !files.contains(f) {
+                files.push(f.clone());
+            }
+        }
         let contract = CONTRACT
             .replace("{NNN}", &feature)
             .replace("{NN}", &nn)
@@ -135,6 +155,10 @@ impl Pack {
             }
         ));
         text.push_str(sections.trim_end());
+        text.push_str("\n\n# Outline\n\n");
+        text.push_str(recon.text.trim_end());
+        text.push_str("\n\n# Lookup\n\n");
+        text.push_str(LOOKUP.trim_end());
         text.push_str("\n\n# Contract\n\n");
         text.push_str(contract.trim_end());
         text.push_str("\n\n# Autonomy\n\n");
@@ -536,6 +560,197 @@ pub fn qa_rows(prd: &str, named: &[String]) -> String {
     out.join("\n")
 }
 
+/// A slice pack's `# Outline` body and the files it outlined (§14 FR-12
+/// decision 3).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Recon {
+    pub text: String,
+    /// Repo-relative, in print order: the header line's additions.
+    pub outlined: Vec<String>,
+}
+
+impl Recon {
+    /// The `def` of each symbol the slice's `Current code / environment`
+    /// cites, then the outline of each file it cites and of each file a
+    /// printed `def` hit lives in; [`DEF_CAP`] and [`OUTLINE_CAP`] with a
+    /// trailer when cut. A planned file (absent) and a `def` with no hit
+    /// are skipped; so is a file in no outlined language.
+    pub fn of(repo: &Path, slice_text: &str) -> Result<Recon> {
+        let (paths, symbols) = cited_in(current_code(slice_text));
+        let opts = walk::WalkOpts { vendor: false };
+        let mut defs = String::new();
+        let mut def_files: Vec<String> = Vec::new();
+        for name in &symbols {
+            if defs.len() >= DEF_CAP {
+                break;
+            }
+            let found = def::find(repo, name, None, &opts)?;
+            if found.hits.is_empty() {
+                continue;
+            }
+            for h in &found.hits {
+                if !def_files.contains(&h.path) {
+                    def_files.push(h.path.clone());
+                }
+            }
+            defs.push_str(&format!(
+                "<!-- factory ctx def {name} -->\n\n{}\n",
+                print::defs(name, &found, true).trim_end()
+            ));
+        }
+        let (defs, defs_cut) = cap(&defs, DEF_CAP, "factory ctx def <symbol>");
+        if defs_cut {
+            def_files.retain(|f| defs.contains(&format!("{f}:")));
+        }
+
+        let mut outlines = String::new();
+        let mut outlined: Vec<String> = Vec::new();
+        for p in paths.iter().chain(&def_files) {
+            if outlined.contains(p) || !repo.join(p).is_file() {
+                continue;
+            }
+            let Ok(listing) = outline::list(repo, &[PathBuf::from(p)]) else {
+                continue;
+            };
+            if listing.files.is_empty() {
+                continue;
+            }
+            let found = outline::find(repo, &listing, 2);
+            if !outlines.is_empty() {
+                outlines.push('\n');
+            }
+            outlines.push_str(&print::outline(&found));
+            outlined.push(p.clone());
+        }
+        let (outlines, outlines_cut) = cap(&outlines, OUTLINE_CAP, "factory ctx outline <path>");
+        if outlines_cut {
+            outlined.retain(|f| outlines.contains(&format!("== {f} ==")));
+        }
+
+        let mut text = String::new();
+        if outlined.is_empty() && defs.is_empty() {
+            text.push_str(
+                "<!-- the slice's Current code cites no existing source file and no defined symbol -->\n",
+            );
+        }
+        if !outlined.is_empty() {
+            text.push_str(&format!(
+                "<!-- factory ctx outline {} -->\n\n{}\n",
+                outlined.join(" "),
+                outlines.trim_end()
+            ));
+        }
+        if !defs.is_empty() {
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(&defs);
+        }
+        Ok(Recon { text, outlined })
+    }
+}
+
+/// `text` whole when it fits in `max` bytes; else cut at the last line
+/// that fits, with a trailer saying how to get the rest.
+fn cap(text: &str, max: usize, verb: &str) -> (String, bool) {
+    if text.len() <= max {
+        return (text.to_string(), false);
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let keep = text[..end].rfind('\n').map_or(0, |i| i + 1);
+    (
+        format!(
+            "{}[cut at {max} chars: run `{verb}` for the rest]\n",
+            &text[..keep]
+        ),
+        true,
+    )
+}
+
+/// The slice's `## Current code / environment` section, to the next `## `.
+pub fn current_code(slice_text: &str) -> &str {
+    let mut start = None;
+    let mut offset = 0;
+    for line in slice_text.split_inclusive('\n') {
+        if let Some(s) = start
+            && line.starts_with("## ")
+        {
+            return &slice_text[s..offset];
+        }
+        if start.is_none() && line.starts_with("## Current code") {
+            start = Some(offset + line.len());
+        }
+        offset += line.len();
+    }
+    start.map_or("", |s| &slice_text[s..])
+}
+
+/// The repo-relative paths (`` `src/a.rs` ``, `` `src/a.rs:12` ``,
+/// `` `src/a.rs:12-40` ``) and the symbol names (`` `name()` ``,
+/// `` `Type::name` ``, by their last segment) backticked in `text`, in
+/// order, once each. Absolute, home, variable and `..` paths are not the
+/// repo's and are left out.
+pub fn cited_in(text: &str) -> (Vec<String>, Vec<String>) {
+    let mut paths: Vec<String> = Vec::new();
+    let mut symbols: Vec<String> = Vec::new();
+    for span in text.split('`').skip(1).step_by(2) {
+        let span = span.trim();
+        if let Some(p) = cited_path(span) {
+            if !paths.contains(&p) {
+                paths.push(p);
+            }
+        } else if let Some(s) = cited_symbol(span)
+            && !symbols.contains(&s)
+        {
+            symbols.push(s);
+        }
+    }
+    (paths, symbols)
+}
+
+fn cited_path(span: &str) -> Option<String> {
+    let path = match span.rsplit_once(':') {
+        Some((p, lines))
+            if !lines.is_empty()
+                && lines
+                    .split('-')
+                    .all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())) =>
+        {
+            p
+        }
+        _ => span,
+    };
+    let path = path.strip_prefix("./").unwrap_or(path);
+    let name = path.rsplit('/').next()?;
+    let ok = !path.is_empty()
+        && !path.starts_with(['/', '~', '$'])
+        && !path.split('/').any(|seg| seg.is_empty() || seg == "..")
+        && path
+            .chars()
+            .all(|c| c.is_alphanumeric() || "/._-@+".contains(c))
+        && name.rsplit_once('.').is_some_and(|(stem, ext)| {
+            !stem.is_empty() && !ext.is_empty() && ext.chars().all(|c| c.is_ascii_alphanumeric())
+        });
+    ok.then(|| path.to_string())
+}
+
+fn cited_symbol(span: &str) -> Option<String> {
+    let call = span.strip_suffix("()");
+    let body = call.unwrap_or(span);
+    let segs: Vec<&str> = body.split("::").collect();
+    let ident = |s: &str| {
+        s.starts_with(|c: char| c.is_alphabetic() || c == '_')
+            && s.chars().all(|c| c.is_alphanumeric() || c == '_')
+    };
+    if !segs.iter().all(|s| ident(s)) || (call.is_none() && segs.len() < 2) {
+        return None;
+    }
+    segs.last().map(|s| s.to_string())
+}
+
 fn read(path: &Path) -> Result<String> {
     fs::read_to_string(path).map_err(io(format!("read {}", path.display())))
 }
@@ -594,6 +809,35 @@ mod tests {
         assert_eq!(cited_sections(text), vec![4, 3]);
         assert_eq!(cited_sections("**Source**: §_(n)_.\n"), Vec::<u32>::new());
         assert_eq!(cited_sections("no source line\n"), Vec::<u32>::new());
+    }
+
+    #[test]
+    fn current_code_cites_paths_and_symbols_once_each() {
+        let slice = "# S\n\n## Current code / environment\n\n\
+            - `src/a.rs:12` and `src/a.rs:3-9`, `./lib/b.php`, `Cargo.toml`\n\
+            - `~/.claude/settings.json:51`, `/etc/x.conf`, `$HOME/a.sh`, `../up.rs`\n\
+            - `helper()`, `Pack::for_slice`, `Pack::for_slice()`, `a::b::c`\n\
+            - `file:line`, `name`, `--settings '<json>'`, `x.y()`, `` `src/c.go` ``\n\n\
+            ## Tasks\n\n`src/not_here.rs` and `later()`\n";
+        let (paths, symbols) = cited_in(current_code(slice));
+        assert_eq!(
+            paths,
+            vec!["src/a.rs", "lib/b.php", "Cargo.toml", "src/c.go"]
+        );
+        assert_eq!(symbols, vec!["helper", "for_slice", "c"]);
+        assert_eq!(current_code("# no such section\n"), "");
+    }
+
+    #[test]
+    fn cap_cuts_at_a_line_with_a_trailer() {
+        let text = "aaaa\nbbbb\ncccc\n";
+        assert_eq!(cap(text, 100, "v"), (text.to_string(), false));
+        let (cut, was) = cap(text, 12, "factory ctx outline <path>");
+        assert!(was);
+        assert_eq!(
+            cut,
+            "aaaa\nbbbb\n[cut at 12 chars: run `factory ctx outline <path>` for the rest]\n"
+        );
     }
 
     #[test]

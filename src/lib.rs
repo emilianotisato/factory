@@ -31,6 +31,7 @@ pub mod paths;
 pub mod quota;
 pub mod run;
 pub mod scheduler;
+pub mod shell;
 pub mod stream;
 pub mod worker;
 

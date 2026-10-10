@@ -10,6 +10,13 @@
 //! started from inside a Claude Code session would otherwise hand its workers
 //! the nested-session guard. It does get its lane (FR-3): `FACTORY_LANE=N`
 //! and whatever `env` the lane file declares.
+//!
+//! Every worker also gets `--settings <file>` (slice 13, §4 FR-2 as
+//! corrected 2026-10-09): the two permission deny rules and the PreToolUse
+//! hook `<this binary> hook`, written per worker to
+//! `runs/<id>/workers/<session>.settings.json` — a file the driver owns, so
+//! nothing is installed under the owner's `~/.claude/` or the project's
+//! `.claude/`. `FACTORY_PACK=<pack>` tells the hook which files the pack holds.
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::process::ExitStatusExt;
@@ -26,6 +33,47 @@ use crate::stream::{Collector, Summary};
 use crate::{Error, Result};
 
 pub const DIR: &str = "workers";
+
+/// The permission deny rules every worker carries (§4 FR-2): no merge, no
+/// force push, whatever the project's own settings say.
+pub const DENY_RULES: [&str; 3] = [
+    "Bash(gh pr merge*)",
+    "Bash(git push --force*)",
+    "Bash(git push -f*)",
+];
+
+/// The hook's command line: `exe` (shell-quoted only when it must be) and
+/// `hook`, so it ends in `factory hook` for an installed binary.
+pub fn hook_command(exe: &Path) -> String {
+    let s = exe.to_string_lossy();
+    let plain = s
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "/._-+:@%,".contains(c));
+    if plain && !s.is_empty() {
+        format!("{s} hook")
+    } else {
+        format!("'{}' hook", s.replace('\'', "'\\''"))
+    }
+}
+
+/// The `--settings` document: [`DENY_RULES`] and the PreToolUse hook on
+/// `Bash` and `Read` (slice 13 task 2).
+pub fn settings(exe: &Path) -> serde_json::Value {
+    serde_json::json!({
+        "permissions": { "deny": DENY_RULES },
+        "hooks": {
+            "PreToolUse": [{
+                "matcher": "Bash|Read",
+                "hooks": [{ "type": "command", "command": hook_command(exe), "timeout": 5 }]
+            }]
+        }
+    })
+}
+
+/// `runs/<id>/workers/<session>.settings.json`.
+pub fn settings_path(run_dir: &Path, session_id: &str) -> PathBuf {
+    dir(run_dir).join(format!("{session_id}.settings.json"))
+}
 
 /// What a worker is spawned for: a slice (FR-2), or a checkpoint's red gate
 /// or green transcript (FR-4). The role is the `workers.role` column and
@@ -135,6 +183,12 @@ impl Worker {
             File::create(&stream_path).map_err(io(format!("create {}", stream_path.display())))?;
         let stderr_file =
             File::create(&stderr_path).map_err(io(format!("create {}", stderr_path.display())))?;
+        let exe = std::env::current_exe().map_err(io("locate the factory binary"))?;
+        let settings_file = settings_path(run.dir(), &session_id);
+        fs::write(&settings_file, format!("{:#}\n", settings(&exe)))
+            .map_err(io(format!("write {}", settings_file.display())))?;
+        let pack_path = std::path::absolute(&pack.path)
+            .map_err(io(format!("resolve {}", pack.path.display())))?;
 
         let mut cmd = Command::new("claude");
         cmd.arg("-p")
@@ -146,6 +200,8 @@ impl Worker {
             .args(["--session-id", &session_id])
             .args(["--model", &cfg.model])
             .args(["--effort", &cfg.effort])
+            .arg("--settings")
+            .arg(&settings_file)
             .current_dir(&run.state().repo)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -159,6 +215,7 @@ impl Worker {
         for (k, v) in env {
             cmd.env(k, v);
         }
+        cmd.env(crate::cli::hook::PACK_ENV, &pack_path);
         let mut child = cmd.spawn().map_err(|e| Error::Tool {
             cmd: format!("claude -p … --session-id {session_id}"),
             detail: format!("could not start claude: {e}"),
@@ -181,6 +238,7 @@ impl Worker {
             &cfg.effort,
             &started_at,
         )?;
+        run.db().set_worker_pack_files(row_id, &pack.files)?;
         run.add_worker(WorkerRef {
             slice,
             checkpoint: job.checkpoint(),

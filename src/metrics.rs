@@ -11,7 +11,15 @@
 //! `bash-grep`, `sed` → `bash-sed`, `cat`, `head`, `tail` → `bash-cat`, a
 //! command containing the feature's gate or inner command → `run-gate`,
 //! else `run`. Any other tool is `other`.
+//!
+//! Slice 13 (§14 FR-12 decision 4) adds `ctx-def`, `ctx-refs` and
+//! `ctx-outline` for `factory ctx <verb>`, ahead of the rest; the two labels
+//! (`label_followup`: a file the ctx answer named is read within the next two
+//! calls; `label_expanded`: the same target read with a wider `limit`, or
+//! `refs` re-run with a larger `--max`, within five); and `pack_doc`, a read
+//! of a file the worker's pack held (`pack_doc_read_chars`, §4).
 use std::collections::HashSet;
+use std::path::Path;
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -21,6 +29,7 @@ use crate::clock;
 use crate::db::{GateInsert, ToolCallInsert};
 use crate::measure::epoch_secs;
 use crate::run::{GateCmds, Run};
+use crate::shell;
 use crate::stream::{Summary, ToolUse};
 
 /// What a tool call did, for the `kind` column and the report's lookup set.
@@ -32,6 +41,9 @@ pub enum Kind {
     BashGrep,
     BashSed,
     BashCat,
+    CtxDef,
+    CtxRefs,
+    CtxOutline,
     RunGate,
     Run,
     Other,
@@ -46,6 +58,9 @@ impl Kind {
             Kind::BashGrep => "bash-grep",
             Kind::BashSed => "bash-sed",
             Kind::BashCat => "bash-cat",
+            Kind::CtxDef => "ctx-def",
+            Kind::CtxRefs => "ctx-refs",
+            Kind::CtxOutline => "ctx-outline",
             Kind::RunGate => "run-gate",
             Kind::Run => "run",
             Kind::Other => "other",
@@ -57,13 +72,50 @@ impl Kind {
     pub fn is_lookup(self) -> bool {
         matches!(
             self,
-            Kind::Read | Kind::Grep | Kind::BashGrep | Kind::BashSed | Kind::BashCat
+            Kind::Read
+                | Kind::Grep
+                | Kind::BashGrep
+                | Kind::BashSed
+                | Kind::BashCat
+                | Kind::CtxDef
+                | Kind::CtxRefs
+                | Kind::CtxOutline
         )
+    }
+
+    pub fn is_ctx(self) -> bool {
+        matches!(self, Kind::CtxDef | Kind::CtxRefs | Kind::CtxOutline)
     }
 }
 
 /// The lookup kinds as the report's SQL names them.
-pub const LOOKUP_KINDS: [&str; 5] = ["read", "grep", "bash-grep", "bash-sed", "bash-cat"];
+pub const LOOKUP_KINDS: [&str; 8] = [
+    "read",
+    "grep",
+    "bash-grep",
+    "bash-sed",
+    "bash-cat",
+    "ctx-def",
+    "ctx-refs",
+    "ctx-outline",
+];
+
+/// The `ctx-*` kinds (slice 13).
+pub const CTX_KINDS: [&str; 3] = ["ctx-def", "ctx-refs", "ctx-outline"];
+
+/// `factory ctx def|refs|outline …` as the first command, by its verb.
+pub fn ctx_kind(command: &str) -> Option<Kind> {
+    let (words, _) = shell::first_command(command);
+    if words.len() < 3 || shell::program(&words[0]) != "factory" || words[1] != "ctx" {
+        return None;
+    }
+    match words[2].as_str() {
+        "def" => Some(Kind::CtxDef),
+        "refs" => Some(Kind::CtxRefs),
+        "outline" => Some(Kind::CtxOutline),
+        _ => None,
+    }
+}
 
 /// The kind of one call. `gate` is the feature's gate pair when the driver
 /// knows it; without it no `Bash` call is a gate run.
@@ -80,6 +132,9 @@ pub fn classify(t: &ToolUse, gate: Option<&GateCmds>) -> Kind {
 /// A `Bash` call's kind from its command, in §10's order: the lookup words
 /// first, then the gate strings, else `run`.
 pub fn bash_kind(command: &str, gate: Option<&GateCmds>) -> Kind {
+    if let Some(k) = ctx_kind(command) {
+        return k;
+    }
     match first_word(command).as_deref() {
         Some("grep" | "rg" | "egrep" | "fgrep") => return Kind::BashGrep,
         Some("sed") => return Kind::BashSed,
@@ -216,6 +271,8 @@ pub struct CallRow {
     pub repeat_in_worker: bool,
     pub repeat_in_run: bool,
     pub ts: Option<String>,
+    pub label_followup: Option<bool>,
+    pub label_expanded: Option<bool>,
 }
 
 pub fn call_rows(
@@ -224,6 +281,8 @@ pub fn call_rows(
     seen_run: &mut HashSet<String>,
 ) -> Vec<CallRow> {
     let mut seen_worker: HashSet<String> = HashSet::new();
+    let kinds: Vec<Kind> = tool_uses.iter().map(|t| classify(t, gate)).collect();
+    let labels = labels(tool_uses, &kinds);
     tool_uses
         .iter()
         .enumerate()
@@ -236,15 +295,181 @@ pub fn call_rows(
             CallRow {
                 seq: i as u32 + 1,
                 tool: t.name.clone(),
-                kind: classify(t, gate),
+                kind: kinds[i],
                 result_chars: t.result_chars.map(|n| n as i64),
                 target_hash: hash,
                 repeat_in_worker,
                 repeat_in_run,
                 ts: t.ts.clone(),
+                label_followup: labels[i].0,
+                label_expanded: labels[i].1,
             }
         })
         .collect()
+}
+
+/// How many calls after a `ctx` answer a read of a file it named counts
+/// as a follow-up (`followup_read_within_2`, §14).
+pub const FOLLOWUP_WITHIN: usize = 2;
+/// How many calls after a lookup a wider one on the same target counts as
+/// an expansion (`expanded_within_5`, §14).
+pub const EXPANDED_WITHIN: usize = 5;
+
+/// `(label_followup, label_expanded)` per call: the first on every `ctx-*`
+/// call, the second on every `read` and `ctx-refs` call, `None` elsewhere.
+pub fn labels(tool_uses: &[ToolUse], kinds: &[Kind]) -> Vec<(Option<bool>, Option<bool>)> {
+    (0..tool_uses.len())
+        .map(|i| {
+            let after = |n: usize| i + 1..tool_uses.len().min(i + 1 + n);
+            let followup = kinds[i].is_ctx().then(|| {
+                let named = ctx_paths(tool_uses[i].result_head.as_deref().unwrap_or(""));
+                after(FOLLOWUP_WITHIN).any(|j| {
+                    matches!(kinds[j], Kind::Read | Kind::BashCat | Kind::BashSed)
+                        && read_paths(&tool_uses[j])
+                            .iter()
+                            .any(|p| named.iter().any(|n| names(p, n)))
+                })
+            });
+            let expanded = match kinds[i] {
+                Kind::Read => {
+                    let (file, limit) = read_window(&tool_uses[i]);
+                    Some(limit.is_some_and(|l| {
+                        after(EXPANDED_WITHIN).any(|j| {
+                            kinds[j] == Kind::Read && {
+                                let (f, w) = read_window(&tool_uses[j]);
+                                f == file && w.is_none_or(|w| w > l)
+                            }
+                        })
+                    }))
+                }
+                Kind::CtxRefs => {
+                    let (target, max) = refs_window(command(&tool_uses[i]));
+                    Some(after(EXPANDED_WITHIN).any(|j| {
+                        kinds[j] == Kind::CtxRefs && {
+                            let (t, m) = refs_window(command(&tool_uses[j]));
+                            t == target && m > max
+                        }
+                    }))
+                }
+                _ => None,
+            };
+            (followup, expanded)
+        })
+        .collect()
+}
+
+/// The files a `ctx` answer names: `path:line  kind  …` hit lines and
+/// `== path ==` outline headers, as printed (relative to where it ran).
+pub fn ctx_paths(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for line in text.lines() {
+        if line.starts_with(char::is_whitespace) {
+            continue;
+        }
+        let path = if let Some(inner) = line.strip_prefix("== ").and_then(|l| l.strip_suffix(" =="))
+        {
+            Some(inner)
+        } else {
+            line.split("  ")
+                .next()
+                .and_then(|head| head.rsplit_once(':'))
+                .filter(|(p, n)| {
+                    !p.is_empty() && !n.is_empty() && n.chars().all(|c| c.is_ascii_digit())
+                })
+                .map(|(p, _)| p)
+        };
+        if let Some(p) = path
+            && !out.iter().any(|o| o == p)
+        {
+            out.push(p.to_string());
+        }
+    }
+    out
+}
+
+/// The paths a read-like call names: `Read`'s `file_path`, a `Bash` call's
+/// first-command operands (a `sed` script among them matches nothing).
+pub fn read_paths(t: &ToolUse) -> Vec<String> {
+    match t.name.as_str() {
+        "Read" => vec![field(t, "file_path").to_string()],
+        "Bash" => {
+            let (words, _) = shell::first_command(command(t));
+            words
+                .into_iter()
+                .skip(1)
+                .filter(|w| !w.starts_with('-'))
+                .collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// `path` (absolute, or relative to the repo) names the repo-relative `rel`.
+pub fn names(path: &str, rel: &str) -> bool {
+    let rel = rel.trim_start_matches("./");
+    !rel.is_empty() && (path.trim_start_matches("./") == rel || path.ends_with(&format!("/{rel}")))
+}
+
+/// A `Read`'s file and `limit` (`None`: the whole file).
+fn read_window(t: &ToolUse) -> (&str, Option<u64>) {
+    (
+        field(t, "file_path"),
+        t.input.get("limit").and_then(Value::as_u64),
+    )
+}
+
+/// A `ctx refs` call's target (symbol and `--in`) and `--max` (default 10).
+fn refs_window(command: &str) -> (String, usize) {
+    let (words, _) = shell::first_command(command);
+    let mut symbol = String::new();
+    let mut dir = String::new();
+    let mut max = 10;
+    let mut it = words.iter().skip(3);
+    while let Some(w) = it.next() {
+        let (flag, inline) = match w.split_once('=') {
+            Some((f, v)) if f.starts_with("--") => (f, Some(v.to_string())),
+            _ => (w.as_str(), None),
+        };
+        match flag {
+            "--max" | "--in" => {
+                let v = inline.or_else(|| it.next().cloned()).unwrap_or_default();
+                if flag == "--max" {
+                    max = v.parse().unwrap_or(max);
+                } else {
+                    dir = v;
+                }
+            }
+            f if f.starts_with('-') => {
+                if f == "--per-file" && inline.is_none() {
+                    it.next();
+                }
+            }
+            _ if symbol.is_empty() => symbol = w.clone(),
+            _ => {}
+        }
+    }
+    (format!("{symbol}\n{dir}"), max)
+}
+
+/// A `read` or `bash-cat` of a file the worker's pack held (`held`,
+/// repo-relative): `pack_doc_read_chars` (§4) counts its chars.
+pub fn pack_doc(t: &ToolUse, kind: Kind, held: &[String], repo: &Path) -> bool {
+    if !matches!(kind, Kind::Read | Kind::BashCat) || held.is_empty() {
+        return false;
+    }
+    let repo = repo.to_string_lossy();
+    read_paths(t).iter().any(|p| {
+        let full = if p.starts_with('/') {
+            p.clone()
+        } else {
+            format!(
+                "{}/{}",
+                repo.trim_end_matches('/'),
+                p.trim_start_matches("./")
+            )
+        };
+        held.iter().any(|h| names(&full, h))
+    })
 }
 
 /// Write a settled worker's `tool_calls` rows (one transaction) and its
@@ -259,9 +484,12 @@ pub fn record_exit(run: &Run, worker_id: i64, summary: &Summary) -> Result<()> {
     let gate = run.gate_cmds();
     let mut seen_run = db.run_targets(run_id)?;
     let rows = call_rows(&summary.tool_uses, gate, &mut seen_run);
+    let held = db.worker_pack_files(worker_id)?;
+    let repo = run.state().repo.clone();
     let inserts: Vec<ToolCallInsert> = rows
         .iter()
-        .map(|r| ToolCallInsert {
+        .zip(&summary.tool_uses)
+        .map(|(r, t)| ToolCallInsert {
             run_id,
             worker_id,
             seq: r.seq,
@@ -272,6 +500,9 @@ pub fn record_exit(run: &Run, worker_id: i64, summary: &Summary) -> Result<()> {
             repeat_in_worker: r.repeat_in_worker,
             repeat_in_run: r.repeat_in_run,
             ts: r.ts.as_deref(),
+            label_followup: r.label_followup,
+            label_expanded: r.label_expanded,
+            pack_doc: pack_doc(t, r.kind, &held, &repo),
         })
         .collect();
     db.insert_tool_calls(&inserts)?;
@@ -392,6 +623,152 @@ mod tests {
         let second = call_rows(&[f()], None, &mut seen);
         assert!(!second[0].repeat_in_worker);
         assert!(second[0].repeat_in_run);
+    }
+
+    fn ctx(cmd: &str, answer: &str) -> ToolUse {
+        let mut t = bash(cmd);
+        t.result_head = Some(answer.to_string());
+        t
+    }
+
+    fn read(file: &str, limit: Option<u64>) -> ToolUse {
+        match limit {
+            Some(l) => use_(
+                "Read",
+                json!({ "file_path": file, "offset": 1, "limit": l }),
+            ),
+            None => use_("Read", json!({ "file_path": file })),
+        }
+    }
+
+    const REFS: &str = "src/a.rs:3  ref  let x = helper();\n    y\n\n\
+                        src/b.rs:9  ref  helper()\n\n2 hits in 2 files (searched 4 files)\n";
+
+    fn rows(uses: &[ToolUse]) -> Vec<CallRow> {
+        call_rows(uses, Some(&gate()), &mut HashSet::new())
+    }
+
+    #[test]
+    fn ctx_calls_get_their_own_kinds_ahead_of_the_rest() {
+        let g = gate();
+        let k = |c: &str| bash_kind(c, Some(&g));
+        assert_eq!(k("factory ctx def helper"), Kind::CtxDef);
+        assert_eq!(
+            k("cd /r && factory ctx refs helper --max 30"),
+            Kind::CtxRefs
+        );
+        assert_eq!(k("/usr/bin/factory ctx outline src/a.rs"), Kind::CtxOutline);
+        assert_eq!(k("factory ctx tags"), Kind::Run);
+        assert_eq!(k("factory run 001"), Kind::Run);
+        assert!(Kind::CtxRefs.is_lookup() && Kind::CtxRefs.is_ctx());
+        assert!(LOOKUP_KINDS.contains(&"ctx-outline"));
+        assert_eq!(
+            ctx_paths("== src/x.rs ==\n3  fn  main()\n\n== src/y.vue ==\n"),
+            vec!["src/x.rs", "src/y.vue"]
+        );
+        assert_eq!(ctx_paths(REFS), vec!["src/a.rs", "src/b.rs"]);
+    }
+
+    #[test]
+    fn a_read_of_a_named_file_within_two_calls_is_a_followup() {
+        let r = rows(&[
+            ctx("factory ctx refs helper", REFS),
+            read("/repo/src/b.rs", None),
+        ]);
+        assert_eq!(r[0].label_followup, Some(true));
+        assert_eq!(r[1].label_followup, None);
+
+        let r = rows(&[
+            ctx("factory ctx refs helper", REFS),
+            read("/repo/src/c.rs", None),
+            bash("cargo build"),
+            read("/repo/src/a.rs", None),
+        ]);
+        assert_eq!(
+            r[0].label_followup,
+            Some(false),
+            "the third call is too late"
+        );
+
+        let r = rows(&[
+            ctx("factory ctx def helper", REFS),
+            bash("ls"),
+            bash("sed -n 1,20p src/a.rs"),
+        ]);
+        assert_eq!(r[0].label_followup, Some(true), "bash-sed counts");
+        let r = rows(&[
+            ctx("factory ctx def helper", REFS),
+            bash("grep -n x src/a.rs"),
+        ]);
+        assert_eq!(r[0].label_followup, Some(false), "a grep is no read");
+    }
+
+    #[test]
+    fn a_wider_read_or_a_larger_max_within_five_calls_is_an_expansion() {
+        let r = rows(&[
+            read("/r/f.rs", Some(40)),
+            bash("ls"),
+            read("/r/f.rs", Some(200)),
+        ]);
+        assert_eq!(r[0].label_expanded, Some(true));
+        assert_eq!(r[2].label_expanded, Some(false));
+        assert_eq!(r[1].label_expanded, None);
+
+        let r = rows(&[read("/r/f.rs", Some(40)), read("/r/f.rs", None)]);
+        assert_eq!(r[0].label_expanded, Some(true), "the whole file is wider");
+        let r = rows(&[read("/r/f.rs", None), read("/r/f.rs", None)]);
+        assert_eq!(
+            r[0].label_expanded,
+            Some(false),
+            "nothing is wider than whole"
+        );
+        let r = rows(&[read("/r/f.rs", Some(40)), read("/r/g.rs", Some(400))]);
+        assert_eq!(r[0].label_expanded, Some(false), "another file");
+        let mut late = vec![read("/r/f.rs", Some(40))];
+        late.extend((0..5).map(|_| bash("ls")));
+        late.push(read("/r/f.rs", Some(400)));
+        assert_eq!(rows(&late)[0].label_expanded, Some(false), "six calls on");
+
+        let r = rows(&[
+            ctx("factory ctx refs helper", REFS),
+            ctx("factory ctx refs helper --max=40", REFS),
+            ctx("factory ctx refs other --max 99", REFS),
+        ]);
+        assert_eq!(r[0].label_expanded, Some(true));
+        assert_eq!(r[1].label_expanded, Some(false));
+        let r = rows(&[
+            ctx("factory ctx refs helper --max 30 --in src", REFS),
+            ctx("factory ctx refs helper --max 50 --in tests", REFS),
+        ]);
+        assert_eq!(r[0].label_expanded, Some(false), "another --in");
+        assert_eq!(
+            rows(&[ctx("factory ctx def helper", REFS)])[0].label_expanded,
+            None
+        );
+    }
+
+    #[test]
+    fn a_read_of_a_held_file_is_a_pack_doc() {
+        let held = vec![
+            "docs/features/001-x/slice-01-a.md".to_string(),
+            "docs/features/001-x/prd.md".to_string(),
+        ];
+        let repo = Path::new("/repo");
+        let r = |t: &ToolUse| pack_doc(t, classify(t, None), &held, repo);
+        assert!(r(&read("/repo/docs/features/001-x/prd.md", None)));
+        assert!(r(&read("/repo/docs/features/001-x/prd.md", Some(40))));
+        assert!(r(&bash("cat docs/features/001-x/slice-01-a.md")));
+        assert!(
+            !r(&bash("sed -n 1,9p docs/features/001-x/prd.md")),
+            "sed is not counted"
+        );
+        assert!(!r(&read("/repo/docs/features/002-y/prd.md", None)));
+        assert!(!pack_doc(
+            &read("/repo/docs/features/001-x/prd.md", None),
+            Kind::Read,
+            &[],
+            repo
+        ));
     }
 
     #[test]

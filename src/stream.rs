@@ -165,6 +165,20 @@ pub struct ToolUse {
 /// How much of a `tool_result` the summary keeps as text.
 pub const RESULT_HEAD: usize = 4096;
 
+/// How much of a `factory ctx` answer it keeps: `label_followup` looks for
+/// the paths the answer named, and a def with bodies runs past 4096.
+pub const CTX_RESULT_HEAD: usize = 65536;
+
+/// A `Bash` call whose first command is `factory ctx …`.
+fn is_ctx_call(t: &ToolUse) -> bool {
+    if t.name != "Bash" {
+        return false;
+    }
+    let cmd = t.input.get("command").and_then(Value::as_str).unwrap_or("");
+    let (words, _) = crate::shell::first_command(cmd);
+    words.len() > 1 && crate::shell::program(&words[0]) == "factory" && words[1] == "ctx"
+}
+
 /// What one worker's stream amounts to.
 #[derive(Debug, Clone, Default)]
 pub struct Summary {
@@ -329,7 +343,12 @@ impl Collector {
                         t.result_chars = Some(content_chars(b.get("content")));
                         t.result_ts = ts.clone();
                         t.result_error = b.get("is_error").and_then(Value::as_bool) == Some(true);
-                        t.result_head = Some(content_head(b.get("content")));
+                        let head = if is_ctx_call(t) {
+                            CTX_RESULT_HEAD
+                        } else {
+                            RESULT_HEAD
+                        };
+                        t.result_head = Some(content_head(b.get("content"), head));
                     }
                 }
             }
@@ -372,8 +391,8 @@ fn timestamp(rest: &Map<String, Value>) -> Option<String> {
         .map(str::to_string)
 }
 
-/// The first [`RESULT_HEAD`] characters of a `tool_result` content's text.
-fn content_head(content: Option<&Value>) -> String {
+/// The first `head` characters of a `tool_result` content's text.
+fn content_head(content: Option<&Value>, head: usize) -> String {
     let text = match content {
         Some(Value::String(s)) => s.clone(),
         Some(Value::Array(blocks)) => blocks
@@ -387,7 +406,7 @@ fn content_head(content: Option<&Value>) -> String {
         Some(other) => other.to_string(),
         None => String::new(),
     };
-    text.chars().take(RESULT_HEAD).collect()
+    text.chars().take(head).collect()
 }
 
 /// Characters of a `tool_result` content: a string, or text blocks.

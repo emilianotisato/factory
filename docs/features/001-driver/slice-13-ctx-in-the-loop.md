@@ -1,6 +1,7 @@
 ---
 slice: 13
-status: pending
+status: done
+lane: 1
 depends_on: [10, 12]
 ---
 
@@ -9,7 +10,103 @@ depends_on: [10, 12]
 **Source**: [`prd.md`](prd.md) → §14 FR-12 decisions 3 and 4 (the pack's Outline and Lookup sections, the hook hints, the follow-up labels and report keys, the reversal rule) and decision 5 ("(3) pack sections, the two hook hints (lookup verb, pack doc), `tool_calls` table with the follow-up labels, and report keys"); §4 FR-2 permissions bullet as corrected 2026-10-09 (a new PreToolUse hook `factory hook` injected through `--settings`, carrying the two deny rules); §10 FR-8 (`followup_reads`, `pack_doc_read_chars`). **Depends on**: 10 (the whole driver loop and the report) and 12 (`outline` and `def` with bodies). The join of the spine and the branch.
 **Created**: 2026-10-09 · **Status**: pending
 
-**Progress**: _(written as it lands)_
+**Progress** (2026-10-10, lane 1):
+- **Built.**
+  - **`factory hook`** (`src/cli/hook.rs`, on a new `src/shell.rs` tokenizer):
+    - It reads the PreToolUse JSON and the first line of `$FACTORY_PACK`, decides, prints `hookSpecificOutput` and exits 0.
+    - Malformed input is allowed, with a line on stderr.
+    - It denies:
+      - a recursive `grep`/`egrep`/`fgrep`, or any `rg`, over no path or over a directory under `cwd`, with `use: factory ctx refs <word> (or ctx def <symbol>); grep only for literal strings and log output` (AD-1305);
+      - in a slice pack only, a whole `Read` or an unpiped `cat` of a held file, with `that file is in your pack under "# Slice"` or `"# Outline"` (AD-1304). `prd.md` and block logs pass.
+    - There is no fallback deny for merge and force-push (AD-1303).
+    - The `Hook` subcommand lost its `Passthrough`, and `not_built` is gone from `main.rs`.
+  - **Settings injection** (`src/worker.rs`): every role writes `runs/<id>/workers/<session>.settings.json` (AD-1301), holding:
+    - the deny rules `Bash(gh pr merge*)`, `Bash(git push --force*)` and `Bash(git push -f*)`;
+    - the PreToolUse hook: `matcher: "Bash|Read"`, `<current_exe> hook`, `timeout: 5`.
+
+    `spawn` passes `--settings <file>`, sets `FACTORY_PACK=<absolute pack>`, and stores the pack's held files in `workers.pack_files`.
+  - **The pack** (`src/pack.rs`):
+    - `Recon::of` reads the paths and symbols the `## Current code / environment` section cites.
+    - It runs `ctx::def` and `ctx::outline` in-process, outlining the cited files and the `def` hit files (AD-1306).
+    - The `# Outline` section is capped at 8,000 chars for outlines and 6,000 for defs, cut at a line with a trailer naming the verb.
+    - The `# Lookup` section comes from the new `assets/lookup.md`.
+    - Both sections sit between `# PRD sections` and `# Contract`, and the header's `files:` gains the outlined files.
+  - **`tool_calls`** (`src/metrics.rs`, `src/stream.rs`):
+    - New kinds: `ctx-def`, `ctx-refs` and `ctx-outline`.
+    - `label_followup` is set on `ctx-*` rows: a `read`, `bash-cat` or `bash-sed` of a path the answer named, within 2 calls.
+    - `label_expanded` is set on `read` and `ctx-refs` rows: a wider `limit` or a larger `--max` within 5 calls (AD-1308).
+    - New column `pack_doc` (AD-1302).
+    - A ctx answer's result head is kept to 65,536 chars (AD-1309).
+  - **The report** (`src/cli/report.rs`):
+    - `ctx_share` is now ctx rows among lookup rows; slice 08's byte share prints as `lookup_share_chars`.
+    - New keys `followup_reads: N of M ctx calls (P%)` and `pack_doc_read_chars` (AD-1307).
+    - Three status lines, with the §14 constants 30%, 10% and 26.7% cited in a comment.
+    - `--per-worker`.
+    - `--json` carries all of them (AD-1302).
+- **Tests.**
+  - `tests/cli.rs::hook_denies_repo_greps_and_whole_reads_of_held_files` covers task 1's acceptance list through the binary.
+  - `tests/loop.rs`:
+    - `check_worker_argv` now asserts on each slice worker that:
+      - the stub received `--settings`;
+      - the path is under `runs/<id>/workers/`;
+      - the file parses with both task 2 deny rules and a single `Bash|Read` PreToolUse command ending in `factory hook`, with `timeout: 5`;
+      - `FACTORY_PACK` is the pack.
+    - New `pack_outlines_the_cited_code_and_carries_the_lookup_verbs`:
+      - the planted `src/helper.rs` outline and `def helper` body;
+      - `# Lookup` with the three verbs and the rule;
+      - the header gains `src/helper.rs`;
+      - output is byte-identical across two spawns;
+      - a 60-file recon is cut at 8,000 chars with its trailer, and the held list matches the kept headers.
+  - `tests/metrics.rs`:
+    - New `ctx_calls_are_labelled_and_the_report_reads_the_reversal_rule`. The stub's new `ctx: true` option streams a `ctx refs`, a follow-up `Read` and a `ctx outline`. It checks:
+      - the report shows `followup_reads: 1 of 2 ctx calls (50%)`, `followup threshold 30%: over` and `ctx_share` 0.200;
+      - `pack_doc_read_chars` is the sum of the held reads;
+      - `--per-worker` text and JSON;
+      - the labels row by row.
+    - The first test also checks `pack_doc` and `pack_files`, and `--settings` on every role.
+  - Unit tests:
+    - `shell.rs`: one;
+    - `hook.rs`: three;
+    - `metrics.rs`: four (kinds, followup, expansion, pack_doc);
+    - `pack.rs`: two (citations, cap);
+    - `report.rs`: one (the threshold lines).
+- **Inner loop:** 3 runs of `cargo test`, 1 red, about 2 min (40 s, 36 s, 38 s).
+  - Run 1 was red. `tests/closeout.rs::the_driver_never_merges_or_readies_a_pr` scans `src/` for `pr merge`, and it caught the new deny-rule string in `worker.rs` (Traps). Everything else passed on its first run.
+  - Run 2 was green.
+  - Run 3 was green after `cargo fmt`: 155 tests, 0 ignored.
+  - `cargo fmt` reflowed `tests/loop.rs`, `tests/metrics.rs`, `src/metrics.rs` and `src/pack.rs`.
+  - `cargo clippy --all-targets -- -D warnings` caught nothing.
+- **Hook timing and a hand transcript** (debug build, this repo's checkout as `cwd`, a slice pack):
+  - Timing over 50 runs: median 2.9 ms, max 4.1 ms. The target is under 20 ms.
+  - `grep -rn foo src` → `deny` with the `factory ctx refs` hint, exit 0.
+  - a whole `Read` of a held `src/pack.rs` → `deny` naming `# Outline`.
+  - `cat src/x.php | grep foo` → `allow`.
+- **Earlier-slice expectation shifts:**
+  - `tests/cli.rs`: removed `every_subcommand_says_not_built_yet_and_exits_2`, because `hook` was the last unbuilt subcommand.
+  - `tests/loop.rs`: the `check_worker_argv` length is 15 → 17 (`--settings <file>`).
+  - `tests/closeout.rs`: the no-merge source scan now strips the deny-rule literal first.
+  - `tests/metrics.rs`:
+    - `KEYS` 21 → 23 (`followup_reads` and `pack_doc_read_chars` after `repeat_rate`);
+    - `EXTRA_KEYS` gains `lookup_share_chars`;
+    - the byte-share assertion moved from `ctx_share` to `lookup_share_chars`;
+    - `ctx_share` is now 0.000 on a run with no `ctx` calls;
+    - the threshold lines follow the keys.
+  - `src/cli/report.rs`'s keys unit test was updated the same way.
+- **Deviations:**
+  - `decide`:
+    - AD-1301: `--settings` takes a driver-owned file, not inline JSON.
+    - AD-1302: the new columns, the report JSON shape and `--per-worker`.
+  - `fyi`:
+    - AD-1303: no fallback deny.
+    - AD-1304: whole-read denies in slice packs only.
+    - AD-1305: a lexical "over the repo".
+    - AD-1306: `def` hit files are outlined too.
+    - AD-1307: `followup_reads` is a count, not count and chars.
+- **Prove (task 7), left for the checkpoint:**
+  - the FR-12 tail: `factory report --per-worker` on the fixture run;
+  - the FR-8 tail: `followup_reads` and `pack_doc_read_chars` in that report;
+  - the task 1 hook transcript;
+  - the real one-turn worker, Haiku-sized, with the injected settings under `bypassPermissions`, kept under `recordings/`. It also confirms that AD-1304's ranged read of the slice is not a problem for a real worker.
 
 **Slice**: After this slice the worker meets `factory ctx` three ways: the pack opens with an Outline of every recon file and the `def` of every cited symbol, plus a Lookup section with the three verbs; a PreToolUse hook injected through `--settings` denies `grep -r` and `rg` over the repo with a one-line hint naming the verb, and denies whole-file reads of files the pack already holds with a hint naming the pack section; and the same settings carry the two permission deny rules so a worker is guarded on any project. The `tool_calls` table gains the `ctx-*` kinds and the two follow-up labels, and `factory report` prints `followup_reads` and `pack_doc_read_chars` with the three threshold lines the reversal rule reads. The A/B numbers themselves are the owner's (qa-guide.md).
 

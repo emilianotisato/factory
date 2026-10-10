@@ -854,7 +854,11 @@ fn the_driver_never_merges_or_readies_a_pr() {
             if p.is_dir() {
                 stack.push(p);
             } else if p.extension().is_some_and(|x| x == "rs") {
-                let text = fs::read_to_string(&p).unwrap();
+                // The one allowed mention is the deny rule slice 13 injects
+                // into every worker's settings: it forbids the merge.
+                let text = fs::read_to_string(&p)
+                    .unwrap()
+                    .replace("\"Bash(gh pr merge*)\"", "");
                 if text.contains("pr merge") || text.contains("pr ready") {
                     hits.push(p);
                 }

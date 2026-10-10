@@ -118,6 +118,28 @@ fn wait_until(what: &str, secs: u64, mut ok: impl FnMut() -> bool) {
 }
 
 /// The session id of the call, after checking FR-2's argv bullet by bullet.
+/// A worker's `--settings` file: JSON with the two deny rules and one
+/// `PreToolUse` hook on `Bash|Read` whose command ends in `factory hook`.
+fn check_settings(path: &Path) {
+    let v: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    let deny: Vec<&str> = v["permissions"]["deny"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d.as_str().unwrap())
+        .collect();
+    assert!(deny.contains(&"Bash(gh pr merge*)"), "{deny:?}");
+    assert!(deny.contains(&"Bash(git push --force*)"), "{deny:?}");
+    let pre = &v["hooks"]["PreToolUse"];
+    assert_eq!(pre.as_array().map(Vec::len), Some(1), "{v}");
+    assert_eq!(pre[0]["matcher"], "Bash|Read");
+    let hook = &pre[0]["hooks"][0];
+    assert_eq!(hook["type"], "command");
+    let cmd = hook["command"].as_str().unwrap();
+    assert!(cmd.ends_with("factory hook"), "{cmd}");
+    assert_eq!(hook["timeout"], 5);
+}
+
 fn check_worker_argv(fx: &Fixture, call: &Value, slice: u32, run_dir: &Path) -> String {
     let argv: Vec<&str> = call["argv"]
         .as_array()
@@ -146,7 +168,18 @@ fn check_worker_argv(fx: &Fixture, call: &Value, slice: u32, run_dir: &Path) -> 
     assert!(is_uuid_v4(sid), "{sid}");
     assert_eq!(flag("--model"), "opus");
     assert_eq!(flag("--effort"), "high");
-    assert_eq!(argv.len(), 15, "{argv:?}");
+    // Slice 13: the settings file the driver owns, under the run's own
+    // directory, with the two deny rules and the `factory hook` PreToolUse
+    // command; the pack the hook reads, through FACTORY_PACK.
+    let settings = PathBuf::from(flag("--settings"));
+    assert_eq!(call["settings"], settings.to_str().unwrap());
+    assert!(
+        settings.starts_with(run_dir.join("workers")),
+        "{settings:?}"
+    );
+    check_settings(&settings);
+    assert_eq!(call["env"]["FACTORY_PACK"], pack.to_str().unwrap());
+    assert_eq!(argv.len(), 17, "{argv:?}");
     assert_eq!(call["cwd"], fx.path().to_str().unwrap());
     assert_eq!(call["pack_source"], "file");
     assert!(
@@ -257,6 +290,124 @@ fn pack_is_the_slice_the_cited_sections_the_contract_and_the_inner_loop() {
         diff,
         vec![("./gate.sh --inner", "./gate.sh --inner --fast")]
     );
+}
+
+/// Slice 13 task 3: `# Outline` (the `def` of each cited symbol, the outline
+/// of each cited file and of each file a printed `def` lives in) and
+/// `# Lookup`, between the PRD sections and the contract; the outlined
+/// files join the header's list.
+#[test]
+fn pack_outlines_the_cited_code_and_carries_the_lookup_verbs() {
+    let fx = Fixture::new("pack-outline");
+    fs::write(
+        fx.path().join("src/helper.rs"),
+        "/// The helper.\npub fn helper() -> u8 {\n    1\n}\n",
+    )
+    .unwrap();
+    let slice_file = fx.slice_path(1);
+    let scaffold = fs::read_to_string(&slice_file).unwrap();
+    let cites = scaffold.replacen(
+        "`file:line`",
+        "`src/lib.txt:1` calls `helper()`; `src/planned.rs` is new; `nowhere()` has no def",
+        1,
+    );
+    assert_ne!(
+        cites, scaffold,
+        "the scaffold's Current code cites `file:line`"
+    );
+    fs::write(&slice_file, &cites).unwrap();
+    let docs = Docs::locate(fx.path()).unwrap();
+    let board = docs.status("001").unwrap();
+    let packs = fx.path().join("scenario/packs");
+
+    let pack = Pack::for_slice(&docs, &board, 1, &packs, 1).unwrap();
+    let text = fs::read_to_string(&pack.path).unwrap();
+    assert_eq!(
+        pack.files,
+        vec![
+            format!("{FEATURE_DIR}/slice-01-a.md"),
+            format!("{FEATURE_DIR}/prd.md"),
+            "src/helper.rs".to_string(),
+        ]
+    );
+    assert!(
+        text.starts_with(&format!(
+            "<!-- factory-pack files: {FEATURE_DIR}/slice-01-a.md,{FEATURE_DIR}/prd.md,src/helper.rs -->\n"
+        )),
+        "{text}"
+    );
+    let at = |s: &str| {
+        text.find(s)
+            .unwrap_or_else(|| panic!("{s} missing in pack"))
+    };
+    assert!(at("\n# PRD sections\n") < at("\n# Outline\n"));
+    assert!(at("\n# Outline\n") < at("\n# Lookup\n"));
+    assert!(at("\n# Lookup\n") < at("\n# Contract\n"));
+    let outline = &text[at("\n# Outline\n")..at("\n# Lookup\n")];
+    assert!(
+        outline.contains(
+            "<!-- factory ctx outline src/helper.rs -->\n\n== src/helper.rs ==\n2  fn  pub fn helper() -> u8 {\n"
+        ),
+        "{outline}"
+    );
+    assert!(
+        outline.contains(
+            "<!-- factory ctx def helper -->\n\nsrc/helper.rs:2  fn  pub fn helper() -> u8 {\n        1\n    }\n\n1 definition (searched "
+        ),
+        "{outline}"
+    );
+    assert!(
+        !outline.contains("lib.txt"),
+        "no outlined language: {outline}"
+    );
+    assert!(
+        !outline.contains("planned"),
+        "a planned file is skipped: {outline}"
+    );
+    assert!(
+        !outline.contains("nowhere"),
+        "a def with no hit is skipped: {outline}"
+    );
+    let lookup = &text[at("\n# Lookup\n")..at("\n# Contract\n")];
+    for verb in ["factory ctx def", "factory ctx refs", "factory ctx outline"] {
+        assert!(lookup.contains(verb), "{verb}: {lookup}");
+    }
+    assert!(
+        lookup.contains("grep only for literal strings and log output"),
+        "{lookup}"
+    );
+    // Byte-identical across builds of the same tree.
+    let again = Pack::for_slice(&docs, &board, 1, &packs, 2).unwrap();
+    assert_eq!(fs::read_to_string(&again.path).unwrap(), text);
+
+    // A long recon list: the outlines stop at 8k chars with a trailer, and
+    // only the files whose outline made it in join the header.
+    let mut many = String::new();
+    for n in 0..60 {
+        let path = format!("src/m{n:02}.rs");
+        let body: String = (0..12)
+            .map(|i| format!("pub fn function_number_{i}_in_module_{n}() {{}}\n"))
+            .collect();
+        fs::write(fx.path().join(&path), body).unwrap();
+        many.push_str(&format!("`{path}` "));
+    }
+    fs::write(&slice_file, scaffold.replacen("`file:line`", &many, 1)).unwrap();
+    let big = Pack::for_slice(&docs, &board, 1, &packs, 3).unwrap();
+    let text = fs::read_to_string(&big.path).unwrap();
+    let at = |s: &str| text.find(s).unwrap();
+    let outline = &text[at("\n# Outline\n")..at("\n# Lookup\n")];
+    assert!(
+        outline.contains("[cut at 8000 chars: run `factory ctx outline <path>` for the rest]"),
+        "{outline}"
+    );
+    assert!(outline.len() < 8000 + 1000, "{}", outline.len());
+    assert!(outline.contains("== src/m00.rs =="));
+    assert!(!outline.contains("== src/m59.rs =="));
+    let held = &big.files[2..];
+    assert!(!held.is_empty() && held.len() < 60, "{held:?}");
+    for f in held {
+        assert!(outline.contains(&format!("== {f} ==")), "{f}");
+    }
 }
 
 #[test]

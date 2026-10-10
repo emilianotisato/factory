@@ -2,6 +2,7 @@
 //! and the writer for stdout, and returns the exit code, so tests drive them
 //! in-process and `main` stays a dispatch table.
 pub mod answer;
+pub mod hook;
 pub mod report;
 pub mod run;
 pub mod status;

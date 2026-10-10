@@ -1,8 +1,8 @@
-use std::io::{stderr, stdout};
+use std::io::{stderr, stdin, stdout};
 use std::path::Path;
 use std::process::ExitCode;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Parser, Subcommand};
 
 use factory::{cli, ctx};
 
@@ -35,18 +35,10 @@ enum Command {
         verb: ctx::Verb,
     },
     /// The PreToolUse hook the driver injects into every worker
-    Hook(Passthrough),
+    Hook,
     /// The detached driver `factory run` starts; not for hands
     #[command(hide = true)]
     Daemon(cli::run::DaemonArgs),
-}
-
-/// Arguments are accepted and ignored until the slice that builds the
-/// subcommand gives them a shape.
-#[derive(Args)]
-struct Passthrough {
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
-    args: Vec<String>,
 }
 
 fn main() -> ExitCode {
@@ -60,7 +52,7 @@ fn main() -> ExitCode {
         Command::Wait(a) => cli::wait::wait(&a, &mut stdout()),
         Command::Status(a) => cli::status::status(&a, &mut stdout()),
         Command::Ctx { verb } => ctx::run(&verb, Path::new("."), &mut stdout(), &mut stderr()),
-        Command::Hook(p) => return not_built(13, &p.args),
+        Command::Hook => cli::hook::hook(&mut stdin(), &mut stdout(), &mut stderr()),
     };
     match result {
         Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
@@ -69,12 +61,4 @@ fn main() -> ExitCode {
             ExitCode::from(1)
         }
     }
-}
-
-fn not_built(slice: u8, args: &[String]) -> ExitCode {
-    eprintln!(
-        "factory: not built yet (slice {slice:02}) — {} argument(s) ignored",
-        args.len()
-    );
-    ExitCode::from(2)
 }
