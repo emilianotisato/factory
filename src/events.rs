@@ -118,6 +118,14 @@ pub enum EventKind {
         slice: u32,
         files: Vec<String>,
     },
+    /// What a checkpoint's fix or checkpoint worker changed that its stream
+    /// never named and its commit does not take: untracked files and the
+    /// protected ones, left in the tree for the owner (AD-20007).
+    CheckpointLeftovers {
+        n: u32,
+        role: String,
+        files: Vec<String>,
+    },
     /// The stream names one of the three files no worker may write
     /// (`prd.md`, `agent-log.md`, `docs/index.md`); left out of the commit.
     WorkerWroteProtectedFile {

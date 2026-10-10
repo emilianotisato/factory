@@ -159,9 +159,18 @@ pub fn relativize(repo: &Path, canon: &Path, raw: &str) -> Option<String> {
     }
 }
 
-/// Untracked, non-ignored files in the tree, repo-relative and sorted: the
-/// `??` entries of `git status --porcelain -z --untracked-files=all`.
-pub fn untracked(repo: &Path) -> Result<Vec<String>> {
+/// A path `git status` reports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Changed {
+    pub path: String,
+    /// Changed against HEAD, staged or not; `false` for an untracked file.
+    pub tracked: bool,
+}
+
+/// Every changed path in the tree, repo-relative and sorted: tracked files
+/// changed against HEAD (both sides of a rename) and untracked, non-ignored
+/// files — `git status --porcelain -z --untracked-files=all`.
+pub fn changed(repo: &Path) -> Result<Vec<Changed>> {
     let out = git(
         repo,
         &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
@@ -173,16 +182,47 @@ pub fn untracked(repo: &Path) -> Result<Vec<String>> {
             continue;
         }
         let (xy, path) = (&entry[..2], &entry[3..]);
+        let tracked = xy != "??";
+        if xy == "!!" {
+            continue;
+        }
         // A rename or copy carries the original path in the next field.
-        if xy.starts_with('R') || xy.starts_with('C') {
-            entries.next();
+        if xy.contains(['R', 'C']) {
+            let orig = entries.next();
+            // A copy leaves its original as it was; a rename deletes it.
+            if let Some(orig) = orig
+                && xy.contains('R')
+            {
+                files.push(Changed {
+                    path: orig.to_string(),
+                    tracked: true,
+                });
+            }
         }
-        if xy == "??" {
-            files.push(path.to_string());
-        }
+        files.push(Changed {
+            path: path.to_string(),
+            tracked,
+        });
     }
-    files.sort();
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    files.dedup_by(|a, b| a.path == b.path);
     Ok(files)
+}
+
+/// Untracked, non-ignored files in the tree, repo-relative and sorted: the
+/// `??` entries of [`changed`].
+pub fn untracked(repo: &Path) -> Result<Vec<String>> {
+    Ok(changed(repo)?
+        .into_iter()
+        .filter(|c| !c.tracked)
+        .map(|c| c.path)
+        .collect())
+}
+
+/// Whether the tree has a change outside `docs/`: what the gate runs on is
+/// then not what HEAD holds.
+pub fn dirty_outside_docs(repo: &Path) -> Result<bool> {
+    Ok(changed(repo)?.iter().any(|c| !c.path.starts_with("docs/")))
 }
 
 /// What a commit landed.
@@ -623,6 +663,33 @@ mod tests {
         fs::write(r.join("kept.txt"), "k3\n").unwrap();
         let err = commit(r, &mine, "feat: default").unwrap_err().to_string();
         assert!(err.contains("is the default branch"), "{err}");
+    }
+
+    #[test]
+    fn changed_names_tracked_and_untracked_paths_apart() {
+        let dir = repo();
+        let r = dir.path();
+        fs::write(r.join("kept.txt"), "k2\n").unwrap();
+        fs::write(r.join("new.txt"), "n\n").unwrap();
+        fs::create_dir_all(r.join("ignored")).unwrap();
+        fs::write(r.join("ignored/x.txt"), "x\n").unwrap();
+        git(r, &["mv", "gone.txt", "moved.txt"]).unwrap();
+        let got: Vec<(String, bool)> = changed(r)
+            .unwrap()
+            .into_iter()
+            .map(|c| (c.path, c.tracked))
+            .collect();
+        let want: Vec<(String, bool)> = [
+            ("gone.txt", true),
+            ("kept.txt", true),
+            ("moved.txt", true),
+            ("new.txt", false),
+        ]
+        .map(|(p, t)| (p.to_string(), t))
+        .to_vec();
+        assert_eq!(got, want);
+        assert_eq!(untracked(r).unwrap(), ["new.txt"]);
+        assert!(dirty_outside_docs(r).unwrap());
     }
 
     #[test]

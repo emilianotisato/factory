@@ -28,10 +28,12 @@
 //! pathspec before the next board read — the paths its stream named, the
 //! slice file and its fragment, nothing with `-A` since another lane may be
 //! mid-write. The worker's outcome is saved after the commit, so a driver
-//! killed in between leaves it unsettled and the resume commits. Every
-//! commit lands on the run's branch: HEAD anywhere else
-//! parks the run until the owner switches back, with nothing reaped or
-//! spawned meanwhile (AD-20005).
+//! killed in between leaves it unsettled and the resume commits. A tracked
+//! file the worker changed without naming it joins the commit when no
+//! sibling was live, and is listed otherwise; a new file no tool call named
+//! is always listed (AD-20007). Every commit lands on the run's branch: HEAD
+//! anywhere else parks the run until the owner switches back, with nothing
+//! reaped or spawned meanwhile (AD-20005).
 //!
 //! FR-4: when the board says `checkpoint_due` nothing new spawns; once the
 //! table is empty the loop hands the run to [`checkpoint::run`] — the gate,
@@ -74,9 +76,9 @@ struct Running {
     lane: u32,
     /// Set by `poll` when the process exited; routed on the next reap.
     exit: Option<Exit>,
-    /// Untracked files in the tree at spawn: what the worker leaves beyond
-    /// these and its stream's paths is an "untracked leftover" (FR-5).
-    untracked_before: HashSet<String>,
+    /// The tree's changed paths at spawn: what the worker changes beyond
+    /// these and its stream's paths is unnamed (FR-5, [`unnamed`]).
+    changed_before: HashSet<String>,
 }
 
 type Table = HashMap<u32, Running>;
@@ -223,7 +225,7 @@ fn drive_inner(run: &mut Run, docs: &Docs, cfg: &Config, out: &mut dyn Write) ->
             .values()
             .map(|r| r.worker.session_id.clone())
             .collect();
-        match settle_orphans(run, &board, &live, out)? {
+        match settle_orphans(run, docs, &board, &live, out)? {
             Orphans::None => {}
             Orphans::Live => {
                 std::thread::sleep(Duration::from_millis(200));
@@ -592,10 +594,9 @@ fn spawn_on(
             &format!("slice {slice:02} cites §{section}, which prd.md does not have"),
         )?;
     }
-    // The tree's untracked files before the worker touches it (FR-5), kept
+    // The tree's changed paths before the worker touches it (FR-5), kept
     // on disk too for a resumed driver that settles this worker.
-    let untracked_before: HashSet<String> = commit::untracked(&repo)?.into_iter().collect();
-    save_baseline(run.dir(), slice, &untracked_before)?;
+    let changed_before = snapshot(run, &slice_key(slice))?;
     let w = Worker::spawn(
         run,
         Job::Build { slice },
@@ -619,7 +620,7 @@ fn spawn_on(
             worker: w,
             lane,
             exit: None,
-            untracked_before,
+            changed_before,
         },
     );
     Ok(())
@@ -691,7 +692,7 @@ fn route_exit(
                 slice,
                 row_id,
                 &exit.summary,
-                &r.untracked_before,
+                &r.changed_before,
                 live,
                 out,
             )?;
@@ -732,17 +733,38 @@ fn route_exit(
     Ok(())
 }
 
-/// `runs/<id>/untracked-before/slice-NN.json`: the tree's untracked files
-/// at the spawn of the slice's current worker. One worker runs per slice, and
-/// a respawn waits for the last one to be settled, so the slice keys it.
-fn baseline_path(run_dir: &Path, slice: u32) -> PathBuf {
-    run_dir
-        .join("untracked-before")
-        .join(format!("slice-{slice:02}.json"))
+/// `runs/<id>/untracked-before/<key>.json`: the tree's changed paths at the
+/// spawn of a worker, for the driver that settles it. One worker runs per
+/// slice (`slice-NN`) and per checkpoint role (`checkpoint-n-fix`,
+/// `checkpoint-n-checkpoint`), and a respawn waits for the last one to be
+/// settled, so the key names it.
+fn baseline_path(run_dir: &Path, key: &str) -> PathBuf {
+    run_dir.join("untracked-before").join(format!("{key}.json"))
 }
 
-fn save_baseline(run_dir: &Path, slice: u32, files: &HashSet<String>) -> Result<()> {
-    let path = baseline_path(run_dir, slice);
+/// The baseline key of a slice's worker.
+fn slice_key(slice: u32) -> String {
+    format!("slice-{slice:02}")
+}
+
+/// The baseline key of a checkpoint's worker of `role`.
+pub fn checkpoint_key(n: u32, role: &str) -> String {
+    format!("checkpoint-{n}-{role}")
+}
+
+/// The tree's changed paths now, saved under `key` and returned.
+pub fn snapshot(run: &Run, key: &str) -> Result<HashSet<String>> {
+    let repo = run.state().repo.clone();
+    let files: HashSet<String> = commit::changed(&repo)?
+        .into_iter()
+        .map(|c| c.path)
+        .collect();
+    save_baseline(run.dir(), key, &files)?;
+    Ok(files)
+}
+
+fn save_baseline(run_dir: &Path, key: &str, files: &HashSet<String>) -> Result<()> {
+    let path = baseline_path(run_dir, key);
     let dir = path.parent().expect("a file in a dir");
     fs::create_dir_all(dir).map_err(io(format!("create {}", dir.display())))?;
     let mut sorted: Vec<&String> = files.iter().collect();
@@ -754,8 +776,8 @@ fn save_baseline(run_dir: &Path, slice: u32, files: &HashSet<String>) -> Result<
 }
 
 /// The saved baseline; empty when none was saved (a run from before it was).
-fn load_baseline(run_dir: &Path, slice: u32) -> Result<HashSet<String>> {
-    let path = baseline_path(run_dir, slice);
+pub fn load_baseline(run_dir: &Path, key: &str) -> Result<HashSet<String>> {
+    let path = baseline_path(run_dir, key);
     match fs::read_to_string(&path) {
         Ok(t) => Ok(serde_json::from_str::<Vec<String>>(&t)
             .map_err(json(format!("parse {}", path.display())))?
@@ -831,31 +853,43 @@ fn commit_slice(
             &format!("slice {slice:02} wrote {path}, outside the repo — left out of the commit"),
         )?;
     }
-    let left = leftovers(run, board, slice, &spec, baseline, live)?;
-    if !left.is_empty() {
+    let Unnamed { sweep, listed } = leftovers(run, board, slice, &spec, baseline, live)?;
+    if !listed.is_empty() {
         let fragment = repo.join(commit::fragment_path(board, slice));
-        let body: String = left.iter().map(|p| format!("- {p}\n")).collect();
+        let body: String = listed.iter().map(|p| format!("- {p}\n")).collect();
         append_under(&fragment, "## Untracked leftovers", &body)?;
         run.emit(EventKind::UntrackedLeftovers {
             slice,
-            files: left.clone(),
+            files: listed.clone(),
         })?;
         say(
             out,
             &format!(
-                "slice {slice:02} left {} untracked file(s) no tool call named — listed in its fragment, not committed: {}",
-                left.len(),
-                left.join(", ")
+                "slice {slice:02} left {} file(s) no tool call named — listed in its fragment, not committed: {}",
+                listed.len(),
+                listed.join(", ")
             ),
         )?;
     }
+    if !sweep.is_empty() {
+        say(
+            out,
+            &format!(
+                "slice {slice:02} changed {} tracked file(s) no tool call named, with no other worker live — in its commit: {}",
+                sweep.len(),
+                sweep.join(", ")
+            ),
+        )?;
+    }
+    let mut paths = spec.paths.clone();
+    paths.extend(sweep);
     let title = board
         .slices
         .iter()
         .find(|s| s.number == slice)
         .and_then(|s| s.title.clone())
         .unwrap_or_else(|| format!("slice {slice:02}"));
-    match commit::commit(&repo, &spec.paths, &format!("feat: {title}"))? {
+    match commit::commit(&repo, &paths, &format!("feat: {title}"))? {
         Some(c) => {
             run.db().set_worker_commit(row_id, &c.sha)?;
             say(
@@ -878,10 +912,55 @@ fn commit_slice(
     Ok(())
 }
 
-/// Untracked files in the tree now that were not there at spawn, that the
-/// stream does not name, that are not another slice's file or fragment and
-/// that no live worker's stream names so far — the other lane's half-written
-/// work is its own, not this slice's leftover.
+/// What a worker changed in the tree that no tool call of its stream named
+/// (FR-5, AD-20007).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Unnamed {
+    /// Tracked files it changed with no other worker live: they go in its
+    /// commit, since no lane can be mid-write in them.
+    pub sweep: Vec<String>,
+    /// The rest — new untracked files, tracked changes while another worker
+    /// was live, the protected files: listed, left in the tree for the owner.
+    pub listed: Vec<String>,
+}
+
+/// The tree's changes now that were not changed at the worker's spawn
+/// (`baseline`), that `skip` does not hold and that no earlier
+/// `untracked_leftovers` already listed.
+pub fn unnamed(
+    run: &Run,
+    board: &Status,
+    baseline: &HashSet<String>,
+    skip: &HashSet<String>,
+    alone: bool,
+) -> Result<Unnamed> {
+    let repo = run.state().repo.clone();
+    let protected = commit::protected_files(board);
+    let mut listed_before: HashSet<String> = HashSet::new();
+    for e in run.events()? {
+        if let EventKind::UntrackedLeftovers { files, .. }
+        | EventKind::CheckpointLeftovers { files, .. } = e.kind
+        {
+            listed_before.extend(files);
+        }
+    }
+    let mut found = Unnamed::default();
+    for c in commit::changed(&repo)? {
+        if baseline.contains(&c.path) || skip.contains(&c.path) || listed_before.contains(&c.path) {
+            continue;
+        }
+        if c.tracked && alone && !protected.contains(&c.path) {
+            found.sweep.push(c.path);
+        } else {
+            found.listed.push(c.path);
+        }
+    }
+    Ok(found)
+}
+
+/// The slice's [`unnamed`] changes: not another slice's file or fragment,
+/// and nothing a live worker's stream names so far — the other lane's
+/// half-written work is its own, not this slice's leftover.
 fn leftovers(
     run: &Run,
     board: &Status,
@@ -889,10 +968,10 @@ fn leftovers(
     spec: &Pathspec,
     baseline: &HashSet<String>,
     live: &HashSet<String>,
-) -> Result<Vec<String>> {
+) -> Result<Unnamed> {
     let repo = run.state().repo.clone();
     let canon = repo.canonicalize().unwrap_or_else(|_| repo.clone());
-    let mut skip: HashSet<String> = baseline.clone();
+    let mut skip: HashSet<String> = HashSet::new();
     skip.extend(spec.paths.iter().cloned());
     skip.extend(spec.protected.iter().cloned());
     for s in &board.slices {
@@ -907,10 +986,7 @@ fn leftovers(
             commit::written_paths(&other).filter_map(|raw| commit::relativize(&repo, &canon, raw)),
         );
     }
-    Ok(commit::untracked(&repo)?
-        .into_iter()
-        .filter(|p| !skip.contains(p))
-        .collect())
+    unnamed(run, board, baseline, &skip, live.is_empty())
 }
 
 pub fn short(sha: &str) -> &str {
@@ -921,6 +997,7 @@ pub fn short(sha: &str) -> &str {
 /// dead driver's workers (FR-1 resume).
 fn settle_orphans(
     run: &mut Run,
+    docs: &Docs,
     board: &Status,
     live: &HashSet<String>,
     out: &mut dyn Write,
@@ -953,7 +1030,7 @@ fn settle_orphans(
             if w.role == "polish" || (w.role == "fix" && w.checkpoint.is_none()) {
                 closeout::settle_orphan(run, board, &w, summary, out)?;
             } else {
-                settle_checkpoint_orphan(run, board, &w, summary, out)?;
+                settle_checkpoint_orphan(run, docs, board, &w, summary, out)?;
             }
             continue;
         };
@@ -969,9 +1046,20 @@ fn settle_orphans(
                         slice, w.session_id
                     ),
                 )?;
-                // The snapshot the dead driver saved at this worker's spawn.
-                let baseline = load_baseline(run.dir(), slice)?;
-                commit_slice(run, board, slice, w.row_id, &summary, &baseline, live, out)?;
+                // The snapshot the dead driver saved at this worker's spawn;
+                // the other orphans were live beside it.
+                let baseline = load_baseline(run.dir(), &slice_key(slice))?;
+                let mut beside = live.clone();
+                beside.extend(
+                    run.state()
+                        .workers
+                        .iter()
+                        .filter(|o| o.outcome.is_none() && o.session_id != w.session_id)
+                        .map(|o| o.session_id.clone()),
+                );
+                commit_slice(
+                    run, board, slice, w.row_id, &summary, &baseline, &beside, out,
+                )?;
                 settle(run, w.row_id, &w.session_id, &summary, WorkerOutcome::Done)?;
             }
             "blocked" => {
@@ -1006,11 +1094,14 @@ fn label(w: &WorkerRef) -> String {
 }
 
 /// A fix or checkpoint worker of a dead driver (FR-4). A checkpoint worker
-/// whose `CP-n` is on the board is done (the next checkpoint commit carries
-/// the file); a fix worker that returned has its files committed; anything
-/// else is dead, and the checkpoint runs again from the board.
+/// whose `CP-n` is on the board is done, and this driver finishes what the
+/// dead one did not: render, `docs: checkpoint n`, `checkpoint_done`. A fix
+/// worker has what it changed committed however it ended, judged against
+/// its spawn baseline (AD-20007). A limit pauses the run; anything else is
+/// dead, and the checkpoint runs again from the board.
 fn settle_checkpoint_orphan(
     run: &mut Run,
+    docs: &Docs,
     board: &Status,
     w: &WorkerRef,
     summary: Summary,
@@ -1019,15 +1110,49 @@ fn settle_checkpoint_orphan(
     let n = w.checkpoint.unwrap_or(0);
     let repo = run.state().repo.clone();
     if w.role == "checkpoint" && board.checkpoints.iter().any(|c| c.n == n) {
+        let before = load_baseline(run.dir(), &checkpoint_key(n, "checkpoint"))?;
+        let spec = Pathspec::from_stream(&summary, board, &repo);
+        let sha =
+            checkpoint::commit_checkpoint(run, docs, board, n, w.row_id, &spec, &before, out)?;
         settle(run, w.row_id, &w.session_id, &summary, WorkerOutcome::Done)?;
+        let logged = run
+            .events()?
+            .iter()
+            .any(|e| matches!(e.kind, EventKind::CheckpointDone { n: m, .. } if m == n));
+        if !logged {
+            run.emit(EventKind::CheckpointDone { n, sha })?;
+        }
         say(
             out,
             &format!(
-                "checkpoint {n}: worker {} of an earlier driver wrote CP-{n} — the next checkpoint commit carries it",
+                "checkpoint {n}: worker {} of an earlier driver wrote CP-{n} — checkpoint {n} done",
                 w.session_id
             ),
         )?;
         return Ok(());
+    }
+    if w.role == "fix" {
+        let before = load_baseline(run.dir(), &checkpoint_key(n, "fix"))?;
+        let attempt = run
+            .db()
+            .gates(run.id().as_str())?
+            .iter()
+            .filter(|g| g.checkpoint == Some(n))
+            .filter_map(|g| g.attempt)
+            .max()
+            .unwrap_or(0);
+        checkpoint::commit_fix(
+            run,
+            board,
+            n,
+            attempt,
+            w.row_id,
+            &w.session_id,
+            &summary,
+            &before,
+            false,
+            out,
+        )?;
     }
     // FR-9: a limit is not a death; the checkpoint runs again after the pause.
     if let Some(limit) = Limit::from(&summary) {
@@ -1053,37 +1178,13 @@ fn settle_checkpoint_orphan(
     }
     if w.role == "fix" && !summary.is_dead() {
         settle(run, w.row_id, &w.session_id, &summary, WorkerOutcome::Done)?;
-        let spec = Pathspec::from_stream(&summary, board, &repo);
-        let attempt = run
-            .db()
-            .gates(run.id().as_str())?
-            .iter()
-            .filter(|g| g.checkpoint == Some(n))
-            .filter_map(|g| g.attempt)
-            .max()
-            .unwrap_or(0);
-        if let Some(c) = commit::commit(
-            &repo,
-            &spec.paths,
-            &format!("fix: gate red at checkpoint {n}"),
-        )? {
-            run.db().set_worker_commit(w.row_id, &c.sha)?;
-            say(
-                out,
-                &format!(
-                    "checkpoint {n}: fix worker {} of an earlier driver committed {} ({} file(s))",
-                    w.session_id,
-                    short(&c.sha),
-                    c.files.len()
-                ),
-            )?;
-            run.emit(EventKind::FixCommitted {
-                n,
-                attempt,
-                sha: c.sha,
-                files: c.files,
-            })?;
-        }
+        say(
+            out,
+            &format!(
+                "checkpoint {n}: fix worker {} of an earlier driver returned — the gate runs again",
+                w.session_id
+            ),
+        )?;
         return Ok(());
     }
     let outcome = if summary.is_dead() {

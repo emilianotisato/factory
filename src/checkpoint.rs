@@ -302,6 +302,7 @@ pub fn run(
             .into_iter()
             .map(|(id, _)| id)
             .collect();
+        let changed_before = scheduler::snapshot(run, &scheduler::checkpoint_key(n, "checkpoint"))?;
         let worker = Worker::spawn(
             run,
             Job::Checkpoint { n, attempt },
@@ -323,9 +324,9 @@ pub fn run(
         green_cached = true; // a respawn reads the same transcript
         let after = docs.status(&feature)?;
         if after.checkpoints.iter().any(|c| c.n == n) {
-            settle(run, row_id, &session_id, &exit.summary, WorkerOutcome::Done)?;
             let spec = Pathspec::from_stream(&exit.summary, board, &repo);
-            let sha = commit_checkpoint(run, docs, board, n, row_id, &spec, out)?;
+            let sha = commit_checkpoint(run, docs, board, n, row_id, &spec, &changed_before, out)?;
+            settle(run, row_id, &session_id, &exit.summary, WorkerOutcome::Done)?;
             run.emit(EventKind::CheckpointDone { n, sha })?;
             return Ok(Outcome::Done);
         }
@@ -519,15 +520,19 @@ fn gate_once(
         checkpoint: Some(n),
         attempt: Some(attempt),
     })?;
-    cache.put(
-        &key,
-        Entry {
-            red,
-            minutes,
-            at: at.clone(),
-            log: rel.clone(),
-        },
-    )?;
+    // A green run on a tree with changes outside `docs/` tested what HEAD
+    // does not hold: it is not remembered.
+    if red || !commit::dirty_outside_docs(repo)? {
+        cache.put(
+            &key,
+            Entry {
+                red,
+                minutes,
+                at: at.clone(),
+                log: rel.clone(),
+            },
+        )?;
+    }
     run.emit(EventKind::GateRun {
         n,
         attempt,
@@ -551,11 +556,13 @@ fn gate_once(
     })
 }
 
-/// A fix worker on the red transcript; its files committed when it returns.
-/// A dead worker is settled and counted by the gate that follows (a tree it
-/// did not change is a cache hit, red again). `false` when the worker hit a
-/// usage limit (FR-9): the run is paused and this attempt gets another fix
-/// worker, no gate run between.
+/// A fix worker on the red transcript; what it changed is committed however
+/// it ended — done, dead or on a usage limit — and before its outcome is
+/// saved, so a driver killed in between leaves it to the resume. A dead
+/// worker is settled and counted by the gate that follows (a tree it did not
+/// change is a cache hit, red again). `false` when the worker hit a usage
+/// limit (FR-9): the run is paused and this attempt gets another fix worker,
+/// no gate run between.
 #[allow(clippy::too_many_arguments)]
 fn fix_once(
     run: &mut Run,
@@ -567,10 +574,10 @@ fn fix_once(
     gate_log: &Path,
     out: &mut dyn Write,
 ) -> Result<bool> {
-    let repo = run.state().repo.clone();
     let spawn = run.state().workers.len() as u32 + 1;
     let packs = scheduler::packs_dir(run.dir());
     let pack = Pack::for_fix(docs, board, n, attempt, gate_log, &packs, spawn)?;
+    let before = scheduler::snapshot(run, &scheduler::checkpoint_key(n, "fix"))?;
     let worker = Worker::spawn(
         run,
         Job::Fix {
@@ -592,7 +599,21 @@ fn fix_once(
         ),
     )?;
     let exit = worker.wait()?;
-    if let Some(limit) = Limit::from(&exit.summary) {
+    let limit = Limit::from(&exit.summary);
+    let dead = limit.is_none() && exit.summary.is_dead();
+    commit_fix(
+        run,
+        board,
+        n,
+        attempt,
+        row_id,
+        &session_id,
+        &exit.summary,
+        &before,
+        !dead && limit.is_none(),
+        out,
+    )?;
+    if let Some(limit) = limit {
         settle(
             run,
             row_id,
@@ -611,7 +632,7 @@ fn fix_once(
         )?;
         return Ok(false);
     }
-    if exit.summary.is_dead() {
+    if dead {
         settle(run, row_id, &session_id, &exit.summary, WorkerOutcome::Dead)?;
         run.emit(EventKind::WorkerDead {
             slice: None,
@@ -629,7 +650,30 @@ fn fix_once(
         return Ok(true);
     }
     settle(run, row_id, &session_id, &exit.summary, WorkerOutcome::Done)?;
-    let spec = Pathspec::from_stream(&exit.summary, board, &repo);
+    Ok(true)
+}
+
+/// A fix worker's commit: the paths its stream named (less the protected
+/// files) and the tracked files it changed unnamed — nothing else is live at
+/// a checkpoint (AD-20007); its new unnamed files are listed, not committed.
+/// `fix: gate red at checkpoint n`. A worker that changed nothing says so
+/// only when `say_nothing`. The scheduler settles a dead driver's fix worker
+/// through here too.
+#[allow(clippy::too_many_arguments)]
+pub fn commit_fix(
+    run: &mut Run,
+    board: &Status,
+    n: u32,
+    attempt: u32,
+    row_id: i64,
+    session_id: &str,
+    summary: &Summary,
+    before: &HashSet<String>,
+    say_nothing: bool,
+    out: &mut dyn Write,
+) -> Result<()> {
+    let repo = run.state().repo.clone();
+    let spec = Pathspec::from_stream(summary, board, &repo);
     for path in &spec.protected {
         say(
             out,
@@ -638,11 +682,12 @@ fn fix_once(
             ),
         )?;
     }
-    match commit::commit(
-        &repo,
-        &spec.paths,
-        &format!("fix: gate red at checkpoint {n}"),
-    )? {
+    let skip: HashSet<String> = spec.paths.iter().chain(&spec.protected).cloned().collect();
+    let found = scheduler::unnamed(run, board, before, &skip, true)?;
+    note_leftovers(run, n, "fix", &found, out)?;
+    let mut paths = spec.paths.clone();
+    paths.extend(found.sweep);
+    match commit::commit(&repo, &paths, &format!("fix: gate red at checkpoint {n}"))? {
         Some(c) => {
             run.db().set_worker_commit(row_id, &c.sha)?;
             say(
@@ -661,30 +706,74 @@ fn fix_once(
                 files: c.files,
             })?;
         }
-        None => say(
+        None if say_nothing => say(
             out,
             &format!("checkpoint {n}: fix worker {session_id} changed nothing to commit"),
         )?,
+        None => {}
     }
-    Ok(true)
+    Ok(())
+}
+
+/// The unnamed changes of a checkpoint's worker, said and logged: the swept
+/// ones go in its commit, the listed ones stay in the tree.
+fn note_leftovers(
+    run: &mut Run,
+    n: u32,
+    role: &str,
+    found: &scheduler::Unnamed,
+    out: &mut dyn Write,
+) -> Result<()> {
+    if !found.sweep.is_empty() {
+        say(
+            out,
+            &format!(
+                "checkpoint {n}: {role} worker changed {} tracked file(s) no tool call named — in its commit: {}",
+                found.sweep.len(),
+                found.sweep.join(", ")
+            ),
+        )?;
+    }
+    if !found.listed.is_empty() {
+        run.emit(EventKind::CheckpointLeftovers {
+            n,
+            role: role.to_string(),
+            files: found.listed.clone(),
+        })?;
+        say(
+            out,
+            &format!(
+                "checkpoint {n}: {role} worker left {} file(s) no tool call named — not committed: {}",
+                found.listed.len(),
+                found.listed.join(", ")
+            ),
+        )?;
+    }
+    Ok(())
 }
 
 /// `render --write`, then one commit of the feature folder, `docs/index.md`
 /// and whatever else the checkpoint worker's stream named.
-fn commit_checkpoint(
+#[allow(clippy::too_many_arguments)]
+pub fn commit_checkpoint(
     run: &mut Run,
     docs: &Docs,
     board: &Status,
     n: u32,
     row_id: i64,
     spec: &Pathspec,
+    before: &HashSet<String>,
     out: &mut dyn Write,
 ) -> Result<Option<String>> {
     let repo = run.state().repo.clone();
     docs.render_write()?;
     let mut want = vec![board.dir.clone(), "docs/index.md".to_string()];
     want.extend(spec.paths.iter().cloned());
-    let files = commit::expand(&repo, &want)?;
+    let mut files = commit::expand(&repo, &want)?;
+    let skip: HashSet<String> = files.iter().chain(&spec.protected).cloned().collect();
+    let found = scheduler::unnamed(run, board, before, &skip, true)?;
+    note_leftovers(run, n, "checkpoint", &found, out)?;
+    files.extend(found.sweep);
     match commit::commit(&repo, &files, &format!("docs: checkpoint {n}"))? {
         Some(c) => {
             run.db().set_worker_commit(row_id, &c.sha)?;

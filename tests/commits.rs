@@ -596,3 +596,76 @@ fn a_resumed_driver_judges_an_orphans_leftovers_against_its_spawn_baseline() {
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     wait_phase(&fx, &dir, "finished", 30);
 }
+
+// ── AD-20007: tracked files no tool call named ──────────────────────────────
+
+/// A tracked `src/extra.txt` a worker can change without naming it.
+fn track_extra(fx: &Fixture) {
+    fs::write(fx.path().join("src/extra.txt"), "extra\n").unwrap();
+    fx.git(&["add", "src/extra.txt"]);
+    fx.git(&["commit", "-q", "-m", "chore: track extra"]);
+}
+
+#[test]
+fn a_lone_workers_unnamed_tracked_change_goes_in_its_slice_commit() {
+    let fx = Fixture::with_index("commits-sweep-alone", &[("checkpoint_every", "10")]);
+    fx.chain();
+    track_extra(&fx);
+    // Slice 01 changes a tracked file no tool call names (a `sed -i`, a
+    // formatter); nothing else runs beside it.
+    fx.write_plan(&[
+        json!({"outcome": "done", "stray": ["src/extra.txt"]}),
+        json!({"outcome": "done"}),
+        json!({"outcome": "done"}),
+        json!({"outcome": "checkpoint"}),
+    ]);
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "finished", 40);
+
+    assert_slice_commit(&fx, &dir, 1, "A", &["src/extra.txt", "src/lib.txt"]);
+    assert_slice_commit(&fx, &dir, 2, "B", &["src/lib.txt"]);
+    assert_eq!(count(&kinds(&dir), "untracked_leftovers"), 0);
+    assert_eq!(fx.git(&["status", "--porcelain"]), "");
+    assert!(
+        driver_log(&dir).contains("changed 1 tracked file(s) no tool call named"),
+        "{}",
+        driver_log(&dir)
+    );
+}
+
+#[test]
+fn an_unnamed_tracked_change_beside_a_live_sibling_is_listed_not_committed() {
+    let fx = Fixture::with_index("commits-sweep-sibling", &[("checkpoint_every", "10")]);
+    track_extra(&fx);
+    // 01 and 02 start together; 01 returns while 02 still runs, so whose
+    // the tracked change is cannot be told: it is listed, not committed.
+    fx.write_plan(&[
+        json!({"outcome": "done", "touch": ["src/a.txt"], "stray": ["src/extra.txt"]}),
+        json!({"outcome": "done", "delay_ms": 1500, "touch": ["src/b.txt"]}),
+        json!({"outcome": "done", "touch": ["src/c.txt"]}),
+        json!({"outcome": "checkpoint"}),
+    ]);
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "finished", 40);
+
+    assert_slice_commit(&fx, &dir, 1, "A", &["src/a.txt"]);
+    assert_slice_commit(&fx, &dir, 2, "B", &["src/b.txt"]);
+    assert_slice_commit(&fx, &dir, 3, "C", &["src/c.txt"]);
+    let leftovers: Vec<Value> = events(&dir)
+        .into_iter()
+        .filter(|e| e["kind"] == "untracked_leftovers")
+        .collect();
+    assert_eq!(leftovers.len(), 1, "{leftovers:?}");
+    assert_eq!(leftovers[0]["slice"], 1);
+    assert_eq!(leftovers[0]["files"], json!(["src/extra.txt"]));
+    // In no commit after the one that tracked it, still modified.
+    let touching = fx.git(&["log", "--format=%s", "--", "src/extra.txt"]);
+    assert_eq!(touching.trim(), "chore: track extra");
+    assert!(
+        fx.git(&["status", "--porcelain"])
+            .contains(" M src/extra.txt"),
+        "{}",
+        fx.git(&["status", "--porcelain"])
+    );
+    assert!(fx.read(AGENT_LOG).contains("- src/extra.txt"));
+}

@@ -4,7 +4,9 @@
 //! write-tree` gives the working tree — tracked, modified, untracked and not
 //! ignored, `docs/` left out — built on a throwaway index so the repo's own
 //! index is never touched, plus the gate command. Hits and misses live in
-//! `runs/<id>/gate-cache.json`, so a resumed run reuses a green gate.
+//! `runs/<id>/gate-cache.json`, so a resumed run reuses a green gate. A
+//! green on a tree with changes outside `docs/` is not stored: what it
+//! tested is not what HEAD holds.
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};

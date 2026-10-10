@@ -1214,3 +1214,136 @@ fn two_dead_checkpoint_workers_block_the_run_and_the_answer_spawns_a_third() {
     );
     assert_two_checkpoints(&fx, &dir);
 }
+
+// ── finding Xd4 / AD-20007: a fix worker's changes, however it ended ────────
+
+#[test]
+fn a_dead_fix_workers_changes_are_committed_before_the_gate_runs_again() {
+    let fx = Fixture::new("cp-dead-fix");
+    fx.chain();
+    fx.script_gate(&["red"]);
+    fx.write_plan(&[
+        done(),
+        done(),
+        json!({"outcome": "dead", "delay_ms": 3000}),
+        step("checkpoint"),
+        done(),
+        step("checkpoint"),
+    ]);
+    let dir = start(&fx);
+    wait_until(&fx, &dir, "the fix worker", 40, || fx.calls().len() >= 3);
+    // What the fix worker changed before it died, through a tool call the
+    // stream never flushed.
+    fs::write(fx.path().join("src/lib.txt"), "fixed before the death\n").unwrap();
+    wait_phase(&fx, &dir, "finished", 60);
+
+    assert_eq!(prompts(&fx)[2], fix(1));
+    let sha = sha_of(&fx, "fix: gate red at checkpoint 1");
+    assert_eq!(files_of(&fx, &sha), ["src/lib.txt"]);
+    let committed = of_kind(&dir, "fix_committed");
+    assert_eq!(committed.len(), 1, "{committed:?}");
+    assert_eq!(committed[0]["attempt"], 1);
+    assert_eq!(committed[0]["sha"], sha);
+    assert_eq!(of_kind(&dir, "worker_dead").len(), 1);
+    // The commit lands before the gate's second run, which sees the fix.
+    assert!(
+        seq_first(&dir, "fix_committed") < of_kind(&dir, "gate_run")[1]["seq"].as_u64().unwrap()
+    );
+    assert_eq!(
+        gate_shape(&gates(&fx, &dir), 1),
+        [(true, false, 1), (false, false, 2)]
+    );
+    let subjects = subjects(&fx);
+    let at = |s: &str| subjects.iter().position(|x| x == s).unwrap();
+    assert!(at("fix: gate red at checkpoint 1") < at("docs: checkpoint 1"));
+}
+
+#[test]
+fn a_green_gate_on_a_tree_dirty_outside_docs_is_not_cached() {
+    let fx = Fixture::new("cp-dirty-green");
+    fx.chain();
+    // notes.txt is listed, never committed: both gates run on a dirty tree.
+    fx.write_plan(&[
+        json!({"outcome": "done", "stray": ["notes.txt"]}),
+        done(),
+        step("checkpoint"),
+        done(),
+        step("checkpoint"),
+    ]);
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "finished", 60);
+
+    assert!(fx.path().join("notes.txt").exists());
+    let rows = gates(&fx, &dir);
+    assert_eq!(gate_shape(&rows, 1), [(false, false, 1)]);
+    assert_eq!(gate_shape(&rows, 2), [(false, false, 1)]);
+    let cache = factory::gatecache::GateCache::load(&dir).unwrap();
+    assert!(cache.is_empty(), "{cache:?}");
+}
+
+// ── finding Xc4: a checkpoint worker that outlives its driver ───────────────
+
+#[test]
+fn a_checkpoint_worker_that_outlives_its_driver_gets_its_checkpoint_committed() {
+    let fx = Fixture::new("cp-orphan-done");
+    fx.chain();
+    fx.write_plan(&[
+        done(),
+        done(),
+        json!({"outcome": "checkpoint", "delay_ms": 3000}),
+        done(),
+        step("checkpoint"),
+    ]);
+    let dir = start(&fx);
+    let driver = state(&dir)["pid"].as_u64().unwrap() as u32;
+    wait_until(&fx, &dir, "the checkpoint worker", 30, || {
+        fx.calls().len() == 3 && kinds(&dir).iter().any(|k| k == "checkpoint_spawned")
+    });
+    // SAFETY: a plain kill(2) on the detached driver; its worker lives on.
+    assert_eq!(unsafe { libc::kill(driver as i32, libc::SIGKILL) }, 0);
+    wait_until(&fx, &dir, "the driver to die", 5, || !pid_alive(driver));
+    wait_until(&fx, &dir, "the orphan to write CP-1", 20, || {
+        fx.read(AGENT_LOG).contains("### CP-1")
+    });
+    assert!(!subjects(&fx).iter().any(|s| s == "docs: checkpoint 1"));
+
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    wait_phase(&fx, &dir, "finished", 60);
+
+    assert_eq!(
+        prompts(&fx),
+        [
+            build(1),
+            build(2),
+            checkpoint(1),
+            build(3),
+            checkpoint(2),
+            polish()
+        ]
+    );
+    let subjects = subjects(&fx);
+    let at = |s: &str| {
+        subjects
+            .iter()
+            .position(|x| x == s)
+            .unwrap_or_else(|| panic!("{s}: {subjects:?}"))
+    };
+    assert!(at("feat: B") < at("docs: checkpoint 1"), "{subjects:?}");
+    assert!(at("docs: checkpoint 1") < at("feat: C"), "{subjects:?}");
+    let sha = sha_of(&fx, "docs: checkpoint 1");
+    assert!(
+        files_of(&fx, &sha).contains(&AGENT_LOG.to_string()),
+        "{:?}",
+        files_of(&fx, &sha)
+    );
+    let done: Vec<u64> = of_kind(&dir, "checkpoint_done")
+        .iter()
+        .map(|e| e["n"].as_u64().unwrap())
+        .collect();
+    assert_eq!(done, [1, 2]);
+    assert_eq!(of_kind(&dir, "checkpoint_done")[0]["sha"], sha);
+    let workers = db(&fx).workers(&run_id(&dir)).unwrap();
+    assert_eq!(workers[2].outcome.as_deref(), Some("done"));
+    assert_eq!(workers[2].commit_sha.as_deref(), Some(sha.as_str()));
+}

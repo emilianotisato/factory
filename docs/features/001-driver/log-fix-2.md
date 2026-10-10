@@ -39,3 +39,11 @@
 **Because:** switching back is the whole fix, so a block and an answer would add a step without adding information. A park that clears itself keeps the run. The process-wide hold also covers the polish, ship and CI-fix commits in `closeout.rs`, which this fixer may not edit.
 **Undo:** drop the `branch_refusal` block at the top of the `drive_inner` loop, and the `held` check in `commit::commit`.
 **Review:** fyi
+
+### AD-20007 — Whose are the tracked files a worker changed without naming them? · polish · 2026-10-10
+
+**Chose:** the worker's, when nothing else ran beside it. A file changed since the worker's spawn baseline that no tool call named goes in the worker's commit if it is tracked, not protected, and no other worker was live. That applies to a slice worker with no sibling, and to every fix and checkpoint worker, since the lanes drain before a checkpoint. With a sibling live, the file is listed (an `untracked_leftovers` event and the fragment's list for a slice, `checkpoint_leftovers` at a checkpoint) and left in the tree. A new, untracked file that no tool call named is always listed, never committed, as before. A file once listed is never swept later. Each checkpoint worker's baseline is saved under `runs/<id>/untracked-before/checkpoint-n-<role>.json`, as a slice's is, so a resumed driver judges an orphan the same way.
+**Over:** listing every tracked change as well (it would leave a `sed -i` or a formatter's edit uncommitted for good); or sweeping with siblings live (whose change it is cannot be told).
+**Because:** with one worker running, a tracked file that changed under it is its work. The commit message already names the worker, so the sweep loses nothing, and `git diff` of the commit shows it. An untracked file can be a scratch file, a build output that `.gitignore` misses, or a secret, so it stays a human call. The cost is that an owner editing a tracked file by hand during a lone worker's run sees the edit in that worker's commit.
+**Undo:** pass `alone: false` to `scheduler::unnamed` everywhere, so every unnamed change is listed.
+**Review:** fyi
