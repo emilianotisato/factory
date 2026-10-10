@@ -1,6 +1,6 @@
 //! One commit per slice, by pathspec (PRD §7 FR-5). The paths are the
-//! `file_path` of every `Edit`, `Write` and `NotebookEdit` call in the
-//! worker's stream (§4 FR-2: the stream is the record) plus the slice file
+//! `file_path` of every `Edit` and `Write` call and the `notebook_path` of
+//! every `NotebookEdit` call in the worker's stream (§4 FR-2: the stream is the record) plus the slice file
 //! and its log fragment; the message is `feat: <slice title>`, no body, no
 //! trailers, the repo's own `user.*`. Never `git add -A`: another lane may be
 //! mid-write in the same tree, and only named paths move. What the worker
@@ -20,7 +20,7 @@ use crate::error::io;
 use crate::stream::Summary;
 use crate::{Error, Result};
 
-/// The tools whose `input.file_path` names a file the worker wrote.
+/// The tools whose input names a file the worker wrote ([`written_paths`]).
 pub const WRITING_TOOLS: &[&str] = &["Edit", "Write", "NotebookEdit"];
 
 /// The three files no worker may write (`deliver/SKILL.md`): they are the
@@ -106,13 +106,20 @@ impl Pathspec {
     }
 }
 
-/// The `file_path` of every writing tool call in the stream, as given.
+/// The path every writing tool call in the stream names, as given:
+/// `file_path` for `Edit` and `Write`, `notebook_path` for `NotebookEdit`.
 pub fn written_paths(summary: &Summary) -> impl Iterator<Item = &str> {
     summary
         .tool_uses
         .iter()
         .filter(|t| WRITING_TOOLS.contains(&t.name.as_str()))
-        .filter_map(|t| t.input.get("file_path").and_then(|v| v.as_str()))
+        .filter_map(|t| {
+            let key = match t.name.as_str() {
+                "NotebookEdit" => "notebook_path",
+                _ => "file_path",
+            };
+            t.input.get(key).and_then(|v| v.as_str())
+        })
 }
 
 fn push_once(v: &mut Vec<String>, s: String) {
@@ -387,10 +394,15 @@ mod tests {
     }
 
     fn tool(name: &str, file_path: &str) -> ToolUse {
+        // The input key Claude Code sends for each tool.
+        let input = match name {
+            "NotebookEdit" => json!({ "notebook_path": file_path, "new_source": "x" }),
+            _ => json!({ "file_path": file_path }),
+        };
         ToolUse {
             id: format!("toolu_{name}"),
             name: name.to_string(),
-            input: json!({ "file_path": file_path }),
+            input,
             result_chars: None,
             ts: None,
             result_ts: None,
@@ -524,7 +536,10 @@ mod tests {
         // The worker's path is unchanged, the owner's is staged: no commit.
         let mine = vec!["kept.txt".to_string()];
         assert_eq!(commit(r, &mine, "feat: nothing").unwrap(), None);
-        assert_eq!(git(r, &["rev-list", "--count", "HEAD"]).unwrap().trim(), "1");
+        assert_eq!(
+            git(r, &["rev-list", "--count", "HEAD"]).unwrap().trim(),
+            "1"
+        );
 
         fs::write(r.join("kept.txt"), "k2\n").unwrap();
         let c = commit(r, &mine, "feat: mine").unwrap().unwrap();
