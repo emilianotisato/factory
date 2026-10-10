@@ -755,6 +755,7 @@ fn answer_takes_the_open_block_and_prefers_the_parked_feature() {
     }
 
     // 001's run is parked: its block is the one the owner means.
+    factory::scheduler::set_slice_status(&fx.slice_path(1), "blocked").unwrap();
     let run = parked_run(&fx);
     let out = factory(&fx, &["answer", "BLOCK-101", "use sqlite"]);
     let text = stdout(&out);
@@ -779,24 +780,144 @@ fn answer_takes_the_open_block_and_prefers_the_parked_feature() {
 #[test]
 fn block_answered_is_logged_before_the_slice_flips() {
     // The flip is what a live driver acts on; an event logged after it can
-    // land behind the `slice_spawned` it caused. A block on slice 04, which
-    // has no file, makes the flip fail: whatever was logged before it shows.
+    // land behind the `slice_spawned` it caused. A read-only slice file
+    // makes the flip fail: whatever was logged before it shows.
     let fx = Fixture::new("answer-order");
-    fs::write(
-        fx.path().join(harness::FEATURE_DIR).join("log-slice-04.md"),
-        "## Blockers\n\n### BLOCK-401 — Which store? · slice-04 · open\n",
-    )
-    .unwrap();
+    let frag = fx.path().join(harness::FEATURE_DIR).join("log-slice-01.md");
+    fs::write(&frag, block_fragment("open")).unwrap();
+    let slice = fx.slice_path(1);
+    factory::scheduler::set_slice_status(&slice, "blocked").unwrap();
     let run = parked_run(&fx);
-    let out = factory(&fx, &["answer", "BLOCK-401", "use sqlite"]);
+    let mode = |m: u32| {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&slice, fs::Permissions::from_mode(m)).unwrap();
+    };
+    mode(0o444);
+    let out = factory(&fx, &["answer", "BLOCK-101", "use sqlite"]);
+    mode(0o644);
     assert_ne!(out.status.code(), Some(0), "{}", stdout(&out));
     let answered: Vec<Value> = events(run.dir())
         .into_iter()
         .filter(|e| e["kind"] == "block_answered")
         .collect();
     assert_eq!(answered.len(), 1, "{:?}", kinds(run.dir()));
-    assert_eq!(answered[0]["id"], "BLOCK-401");
-    assert_eq!(answered[0]["slice"], 4);
+    assert_eq!(answered[0]["id"], "BLOCK-101");
+    assert_eq!(answered[0]["slice"], 1);
+    assert!(run.dir().join("answers/BLOCK-101.json").is_file());
+    assert_eq!(fx.slice_status(1), "blocked");
+}
+
+#[test]
+fn an_answer_that_stopped_before_the_flip_is_finished_by_a_retry() {
+    let fx = Fixture::new("answer-retry");
+    let frag = fx.path().join(harness::FEATURE_DIR).join("log-slice-01.md");
+    fs::write(&frag, block_fragment("open")).unwrap();
+    let slice = fx.slice_path(1);
+    factory::scheduler::set_slice_status(&slice, "blocked").unwrap();
+    let run = parked_run(&fx);
+    let mode = |m: u32| {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&slice, fs::Permissions::from_mode(m)).unwrap();
+    };
+    mode(0o444);
+    let out = factory(&fx, &["answer", "BLOCK-101", "use sqlite"]);
+    mode(0o644);
+    assert_ne!(out.status.code(), Some(0), "{}", stdout(&out));
+    assert!(fs::read_to_string(&frag).unwrap().contains("· resolved\n"));
+
+    // The retry finds the heading resolved and the answer on file: it
+    // finishes the flip instead of refusing an "already resolved" block.
+    let out = factory(&fx, &["answer", "BLOCK-101", "use sqlite"]);
+    let text = stdout(&out);
+    assert_eq!(out.status.code(), Some(0), "{text}");
+    assert!(text.contains("holds its answer — finishing it"), "{text}");
+    assert!(text.contains("slice 01 → building"), "{text}");
+    assert_eq!(fx.slice_status(1), "building");
+    assert_eq!(
+        fs::read_to_string(&frag)
+            .unwrap()
+            .matches("**Resolution (")
+            .count(),
+        1
+    );
+    assert!(run.dir().join("answers/BLOCK-101.json").is_file());
+
+    // Once delivered, the block is refused as before.
+    let out = factory(&fx, &["answer", "BLOCK-101", "use sqlite"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+    assert!(
+        stdout(&out).contains("BLOCK-101 is already resolved"),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn a_block_on_a_missing_slice_file_writes_nothing() {
+    let fx = Fixture::new("answer-no-slice");
+    let frag = fx.path().join(harness::FEATURE_DIR).join("log-slice-04.md");
+    let block = "## Blockers\n\n### BLOCK-401 — Which store? · slice-04 · open\n";
+    fs::write(&frag, block).unwrap();
+    let run = parked_run(&fx);
+    let out = factory(&fx, &["answer", "BLOCK-401", "use sqlite"]);
+    assert_ne!(out.status.code(), Some(0), "{}", stdout(&out));
+    assert_eq!(fs::read_to_string(&frag).unwrap(), block);
+    assert!(!run.dir().join("answers/BLOCK-401.json").exists());
+    assert_eq!(count(&kinds(run.dir()), "block_answered"), 0);
+}
+
+#[test]
+fn an_answer_flips_only_a_blocked_slice() {
+    let fx = Fixture::new("answer-done-slice");
+    let frag = fx.path().join(harness::FEATURE_DIR).join("log-slice-01.md");
+    fs::write(&frag, block_fragment("open")).unwrap();
+    factory::scheduler::set_slice_status(&fx.slice_path(1), "done").unwrap();
+    let run = parked_run(&fx);
+    let out = factory(&fx, &["answer", "BLOCK-101", "use sqlite"]);
+    let text = stdout(&out);
+    assert_eq!(out.status.code(), Some(0), "{text}");
+    assert!(text.contains("slice 01 is done: left as is"), "{text}");
+    assert_eq!(fx.slice_status(1), "done");
+    assert!(fs::read_to_string(&frag).unwrap().contains("· resolved\n"));
+    assert!(run.dir().join("answers/BLOCK-101.json").is_file());
+}
+
+/// A pid no process holds: a child that already exited.
+fn dead_pid() -> u32 {
+    let mut child = std::process::Command::new("true").spawn().unwrap();
+    let pid = child.id();
+    child.wait().unwrap();
+    pid
+}
+
+#[test]
+fn an_answer_to_a_run_parked_on_its_budget_says_so_and_starts_no_driver() {
+    let fx = Fixture::new("answer-budget");
+    let frag = fx.path().join(harness::FEATURE_DIR).join("log-slice-01.md");
+    fs::write(&frag, block_fragment("open")).unwrap();
+    factory::scheduler::set_slice_status(&fx.slice_path(1), "blocked").unwrap();
+    // Budget 0 and a worker that spent 10 weighted tokens; no live driver.
+    let run = parked_run(&fx);
+    run.db()
+        .conn()
+        .execute(
+            "INSERT INTO workers (run_id, role, started_at, input) VALUES (?1, 'build', 'x', 10)",
+            [run.id().as_str()],
+        )
+        .unwrap();
+    let mut s: Value =
+        serde_json::from_str(&fs::read_to_string(run.dir().join("state.json")).unwrap()).unwrap();
+    s["pid"] = json!(dead_pid());
+    fs::write(run.dir().join("state.json"), s.to_string()).unwrap();
+    let out = factory(&fx, &["answer", "BLOCK-101", "use sqlite"]);
+    let text = stdout(&out);
+    assert_eq!(out.status.code(), Some(0), "{text}");
+    assert!(
+        text.contains("is parked on its budget (10 weighted tokens, budget 0) — `factory run 001 --budget <higher>` resumes it"),
+        "{text}"
+    );
+    assert!(!text.contains("driver pid"), "{text}");
+    assert!(!run.dir().join("driver.log").exists());
 }
 
 /// Lane files for lanes 1 and 2 whose setup appends a line to

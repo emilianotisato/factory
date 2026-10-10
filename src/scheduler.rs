@@ -1756,6 +1756,24 @@ pub fn set_slice_status(path: &Path, status: &str) -> Result<()> {
     set_frontmatter(path, &[("status", status)])
 }
 
+/// The `status:` of a slice file's frontmatter; `None` when it has none.
+pub fn read_slice_status(path: &Path) -> Result<Option<String>> {
+    let mut status = None;
+    let text = fs::read_to_string(path).map_err(io(format!("read {}", path.display())))?;
+    let fm = text
+        .strip_prefix("---\n")
+        .or_else(|| text.strip_prefix("---\r\n"))
+        .and_then(|rest| rest.find("\n---").map(|end| &rest[..end]))
+        .ok_or_else(|| crate::Error::Msg(format!("{} has no frontmatter", path.display())))?;
+    for line in fm.lines() {
+        if let Some(v) = line.strip_prefix("status:") {
+            status = Some(v.trim().trim_matches(|c| c == '"' || c == '\'').to_string());
+            break;
+        }
+    }
+    Ok(status)
+}
+
 /// Set `key: value` lines in a slice file's frontmatter: an existing key is
 /// rewritten in place, a missing one appended before the closing `---`.
 /// Nothing below the frontmatter is touched.
