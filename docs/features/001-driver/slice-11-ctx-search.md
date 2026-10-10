@@ -31,6 +31,12 @@ depends_on: [1]
   | outline | arca-api | `factory ctx outline internal/caea` (116 files) | 0.060, 0.052, 0.047 | 0.052 |
   | outline | arca-api | `factory ctx outline internal/` (no files in it) | 0.002, 0.002, 0.002 | 0.002 |
 
+**Code-review fixes (2026-10-10).**
+- `def`'s regex prefilter missed shapes that `outline` lists (TypeScript `export default function`, getters, generic members and multi-line parameters; PHP modifiers in any order; Rust `const fn` and `extern "C" fn`; Go's grouped `type ( … )`), so `def` said not found and the pack's recon dropped them silently (C1). Each language's patterns are widened, the tree still confirms every hit, and `def_finds_every_shape_outline_lists` pins each shape against `outline` (AD-40001).
+- `refs::is_test` matched substrings, so `Inspector.php`, `respect.rs`, `latest/` and `contest/` were hidden as tests (C6). A test path is now a `test`, `tests`, `spec`, `specs` or `__tests__` segment, or a file name ending `_test.go` or holding `.test.` or `.spec.`, which refines AD-1106 (AD-40003).
+- `build/`, `dist/` and `storage/` were skipped at any depth, which hid source such as `src/build/` or `app/storage/` (Cn5). They are now skipped only directly under the search root, while `vendor/`, `node_modules/` and `target/` stay skipped at any depth; this slice's walk test now plants `php/build/` as walked, not skipped (AD-40004, `decide`).
+- `refs`' `\b` boundary cannot match before a `$`, so a `$`-led name such as `$user` was never found (Cn6). It is found now.
+
 **Slice**: After this slice `factory ctx def`, `refs` and `outline` exist with the textual engine: an `ignore`-based walker that skips vendor and gitignored paths, a per-language definition regex for PHP, TypeScript, Go and Rust run through the grep crates, a word-boundary reference search collapsed per file with caps and a trailer, and the compact printer with its two context lines. `def` prints the regex match with context; the exact body and the comment/string filtering arrive with tree-sitter in slice 12, so `--no-body` exists but the body printed here is the context window. `outline` is a stub that says so and exits 0. Fixture files per stack pin the output.
 
 ## Current code / environment

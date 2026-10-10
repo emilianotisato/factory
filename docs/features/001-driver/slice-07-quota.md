@@ -35,6 +35,11 @@ Evidence for the FR-9 Prove row, from the two `tests/quota.rs` runs kept with `F
 {"kind": "run_finished", "seq": 22, "ts": "2026-10-10T10:58:33Z"}
 ```
 
+**Code-review fixes (2026-10-10).**
+- `quota::pause` kept the later deadline, so a 15-minute guess (a limit with no `resetsAt`) held spawning past an earlier reported reset (Xq1). A reported `resetsAt` now replaces a guess, earlier or later, a guess never pushes past a report, and one pause announces once.
+- The budget was compared after rounding, so a spend of 1.4 passed a budget of 1 (Xq2). `quota::hold` now parks when the unrounded weighted sum is above the budget, still `>` as §11's "Past the budget" says (AD-20014), and slice 10's `status` line rounds up to match (AD-50004).
+- The tick checked `quota::hold` before it settled orphans and then went on, so an orphan whose limit or tokens should have paused or parked the run was followed by a spawn in the same tick, and a settled checkpoint orphan ran the gate during a pause (Xc1, Xd6). The hold is now checked again after any orphan settles.
+
 **Slice**: After this slice a run survives the five-hour window closing. The driver reads the `rate_limit_event` and the `result` error of every worker; a limit reached means pause: no new spawns, in-flight workers finish, one event, resume at the reset time the stream gave or on a 15-minute retry when it gave none. A pause never counts against any cap. The second half is spend: a per-run weighted token budget from `config.toml`, summed over every worker row, that parks the run when crossed and resumes with `--budget`.
 
 ## Current code / environment

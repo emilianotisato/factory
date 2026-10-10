@@ -49,6 +49,10 @@ sqlite> SELECT count(*) FROM tool_calls;
 19
 ```
 
+**Code-review fixes (2026-10-10).**
+- `metrics::first_word` split on whitespace, so `FOO="a b" grep x .` or `cd /r&&sed …` read as `run` while `ctx_kind` and the hook read them as a shell would (Cn8). It now takes `shell::first_command`'s first word with its directory dropped, which supersedes AD-1309's clause that the other kinds keep this slice's whitespace reading (AD-40006).
+- The `--cockpit` measure started at the `skills/deliver` prompt only, so a session run through `/factory-deliver` was measured from its first message (Cn10). It now starts at either skill's prompt.
+
 **Slice**: After this slice a run is measurable without reading a transcript. The driver records every tool call of every worker with its kind, result size, target and whether it repeated, counts the worker's own inner-loop gate runs as `gates` rows, and `factory report <run>` prints the twelve retro keys the old framework's `retro.md` expects plus the eight run keys FR-11 compares. The cockpit's own cost comes from the cockpit session's transcript the same way `measure.py` computed it. The schema was created in slice 02; this slice adds the `tool_calls` table and fills it. Slice 13 adds the `ctx` kinds and the follow-up labels to the same table.
 
 ## Current code / environment
