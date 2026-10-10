@@ -55,3 +55,11 @@
 **Because:** with one worker running, a tracked file that changed under it is its work. The commit message already names the worker, so the sweep loses nothing, and `git diff` of the commit shows it. An untracked file can be a scratch file, a build output that `.gitignore` misses, or a secret, so it stays a human call. The cost is that an owner editing a tracked file by hand during a lone worker's run sees the edit in that worker's commit.
 **Undo:** pass `alone: false` to `scheduler::unnamed` everywhere, so every unnamed change is listed.
 **Review:** fyi
+
+### AD-20008 — Does a slice whose worker died wait for a due checkpoint? · polish · 2026-10-10
+
+**Chose:** yes, on resume and in an unbroken run alike. With `checkpointDue` set, a `building` slice with no live worker (a death below the cap, or an answered block) is not respawned. Workers in flight finish, the checkpoint runs, and the respawn follows it. A death-cap block still happens at once, since it spawns nothing.
+**Over:** respawning first and counting the respawn as part of draining the lanes.
+**Because:** PRD §5 FR-4 says to drain the lanes on `checkpointDue`, and the board reports `spawnable: 0`. A respawn is a spawn. Respawning first also lets a checkpoint cover more than `checkpoint_every` slices. The cost is that the gate runs over the dead worker's half-written changes. The checkpoint commit leaves them out, because they are in its spawn baseline, so the respawned worker still owns them.
+**Undo:** drop the `board.checkpoint_due` skip in the building-respawn loop of `drive_inner`.
+**Review:** fyi

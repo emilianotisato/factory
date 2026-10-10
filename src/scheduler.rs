@@ -313,7 +313,8 @@ fn drive_inner(
         let mut free = free_lanes(&board, table);
         // A `building` slice with nothing alive on it is either answered
         // (an `answers/BLOCK-n.json` names it) or a worker that died below
-        // the cap: either way it gets a fresh worker, on the lane it holds.
+        // the cap: either way it gets a fresh worker, on the lane it holds,
+        // once no checkpoint is due.
         // One whose deaths since the last answer reached the cap is a kill
         // between the second death and the flip: it blocks, it never gets a
         // third worker.
@@ -335,6 +336,11 @@ fn drive_inner(
                     ),
                 )?;
                 capped = true;
+                continue;
+            }
+            // A due checkpoint drains first (FR-4): a respawn is a spawn,
+            // so the slice waits for the checkpoint like a ready one.
+            if board.checkpoint_due {
                 continue;
             }
             let lane = match b.lane {

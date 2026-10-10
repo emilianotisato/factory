@@ -1347,3 +1347,36 @@ fn a_checkpoint_worker_that_outlives_its_driver_gets_its_checkpoint_committed() 
     assert_eq!(workers[2].outcome.as_deref(), Some("done"));
     assert_eq!(workers[2].commit_sha.as_deref(), Some(sha.as_str()));
 }
+
+#[test]
+fn a_due_checkpoint_runs_before_a_dead_slice_respawns() {
+    // A checkpoint every slice; 01 and 02 build at once. 01 is done (the
+    // checkpoint is due) while 02's worker is still running, then dies.
+    let fx = Fixture::with_index("cp-before-respawn", &[("checkpoint_every", "1")]);
+    fx.write_plan(&[
+        done(),
+        json!({"outcome": "dead", "delay_ms": 1500}),
+        step("checkpoint"),
+        done(),
+        step("checkpoint"),
+        done(),
+        step("checkpoint"),
+    ]);
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "finished", 90);
+    assert_eq!(
+        prompts(&fx),
+        [
+            build(1),
+            build(2),
+            checkpoint(1),
+            build(2),
+            checkpoint(2),
+            build(3),
+            checkpoint(3),
+            polish()
+        ],
+        "{}",
+        driver_log(&dir)
+    );
+}
