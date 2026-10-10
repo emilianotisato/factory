@@ -32,17 +32,35 @@ pub const DIR: &str = "workers";
 /// the config key under `[workers]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Job {
-    Build { slice: u32 },
-    Fix { checkpoint: u32, attempt: u32 },
-    Checkpoint { n: u32, attempt: u32 },
+    Build {
+        slice: u32,
+    },
+    Fix {
+        checkpoint: u32,
+        attempt: u32,
+    },
+    Checkpoint {
+        n: u32,
+        attempt: u32,
+    },
+    /// The closeout's polish worker (FR-6); `attempt` counts its spawns.
+    Polish {
+        attempt: u32,
+    },
+    /// A CI fix worker (FR-6): role `fix` with no checkpoint.
+    CiFix {
+        round: u32,
+        attempt: u32,
+    },
 }
 
 impl Job {
     pub fn role(&self) -> &'static str {
         match self {
             Job::Build { .. } => "build",
-            Job::Fix { .. } => "fix",
+            Job::Fix { .. } | Job::CiFix { .. } => "fix",
             Job::Checkpoint { .. } => "checkpoint",
+            Job::Polish { .. } => "polish",
         }
     }
 
@@ -55,7 +73,7 @@ impl Job {
 
     pub fn checkpoint(&self) -> Option<u32> {
         match self {
-            Job::Build { .. } => None,
+            Job::Build { .. } | Job::Polish { .. } | Job::CiFix { .. } => None,
             Job::Fix { checkpoint, .. } => Some(*checkpoint),
             Job::Checkpoint { n, .. } => Some(*n),
         }
@@ -190,6 +208,17 @@ impl Worker {
             },
             Job::Checkpoint { n, attempt } => EventKind::CheckpointSpawned {
                 n,
+                attempt,
+                session_id: session_id.clone(),
+                pid,
+            },
+            Job::Polish { attempt } => EventKind::PolishSpawned {
+                attempt,
+                session_id: session_id.clone(),
+                pid,
+            },
+            Job::CiFix { round, attempt } => EventKind::CiFixSpawned {
+                round,
                 attempt,
                 session_id: session_id.clone(),
                 pid,

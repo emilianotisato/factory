@@ -1,10 +1,18 @@
 #!/usr/bin/env node
 'use strict'
 // Stub `gh` for the cargo test harness (PRD-001 FR-10). Records every call to
-// $FACTORY_STUB_DIR/gh.log, one argv line each, and answers the few verbs the
-// driver reads. CI scenarios (`pr checks --watch`, `run rerun`) are slice 09's.
+// $FACTORY_STUB_DIR/gh.log, one argv line each, and answers the verbs the
+// driver reads. CI (slice 09) is scripted by `scenario/ci` in the cwd (the
+// driver runs gh in the repo root): one line per `pr checks` call —
+//   green                 every check passed, exit 0
+//   red:<check>[@<sha>]   <check> failed at <sha> (default: HEAD), exit 1
+//   flaky:<check>         as red, and `run list` also shows a green run at
+//                         that head, so the driver reruns once
+// A missing line is `green`. Whether `pr create` ran and the reds seen so
+// far live in $FACTORY_STUB_DIR/ci-state.json (`pr view`, `run list`).
 const fs = require('node:fs')
 const path = require('node:path')
+const { execFileSync } = require('node:child_process')
 
 const argv = process.argv.slice(2)
 const stubDir = process.env.FACTORY_STUB_DIR
@@ -17,10 +25,70 @@ if (stubDir) {
 }
 
 const URL = 'https://example.invalid/pr/1'
+const RUNS = 'https://example.invalid/actions/runs'
 const [a, b] = argv
-if (a === 'pr' && b === 'create') console.log(URL)
-else if (a === 'pr' && b === 'view' && argv.includes('--json')) {
-  console.log(JSON.stringify({ number: 1, url: URL, state: 'OPEN', isDraft: true, headRefName: 'feat/fixture' }))
+
+const statePath = stubDir ? path.join(stubDir, 'ci-state.json') : null
+const loadState = () => {
+  if (statePath && fs.existsSync(statePath)) return JSON.parse(fs.readFileSync(statePath, 'utf8'))
+  return { pr: false, checks: 0, reds: [] }
 }
-// `auth status`, `pr edit` and everything else: exit 0 with empty output.
+const saveState = (s) => statePath && fs.writeFileSync(statePath, JSON.stringify(s, null, 2))
+const head = () => {
+  try {
+    return execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+  } catch {
+    return 'unknown'
+  }
+}
+
+if (a === 'pr' && b === 'create') {
+  const state = loadState()
+  state.pr = true
+  saveState(state)
+  console.log(URL)
+} else if (a === 'pr' && b === 'view' && argv.includes('--json')) {
+  // No PR until `pr create` ran (the driver asks before it creates one).
+  if (!loadState().pr) {
+    console.error(`no pull requests found for branch "${argv[2]}"`)
+    process.exit(1)
+  }
+  console.log(JSON.stringify({ number: 1, url: URL, state: 'OPEN', isDraft: true, headRefName: 'feat/fixture' }))
+} else if (a === 'pr' && b === 'checks') {
+  const state = loadState()
+  const k = state.checks++
+  const scenario = path.join(process.cwd(), 'scenario', 'ci')
+  const lines = fs.existsSync(scenario) ? fs.readFileSync(scenario, 'utf8').split('\n').filter((l) => l.trim()) : []
+  const step = (lines[k] ?? 'green').trim()
+  const runId = 1000 + k
+  const m = step.match(/^(red|flaky):([^@\s]+)(?:@(\S+))?$/)
+  if (step === 'green') {
+    console.log(`test\tpass\t1s\t${RUNS}/${runId}`)
+    saveState(state)
+    process.exit(0)
+  }
+  if (!m) {
+    console.error(`stub gh: scenario/ci line ${k + 1} "${step}" is not green, red:<check>[@<sha>] or flaky:<check>`)
+    process.exit(65)
+  }
+  const red = { runId, check: m[2], head: m[3] ?? head(), flaky: m[1] === 'flaky' }
+  state.reds.push(red)
+  saveState(state)
+  console.log(`${red.check}\tfail\t1s\t${RUNS}/${runId}`)
+  process.exit(1)
+} else if (a === 'run' && b === 'list') {
+  const rows = []
+  for (const r of [...loadState().reds].reverse()) {
+    rows.push({ databaseId: r.runId, name: r.check, workflowName: 'ci', conclusion: 'failure', headSha: r.head })
+    if (r.flaky) rows.push({ databaseId: r.runId - 500, name: r.check, workflowName: 'ci', conclusion: 'success', headSha: r.head })
+  }
+  console.log(JSON.stringify(rows))
+} else if (a === 'run' && b === 'view' && argv.includes('--log-failed')) {
+  const id = Number(argv[2])
+  const red = loadState().reds.find((r) => r.runId === id)
+  const check = red?.check ?? 'test'
+  console.log(`${check}\tRun gate\t2026-10-10T00:00:00Z FAIL ${check}: expected 2 got 3`)
+  console.log(`${check}\tRun gate\t2026-10-10T00:00:01Z ##[error]Process completed with exit code 1.`)
+}
+// `auth status`, `pr edit`, `run rerun` and everything else: exit 0, no output.
 process.exit(0)

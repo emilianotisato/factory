@@ -225,6 +225,11 @@ fn checkpoint(n: u32) -> String {
     CHECKPOINT.replace("{n}", &n.to_string())
 }
 
+/// The polish worker's prompt: the slash command, nothing else (slice 09).
+fn polish() -> String {
+    "/polish".into()
+}
+
 /// The pack file a call was given, and its text.
 fn pack_of(call: &Value) -> (String, String) {
     let argv: Vec<&str> = call["argv"]
@@ -382,11 +387,25 @@ fn the_driver_runs_the_gate_at_each_checkpoint_and_commits_the_cp_entries() {
     // Spawn order: the checkpoint sits between slice 02 and slice 03.
     assert_eq!(
         prompts(&fx),
-        [build(1), build(2), checkpoint(1), build(3), checkpoint(2)]
+        [
+            build(1),
+            build(2),
+            checkpoint(1),
+            build(3),
+            checkpoint(2),
+            polish()
+        ]
     );
     assert_eq!(
         roles(&fx, &dir),
-        ["build", "build", "checkpoint", "build", "checkpoint"]
+        [
+            "build",
+            "build",
+            "checkpoint",
+            "build",
+            "checkpoint",
+            "polish"
+        ]
     );
     assert_eq!(
         subjects(&fx),
@@ -398,6 +417,8 @@ fn the_driver_runs_the_gate_at_each_checkpoint_and_commits_the_cp_entries() {
             "docs: checkpoint 1",
             "feat: C",
             "docs: checkpoint 2",
+            "polish: review fixes",
+            "docs: ship PRD-001",
         ]
     );
 
@@ -505,6 +526,11 @@ fn the_driver_runs_the_gate_at_each_checkpoint_and_commits_the_cp_entries() {
             "log_merged",
             "checkpoint_spawned",
             "checkpoint_done",
+            "polish_spawned",
+            "polish_done",
+            "shipped",
+            "pr_opened",
+            "ci_green",
             "run_finished",
         ]
     );
@@ -591,7 +617,8 @@ fn red_red_green_runs_two_fix_workers_and_three_gates_before_the_cp() {
             fix(1),
             checkpoint(1),
             build(3),
-            checkpoint(2)
+            checkpoint(2),
+            polish()
         ]
     );
     assert_eq!(
@@ -603,7 +630,8 @@ fn red_red_green_runs_two_fix_workers_and_three_gates_before_the_cp() {
             "fix",
             "checkpoint",
             "build",
-            "checkpoint"
+            "checkpoint",
+            "polish"
         ]
     );
     // Three gate runs at checkpoint 1, one at checkpoint 2 (slice 03 touched
@@ -638,6 +666,8 @@ fn red_red_green_runs_two_fix_workers_and_three_gates_before_the_cp() {
             "docs: checkpoint 1",
             "feat: C",
             "docs: checkpoint 2",
+            "polish: review fixes",
+            "docs: ship PRD-001",
         ]
     );
     let fixes: Vec<String> = fx
@@ -731,6 +761,11 @@ fn red_red_green_runs_two_fix_workers_and_three_gates_before_the_cp() {
             "log_merged",
             "checkpoint_spawned",
             "checkpoint_done",
+            "polish_spawned",
+            "polish_done",
+            "shipped",
+            "pr_opened",
+            "ci_green",
             "run_finished",
         ]
     );
@@ -867,6 +902,11 @@ fn three_reds_block_the_run_and_the_answer_reruns_the_gate() {
             "log_merged",
             "checkpoint_spawned",
             "checkpoint_done",
+            "polish_spawned",
+            "polish_done",
+            "shipped",
+            "pr_opened",
+            "ci_green",
             "run_finished",
         ]
     );
@@ -883,7 +923,8 @@ fn three_reds_block_the_run_and_the_answer_reruns_the_gate() {
             fix(1),
             checkpoint(1),
             build(3),
-            checkpoint(2)
+            checkpoint(2),
+            polish()
         ]
     );
     let log = fx.read(AGENT_LOG);
@@ -987,6 +1028,11 @@ fn a_run_killed_during_the_checkpoint_worker_resumes_at_the_checkpoint() {
             "log_merged",
             "checkpoint_spawned",
             "checkpoint_done",
+            "polish_spawned",
+            "polish_done",
+            "shipped",
+            "pr_opened",
+            "ci_green",
             "run_finished",
         ]
     );
@@ -1018,11 +1064,12 @@ fn a_run_killed_during_the_checkpoint_worker_resumes_at_the_checkpoint() {
             checkpoint(1),
             checkpoint(1),
             build(3),
-            checkpoint(2)
+            checkpoint(2),
+            polish()
         ]
     );
     let workers = db(&fx).workers(&run_id(&dir)).unwrap();
-    assert_eq!(workers.len(), 6);
+    assert_eq!(workers.len(), 7, "the six and the polish worker");
     assert_eq!(workers[2].outcome.as_deref(), Some("dead"));
     assert_eq!(workers[2].checkpoint, Some(1));
     assert_eq!(workers[3].outcome.as_deref(), Some("done"));
@@ -1132,6 +1179,11 @@ fn two_dead_checkpoint_workers_block_the_run_and_the_answer_spawns_a_third() {
             "log_merged",
             "checkpoint_spawned",
             "checkpoint_done",
+            "polish_spawned",
+            "polish_done",
+            "shipped",
+            "pr_opened",
+            "ci_green",
             "run_finished",
         ]
     );
@@ -1151,7 +1203,8 @@ fn two_dead_checkpoint_workers_block_the_run_and_the_answer_spawns_a_third() {
             checkpoint(1),
             checkpoint(1),
             build(3),
-            checkpoint(2)
+            checkpoint(2),
+            polish()
         ]
     );
     let log = fx.read(AGENT_LOG);

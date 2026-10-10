@@ -101,7 +101,7 @@ pub struct Report {
     pub gate_runs: u64,
     pub gate_red: u64,
     pub gate_minutes: f64,
-    /// Slice 09's; 0 until then.
+    /// CI fix rounds that landed a `fix: CI <check>` commit (FR-6).
     pub ci_cycles: u64,
     pub slices: u64,
     pub checkpoints: u64,
@@ -174,7 +174,7 @@ pub fn compute(db: &Db, run_id: &str, cockpit: Option<&Measure>) -> Result<Repor
         gate_runs: driver.len() as u64,
         gate_red: driver.iter().filter(|g| g.red).count() as u64,
         gate_minutes: round(driver.iter().map(|g| g.minutes).sum(), 2),
-        ci_cycles: 0,
+        ci_cycles: count("ci_fix_committed"),
         slices: count("slice_done"),
         checkpoints: count("checkpoint_done"),
         build_minutes: minutes(&["build", "fix"]),

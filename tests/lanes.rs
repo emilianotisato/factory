@@ -246,8 +246,8 @@ fn two_lanes_build_two_slices_at_once_and_the_third_waits_for_its_dependency() {
     let calls = fx.calls();
     assert_eq!(
         calls.len(),
-        4,
-        "three builds and a checkpoint worker: {calls:?}"
+        5,
+        "three builds, a checkpoint and the polish worker: {calls:?}"
     );
     let builds = builds(&calls);
     assert_eq!(
@@ -310,7 +310,7 @@ fn two_lanes_build_two_slices_at_once_and_the_third_waits_for_its_dependency() {
     assert!(log.contains("), lane 1, pack"), "{log}");
     assert!(log.contains("), lane 2, pack"), "{log}");
     let rows = db(&fx).workers(&id).unwrap();
-    assert_eq!(rows.len(), 4);
+    assert_eq!(rows.len(), 5, "three builds, the checkpoint, the polish");
     assert!(
         rows.iter().all(|r| r.outcome.as_deref() == Some("done")),
         "{rows:?}"
@@ -488,7 +488,7 @@ fn a_blocked_slice_parks_its_lane_and_the_answer_respawns_it() {
     for n in 1..=3 {
         assert_eq!(fx.slice_status(n), "done", "slice {n:02}");
     }
-    assert_eq!(fx.calls().len(), 5);
+    assert_eq!(fx.calls().len(), 6);
     let k = kinds(&dir);
     assert_eq!(count(&k, "slice_spawned"), 4, "{k:?}");
     assert_eq!(count(&k, "slice_done"), 3, "{k:?}");
@@ -509,11 +509,11 @@ fn a_blocked_slice_parks_its_lane_and_the_answer_respawns_it() {
     assert!(answered < respawn, "{k:?}");
     assert!(respawn < seq_of(&dir, "slice_done", 1), "{k:?}");
     let ws = state(&dir)["workers"].as_array().unwrap().clone();
-    assert_eq!(ws.len(), 5);
+    assert_eq!(ws.len(), 6);
     assert_eq!(ws[0]["outcome"], "blocked");
     assert!(ws[1..].iter().all(|w| w["outcome"] == "done"), "{ws:?}");
     let rows = db(&fx).workers(&id).unwrap();
-    assert_eq!(rows.len(), 5);
+    assert_eq!(rows.len(), 6);
     assert_eq!(rows[3].slice, Some(1));
     assert_eq!(rows[3].outcome.as_deref(), Some("done"));
     assert_eq!(db(&fx).run_row(&id).unwrap().unwrap().phase, "finished");
@@ -630,7 +630,7 @@ fn answering_every_ask_starts_the_parked_run() {
     for n in 1..=3 {
         assert_eq!(fx.slice_status(n), "done", "slice {n:02}");
     }
-    assert_eq!(fx.calls().len(), 4);
+    assert_eq!(fx.calls().len(), 5);
     assert_eq!(run_dirs(&fx).len(), 1);
     let k = kinds(&dir);
     assert_eq!(count(&k, "ask_opened"), asks.len(), "{k:?}");

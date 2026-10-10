@@ -377,8 +377,8 @@ fn run_drives_three_slices_through_the_detached_driver() {
     let calls = fx.calls();
     assert_eq!(
         calls.len(),
-        4,
-        "three builds and a checkpoint worker: {calls:?}"
+        5,
+        "three builds, a checkpoint and the polish worker: {calls:?}"
     );
     let sids: Vec<String> = (1..=3u32)
         .map(|n| check_worker_argv(&fx, &calls[n as usize - 1], n, &dir))
@@ -408,6 +408,11 @@ fn run_drives_three_slices_through_the_detached_driver() {
             "log_merged",
             "checkpoint_spawned",
             "checkpoint_done",
+            "polish_spawned",
+            "polish_done",
+            "shipped",
+            "pr_opened",
+            "ci_green",
             "run_finished"
         ]
     );
@@ -426,7 +431,11 @@ fn run_drives_three_slices_through_the_detached_driver() {
     assert_eq!(spawned_sids, sids);
 
     let ws = state(&dir)["workers"].as_array().unwrap().clone();
-    assert_eq!(ws.len(), 4, "three builds and the checkpoint worker");
+    assert_eq!(
+        ws.len(),
+        5,
+        "three builds, the checkpoint and the polish worker"
+    );
     for (i, w) in ws[..3].iter().enumerate() {
         assert_eq!(w["slice"], i as u64 + 1);
         assert_eq!(w["session_id"], sids[i].as_str());
@@ -436,7 +445,7 @@ fn run_drives_three_slices_through_the_detached_driver() {
 
     let db = db(&fx);
     let rows = db.workers(&id).unwrap();
-    assert_eq!(rows.len(), 4);
+    assert_eq!(rows.len(), 5, "three builds, the checkpoint, the polish");
     for (i, r) in rows[..3].iter().enumerate() {
         assert_eq!(r.slice, Some(i as u32 + 1));
         assert_eq!(r.role, "build");
@@ -499,7 +508,7 @@ fn run_foreground_drives_the_same_loop_in_this_process() {
     for n in 1..=3 {
         assert_eq!(fx.slice_status(n), "done");
     }
-    assert_eq!(fx.calls().len(), 4);
+    assert_eq!(fx.calls().len(), 5);
     let k = kinds(&dir);
     assert_eq!(count(&k, "slice_spawned"), 3);
     assert_eq!(count(&k, "slice_done"), 3);
@@ -526,7 +535,7 @@ fn a_dead_worker_is_noted_and_respawned_once() {
         assert_eq!(fx.slice_status(n), "done");
     }
     let calls = fx.calls();
-    assert_eq!(calls.len(), 5);
+    assert_eq!(calls.len(), 6);
     let sid0 = check_worker_argv(&fx, &calls[0], 1, &dir);
     let sid1 = check_worker_argv(&fx, &calls[1], 1, &dir);
     assert_ne!(sid0, sid1, "a respawn is a new session");
@@ -553,6 +562,11 @@ fn a_dead_worker_is_noted_and_respawned_once() {
             "log_merged",
             "checkpoint_spawned",
             "checkpoint_done",
+            "polish_spawned",
+            "polish_done",
+            "shipped",
+            "pr_opened",
+            "ci_green",
             "run_finished"
         ]
     );
@@ -583,7 +597,7 @@ fn a_dead_worker_is_noted_and_respawned_once() {
     assert!(frag.contains("### AD-101 "), "{frag}");
 
     let rows = db(&fx).workers(&id).unwrap();
-    assert_eq!(rows.len(), 5);
+    assert_eq!(rows.len(), 6);
     assert_eq!(rows[0].outcome.as_deref(), Some("dead"));
     assert_eq!(rows[0].slice, Some(1));
     assert_eq!(rows[0].session_id.as_deref(), Some(sid0.as_str()));
@@ -598,7 +612,7 @@ fn a_dead_worker_is_noted_and_respawned_once() {
         assert!(r.input.is_some(), "{r:?}");
     }
     let ws = state(&dir)["workers"].as_array().unwrap().clone();
-    assert_eq!(ws.len(), 5);
+    assert_eq!(ws.len(), 6);
     assert_eq!(ws[0]["outcome"], "dead");
     let s0 = fs::read_to_string(dir.join("workers").join(format!("{sid0}.jsonl"))).unwrap();
     assert_eq!(
@@ -825,7 +839,7 @@ fn the_driver_killed_mid_slice_resumes_and_finishes() {
         assert_eq!(fx.slice_status(n), "done", "slice {n:02}");
     }
     let calls = fx.calls();
-    assert_eq!(calls.len(), 5);
+    assert_eq!(calls.len(), 6);
     assert_eq!(check_worker_argv(&fx, &calls[0], 1, &dir), sid0);
     let sid1 = check_worker_argv(&fx, &calls[1], 1, &dir);
     assert_ne!(sid1, sid0);
@@ -864,7 +878,7 @@ fn the_driver_killed_mid_slice_resumes_and_finishes() {
         "{frag}"
     );
     let rows = db(&fx).workers(&id).unwrap();
-    assert_eq!(rows.len(), 5);
+    assert_eq!(rows.len(), 6);
     assert_eq!(rows[0].outcome.as_deref(), Some("dead"));
     assert!(rows[0].ended_at.is_some());
     assert!(
@@ -874,7 +888,7 @@ fn the_driver_killed_mid_slice_resumes_and_finishes() {
         "{rows:?}"
     );
     let ws = state(&dir)["workers"].as_array().unwrap().clone();
-    assert_eq!(ws.len(), 5);
+    assert_eq!(ws.len(), 6);
     assert_eq!(ws[0]["outcome"], "dead");
     assert!(ws[1..].iter().all(|w| w["outcome"] == "done"));
 }

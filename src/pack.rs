@@ -16,6 +16,10 @@ use crate::{Error, Result};
 pub const CONTRACT: &str = include_str!("../assets/contract-slice.md");
 pub const CONTRACT_FIX: &str = include_str!("../assets/contract-fix.md");
 pub const CONTRACT_CHECKPOINT: &str = include_str!("../assets/contract-checkpoint.md");
+pub const CONTRACT_POLISH: &str = include_str!("../assets/contract-polish.md");
+pub const CONTRACT_CI_FIX: &str = include_str!("../assets/contract-ci-fix.md");
+/// The PR body shape `/deliver` fills (`deliver/pr-body.md`), this repo's copy.
+pub const PR_BODY: &str = include_str!("../assets/pr-body.md");
 pub const AUTONOMY: &str = include_str!("../assets/autonomy.md");
 
 /// The most lines of a gate transcript a pack carries.
@@ -303,6 +307,141 @@ impl Pack {
                 "Run checkpoint {n} of PRD-{feature} as the appended system prompt says. Return the STATUS block."
             ),
             files,
+            missing_sections: Vec::new(),
+        })
+    }
+
+    /// The polish worker's pack (FR-6): `# Branch` (the default and feature
+    /// branch names, `git log --oneline <default>..HEAD`), `# Retro` (the
+    /// template and which keys the driver fills), `# PR body` (the shape and
+    /// the run-dir path to write), the polish contract and the autonomy rules.
+    /// The prompt is `/polish`: slash commands resolve inside `-p` (slice 03,
+    /// PRD §20), so the pack carries no skill body.
+    #[allow(clippy::too_many_arguments)]
+    pub fn for_polish(
+        docs: &Docs,
+        board: &Status,
+        run_dir: &Path,
+        default_branch: &str,
+        feature_branch: &str,
+        retro_template: &str,
+        packs_dir: &Path,
+        spawn: u32,
+    ) -> Result<Pack> {
+        let feature = format!("{:03}", board.number);
+        let prd_rel = format!("{}/prd.md", board.dir);
+        let repo = docs.root();
+        let log = std::process::Command::new("git")
+            .args(["log", "--oneline", &format!("{default_branch}..HEAD")])
+            .current_dir(repo)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim_end().to_string())
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| "(no commits listed)".to_string());
+        let body_path = run_dir.join("pr-body.md");
+        let contract = CONTRACT_POLISH
+            .replace("{NNN}", &feature)
+            .replace("{feature dir}", &board.dir)
+            .replace("{date}", &crate::clock::today())
+            .replace("{seed}", "9901");
+        let files = vec![prd_rel.clone()];
+
+        let mut text = format!(
+            "<!-- factory-pack files: {} -->\n<!-- run dir: {} -->\n\n",
+            files.join(","),
+            run_dir.display()
+        );
+        text.push_str(&format!(
+            "# Branch\n\nDefault branch: `{default_branch}` · feature branch: `{feature_branch}`\n\n\
+             Commits this branch adds (`git log --oneline {default_branch}..HEAD`):\n\n```\n{log}\n```"
+        ));
+        text.push_str(&format!(
+            "\n\n# Retro\n\n<!-- {}/retro.md -->\n\n\
+             Write the prose sections. The driver fills `gate_runs`, `gate_red`, `gate_minutes`, \
+             `ci_cycles`, `slices`, `checkpoints`, `build_minutes`, `polish_minutes`, `out_tokens`, \
+             `cache_read_tokens`, `start_context` and `peak_context` from its store after you return; \
+             `score` is the owner's. The template:\n\n````markdown\n{}\n````",
+            board.dir,
+            retro_template.replace("{NNN}", &feature).trim_end()
+        ));
+        text.push_str(&format!(
+            "\n\n# PR body\n\n<!-- write: {} -->\n\nWrite the PR body to `{}` (outside the repo) in this shape:\n\n{}",
+            body_path.display(),
+            body_path.display(),
+            PR_BODY.trim_end()
+        ));
+        text.push_str("\n\n# Contract\n\n");
+        text.push_str(contract.trim_end());
+        text.push_str("\n\n# Autonomy\n\n");
+        text.push_str(AUTONOMY.trim_end());
+        text.push('\n');
+
+        fs::create_dir_all(packs_dir).map_err(io(format!("mkdir {}", packs_dir.display())))?;
+        let path = packs_dir.join(format!("polish-{spawn}.md"));
+        fs::write(&path, text).map_err(io(format!("write {}", path.display())))?;
+        Ok(Pack {
+            path,
+            prompt: "/polish".to_string(),
+            files,
+            missing_sections: Vec::new(),
+        })
+    }
+
+    /// The CI fix worker's pack (FR-6): `# CI failure` — the check's name,
+    /// the gate and inner commands, the last [`TAIL_LINES`] of
+    /// `gh run view --log-failed` — then the CI fix contract, the autonomy
+    /// rules and the inner loop.
+    #[allow(clippy::too_many_arguments)]
+    pub fn for_ci_fix(
+        docs: &Docs,
+        board: &Status,
+        round: u32,
+        attempt: u32,
+        check: &str,
+        log_text: &str,
+        packs_dir: &Path,
+        spawn: u32,
+    ) -> Result<Pack> {
+        let feature = format!("{:03}", board.number);
+        let gate = docs.gate()?;
+        let inner = docs.gate_inner()?;
+        let contract = CONTRACT_CI_FIX
+            .replace("{NNN}", &feature)
+            .replace("{round}", &round.to_string())
+            .replace("{check}", check)
+            .replace("{seed}", &format!("8{round}01"));
+
+        let mut text = String::from("<!-- factory-pack files: -->\n\n");
+        text.push_str(&format!(
+            "# CI failure\n\n<!-- round {round}, attempt {attempt}, check: {check} -->\n\n"
+        ));
+        text.push_str(&format!(
+            "Failing check: `{check}`\nGate command: `{}`\nInner command: `{}`\n\n",
+            gate.trim(),
+            inner.trim()
+        ));
+        text.push_str("```\n");
+        text.push_str(tail(log_text, TAIL_LINES).trim_end());
+        text.push_str("\n```");
+        text.push_str("\n\n# Contract\n\n");
+        text.push_str(contract.trim_end());
+        text.push_str("\n\n# Autonomy\n\n");
+        text.push_str(AUTONOMY.trim_end());
+        text.push_str("\n\n# Inner loop\n\n");
+        text.push_str(inner.trim());
+        text.push('\n');
+
+        fs::create_dir_all(packs_dir).map_err(io(format!("mkdir {}", packs_dir.display())))?;
+        let path = packs_dir.join(format!("ci-fix-{round}-{spawn}.md"));
+        fs::write(&path, text).map_err(io(format!("write {}", path.display())))?;
+        Ok(Pack {
+            path,
+            prompt: format!(
+                "Fix the red CI check `{check}` on the PR of PRD-{feature} as the appended system prompt says. Return the STATUS block."
+            ),
+            files: Vec::new(),
             missing_sections: Vec::new(),
         })
     }

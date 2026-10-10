@@ -200,6 +200,11 @@ fn checkpoint(n: u32) -> String {
     CHECKPOINT.replace("{n}", &n.to_string())
 }
 
+/// The polish worker's prompt: the slash command, nothing else (slice 09).
+fn polish() -> String {
+    "/polish".into()
+}
+
 /// `(role, outcome)` of every worker row, in id order.
 fn rows(fx: &Fixture, dir: &Path) -> Vec<(String, String)> {
     db(fx)
@@ -335,8 +340,8 @@ fn a_rate_limited_worker_pauses_the_run_until_the_reset() {
     let limited = &st["workers"][0];
     assert_eq!(limited["slice"], 1);
     assert_eq!(limited["outcome"], "rate_limited");
-    // Four build calls and the closing checkpoint's worker.
-    assert_eq!(fx.calls().len(), 5);
+    // Four build calls, the closing checkpoint's worker and the polish worker.
+    assert_eq!(fx.calls().len(), 6);
     assert_eq!(outcomes(&fx, &dir, "checkpoint"), ["done"]);
     assert!(
         !fragment(&fx, 1).contains("Dead worker"),
@@ -456,7 +461,8 @@ fn a_rate_limited_fix_worker_is_not_a_red() {
             fix(1),
             checkpoint(1),
             build(3),
-            checkpoint(2)
+            checkpoint(2),
+            polish()
         ]
     );
     let fixes = of_kind(&dir, "fix_spawned");
@@ -538,8 +544,8 @@ fn a_spent_budget_parks_the_run_and_a_higher_budget_resumes_it() {
     assert_eq!(count(&k, "run_resumed"), 1, "{k:?}");
     assert_eq!(count(&k, "run_parked"), 1, "{k:?}");
     assert_eq!(count(&k, "slice_spawned"), 3, "{k:?}");
-    // Three build calls and the closing checkpoint's worker.
-    assert_eq!(fx.calls().len(), 4);
+    // Three build calls, the closing checkpoint's worker and the polish worker.
+    assert_eq!(fx.calls().len(), 5);
     assert_all_done(&fx);
     assert_eq!(state(&dir)["budget_weighted_tokens"], 100_000_000);
     assert_eq!(outcomes(&fx, &dir, "build"), ["done", "done", "done"]);

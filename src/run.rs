@@ -109,6 +109,10 @@ pub struct RunState {
     /// in `state.json` so a resumed driver honours a pause it did not see.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paused_until: Option<u64>,
+    /// FR-6: the draft PR once `gh pr create` returned it; a resume edits
+    /// the PR instead of opening a second one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_url: Option<String>,
     /// Every worker this run spawned, in order (slice 03). A resume reads the
     /// pids to tell a dead worker from a live one; the outcomes carry the
     /// once-only respawn cap across driver restarts.
@@ -250,6 +254,7 @@ impl Run {
             budget_weighted_tokens,
             stop_requested: false,
             paused_until: None,
+            pr_url: None,
             workers: Vec::new(),
         };
         write_state(&dir, &state)?;
@@ -349,6 +354,11 @@ impl Run {
 
     pub fn set_branch(&mut self, branch: String) -> Result<()> {
         self.state.branch = Some(branch);
+        self.save()
+    }
+
+    pub fn set_pr_url(&mut self, url: String) -> Result<()> {
+        self.state.pr_url = Some(url);
         self.save()
     }
 

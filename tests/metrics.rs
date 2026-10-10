@@ -97,7 +97,11 @@ fn finished_run() -> (Fixture, String) {
     let out = factory(&fx, &["run", "001", "--budget", "70000000", "--foreground"]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     let id = only_run_id(&fx);
-    assert_eq!(fx.calls().len(), 4);
+    assert_eq!(
+        fx.calls().len(),
+        5,
+        "three builds, a checkpoint, the polish"
+    );
     (fx, id)
 }
 
@@ -139,7 +143,18 @@ fn every_tool_call_is_a_row_with_its_kind_and_repeat_flags() {
     let cp_rows: Vec<&ToolCallRow> = rows.iter().filter(|r| r.worker_id == cp.id).collect();
     assert_eq!(cp_rows.len(), 1);
     assert_eq!(cp_rows[0].kind, "edit");
-    assert_eq!(rows.len(), 3 * 6 + 1);
+    // The polish worker (slice 09): Read prd, Write code, Bash inner, Write
+    // retro, Edit prd, Write the PR body.
+    let polish = workers.iter().find(|w| w.role == "polish").unwrap();
+    let polish_rows: Vec<&ToolCallRow> = rows.iter().filter(|r| r.worker_id == polish.id).collect();
+    assert_eq!(
+        polish_rows
+            .iter()
+            .map(|r| r.kind.as_str())
+            .collect::<Vec<_>>(),
+        ["read", "edit", "run-gate", "edit", "edit", "edit"]
+    );
+    assert_eq!(rows.len(), 3 * 6 + 1 + 6);
 
     // Every build reads prd.md first: the second and third see it from the
     // run, none from its own worker. The slice files differ per build.
@@ -181,7 +196,9 @@ fn a_worker_inner_run_is_a_gates_row_with_source_worker() {
     let (fx, id) = finished_run();
     let gates: Vec<GateRow> = db(&fx).gates(&id).unwrap();
     let worker: Vec<&GateRow> = gates.iter().filter(|g| g.source == "worker").collect();
-    assert_eq!(worker.len(), 3, "{gates:?}");
+    // Three builds' inner runs and the polish worker's (slice 09); slice 08
+    // labels every worker's run `slice`, the polish one included.
+    assert_eq!(worker.len(), 4, "{gates:?}");
     for g in &worker {
         assert_eq!(g.kind, "slice");
         assert_eq!(g.cmd, "./gate.sh --inner");
@@ -228,11 +245,17 @@ fn report_prints_the_retro_keys_then_the_run_keys() {
     assert_eq!(value(&lines, "ci_cycles"), "0");
     assert_eq!(value(&lines, "gate_runs"), "1");
     assert_eq!(value(&lines, "gate_red"), "0");
-    assert_eq!(value(&lines, "workers"), "4 (build 3, checkpoint 1)");
+    assert_eq!(
+        value(&lines, "workers"),
+        "5 (build 3, checkpoint 1, polish 1)"
+    );
     assert_eq!(value(&lines, "cockpit_tokens"), "0 (no --cockpit)");
-    assert_eq!(value(&lines, "worker_gate_runs"), "3");
+    assert_eq!(value(&lines, "worker_gate_runs"), "4");
     assert_eq!(value(&lines, "worker_gate_red"), "1");
-    assert_eq!(value(&lines, "polish_minutes"), "0.00");
+    // The stub polish worker returns within a second; the figure is its
+    // duration, two decimals.
+    let polish_minutes: f64 = value(&lines, "polish_minutes").parse().unwrap();
+    assert!((0.0..0.5).contains(&polish_minutes), "{polish_minutes}");
 
     // Slice 07's formula over the workers table.
     let db = db(&fx);
@@ -318,8 +341,9 @@ fn report_json_round_trips_and_cockpit_measures_the_transcript() {
     let v: Value = serde_json::from_str(&stdout(&out)).expect("one JSON object");
     assert_eq!(v["slices"], 3);
     assert_eq!(v["checkpoints"], 1);
-    assert_eq!(v["workers"]["total"], 4);
+    assert_eq!(v["workers"]["total"], 5);
     assert_eq!(v["workers"]["build"], 3);
+    assert_eq!(v["workers"]["polish"], 1);
     assert!(v["score"].is_null());
     assert!(v["cockpit_tokens"].is_null());
     assert_eq!(v["worker_gate_red"], 1);

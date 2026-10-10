@@ -320,6 +320,21 @@ impl Fixture {
         self.script("inner", outcomes);
     }
 
+    /// Script the stub `gh`'s `pr checks` (slice 09): `scenario/ci`, one
+    /// line per call — `green`, `red:<check>[@<sha>]`, `flaky:<check>`.
+    pub fn script_ci(&self, lines: &[&str]) {
+        self.script("ci", lines);
+    }
+
+    /// Every recorded stub `gh` call, one argv line each, in order.
+    pub fn gh_log(&self) -> Vec<String> {
+        fs::read_to_string(self.stub_dir.join("gh.log"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
     fn script(&self, kind: &str, outcomes: &[&str]) {
         fs::create_dir_all(self.root.join("scenario")).unwrap();
         fs::write(
@@ -387,11 +402,16 @@ impl Fixture {
                 .and_then(|s| s.parse::<u32>().ok())
                 .unwrap_or(0)
         });
+        // The stub claims `N.json` empty (`wx`) and fills it a moment later:
+        // a poll that lands in between sees a claim, not a call, and skips it.
         files
             .iter()
-            .map(|p| {
-                serde_json::from_str(&fs::read_to_string(p).unwrap())
-                    .unwrap_or_else(|e| panic!("{}: {e}", p.display()))
+            .filter_map(|p| {
+                let text = fs::read_to_string(p).unwrap();
+                if text.trim().is_empty() {
+                    return None;
+                }
+                Some(serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: {e}", p.display())))
             })
             .collect()
     }

@@ -9,8 +9,10 @@
 //! (`docs/features/001-driver`).
 pub mod answers;
 pub mod checkpoint;
+pub mod ci;
 pub mod cli;
 pub mod clock;
+pub mod closeout;
 pub mod commit;
 pub mod config;
 pub mod daemon;

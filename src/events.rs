@@ -200,7 +200,79 @@ pub enum EventKind {
         n: u32,
         sha: Option<String>,
     },
-    RunFinished,
+    /// Closeout (FR-6): the polish worker, once the last checkpoint is done.
+    PolishSpawned {
+        attempt: u32,
+        session_id: String,
+        pid: u32,
+    },
+    /// The polish worker returned; `sha` is its `polish: review fixes`
+    /// commit, `None` when it changed nothing.
+    PolishDone {
+        sha: Option<String>,
+        files: Vec<String>,
+    },
+    /// `docs ship` ran, the retro keys are filled and `docs: ship PRD-NNN`
+    /// is committed (`sha`, `None` when nothing was left to commit).
+    Shipped {
+        sha: Option<String>,
+    },
+    /// The branch is pushed and the draft PR exists.
+    PrOpened {
+        url: String,
+    },
+    /// `gh pr checks` came back green at `head`.
+    CiGreen {
+        head: String,
+    },
+    /// A red check at `head`; `round` is the fix rounds done before it.
+    CiRed {
+        check: String,
+        round: u32,
+        head: String,
+    },
+    /// The one flaky rerun (`gh run rerun <id> --failed`) at `head`.
+    CiRerun {
+        check: String,
+        run_id: u64,
+        head: String,
+    },
+    /// A CI fix worker on `check`, `round` 1-based; `attempt` counts the
+    /// workers of that round (a death or a usage limit respawns).
+    CiFixSpawned {
+        round: u32,
+        attempt: u32,
+        session_id: String,
+        pid: u32,
+    },
+    CiFixCommitted {
+        round: u32,
+        sha: String,
+        files: Vec<String>,
+    },
+    /// A `BLOCK-n` written by the closeout, `phase` one of `polish`, `pr`,
+    /// `ci`; the scheduler parks the run (`run_waiting` follows).
+    CloseoutBlocked {
+        phase: String,
+        block_id: String,
+        question: String,
+    },
+    /// The end of the run (FR-7). Every field has a default so a line from
+    /// before slice 09, a bare `run_finished`, still parses.
+    RunFinished {
+        #[serde(default)]
+        pr_url: Option<String>,
+        #[serde(default)]
+        slices: u64,
+        #[serde(default)]
+        checkpoints: u64,
+        #[serde(default)]
+        ci_cycles: u64,
+        #[serde(default)]
+        weighted_tokens: u64,
+        #[serde(default)]
+        duration_minutes: f64,
+    },
     RunFailed {
         error: String,
     },

@@ -60,7 +60,7 @@ fs.mkdirSync(callsDir, { recursive: true })
 // takes must follow the driver's order, not the race to start. Otherwise the
 // first free number. Either way the file is claimed atomically.
 const packName = path.basename(String(flags['--append-system-prompt-file'] ?? ''))
-const spawnNo = packName.match(/^(?:slice-\d{2}|fix-\d+|checkpoint-\d+)-(\d+)\.md$/)
+const spawnNo = packName.match(/^(?:slice-\d{2}|fix-\d+|checkpoint-\d+|polish|ci-fix-\d+)-(\d+)\.md$/)
 let n = spawnNo ? Number(spawnNo[1]) : 1
 let fd
 for (;;) {
@@ -98,11 +98,23 @@ if (fs.existsSync(planPath)) {
 }
 if (pack === null) fail(65, 'no pack: pass --append-system-prompt-file <path> or --append-system-prompt <text>')
 // The role is the pack's first section (slice 06): the driver's packs for the
-// checkpoint's workers carry no slice file.
-const role = /^# Gate failure$/m.test(pack) ? 'fix' : /^# Gate transcript$/m.test(pack) ? 'checkpoint' : 'slice'
+// checkpoint's workers carry no slice file. Slice 09 adds the closeout's two:
+// `# CI failure` is a fix worker on a red CI check, `# Branch` the polish.
+const role = /^# (?:Gate failure|CI failure)$/m.test(pack)
+  ? 'fix'
+  : /^# Gate transcript$/m.test(pack)
+    ? 'checkpoint'
+    : /^# Branch$/m.test(pack)
+      ? 'polish'
+      : 'slice'
 const limited = ['rate_limited', 'rate_limited_no_reset']
-const allowed = { slice: ['done', 'dead', 'blocked', ...limited], fix: ['fix', 'done', 'dead', ...limited], checkpoint: ['checkpoint', 'done', 'dead', 'blocked', ...limited] }
-if (!['done', 'dead', 'blocked', 'fix', 'checkpoint', ...limited].includes(step.outcome)) fail(65, `outcome "${step.outcome}" is not built yet — a later slice adds it (PRD-001 §17)`)
+const allowed = {
+  slice: ['done', 'dead', 'blocked', ...limited],
+  fix: ['fix', 'done', 'dead', ...limited],
+  checkpoint: ['checkpoint', 'done', 'dead', 'blocked', ...limited],
+  polish: ['polish', 'done', 'dead', 'blocked', ...limited],
+}
+if (!['done', 'dead', 'blocked', 'fix', 'checkpoint', 'polish', ...limited].includes(step.outcome)) fail(65, `outcome "${step.outcome}" is not built yet — a later slice adds it (PRD-001 §17)`)
 if (!allowed[role].includes(step.outcome)) fail(65, `outcome "${step.outcome}" on step ${n} does not fit a ${role} worker — the plan's order and the driver's spawn order disagree`)
 
 const tpl = JSON.parse(fs.readFileSync(path.join(__dirname, 'stream.json'), 'utf8'))
@@ -206,13 +218,7 @@ if (role === 'checkpoint') {
   }
   const today = new Date().toISOString().slice(0, 10)
   if (step.outcome === 'blocked') {
-    const used = new Set()
-    for (const f of fs.readdirSync(cpDir).filter((f) => f === 'agent-log.md' || /^log-.*\.md$/.test(f))) {
-      for (const x of fs.readFileSync(path.join(cpDir, f), 'utf8').matchAll(/^### BLOCK-(\d+)/gm)) used.add(Number(x[1]))
-    }
-    let k = 1
-    while (used.has(k)) k++
-    const block = `BLOCK-${k}`
+    const block = `BLOCK-${lowestFreeBlock(cpDir)}`
     const question = step.question ?? 'Which row does the owner want proven by hand?'
     appendSection(log, '## Blockers', [
       `### ${block} — ${question} · checkpoint · open`,
@@ -242,6 +248,91 @@ if (role === 'checkpoint') {
   tool('Write', { file_path: log, content: fs.readFileSync(log, 'utf8') })
   emit(assistant([{ type: 'text', text: 'STATUS: done' }]))
   result(['STATUS: done', `PROVE: ${rows.length}/${rows.length} — evidence: none (stub) — unreached: none`, 'FIXED: none', 'BLOCK: none'])
+  process.exit(0)
+}
+
+// ── 3c. a polish worker (slice 09) ───────────────────────────────────────────
+// The pack's header names the run dir (the PR body goes there) and prd.md
+// (the feature dir). `done`/`polish`: touch `step.touch` (default
+// src/lib.txt), write retro.md from the template under `# Retro`, stamp
+// `reviewed:` in prd.md, write the PR body; `step.slices` (`{"02":
+// "building"}`) forces slice statuses first, so a test can make `docs ship`
+// refuse. `blocked`: a BLOCK-n `· polish · open` in agent-log.md.
+if (role === 'polish') {
+  const runDir = pack.match(/^<!-- run dir: (.+?) -->$/m)?.[1]
+  const dirM = pack.match(/<!-- (docs\/features\/[^/\s]+)\//)
+  if (!runDir || !dirM) fail(65, 'the polish pack names no run dir or no docs/features/<dir>/ file')
+  const featDir = path.resolve(cwd, dirM[1])
+  const log = path.join(featDir, 'agent-log.md')
+  const prd = path.join(featDir, 'prd.md')
+  const retro = path.join(featDir, 'retro.md')
+  if (limited.includes(step.outcome)) rateLimited(step)
+  if (step.delay_ms) sleep(Number(step.delay_ms))
+  if (step.outcome === 'dead') {
+    emit(init)
+    process.exit(137)
+  }
+  const today = new Date().toISOString().slice(0, 10)
+  if (step.outcome === 'blocked') {
+    const block = `BLOCK-${lowestFreeBlock(featDir)}`
+    const question = step.question ?? 'Which review finding does the owner want kept?'
+    appendSection(log, '## Blockers', [
+      `### ${block} — ${question} · polish · open`,
+      '',
+      '**Happened:** the stub polish worker reached a fork the review does not settle.',
+      '**Options:** 1. the Recommended option; 2. the other one.',
+      '**Recommended:** 1 — it is the one the fixture expects.',
+      '',
+    ].join('\n'))
+    emit(init)
+    tool('Write', { file_path: log, content: fs.readFileSync(log, 'utf8') })
+    emit(assistant([{ type: 'text', text: `STATUS: blocked\nBLOCK: ${block}` }]))
+    result(['STATUS: blocked', 'FIXED: nothing', 'RETRO: not written: blocked', 'PR_BODY: not written: blocked', 'DECISIONS: none', `BLOCK: ${block} — ${question}`])
+    process.exit(0)
+  }
+  for (const [nn, status] of Object.entries(step.slices ?? {})) {
+    const f = fs.readdirSync(featDir).find((f) => f.startsWith(`slice-${nn}-`) && f.endsWith('.md'))
+    if (!f) fail(65, `step.slices names slice ${nn}, which ${dirM[1]} does not have`)
+    setStatus(path.join(featDir, f), status)
+  }
+  const touched = (step.touch ?? ['src/lib.txt']).map((f) => path.resolve(cwd, f))
+  for (const f of touched) {
+    fs.mkdirSync(path.dirname(f), { recursive: true })
+    fs.appendFileSync(f, `polished by spawn ${n}\n`)
+  }
+  const rel = touched.map((f) => path.relative(cwd, f)).join(', ')
+  // The template's frontmatter as the pack carries it; the driver fills the keys.
+  const tplM = pack.match(/^# Retro\n[\s\S]*?\n````markdown\n([\s\S]*?)\n````/m)
+  if (!tplM) fail(65, 'the polish pack has no ````markdown retro template under # Retro')
+  const fmEnd = tplM[1].indexOf('\n---', 4)
+  if (!tplM[1].startsWith('---\n') || fmEnd === -1) fail(65, 'the retro template in the pack has no frontmatter')
+  const retroText = `${tplM[1].slice(0, fmEnd)}\n---\n\n# Retro — PRD-${dirM[1].match(/(\d{3})-/)[1]}\n\n## Cost vs catch\n\nStub retro (spawn ${n}).\n\n## Score\n\nThe owner's.\n`
+  fs.writeFileSync(retro, retroText)
+  const prdText = fs.readFileSync(prd, 'utf8')
+  const prdEnd = prdText.startsWith('---\n') ? prdText.indexOf('\n---', 4) : -1
+  if (prdEnd === -1) fail(65, `${prd} has no frontmatter`)
+  const fm = prdText.slice(0, prdEnd)
+  const stamped = /^reviewed:.*$/m.test(fm) ? fm.replace(/^reviewed:.*$/m, `reviewed: ${today}`) : `${fm}\nreviewed: ${today}`
+  fs.writeFileSync(prd, stamped + prdText.slice(prdEnd))
+  const body = path.join(runDir, 'pr-body.md')
+  fs.mkdirSync(runDir, { recursive: true })
+  fs.writeFileSync(body, `## PRD-${dirM[1].match(/(\d{3})-/)[1]} — Fixture\n\nStub PR body (spawn ${n}). PR: \`${dirM[1]}/prd.md\`\n\n### Needs your review\n\n- none\n\n### Human QA\n\nNone — every QA-plan row was proven by the run.\n`)
+  emit(init)
+  readFile(prd)
+  for (const f of touched) tool('Write', { file_path: f, content: `polished by spawn ${n}\n` })
+  innerRun(step)
+  tool('Write', { file_path: retro, content: retroText })
+  tool('Edit', { file_path: prd, old_string: 'status:', new_string: `reviewed: ${today}\nstatus:` })
+  tool('Write', { file_path: body, content: fs.readFileSync(body, 'utf8') })
+  emit(assistant([{ type: 'text', text: 'STATUS: done' }]))
+  result([
+    'STATUS: done',
+    `FIXED: ${rel} — stub polish (spawn ${n})`,
+    'RETRO: written',
+    'PR_BODY: written',
+    'DECISIONS: none',
+    'BLOCK: none',
+  ])
   process.exit(0)
 }
 
@@ -391,6 +482,17 @@ function writeBlock(file, nn, block, question) {
   ].join('\n')
   const head = existing.includes('## Blockers') ? '' : '## Blockers\n\n'
   fs.writeFileSync(file, existing ? `${existing.trimEnd()}\n\n${head}${entry}` : `${head}${entry}`)
+}
+
+// The lowest BLOCK number no log file of `dir` (agent-log.md, log-*.md) uses.
+function lowestFreeBlock(dir) {
+  const used = new Set()
+  for (const f of fs.readdirSync(dir).filter((f) => f === 'agent-log.md' || /^log-.*\.md$/.test(f))) {
+    for (const x of fs.readFileSync(path.join(dir, f), 'utf8').matchAll(/^### BLOCK-(\d+)/gm)) used.add(Number(x[1]))
+  }
+  let k = 1
+  while (used.has(k)) k++
+  return k
 }
 
 // Append `entry` at the end of the `heading` section of a log file (before

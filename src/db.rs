@@ -116,6 +116,8 @@ pub struct RunRow {
     pub finished_at: Option<String>,
     pub phase: String,
     pub budget_weighted_tokens: u64,
+    /// The draft PR (FR-6), once opened.
+    pub pr_url: Option<String>,
 }
 
 /// One `workers` row.
@@ -241,6 +243,7 @@ impl Db {
             ("gates", "checkpoint", "INTEGER"),
             ("gates", "attempt", "INTEGER"),
             ("workers", "start_context", "INTEGER"),
+            ("runs", "pr_url", "TEXT"),
         ] {
             if !self.has_column(table, column)? {
                 self.conn.execute(
@@ -304,7 +307,7 @@ impl Db {
         let finished_at = s.phase.is_over().then(|| s.updated_at.clone());
         self.conn.execute(
             "UPDATE runs SET branch = ?2, phase = ?3, budget_weighted_tokens = ?4,
-                             finished_at = COALESCE(finished_at, ?5)
+                             finished_at = COALESCE(finished_at, ?5), pr_url = ?6
              WHERE id = ?1",
             params![
                 s.id.as_str(),
@@ -312,6 +315,7 @@ impl Db {
                 s.phase.as_str(),
                 s.budget_weighted_tokens as i64,
                 finished_at,
+                s.pr_url,
             ],
         )?;
         Ok(())
@@ -321,7 +325,7 @@ impl Db {
         Ok(self
             .conn
             .query_row(
-                "SELECT id, repo, feature, branch, started_at, finished_at, phase, budget_weighted_tokens
+                "SELECT id, repo, feature, branch, started_at, finished_at, phase, budget_weighted_tokens, pr_url
                  FROM runs WHERE id = ?1",
                 [id],
                 |r| {
@@ -334,6 +338,7 @@ impl Db {
                         finished_at: r.get(5)?,
                         phase: r.get(6)?,
                         budget_weighted_tokens: r.get::<_, i64>(7)? as u64,
+                        pr_url: r.get(8)?,
                     })
                 },
             )

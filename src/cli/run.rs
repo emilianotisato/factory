@@ -108,6 +108,8 @@ pub fn run(args: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i
 
     let branch = ensure_branch(&repo, &pf.branch)?;
     let mut run = Run::create(&data_dir, &repo, &feature, Some(branch), budget)?;
+    // The closeout reads `branch.default` from here (FR-6: `--base`).
+    save_preflight(run.dir(), &pf)?;
     // The driver is the judge: each line is noted for the cockpit and the run
     // goes on (FR-1, BLOCK-201).
     for text in &pf.judge {

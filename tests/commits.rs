@@ -229,7 +229,9 @@ fn each_done_slice_is_committed_by_pathspec_and_the_logs_merge_at_the_end() {
             "feat: A",
             "feat: B",
             "feat: C",
-            "docs: checkpoint 1"
+            "docs: checkpoint 1",
+            "polish: review fixes",
+            "docs: ship PRD-001",
         ]
     );
     assert_slice_commit(&fx, &dir, 1, "A", &["src/lib.txt"]);
@@ -269,12 +271,9 @@ fn each_done_slice_is_committed_by_pathspec_and_the_logs_merge_at_the_end() {
 
     // The merge lands in the checkpoint commit (slice 06): agent-log.md,
     // what `render --write` changed (here prd.md's slice table; the index
-    // was already current) and the fragments' removal.
-    let merge = fx.git(&["rev-parse", "HEAD"]).trim().to_string();
-    assert_eq!(
-        fx.git(&["log", "-1", "--format=%s", &merge]).trim(),
-        "docs: checkpoint 1"
-    );
+    // was already current) and the fragments' removal. HEAD itself is the
+    // ship commit (slice 09), two commits later.
+    let merge = sha_of(&fx, "docs: checkpoint 1");
     let merged_files = files_of(&fx, &merge);
     for f in [
         AGENT_LOG.to_string(),
@@ -325,6 +324,11 @@ fn each_done_slice_is_committed_by_pathspec_and_the_logs_merge_at_the_end() {
             "log_merged",
             "checkpoint_spawned",
             "checkpoint_done",
+            "polish_spawned",
+            "polish_done",
+            "shipped",
+            "pr_opened",
+            "ci_green",
             "run_finished",
         ]
     );
@@ -356,9 +360,17 @@ fn two_lanes_commit_out_of_order_and_each_commit_takes_only_its_own_files() {
     assert!(at("feat: B") < at("feat: A"), "{subjects:?}");
     assert_eq!(
         subjects.last().map(String::as_str),
-        Some("docs: checkpoint 1")
+        Some("docs: ship PRD-001")
     );
-    assert_eq!(subjects.len(), 5, "{subjects:?}");
+    assert_eq!(subjects.len(), 7, "{subjects:?}");
+    assert!(
+        subjects.ends_with(&[
+            "docs: checkpoint 1".to_string(),
+            "polish: review fixes".to_string(),
+            "docs: ship PRD-001".to_string()
+        ]),
+        "{subjects:?}"
+    );
     assert_slice_commit(&fx, &dir, 1, "A", &["src/a.txt"]);
     assert_slice_commit(&fx, &dir, 2, "B", &["src/b.txt"]);
     assert_slice_commit(&fx, &dir, 3, "C", &["src/c.txt"]);
@@ -454,9 +466,9 @@ fn a_refused_merge_blocks_in_agent_log_and_the_answer_retries_it() {
 
     assert_eq!(
         fx.git(&["log", "-1", "--format=%s"]).trim(),
-        "docs: checkpoint 1"
+        "docs: ship PRD-001"
     );
-    let merged_files = files_of(&fx, "HEAD");
+    let merged_files = files_of(&fx, &sha_of(&fx, "docs: checkpoint 1"));
     assert!(merged_files.contains(&fragment(2)), "{merged_files:?}");
     assert!(
         merged_files.contains(&AGENT_LOG.to_string()),

@@ -445,14 +445,19 @@ fn run_on_the_clean_fixture_starts_notes_the_judge_lines_then_resumes() {
             "log_merged",
             "checkpoint_spawned",
             "checkpoint_done",
+            "polish_spawned",
+            "polish_done",
+            "shipped",
+            "pr_opened",
+            "ci_green",
             "run_finished"
         ],
         "{k:?}"
     );
     assert_eq!(
         fx.calls().len(),
-        6,
-        "two checkpoint-1 workers among the six"
+        7,
+        "two checkpoint-1 workers among the seven"
     );
     assert_eq!(fx.slice_status(3), "done");
     assert_eq!(db.run_row(&id).unwrap().unwrap().phase, "finished");
@@ -610,12 +615,14 @@ fn budget_comes_from_the_flag_then_the_config_then_the_default() {
     assert_eq!(first.len(), 1, "{first:?}");
     assert_eq!(state(&first[0])["budget_weighted_tokens"], 70_000_000);
     assert_eq!(state(&first[0])["phase"], "finished");
-    assert_eq!(fx.calls().len(), 5);
+    assert_eq!(fx.calls().len(), 6);
 
     // A finished run is never resumed: the next `run` is a new one, which
-    // reads the config file. The driver committed every slice and checkpoint
-    // (slices 05, 06), so the tree is clean for the preflight; with every
-    // slice done and verified the new run finishes at once, spawning nothing.
+    // reads the config file. The driver committed every slice, checkpoint and
+    // the ship (slices 05, 06, 09), so the tree is clean for the preflight;
+    // with the PRD shipped the new run resumes at the PR it finds open
+    // (`gh pr view`), refreshes its body, watches CI and finishes, spawning
+    // nothing and opening no second PR.
     let newest = |before: &[PathBuf]| {
         let dirs = run_dirs(&fx);
         assert_eq!(dirs.len(), before.len() + 1, "{dirs:?}");
@@ -634,7 +641,22 @@ fn budget_comes_from_the_flag_then_the_config_then_the_default() {
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     let third = newest(&[first[0].clone(), second]);
     assert_eq!(state(&third)["budget_weighted_tokens"], 9);
-    assert_eq!(fx.calls().len(), 5, "a delivered feature spawns nothing");
+    assert_eq!(fx.calls().len(), 6, "a delivered feature spawns nothing");
+    let gh: Vec<String> = fx
+        .gh_log()
+        .into_iter()
+        .filter(|l| l.starts_with("pr create") || l.starts_with("pr edit"))
+        .map(|l| l.split(" --body-file ").next().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        gh,
+        [
+            "pr create --draft --base main --title \"PRD-001: Fixture\"",
+            "pr edit 1",
+            "pr edit 1"
+        ],
+        "one PR, refreshed by each later run: {gh:?}"
+    );
 }
 
 // ── task 6: factory stop ─────────────────────────────────────────────────────

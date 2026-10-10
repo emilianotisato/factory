@@ -39,6 +39,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crate::answers::{self, Answer};
 use crate::checkpoint::{self, Outcome};
+use crate::cli::report;
+use crate::closeout;
 use crate::commit::{self, Pathspec};
 use crate::config::Config;
 use crate::docs::{Docs, Status};
@@ -294,15 +296,27 @@ fn drive_inner(run: &mut Run, docs: &Docs, cfg: &Config, out: &mut dyn Write) ->
             slow_tick(run)?;
             continue;
         }
-        return finish(
-            run,
-            out,
-            if board.all_done {
-                "every slice done"
-            } else {
-                "nothing ready"
-            },
-        );
+        // The last checkpoint is done (FR-6): polish, ship, PR, CI — then
+        // the run is finished, or parked on a closeout block.
+        if board.all_done && board.unverified.is_empty() {
+            match closeout::run(run, docs, cfg, &board, out)? {
+                Outcome::Done => return finish(run, out, "every slice done"),
+                Outcome::Parked { what, fresh, .. } => {
+                    if fresh {
+                        parked = false;
+                        announced = false;
+                    }
+                    park_with(run, &mut parked, &mut announced, &[], &[], &what, out)?;
+                    slow_tick(run)?;
+                    continue;
+                }
+                Outcome::Stopped => return finish(run, out, "stop requested"),
+                Outcome::Budget { weighted, budget } => {
+                    return quota::park_budget(run, weighted, budget, out);
+                }
+            }
+        }
+        return finish(run, out, "nothing ready");
     }
 }
 
@@ -817,7 +831,11 @@ fn settle_orphans(
         }
         let summary = worker::summary_from_disk(run.dir(), &w.session_id);
         let Some(slice) = w.slice else {
-            settle_checkpoint_orphan(run, board, &w, summary, out)?;
+            if w.role == "polish" || (w.role == "fix" && w.checkpoint.is_none()) {
+                closeout::settle_orphan(run, board, &w, summary, out)?;
+            } else {
+                settle_checkpoint_orphan(run, board, &w, summary, out)?;
+            }
             continue;
         };
         match slice_status(board, slice) {
@@ -867,9 +885,10 @@ fn settle_orphans(
 
 /// `slice NN` or `checkpoint n (role)`, for a line about a worker.
 fn label(w: &WorkerRef) -> String {
-    match w.slice {
-        Some(s) => format!("slice {s:02}"),
-        None => format!("checkpoint {} ({})", w.checkpoint.unwrap_or(0), w.role),
+    match (w.slice, w.checkpoint) {
+        (Some(s), _) => format!("slice {s:02}"),
+        (None, Some(n)) => format!("checkpoint {n} ({})", w.role),
+        (None, None) => format!("closeout ({})", w.role),
     }
 }
 
@@ -1174,10 +1193,33 @@ fn slice_file(run: &Run, board: &Status, slice: u32) -> Result<PathBuf> {
         .ok_or_else(|| crate::Error::Msg(format!("slice {slice:02} is not on the board")))
 }
 
+/// Phase `finished` and the `run_finished` line (FR-7): the PR URL and the
+/// numbers the cockpit reads first, from the store.
 fn finish(run: &mut Run, out: &mut dyn Write, why: &str) -> Result<Phase> {
     run.set_phase(Phase::Finished)?;
-    run.emit(EventKind::RunFinished)?;
-    say(out, &format!("run {} finished ({why})", run.id()))?;
+    let r = report::compute(run.db(), run.id().as_str(), None)?;
+    let started = clock::from_rfc3339(&run.state().started_at).unwrap_or_else(clock::unix_now);
+    let duration_minutes =
+        (clock::unix_now().saturating_sub(started) as f64 / 60.0 * 100.0).round() / 100.0;
+    run.emit(EventKind::RunFinished {
+        pr_url: run.state().pr_url.clone(),
+        slices: r.slices,
+        checkpoints: r.checkpoints,
+        ci_cycles: r.ci_cycles,
+        weighted_tokens: r.weighted_tokens,
+        duration_minutes,
+    })?;
+    say(
+        out,
+        &format!(
+            "run {} finished ({why}){}",
+            run.id(),
+            run.state()
+                .pr_url
+                .as_deref()
+                .map_or(String::new(), |u| format!(" — PR {u}"))
+        ),
+    )?;
     Ok(Phase::Finished)
 }
 
