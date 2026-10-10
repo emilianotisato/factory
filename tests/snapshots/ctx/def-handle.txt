@@ -1,0 +1,10 @@
+php/UserService.php:19  function  public function handle(array $input): User
+    {
+        $user = User::create($input);
+        $this->mail->welcome($user);
+        $this->touch();
+
+        return $user;
+    }
+
+1 definition (searched 48 files)

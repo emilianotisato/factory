@@ -1,6 +1,7 @@
 ---
 slice: 11
-status: pending
+status: done
+lane: 1
 depends_on: [1]
 ---
 
@@ -9,7 +10,15 @@ depends_on: [1]
 **Source**: [`prd.md`](prd.md) → §14 FR-12 decision 1 (three verbs, plain text, exit 0 on empty, caps and context lines), decision 2 (the engine: ripgrep crates; the tree-sitter half is slice 12), decision 5 ("Three slices … (1) grep-crate walker, per-language definition regexes, compact capped printer"), and its acceptance. **Depends on**: 01 only (the crate). Independent of 02 to 10: §14 "Slices 1 and 2 touch no driver code and can run beside FR-1/FR-2."
 **Created**: 2026-10-09 · **Status**: pending
 
-**Progress**: _(written as it lands)_
+**Progress** (2026-10-10, lane 1):
+- **Built.** `factory ctx def|refs|outline` (`src/ctx/`, wired from `src/main.rs`; `CtxVerb` there is gone). `walk.rs`: the `ignore` parallel walker with the six vendor directories skipped at any depth unless `--vendor`, which also lifts gitignore (AD-1103); `Lang::from_path`; files over 2 MB counted at the walk, binary files (a NUL byte) counted when read; results sorted by path, and `scan` searches the files on all cores and hands results back in path order. `def.rs`: the slice's regexes, `NAME` escaped, one `grep-regex` matcher per table (Vue uses TypeScript's) run with `grep-searcher`; kind = the keyword before the name, `method` for a TypeScript member (AD-1107); heuristic body (AD-1101). `refs.rs`: `\bNAME\b`, first `--per-file` per file, first `--max` overall, test paths left out and counted unless `--tests` (AD-1106). `print.rs`: `path:line  kind  signature`, context indented four spaces, blank line between hits, trailer last (AD-1102). `outline` prints `outline needs tree-sitter (slice 12)` and exits 2 (AD-1105). Exit 2 on a bad flag (clap) or an unreadable root. `--kind class|fn|method|type` is validated and ignored, as `--help` says.
+- **Crates.** `grep-searcher` 0.1.17, `grep-regex` 0.1.14, `ignore` 0.4.33, as §14 names; nothing else added.
+- **Fixtures.** `tests/fixture/ctx/`: `php/` (`UserService` with a starless docblock line `class OtherService, which this one wraps.`, `OtherService`, trait `HasTimestamps`, interface `Notifier`), `vue/UserCard.vue`, `go/client.go`, `rs/config.rs` (`make_fn!(made_by_macro)`), `refs/` (300 textual hits of `planted` in 40 files, two in a comment and a string; one more in `refs/tests/`, AD-1104). 48 source files.
+- **Tests.** `tests/ctx.rs`: the twelve snapshots in `tests/snapshots/ctx/` (each command run twice, byte-identical; `FACTORY_BLESS=1` rewrites, AD-1108), the task 2 and 3 acceptance lines, the outline stub, exit 2 cases, and the walker on a copy of the fixture with planted `vendor/`, `node_modules/`, `php/build/`, a gitignored file, a binary file and a 2 MB file. Two `#[ignore]`d tests hold the slice 12 states (docblock mention dropped; comment and string hits dropped with `2 dropped (comments/strings)`). Unit tests in `walk.rs`, `def.rs`, `refs.rs`.
+- **Inner loop:** 3 runs of `cargo test`, 1 red, about 1 min. The red run was `--test ctx` before the snapshots existed (by design: blessed, then read line by line). The full `cargo test --no-fail-fast` was green on its first run (38 s). `cargo clippy --all-targets -- -D warnings` caught one `double_ended_iterator_last` in `def::kind_of`; `cargo fmt` reflowed the new files only.
+- **Earlier-slice expectation shifts:** `tests/cli.rs::every_subcommand_says_not_built_yet_and_exits_2` (`ctx def`, `refs`, `outline` leave the not-built list; `hook` stays).
+- **Deviations:** AD-1101 (body rule made bracket-aware). AD-1104 and AD-1105 settle two places where the slice contradicts itself.
+- **Prove (task 7):** left for the checkpoint: the FR-12 row's pinned output (`cargo test --test ctx`) and the warm timing table, `time factory ctx def <symbol>` and `time factory ctx refs <symbol>` on `~/Projects/icg-cloud` and `~/Projects/arca-api`, three runs each.
 
 **Slice**: After this slice `factory ctx def`, `refs` and `outline` exist with the textual engine: an `ignore`-based walker that skips vendor and gitignored paths, a per-language definition regex for PHP, TypeScript, Go and Rust run through the grep crates, a word-boundary reference search collapsed per file with caps and a trailer, and the compact printer with its two context lines. `def` prints the regex match with context; the exact body and the comment/string filtering arrive with tree-sitter in slice 12, so `--no-body` exists but the body printed here is the context window. `outline` is a stub that says so and exits 0. Fixture files per stack pin the output.
 

@@ -1,0 +1,3 @@
+refs/tests/planted.test.ts:1  ref  import { planted } from '../caller01'
+
+1 hit in 1 file (searched 1 file)

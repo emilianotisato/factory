@@ -1,0 +1,19 @@
+php/UserService.php:11  class  final class UserService
+    {
+        use HasTimestamps;
+
+        public function __construct(private OtherService $mail)
+        {
+        }
+
+        public function handle(array $input): User
+        {
+            $user = User::create($input);
+            $this->mail->welcome($user);
+            $this->touch();
+
+            return $user;
+        }
+    }
+
+1 definition (searched 48 files)

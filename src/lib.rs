@@ -16,6 +16,7 @@ pub mod closeout;
 pub mod cockpit;
 pub mod commit;
 pub mod config;
+pub mod ctx;
 pub mod daemon;
 pub mod db;
 pub mod docs;

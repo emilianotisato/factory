@@ -1,0 +1,61 @@
+refs/caller01.ts:1  ref  // planted is the shared helper every caller sums
+    const label = 'planted';
+
+refs/caller02.php:5  ref  $total += planted(0);
+    $total += planted(1);
+
+refs/caller03.go:5  ref  total += planted(0)
+    total += planted(1)
+
+refs/caller04.rs:3  ref  total += planted(0);
+    total += planted(1);
+
+refs/caller05.ts:3  ref  total += planted(0)
+    total += planted(1)
+
+refs/caller06.php:5  ref  $total += planted(0);
+    $total += planted(1);
+
+refs/caller07.go:5  ref  total += planted(0)
+    total += planted(1)
+
+refs/caller08.rs:3  ref  total += planted(0);
+    total += planted(1);
+
+refs/caller09.ts:3  ref  total += planted(0)
+    total += planted(1)
+
+refs/caller10.php:5  ref  $total += planted(0);
+    $total += planted(1);
+
+refs/caller11.go:5  ref  total += planted(0)
+    total += planted(1)
+
+refs/caller12.rs:3  ref  total += planted(0);
+    total += planted(1);
+
+refs/caller13.ts:3  ref  total += planted(0)
+    total += planted(1)
+
+refs/caller14.php:5  ref  $total += planted(0);
+    $total += planted(1);
+
+refs/caller15.go:5  ref  total += planted(0)
+    total += planted(1)
+
+refs/caller16.rs:3  ref  total += planted(0);
+    total += planted(1);
+
+refs/caller17.ts:3  ref  total += planted(0)
+    total += planted(1)
+
+refs/caller18.php:5  ref  $total += planted(0);
+    $total += planted(1);
+
+refs/caller19.go:5  ref  total += planted(0)
+    total += planted(1)
+
+refs/caller20.rs:3  ref  total += planted(0);
+    total += planted(1);
+
+280 more hits in 40 files (--max, --per-file to widen); 1 in test files (--tests)

@@ -1,0 +1,6 @@
+rs/config.rs:4  struct  pub struct Config {
+        pub root: PathBuf,
+        pub verbose: bool,
+    }
+
+1 definition (searched 48 files)

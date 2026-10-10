@@ -1,9 +1,10 @@
 use std::io::{stderr, stdout};
+use std::path::Path;
 use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
 
-use factory::cli;
+use factory::{cli, ctx};
 
 /// Drives unattended feature delivery: spawns coding-agent workers with
 /// context packs, runs the gate itself and keeps the record.
@@ -31,23 +32,13 @@ enum Command {
     /// Code lookups for workers: definitions, references, outlines
     Ctx {
         #[command(subcommand)]
-        verb: CtxVerb,
+        verb: ctx::Verb,
     },
     /// The PreToolUse hook the driver injects into every worker
     Hook(Passthrough),
     /// The detached driver `factory run` starts; not for hands
     #[command(hide = true)]
     Daemon(cli::run::DaemonArgs),
-}
-
-#[derive(Subcommand)]
-enum CtxVerb {
-    /// Where a symbol is defined
-    Def(Passthrough),
-    /// Where a symbol is used
-    Refs(Passthrough),
-    /// The definitions a file holds
-    Outline(Passthrough),
 }
 
 /// Arguments are accepted and ignored until the slice that builds the
@@ -68,10 +59,7 @@ fn main() -> ExitCode {
         Command::Report(a) => cli::report::report(&a, &mut stdout()),
         Command::Wait(a) => cli::wait::wait(&a, &mut stdout()),
         Command::Status(a) => cli::status::status(&a, &mut stdout()),
-        Command::Ctx { verb } => match verb {
-            CtxVerb::Def(p) | CtxVerb::Refs(p) => return not_built(11, &p.args),
-            CtxVerb::Outline(p) => return not_built(12, &p.args),
-        },
+        Command::Ctx { verb } => ctx::run(&verb, Path::new("."), &mut stdout(), &mut stderr()),
         Command::Hook(p) => return not_built(13, &p.args),
     };
     match result {

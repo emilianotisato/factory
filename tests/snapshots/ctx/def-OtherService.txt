@@ -1,0 +1,16 @@
+php/OtherService.php:7  class  class OtherService implements Notifier
+    {
+        public function welcome(User $user): void
+        {
+            $this->notify($user, 'welcome');
+        }
+
+        public function notify(User $user, string $template): void
+        {
+            mail($user->email, $template, '');
+        }
+    }
+
+php/UserService.php:9  class  class OtherService, which this one wraps.
+
+2 definitions (searched 48 files)

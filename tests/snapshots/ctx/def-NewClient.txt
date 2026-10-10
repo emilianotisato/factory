@@ -1,0 +1,5 @@
+go/client.go:12  func  func NewClient(base string) *Client {
+    	return &Client{base: base, http: http.DefaultClient}
+    }
+
+1 definition (searched 48 files)
