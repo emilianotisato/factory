@@ -107,13 +107,17 @@ pub fn weigh(input: u64, cache_write: u64, cache_read: u64, output: u64) -> f64 
 
 /// The run's weighted tokens: the sum over its `workers` rows, rounded.
 pub fn weighted(db: &Db, run_id: &str) -> Result<u64> {
+    Ok(weighted_sum(db, run_id)?.round() as u64)
+}
+
+/// The sum unrounded: what the budget is compared with.
+fn weighted_sum(db: &Db, run_id: &str) -> Result<f64> {
     let n = |v: Option<i64>| v.unwrap_or(0).max(0) as u64;
-    let sum: f64 = db
+    Ok(db
         .workers(run_id)?
         .iter()
         .map(|w| weigh(n(w.input), n(w.cache_write), n(w.cache_read), n(w.output)))
-        .sum();
-    Ok(sum.round() as u64)
+        .sum())
 }
 
 /// Why nothing may spawn right now.
@@ -125,11 +129,14 @@ pub enum Hold {
     Budget { weighted: u64, budget: u64 },
 }
 
-/// The budget first — it does not lift by waiting — then the pause.
+/// The budget first — it does not lift by waiting — then the pause. "Past
+/// the budget" (PRD §11) is the unrounded sum above it; the hold reports the
+/// sum rounded, as `status` and `report` show it.
 pub fn hold(run: &Run) -> Result<Option<Hold>> {
-    let weighted = weighted(run.db(), run.id().as_str())?;
+    let sum = weighted_sum(run.db(), run.id().as_str())?;
     let budget = run.state().budget_weighted_tokens;
-    if weighted > budget {
+    if sum > budget as f64 {
+        let weighted = sum.round() as u64;
         return Ok(Some(Hold::Budget { weighted, budget }));
     }
     if let Some(until) = run.state().paused_until
@@ -245,6 +252,36 @@ mod tests {
             until,
             literal: "rejected".to_string(),
         }
+    }
+
+    #[test]
+    fn a_sum_a_fraction_past_the_budget_holds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let run = Run::create(&tmp.path().join("data"), &repo, "001", None, 1).unwrap();
+        let add = |input: i64, cache_read: i64| {
+            run.db()
+                .conn()
+                .execute(
+                    "INSERT INTO workers (run_id, role, started_at, input, cache_read) VALUES (?1, 'build', 'x', ?2, ?3)",
+                    rusqlite::params![run.id().as_str(), input, cache_read],
+                )
+                .unwrap();
+        };
+        // Exactly the budget is not past it.
+        add(1, 0);
+        assert_eq!(hold(&run).unwrap(), None);
+        // 1.4 weighted rounds to 1, but it is past a budget of 1.
+        add(0, 4);
+        assert_eq!(weighted(run.db(), run.id().as_str()).unwrap(), 1);
+        assert_eq!(
+            hold(&run).unwrap(),
+            Some(Hold::Budget {
+                weighted: 1,
+                budget: 1
+            })
+        );
     }
 
     #[test]

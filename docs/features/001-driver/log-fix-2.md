@@ -103,3 +103,11 @@
 **Because:** the old behaviour hid a worker's later `BLOCK-n` from `slice_blocked` and `factory answer`, and wrote the resolution as code. After the repair, the driver and docs.mjs read the same entries. Closing at a heading when the count is even would break the template's fenced examples, which hold BLOCK headings.
 **Undo:** in `answers.rs`, make `dangling_fence` return `None`.
 **Review:** fyi
+
+### AD-20014 — Does a run that reaches its budget exactly park? · polish · 2026-10-10
+
+**Chose:** no. `quota::hold` parks when the unrounded weighted sum is above the budget (`>`). The hold reports the rounded sum, as `status`, `report` and the `run_parked` event already do.
+**Over:** `>=`; or comparing the rounded sum (what it did, which let 1.4 pass a budget of 1).
+**Because:** PRD §11 FR-9 says "Past the budget the run … parks", and a budget is what the run may spend. Rounding first moved the line by up to half a token.
+**Undo:** compare `weighted(..)` with the budget again in `quota::hold`.
+**Review:** no
