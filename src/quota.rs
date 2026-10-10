@@ -111,7 +111,7 @@ pub fn weighted(db: &Db, run_id: &str) -> Result<u64> {
 }
 
 /// The sum unrounded: what the budget is compared with.
-fn weighted_sum(db: &Db, run_id: &str) -> Result<f64> {
+pub fn weighted_sum(db: &Db, run_id: &str) -> Result<f64> {
     let n = |v: Option<i64>| v.unwrap_or(0).max(0) as u64;
     Ok(db
         .workers(run_id)?

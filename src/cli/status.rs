@@ -101,7 +101,9 @@ pub fn board(run: &Run) -> Result<Vec<String>> {
             ))
         )
     });
-    let used = quota::weighted(run.db(), run.id().as_str())?;
+    // Rounded up: `used > budget` exactly when the sum passed it (1.4 of 1
+    // reads `2/1`, not `1/1`).
+    let used = quota::weighted_sum(run.db(), run.id().as_str())?.ceil() as u64;
     lines.push(format!(
         "quota: {pause} · {limit} · budget: {}/{}{}",
         tokens(used),
