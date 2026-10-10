@@ -1203,6 +1203,10 @@ fn a_resumed_driver_settles_an_orphan_whose_pid_was_reused() {
     let out = factory(&fx, &["run", "001"]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     wait_until("slice 01 to be committed", 15, || committed(&dir, 1));
+    // The commit lands before the outcome: wait for the settle too.
+    wait_until("slice 01's worker to be settled", 15, || {
+        !state(&dir)["workers"][0]["outcome"].is_null()
+    });
     assert_eq!(state(&dir)["workers"][0]["outcome"], "done");
     assert!(pid_alive(other.id()));
     other.kill().unwrap();
@@ -1242,6 +1246,10 @@ fn a_resumed_driver_settles_a_dead_orphan_beside_a_live_one() {
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     wait_until("slice 02 to be committed", 20, || committed(&dir, 2));
     assert!(pid_alive(first), "slice 01's worker outlived the commit");
+    // The commit lands before the outcome: wait for the settle too.
+    wait_until("slice 02's worker to be settled", 20, || {
+        !state(&dir)["workers"][1]["outcome"].is_null()
+    });
     assert_eq!(state(&dir)["workers"][1]["outcome"], "done");
 
     // A few ticks of waiting on 01, said once.

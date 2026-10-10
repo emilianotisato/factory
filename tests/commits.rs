@@ -543,6 +543,10 @@ fn a_driver_killed_at_the_slice_commit_leaves_the_worker_for_the_resume() {
     });
     let sha = sha_of(&fx, "feat: A");
     assert!(files_of(&fx, &sha).contains(&slice_rel(&fx, 1)));
+    // The commit lands before the outcome: wait for the settle too.
+    wait_until(&fx, &dir, "slice 01's worker to be settled", 20, || {
+        !state(&dir)["workers"][0]["outcome"].is_null()
+    });
     assert_eq!(state(&dir)["workers"][0]["outcome"], "done");
     // The resume did not log the slice done a second time.
     let done_01 = events(&dir)
