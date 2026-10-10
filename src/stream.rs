@@ -257,8 +257,9 @@ impl Summary {
     }
 }
 
-/// Feeds lines as they arrive; `finish` gives the summary. The tee thread in
-/// `worker.rs` owns one; tests feed it a recording.
+/// Feeds lines as they arrive; `finish` gives the summary. [`parse`] feeds
+/// it a worker's whole stream file once the worker exits (`worker.rs`
+/// writes the stream straight to that file); tests feed it a recording.
 #[derive(Debug, Default)]
 pub struct Collector {
     summary: Summary,
