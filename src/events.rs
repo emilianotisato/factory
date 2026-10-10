@@ -282,8 +282,8 @@ pub enum EventKind {
         duration_minutes: f64,
     },
     /// FR-7: the run ended on `factory stop` once its in-flight workers had
-    /// exited — phase `finished`, `stopped: true` in `state.json`, and
-    /// `factory run NNN` resumes from the board. The last line of a stopped
+    /// exited — phase `finished`, `stopped: true` in `state.json`; the run is
+    /// over and `factory run NNN` starts a new one from the board. The last line of a stopped
     /// run, in place of `run_finished` (AD-1002).
     RunStopped {
         #[serde(default)]

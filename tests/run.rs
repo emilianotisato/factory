@@ -708,6 +708,12 @@ fn stop_finishes_a_dead_run_and_only_flags_a_live_one() {
     let out = factory(&fx, &["stop", &id]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     assert!(stdout(&out).contains("marked finished"), "{}", stdout(&out));
+    // A stopped run is over: what continues is the feature, in a new run.
+    assert!(
+        stdout(&out).contains("factory run 001 resumes the feature in a new run"),
+        "{}",
+        stdout(&out)
+    );
     let s = state(&dir);
     assert_eq!(s["phase"], "finished");
     assert_eq!(s["stop_requested"], true);
@@ -781,6 +787,13 @@ fn stop_during_a_slice_lets_the_worker_finish_then_ends_the_run() {
         "{k:?}"
     );
     assert_eq!(state(&dir)["stopped"], true);
+    let log = fs::read_to_string(dir.join("driver.log")).unwrap();
+    assert!(
+        log.contains(&format!(
+            "run {id} stopped (1 slice(s) done) — factory run 001 resumes the feature in a new run"
+        )),
+        "{log}"
+    );
     // Nothing resumes a finished run: the next `run` is a new one.
     let out = factory(&fx, &["run", "001"]);
     assert!(

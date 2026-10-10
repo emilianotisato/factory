@@ -5,7 +5,8 @@
 //! says how many workers are still in flight; asked again it says how many
 //! remain. With no live process there is no loop to honour it, so `stop`
 //! marks the run stopped itself. There is no kill mode: a kill is `kill` on
-//! the process group, and `factory run NNN` resumes what it left.
+//! the process group, and `factory run NNN` resumes what it left. A stopped
+//! run is over: `factory run NNN` then starts a new run from the board.
 use std::io::Write;
 
 use clap::Args;
@@ -44,7 +45,7 @@ pub fn stop(args: &StopArgs, out: &mut dyn Write) -> Result<i32> {
         let slices = scheduler::mark_stopped(&mut run)?;
         writeln!(
             out,
-            "run {} had no live process (pid {pid}): marked finished ({slices} slice(s) done; factory run {} resumes)",
+            "run {} had no live process (pid {pid}): marked finished ({slices} slice(s) done; factory run {} resumes the feature in a new run)",
             run.id(),
             run.state().feature
         )

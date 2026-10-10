@@ -1636,13 +1636,14 @@ fn finish(run: &mut Run, out: &mut dyn Write, why: &str) -> Result<Phase> {
 /// `factory stop` honoured (FR-7): the in-flight workers were reaped, their
 /// done slices committed; now phase `finished` with `stopped: true` and
 /// `run_stopped` as the last line — not `run_finished`, which says the run
-/// reached its end (AD-1002). `factory run NNN` resumes from the board.
+/// reached its end (AD-1002). The run is over: `factory run NNN` starts a
+/// new one from the board.
 fn stopped(run: &mut Run, out: &mut dyn Write) -> Result<Phase> {
     let slices = mark_stopped(run)?;
     say(
         out,
         &format!(
-            "run {} stopped ({slices} slice(s) done) — factory run {} resumes",
+            "run {} stopped ({slices} slice(s) done) — factory run {} resumes the feature in a new run",
             run.id(),
             run.state().feature
         ),

@@ -117,7 +117,8 @@ pub struct RunState {
     pub budget_weighted_tokens: u64,
     pub stop_requested: bool,
     /// FR-7: the run ended on `factory stop`, not at its end. Phase is
-    /// `finished`; `factory run NNN` resumes from the board.
+    /// `finished`, so nothing resumes it: `factory run NNN` starts a new run
+    /// from the board.
     #[serde(default)]
     pub stopped: bool,
     /// FR-9: no spawn until this epoch second; `None` when not paused. Kept
