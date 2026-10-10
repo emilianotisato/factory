@@ -373,7 +373,9 @@ fn report_prints_the_retro_keys_then_the_run_keys() {
         value(&lines, "pack_doc_read_chars").parse::<u64>().unwrap(),
         lookup
     );
-    assert_eq!(value(&lines, "followup threshold 30%"), "ok");
+    // No ctx call: no follow-up share to compare (n/a, not ok); the lookups
+    // still give ctx_share and repeat_rate.
+    assert_eq!(value(&lines, "followup threshold 30%"), "n/a");
     assert_eq!(value(&lines, "ctx_share threshold 10%"), "under");
     assert_eq!(value(&lines, "repeat_rate vs 26.7%"), "lower");
     let minutes: f64 = value(&lines, "build_minutes").parse().unwrap();
@@ -410,6 +412,7 @@ fn report_json_round_trips_and_cockpit_measures_the_transcript() {
     }
     assert_eq!(v["followup_reads"]["ctx_calls"], 0);
     assert_eq!(v["thresholds"]["ctx_share"], "under");
+    assert_eq!(v["thresholds"]["followup"], "n/a");
     assert!(v.get("per_worker").is_none(), "only with --per-worker");
 
     // The fixture transcript, pinned against `measure.py --retro`

@@ -111,41 +111,46 @@ impl Followups {
     }
 }
 
-/// The three lines the reversal rule reads (§14 FR-12 decision 4).
+/// The three lines the reversal rule reads (§14 FR-12 decision 4). A share
+/// with nothing under it reads `n/a`, not a pass: no ctx call for the
+/// follow-up share, no lookup for `ctx_share` and `repeat_rate`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Thresholds {
-    /// `ok` or `over`.
+    /// `ok`, `over` or `n/a`.
     pub followup: &'static str,
-    /// `ok` or `under`.
+    /// `ok`, `under` or `n/a`.
     pub ctx_share: &'static str,
-    /// `lower` or `not lower`.
+    /// `lower`, `not lower` or `n/a`.
     pub repeat_rate: &'static str,
 }
 
 impl Default for Thresholds {
     fn default() -> Self {
-        Thresholds::of(0.0, 0.0, 0.0)
+        Thresholds::of(None, None, None)
     }
 }
 
+/// What a threshold line says with no data under it.
+const NO_DATA: &str = "n/a";
+
 impl Thresholds {
-    pub fn of(followup_share: f64, ctx_share: f64, repeat_rate: f64) -> Self {
+    pub fn of(
+        followup_share: Option<f64>,
+        ctx_share: Option<f64>,
+        repeat_rate: Option<f64>,
+    ) -> Self {
+        let read = |v: Option<f64>, past: fn(f64) -> bool, yes, no| {
+            v.map_or(NO_DATA, |v| if past(v) { yes } else { no })
+        };
         Thresholds {
-            followup: if followup_share > FOLLOWUP_THRESHOLD {
-                "over"
-            } else {
-                "ok"
-            },
-            ctx_share: if ctx_share < CTX_SHARE_THRESHOLD {
-                "under"
-            } else {
-                "ok"
-            },
-            repeat_rate: if repeat_rate < REPEAT_RATE_BASELINE {
-                "lower"
-            } else {
-                "not lower"
-            },
+            followup: read(followup_share, |v| v > FOLLOWUP_THRESHOLD, "over", "ok"),
+            ctx_share: read(ctx_share, |v| v < CTX_SHARE_THRESHOLD, "under", "ok"),
+            repeat_rate: read(
+                repeat_rate,
+                |v| v < REPEAT_RATE_BASELINE,
+                "lower",
+                "not lower",
+            ),
         }
     }
 
@@ -378,7 +383,11 @@ pub fn compute(db: &Db, run_id: &str, cockpit: Option<&Measure>) -> Result<Repor
         lookup_chars,
         ctx_share,
         repeat_rate,
-        thresholds: Thresholds::of(followup_reads.share, ctx_share, repeat_rate),
+        thresholds: Thresholds::of(
+            (ctx_calls > 0).then_some(followup_reads.share),
+            (lookups > 0).then_some(ctx_share),
+            (lookups > 0).then_some(repeat_rate),
+        ),
         followup_reads,
         pack_doc_read_chars: calls
             .iter()
@@ -483,7 +492,7 @@ mod tests {
     #[test]
     fn the_threshold_lines_compare_with_the_section_14_constants() {
         assert_eq!(
-            Thresholds::of(0.5, 0.05, 0.267).lines(),
+            Thresholds::of(Some(0.5), Some(0.05), Some(0.267)).lines(),
             vec![
                 "followup threshold 30%: over",
                 "ctx_share threshold 10%: under",
@@ -491,13 +500,23 @@ mod tests {
             ]
         );
         assert_eq!(
-            Thresholds::of(0.3, 0.1, 0.2).lines(),
+            Thresholds::of(Some(0.3), Some(0.1), Some(0.2)).lines(),
             vec![
                 "followup threshold 30%: ok",
                 "ctx_share threshold 10%: ok",
                 "repeat_rate vs 26.7%: lower",
             ]
         );
+        // No ctx call, no lookup: nothing to compare, not a pass.
+        assert_eq!(
+            Thresholds::default().lines(),
+            vec![
+                "followup threshold 30%: n/a",
+                "ctx_share threshold 10%: n/a",
+                "repeat_rate vs 26.7%: n/a",
+            ]
+        );
+        assert_eq!(Thresholds::of(None, Some(0.0), Some(0.0)).followup, "n/a");
         let f = Followups {
             count: 1,
             ctx_calls: 3,
