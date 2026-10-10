@@ -95,6 +95,11 @@ fn every_segment_and_every_wrapper_is_read() {
         "echo <(gh pr merge 1)",
         "x=$(echo $(gh pr ready 1))",
         "echo \"$(git push)\"",
+        "true && gh --version",
+        "ls; /usr/bin/gh auth status",
+        "(cd x && gh repo view)",
+        "echo $(gh api user)",
+        "echo \"`gh api user`\"",
         // the program spelled another way
         "/usr/bin/gh pr merge 1",
         "\"gh\" pr merge 1",
@@ -112,6 +117,12 @@ fn every_segment_and_every_wrapper_is_read() {
         "xargs -I{} git push origin {} < branches",
         "env GH_TOKEN=x gh pr merge 1",
         "env -i PATH=/usr/bin git push",
+        "env -S 'gh api' user",
+        "timeout -s KILL 30 gh run list",
+        "nohup git push &",
+        "xargs -n1 gh run view < ids",
+        "find . -name x -exec git push \\;",
+        "watch -n 5 gh run list",
         // shells and eval
         "sh -c \"gh pr merge 1\"",
         "bash -lc 'git push --force'",
@@ -119,6 +130,10 @@ fn every_segment_and_every_wrapper_is_read() {
         "eval \"gh pr merge 1\"",
         "bash <<EOF\ngh pr merge 1\nEOF",
         "sh <<'EOF'\ngit push\nEOF",
+        "bash -c 'git push origin HEAD'",
+        "sh -ec \"cd x && gh api user\"",
+        "bash <<EOF\ngh api user\nEOF",
+        "eval 'gh' api user",
         // git's own ways to push
         "git --git-dir=.git --work-tree=. push",
         "git -C . -c a=b push",
@@ -126,6 +141,10 @@ fn every_segment_and_every_wrapper_is_read() {
         "git send-pack origin main",
         "git lfs push origin main",
         "git -c alias.ship=push ship",
+        "git -c core.hooksPath=/dev/null push",
+        // an alias defined on the line, even one that is not push
+        "git -c alias.p=status p",
+        "git subtree push --prefix=x origin main",
     ]);
 }
 
@@ -135,6 +154,7 @@ fn doubt_is_denied_when_it_names_gh_or_push() {
         // unbalanced quotes
         "echo \"unterminated && gh pr merge 1",
         "echo 'x; git push",
+        "echo 'unbalanced; git push",
         // a script the hook cannot see into
         "cat cmds | sh # gh",
         "printf 'git push' | bash",
@@ -142,6 +162,9 @@ fn doubt_is_denied_when_it_names_gh_or_push() {
         "node -e 'require(\"child_process\").execSync(\"git push\")'",
         "$TOOL pr merge 1 # gh",
         "\"$GH\" pr merge 1",
+        "\"$GH\" api user",
+        "python3 -c \"import os; os.system('gh api user')\"",
+        "printf 'gh api user' | sh",
     ]);
 }
 
@@ -161,6 +184,14 @@ fn the_rest_gets_no_decision() {
         "bash scripts/check.sh",
         "sh -c 'cargo fmt --check'",
         "cat cmds | sh",
+        "git status && git log --grep push",
+        "git commit -m \"$(cat <<'EOF'\nfix: push gh\nEOF\n)\"",
+        "cat <<'EOF' > notes.md\ngh pr x\nEOF",
+        "grep -rn \"git push\" docs",
+        "python3 scripts/push_metrics.py",
+        "bash scripts/ci.sh",
+        "rg -n 'github' src",
+        "pushd src && ls",
     ] {
         assert!(!guard(cmd), "guard denies: {cmd}");
         assert_eq!(decide(cmd), None, "{cmd}");

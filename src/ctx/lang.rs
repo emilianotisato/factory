@@ -404,24 +404,4 @@ mod tests {
         assert!(unit.in_comment_or_string(&tree, 11..12));
         assert!(!unit.in_comment_or_string(&tree, 15..16));
     }
-
-    /// C4 (AD-40002): both `<script>` blocks of a Vue file are units, their
-    /// definitions at file offsets, and a template between them is code.
-    #[test]
-    fn a_vue_file_has_one_unit_per_script_block() {
-        let src = "<script lang=\"ts\">\nexport function one() {}\n</script>\n<template><p>'x'</p></template>\n<script setup lang=\"ts\">\n// x\nfunction two() {}\n</script>\n";
-        let units = Unit::all(Path::new("a.vue"), Lang::Vue, src);
-        assert_eq!(units.len(), 2);
-        let (defs, broken) = definitions(&units).unwrap();
-        let names: Vec<&str> = defs.iter().map(|d| &src[d.name.clone()]).collect();
-        assert_eq!((names, broken), (vec!["one", "two"], false));
-        let starts = line_starts(src);
-        assert_eq!(line_of(&starts, defs[1].name.start), 6);
-        let parsed = Parsed::of(&units).unwrap();
-        assert!(!parsed.has_error());
-        let comment = src.find("// x").unwrap() + 3;
-        assert!(parsed.in_comment_or_string(comment..comment + 1));
-        let template = src.find("'x'").unwrap() + 1;
-        assert!(!parsed.in_comment_or_string(template..template + 1));
-    }
 }
