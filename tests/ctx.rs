@@ -297,6 +297,47 @@ fn def_body_is_the_node_range() {
     );
 }
 
+/// CP-6 (AD-9003): a definition whose node opens with PHP attributes or a
+/// TypeScript decorator is located at its name's line, as `outline` puts
+/// it, with that line as the signature; the body is the node's whole
+/// range, so the attributes are still printed, in place.
+#[test]
+fn def_locates_an_attributed_definition_at_its_name() {
+    let tmp = tempfile::tempdir().unwrap();
+    let php = "<?php\n\n#[Fillable(['name'])]\nclass Company extends Model\n{\n    #[Override]\n    public function save(): bool\n    {\n        return true;\n    }\n}\n";
+    fs::write(tmp.path().join("Company.php"), php).unwrap();
+    let ts =
+        "@Component({ name: 'x' })\nclass Widget {\n  render(): string {\n    return ''\n  }\n}\n";
+    fs::write(tmp.path().join("widget.ts"), ts).unwrap();
+
+    let (code, out, _) = ctx_in(tmp.path(), &["def", "Company"]);
+    assert_eq!(
+        (code, out.as_str()),
+        (
+            0,
+            "Company.php:4  class  class Company extends Model\n    #[Fillable(['name'])]\n    class Company extends Model\n    {\n        #[Override]\n        public function save(): bool\n        {\n            return true;\n        }\n    }\n\n1 definition (searched 2 files)\n"
+        )
+    );
+    let (_, out, _) = ctx_in(tmp.path(), &["def", "save", "--no-body"]);
+    assert_eq!(
+        out,
+        "Company.php:7  method  public function save(): bool\n\n1 definition (searched 2 files)\n"
+    );
+    let (_, out, _) = ctx_in(tmp.path(), &["def", "Widget"]);
+    assert!(
+        out.starts_with(
+            "widget.ts:2  class  class Widget {\n    @Component({ name: 'x' })\n    class Widget {\n"
+        ),
+        "{out}"
+    );
+    let (_, out, _) = ctx_in(tmp.path(), &["outline", "Company.php", "widget.ts"]);
+    assert!(
+        out.contains("\n4  class  class Company extends Model\n  7  method  "),
+        "{out}"
+    );
+    assert!(out.contains("\n2  class  class Widget {\n"), "{out}");
+}
+
 /// Slice 12 task 4: classes with their methods indented, the trait and the
 /// interface; no `use` lines, properties or constants; `--depth 1` keeps
 /// the top level.

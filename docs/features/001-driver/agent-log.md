@@ -51,6 +51,8 @@ What this repo does that cost a builder a run and will cost the next one too: a 
 
 - **A test that waits on a phase and then reads the event tail races the driver (2026-10-10)**: `state.json` is saved before the event that explains it is appended. `scheduler::finish` used to run `report::compute` in that gap, and `tests/checkpoints.rs::two_dead_checkpoint_workers_block_the_run_and_the_answer_spawns_a_third` read a tail with no `run_finished` once in three runs. The gap is now one append; a new test should wait on the event (`kinds().last() == "run_finished"`), not on the phase.
 
+- The cargo target dir here is `$CARGO_TARGET_DIR` (`/mnt/devcache/emiliano/cargo-target`), not `./target`: `target/debug/factory` does not exist. Run the built binary from `$CARGO_TARGET_DIR/debug/factory`, or `cargo run -q -- …`; tests use `env!("CARGO_BIN_EXE_factory")`.
+
 ## Blockers
 
 ### BLOCK-201 — FR-1's "`judge[]` parks the run" rule parks every run, including the fixture's · slice-02 · resolved
@@ -629,6 +631,142 @@ _(none)_
 **Undo:** delete the `eprintln!` and its comment from the two helpers; nothing asserts on the echo
 **Review:** no
 
+### AD-1101 — Where does a heuristic `def` body end? · slice-11 · 2026-10-10
+
+**Chose:** the body goes on while a bracket the definition opened is still open, or the next non-blank line is indented deeper than the match, or that line opens with `{`; it stops at the first line whose indentation returns to the match's, keeping the closing brace, and at 25 lines (`def::body_end`). Trailing blank lines are dropped; a body cut at 25 lines is counted in the trailer (`1 body cut at 25 lines`).
+**Over:** the slice's rule read literally ("up to the first line whose indentation returns to the match's"): on the PHP fixture `final class UserService` is followed by `{` at the same indentation, so the body would be empty or the lone `{`, and a PSR-12 signature spread over lines (`): User` then `{`) would stop at the `)`.
+**Because:** task 2 gives the rule in one line and its own fixture breaks it; bracket depth plus indentation keeps the rule's intent on all four stacks. Slice 12 replaces the body with the tree-sitter node range.
+**Undo:** one function in `src/ctx/def.rs` and the def snapshots.
+**Review:** decide — deviates from the slice's literal body rule (orchestrator regrade, autonomy.md)
+
+### AD-1102 — What does a `refs` hit print, and what does the trailer say when nothing was cut? · slice-11 · 2026-10-10
+
+**Chose:** `path:line  ref  <hit line trimmed>`, then the next line indented four spaces (left out when it is blank or the file ends). Trailers: `N more hits in M files (--max, --per-file to widen)` when the caps cut (M = files with a hit not shown), `N hits in M files (searched K files)` when they did not, `no references to NAME found (searched K files)` on none; then `; N in test files (--tests)` when test files held hits, and `; skipped …` for binary or over-2 MB files. `def` ends `N definitions (searched K files)` or the slice's `no definition of NAME found (searched N files)`.
+**Over:** a bare `path:line  text` line for refs (the printer task spells `path:line  kind  signature` for both verbs and a ref has no kind in this slice), and a trailer only when something was cut.
+**Because:** the slice spells the cut trailer and the empty `def` line but not the others; a model reading a trailerless list cannot tell whether it is complete, and test files are cut silently otherwise.
+**Undo:** `src/ctx/print.rs` and the snapshots.
+**Review:** no
+
+### AD-1103 — What does `--vendor` lift, and what counts as binary? · slice-11 · 2026-10-10
+
+**Chose:** `--vendor` (on `def` and `refs`) lifts both the vendor directories and every gitignore rule (`standard_filters(false)`, hidden files still skipped). Binary = a NUL byte anywhere in the file, read whole since files over 2 MB are already skipped at the walk.
+**Over:** `--vendor` lifting only the six directory overrides: `vendor/` and `node_modules/` are gitignored in every Laravel and Node checkout, so the flag would do nothing there.
+**Because:** §14 "Vendor and gitignored paths are skipped unless `--vendor`"; the slice does not say how binary is detected.
+**Undo:** `walk::walk` and `walk::scan`.
+**Review:** no
+
+### AD-1104 — How many `planted` hits does the `refs/` fixture hold? · slice-11 · 2026-10-10
+
+**Chose:** 300 textual hits across 40 files, two of them the comment and the string in `refs/caller01.ts` (298 real), plus one in `refs/tests/planted.test.ts`.
+**Over:** 300 real hits plus the comment and string (302 textual), which the Current code section's "300 planted hits … plus one hit inside a comment and one inside a string" reads as.
+**Because:** task 3's acceptance says `290 more hits` with the comment hit still printed, and slice 12 task 3 expects "the count of real hits is `300 - 2`"; only 300 textual satisfies both.
+**Undo:** regenerate `tests/fixture/ctx/refs/` and re-bless the refs snapshots.
+**Review:** no
+
+### AD-1105 — Does the `outline` stub exit 0 or 2? · slice-11 · 2026-10-10
+
+**Chose:** exit 2 with `outline needs tree-sitter (slice 12)` on stderr, as task 5 and its acceptance say.
+**Over:** exit 0, which the slice's summary paragraph says ("a stub that says so and exits 0").
+**Because:** task 5 states the reason (no caller mistakes silence for an empty outline) and its acceptance is the check.
+**Undo:** one line in `ctx::run`.
+**Review:** no
+
+### AD-1106 — What is a test path matched against? · slice-11 · 2026-10-10
+
+**Chose:** the path relative to the search root (`--in`, else the current directory), with the slice's pattern `tests?/|spec|_test\.go|\.test\.|\.spec\.` written as plain substring checks (`refs::is_test`).
+**Over:** the absolute path, which hides every file of a checkout that lives under a `tests/` directory (this fixture does), and the `regex` crate for one pattern, a new runtime dependency.
+**Because:** the slice gives the pattern, not what it is matched against. A consequence: `refs X --in tests` searches the test tree without `--tests`.
+**Undo:** one function in `src/ctx/refs.rs`.
+**Review:** no
+
+### AD-1107 — How is the printed kind found, and what is it for TypeScript's class-member regex? · slice-11 · 2026-10-10
+
+**Chose:** the last keyword of the language's table that precedes the symbol on the matched line (`def::kind_of`); a TypeScript class member, whose regex has no keyword, prints `method`.
+**Over:** a capture group per regex, which needs the `grep-matcher` trait as a direct dependency the slice does not name.
+**Because:** the slice says "the kind printed here is the keyword matched" and gives the member regex without one.
+**Undo:** one function in `src/ctx/def.rs`.
+**Review:** no
+
+### AD-1108 — How are the outputs pinned? · slice-11 · 2026-10-10
+
+**Chose:** a plain string compare against `tests/snapshots/ctx/*.txt` (twelve commands, each run twice and compared byte for byte); `FACTORY_BLESS=1 cargo test --test ctx` rewrites them. The slice 12 states are `#[ignore]`d tests beside the slice 11 ones.
+**Over:** the `insta` crate, which the slice offers as the other option.
+**Because:** twelve files and one loop need no dev dependency; slice 12 re-blesses with the same variable.
+**Undo:** `tests/ctx.rs` and the snapshot folder.
+**Review:** no
+
+### AD-1201 — Does `--kind fn` take methods? · slice-12 · 2026-10-10
+
+**Chose:** yes, everywhere: `--kind fn` keeps tags mapped to `fn` and to `method`, and the hit still prints its own kind (`def new --kind fn` prints `rs/config.rs:10  method  pub fn new(…)`). `--kind method`, `class` and `type` match their own kind only (`lang::kind_matches`).
+**Over:** `fn` ← function only, as the slice's mapping reads ("`fn` ← function; `method` ← method").
+**Because:** task 2's acceptance asks `def new --kind fn` to find the `impl` method as kind `method`, which the literal mapping cannot do; one rule for all four grammars beats a Rust-only exception, and "a function" in an agent's question usually includes methods.
+**Undo:** one line in `src/ctx/lang.rs` (`kind_matches`) and the `def-new-kind-fn` snapshot.
+**Review:** decide — reconciles the slice's kind mapping with its own acceptance, a public flag's meaning
+
+### AD-1202 — How does `outline` nest Rust methods, and what else does it list? · slice-12 · 2026-10-10
+
+**Chose:** an `impl` block is a line of its own (`9  impl  impl Config {`) with its methods indented under it, as a class's are; a trait's method declarations are listed under the trait (`  24  method  fn load(&self) -> Config;`). So the Rust fixture prints the struct, the impl, its two methods, the trait and its one declaration.
+**Over:** the acceptance's list read literally ("the struct, the trait and the two `impl` methods") with the methods at the top level, which `--depth 1` could not then hide, or the impl's methods indented under nothing.
+**Because:** a Rust method has no class to sit under, and the impl line carries what a reader needs (which type, which trait); the trait's declarations are its interface, the same as a PHP interface's methods, which the slice wants listed.
+**Undo:** the `impl_item` and `function_signature_item` patterns in `RUST_EXTRA` (`src/ctx/lang.rs`) and `"impl"` in `outline::outlined`; the `outline-rs` snapshot.
+**Review:** decide — prints lines the acceptance's list does not name
+
+### AD-1203 — Upstream `tags.scm` as shipped, or with patterns of our own? · slice-12 · 2026-10-10
+
+**Chose:** each grammar's `TAGS_QUERY` with a few patterns put in front of it (`PHP_EXTRA`, `TS_EXTRA`, `GO_EXTRA`, `RUST_EXTRA` in `src/ctx/lang.rs`); tree-sitter-tags keeps one tag per name, the lowest pattern's, so ours win. PHP: `method_declaration` is a method (upstream: function), enums tagged. TypeScript: function, generator, class, method, `const`/`let`/`var` bound to an arrow or function expression (the whole declaration), type alias, enum. Go: a struct or interface `type_spec` is a class (upstream: type), `type_alias` tagged. Rust: `type` alias is a type (upstream: class), a fn in a `mod` body is a function (upstream: method), trait method declarations, `const`, `static`, `impl`. No locals query is passed.
+**Over:** the shipped queries alone.
+**Because:** tree-sitter-typescript's `tags.scm` leaves functions, classes and methods to tree-sitter-javascript's, so without these `def useThing` and `outline` on the Vue fixture find nothing; PHP methods come out as `fn`, which task 2's `def handle --kind method` rules out. The locals query only hides references, and only definitions are read.
+**Undo:** delete the four constants' lines; the snapshots show what moves.
+**Review:** fyi — the kinds come from our query text, not only the grammar crates'
+
+### AD-1204 — Which grammar for `.tsx`, `.js`, `.jsx` and `.mjs`? · slice-12 · 2026-10-10
+
+**Chose:** `LANGUAGE_TSX` for those four, `LANGUAGE_TYPESCRIPT` for `.ts` and Vue `<script>` blocks.
+**Over:** TypeScript for all.
+**Because:** JSX parses as an error under the TypeScript grammar, and an error sends the file to the textual fallback; the slice rules TSX out for Vue only.
+**Undo:** `Grammar::of` in `src/ctx/lang.rs`.
+**Review:** no
+
+### AD-1205 — What does the `def` trailer say about what the tree dropped? · slice-12 · 2026-10-10
+
+**Chose:** after `(searched K files)`: `; N textual match(es) dropped: inside comments or strings`, `; N textual match(es) dropped: no definition node` (a line that reads like a definition and is not one, or a Vue template line), `; N definition(s) of another kind (--kind)`, `; N file(s) not parsed cleanly: textual matches kept`. `def handle --kind class` prints `no definition of handle found (searched 48 files); 1 definition of another kind (--kind)`.
+**Over:** one reason for every drop, as the slice's example has it.
+**Because:** a hit can fail the tree without being in a comment; labelling it so would be false, and an empty answer under `--kind` should say a definition exists.
+**Undo:** `print::defs`.
+**Review:** no
+
+### AD-1206 — What counts as "fails to parse", and what does it change? · slice-12 · 2026-10-10
+
+**Chose:** a tree whose root `has_error()` (an ERROR or MISSING node anywhere), or tagging that fails. `def` then gives slice 11's output for that whole file (heuristic body, keyword kind mapped to the vocabulary: `class`, `fn`, `method`, `type`, `module`, `constant`, `macro`) and counts it in the trailer; under `--kind`, `fn` and `method` pass for each other there, since the keyword cannot tell them apart. `refs` keeps every hit of such a file unfiltered and says so in its trailer (`; N file(s) not parsed cleanly: comments and strings kept`); `outline` prints what was tagged and notes the file.
+**Over:** keeping the confirmed hits of a file with a local error, or filtering a broken file's refs anyway.
+**Because:** the slice's "syntax error at the root" names no node test; an unterminated string in a broken tree swallows the code after it, so filtering by it could drop real hits — "a broken file never hides a definition".
+**Undo:** `File::confirmed` in `src/ctx/def.rs`, `code_lines` in `src/ctx/refs.rs`.
+**Review:** no
+
+### AD-1207 — What does `outline` list, how deep, and what does it say at the end? · slice-12 · 2026-10-10
+
+**Chose:** kinds `class`, `fn`, `method`, `type`, `impl`, and `module` when it has a body; left out: `field` (properties), `constant`, `macro`, a bodyless `namespace X;`, and anything defined inside a function or method (locals). Depth = 1 + the containers around it (class, impl, module); `--depth N` keeps depth ≤ N. Each line is `{2 spaces per level}{line}  {kind}  {the name's line, trimmed}`, the line number being the name's. A directory stands for its source files, non-recursive, dot-files skipped, sorted. A path that cannot be read exits 2 (`factory ctx: cannot read P: …`); a named file of no known language is counted. The trailer is printed only when something was left out: `N nested definitions hidden (--depth)`, files not parsed cleanly, files in no outlined language, skipped binary or over-2 MB files. An empty file prints its header alone.
+**Over:** a trailer on every outline, as `def` and `refs` have.
+**Because:** the acceptance pins the empty file to "the header and nothing else"; the rest is where the slice was silent.
+**Undo:** `src/ctx/outline.rs`, `print::outline`.
+**Review:** no
+
+### AD-1208 — Which nodes are comments and strings, and how is the Vue block found? · slice-12 · 2026-10-10
+
+**Chose:** PHP `comment`, `string`, `encapsed_string`, `heredoc`, `nowdoc` (the slice lists `comment` only); TypeScript, Go and Rust as the slice lists them. A `${…}` inside a template string is code (`template_substitution` stops the climb). A `refs` line is kept when any whole-word match on it lies outside comments and strings. The Vue block is the first `<script` followed by whitespace or `>`; a `>` inside a quoted attribute (`generic="T extends Map<K, V>"`) does not close the tag; `script_block` returns `(offset, text)` without a `lang`, since every block parses as TypeScript. A `refs` hit in a Vue template is kept.
+**Over:** the slice's PHP list read literally, which keeps `'planted'` in PHP strings.
+**Because:** the slice's own heading drops "comments and strings"; PHP strings have four node kinds.
+**Undo:** `Grammar::is_comment_or_string`, `Unit::in_comment_or_string` (`src/ctx/lang.rs`), `src/ctx/vue.rs`.
+**Review:** no
+
+### AD-9003 — Where does `def` put a definition whose node opens with attributes or a decorator? · checkpoint · 2026-10-10
+
+**Chose:** the header is the line of the definition's name, its number and its text trimmed, as `outline` (AD-1207) and slice 11's regex hit already locate it; the body is the node's lines after it, and when the node opens above its name the body is the node's whole range, the signature line repeated in place, so the attributes still print (`def::node_def`). Found at CP-6 on icg-cloud: `def Company` said `app/Core/Models/Company.php:37  class  #[Fillable([...])]` where `outline` says `38  class  class Company extends Model implements …`; 46 attributed class or method definitions in that repo's `app/` and `tests/` printed an attribute as their signature. Pinned by `tests/ctx.rs::def_locates_an_attributed_definition_at_its_name` (PHP class and method attributes, a TypeScript class decorator); the 20 fixture snapshots did not move.
+**Over:** slice 12 task 2 read literally ("The signature line is the first line of the range"), which names the attribute line as the location and the attribute as the signature; or the header at the name with the attribute lines dropped, which loses the node's exact range (§14) and, on a Laravel model, its `#[Fillable]` list.
+**Because:** §14 promises `path:line, kind, signature` and "`def` returns exactly the definition with kind and signature"; the fixture has no attributed definition, so the slice's rule held there and failed on the owner's own repository. Rust attributes and TypeScript member decorators are sibling nodes and were never affected.
+**Undo:** `node_def` in `src/ctx/def.rs` (three lines) and the one test.
+**Review:** decide — changes slice 12 task 2's signature rule
+
 ## Checkpoints
 
 ### CP-1 — after slice-02 · 2026-10-09
@@ -665,6 +803,13 @@ _(none)_
 **Gate:** 4 runs, 1 red, ~1.7 min (101.8 s in all: 32.9 s green on HEAD 9248211 plus the merge, 0.2 s red, 33.8 s and 34.9 s green over the final tree; warm target dir; 113 tests in 14 binaries; then the five live-driver binaries ten times, 370 test executions, 0 failures) — caught: nothing in the slice commits (69913e8, 9248211 green as committed); the red run was this checkpoint's own transcript echo failing `cargo fmt --check` in `tests/cockpit.rs` and `tests/run.rs`. No race tripped; the phase-then-event order of `scheduler::finish`/`mark_stopped` (one append wide since AD-1005) stays latent, see the gate file. `docs log merge 001` folded `log-slice-09.md` (AD-901–911, Traps) and `log-slice-10.md` (AD-1001–1007, Traps) in with no number clash.
 **Prove:** FR-6 (`tests/closeout.rs::a_red_check_gets_one_fix_round_then_green`: stub `gh.log` `pr view` probe, one `pr create --draft --base main`, `pr checks` red, `run list`, `run view 1000 --log-failed`, `pr checks` green; one `fix` worker, `fix: CI test`, `ci_cycles: 1`; and `::a_flaky_check_is_rerun_once_then_green`: the same with `run rerun 1000 --failed` and no fix worker, `ci_cycles: 0`; both `status: shipped`, `docs: ship PRD-001`, 12 of 12 retro keys filled, `score:` empty), FR-7 machine half (`tests/cockpit.rs` wait/still-running/status/unknown id/dead driver/answer → `finished`/replay/finished status on the slice 04 parked fixture, and stop → `run_stopped` → a new run that builds 02 and 03; `tests/run.rs::stop_during_a_slice_lets_the_worker_finish_then_ends_the_run`) — evidence: `evidence/cp-5-gate.txt`, `evidence/cp-5-fr6-ci-red-one-fix-round.txt`, `evidence/cp-5-fr6-ci-flaky-one-rerun.txt`, `evidence/cp-5-fr7-wait-and-status.txt`, `evidence/cp-5-fr7-stop.txt`. Unreached: FR-7's human row (in `qa-guide.md` for the owner); FR-10's CI run on this repo's PR.
 **Fixed:** `factory status` printed the gate minutes on its checkpoints line as a raw f64 (`0.00018016041666666667 min`) — now `{:.2}` like `factory report` (`src/cli/status.rs`), pinned by the needle in `tests/cockpit.rs`; the transcript echo (AD-9002) and its `cargo fmt`; all in this checkpoint's commit (`verify(001): checkpoint after slice-10`)
+
+### CP-6 — after slice-12 · 2026-10-10
+
+**Covers:** slices 11, 12
+**Gate:** 2 runs, 0 red, ~1.2 min (73.8 s in all: 35.5 s green on HEAD 25abef4 plus the merge, 38.3 s green over the final tree with the Prove fix; warm target dir; 141 then 142 tests in 15 binaries, 0 ignored) — caught: nothing (both builders ran fmt and clippy; the slice commits 1845d9d and 25abef4 green as committed). `docs log merge 001` folded `log-slice-11.md` (AD-1101–1108, Traps; AD-1101's regraded `Review: decide` kept) and `log-slice-12.md` (AD-1201–1208) in with no number clash.
+**Prove:** FR-12 pinned output (`cargo test --test ctx -- --nocapture`: 17 tests green, the 20 snapshot commands each run twice and byte-identical, the `def OtherService` docblock mention dropped, `refs planted` 10 lines + `288 more hits in 40 files …; 2 dropped (comments/strings)`, 298 = 300 − 2, `outline` definitions only; the same 17 commands driven by hand on the fixture, 34 of 34 comparisons byte-identical) and FR-12 "each verb under 1 s warm" (release build, one warm-up and three timed runs per row, on the owner's checkouts `~/Projects/ICG/icg-cloud` and `~/Projects/Prokey/arca-api`, the two repos at one level below the slices' paths, identified read-only: `def`/`refs Company` 0.050/0.041 s and `outline app/Core/Http/Controllers/Admin` 0.046 s on icg-cloud, `def`/`refs Code` 0.030/0.044 s and `outline internal/caea` 0.052 s on arca-api, medians, slowest run 0.060 s; the suggested `app/Services` is absent from icg-cloud and `internal/` holds no files directly, both timed as given and recorded) — evidence: `evidence/cp-6-gate.txt`, `evidence/cp-6-fr12-ctx-tests.txt`, `evidence/cp-6-fr12-pinned-output.txt`, `evidence/cp-6-fr12-timing.txt`. Unreached: FR-12's `ctx_share`/`repeat_rate` piece (slice 13, then the A/B run); FR-10's CI run on this repo's PR.
+**Fixed:** `def` on icg-cloud located an attributed definition at its attribute line and printed the attribute as its signature (`Company.php:37  class  #[Fillable([...])]`, where `outline` says 38, `class Company extends Model …`): the header is now the name's line and an attributed node's body its whole range (AD-9003, `decide`), in `src/ctx/def.rs::node_def`, pinned by `tests/ctx.rs::def_locates_an_attributed_definition_at_its_name`; in this checkpoint's commit (`verify(001): checkpoint after slice-12`)
 
 ---
 

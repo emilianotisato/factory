@@ -18,7 +18,18 @@ depends_on: [1]
 - **Inner loop:** 3 runs of `cargo test`, 1 red, about 1 min. The red run was `--test ctx` before the snapshots existed (by design: blessed, then read line by line). The full `cargo test --no-fail-fast` was green on its first run (38 s). `cargo clippy --all-targets -- -D warnings` caught one `double_ended_iterator_last` in `def::kind_of`; `cargo fmt` reflowed the new files only.
 - **Earlier-slice expectation shifts:** `tests/cli.rs::every_subcommand_says_not_built_yet_and_exits_2` (`ctx def`, `refs`, `outline` leave the not-built list; `hook` stays).
 - **Deviations:** AD-1101 (body rule made bracket-aware). AD-1104 and AD-1105 settle two places where the slice contradicts itself.
-- **Prove (task 7):** left for the checkpoint: the FR-12 row's pinned output (`cargo test --test ctx`) and the warm timing table, `time factory ctx def <symbol>` and `time factory ctx refs <symbol>` on `~/Projects/icg-cloud` and `~/Projects/arca-api`, three runs each.
+- **Prove (task 7), CP-6 2026-10-10:** passed. Pinned output: `cargo test --test ctx -- --nocapture` green, 17 tests (the 20 snapshots each run twice, byte-identical, and the acceptance assertions), and the same commands driven by hand on the fixture, 34 of 34 comparisons byte-identical. Timing: release build (`cargo build --release`), one warm-up then three runs each under `time`, in the owner's checkouts, which sit one level below the paths this slice names: icg-cloud at `~/Projects/ICG/icg-cloud` (`feat/arca-setup`), arca-api at `~/Projects/Prokey/arca-api` (Go, `make verify`); only `factory ctx` and read-only commands ran there. Every run is under 1 s warm, the slowest 0.060 s. Slice 12's `outline` rows are here too: icg-cloud has no `app/Services`, so the densest PHP directory stands in for it, and arca-api's `internal/` holds only packages (non-recursive, AD-1207), so `internal/caea` stands in for it; both suggested paths were timed as given. Evidence: [`evidence/cp-6-fr12-ctx-tests.txt`](evidence/cp-6-fr12-ctx-tests.txt), [`evidence/cp-6-fr12-pinned-output.txt`](evidence/cp-6-fr12-pinned-output.txt), [`evidence/cp-6-fr12-timing.txt`](evidence/cp-6-fr12-timing.txt), [`evidence/cp-6-gate.txt`](evidence/cp-6-gate.txt).
+
+  | verb | repo | command | runs (s) | median (s) |
+  |---|---|---|---|---|
+  | def | icg-cloud | `factory ctx def Company` | 0.052, 0.033, 0.050 | 0.050 |
+  | refs | icg-cloud | `factory ctx refs Company` | 0.044, 0.041, 0.038 | 0.041 |
+  | outline | icg-cloud | `factory ctx outline app/Core/Http/Controllers/Admin` (29 files) | 0.046, 0.045, 0.046 | 0.046 |
+  | outline | icg-cloud | `factory ctx outline app/Services` (absent: exit 2) | 0.002, 0.002, 0.002 | 0.002 |
+  | def | arca-api | `factory ctx def Code` | 0.017, 0.030, 0.033 | 0.030 |
+  | refs | arca-api | `factory ctx refs Code` | 0.046, 0.044, 0.035 | 0.044 |
+  | outline | arca-api | `factory ctx outline internal/caea` (116 files) | 0.060, 0.052, 0.047 | 0.052 |
+  | outline | arca-api | `factory ctx outline internal/` (no files in it) | 0.002, 0.002, 0.002 | 0.002 |
 
 **Slice**: After this slice `factory ctx def`, `refs` and `outline` exist with the textual engine: an `ignore`-based walker that skips vendor and gitignored paths, a per-language definition regex for PHP, TypeScript, Go and Rust run through the grep crates, a word-boundary reference search collapsed per file with caps and a trailer, and the compact printer with its two context lines. `def` prints the regex match with context; the exact body and the comment/string filtering arrive with tree-sitter in slice 12, so `--no-body` exists but the body printed here is the context window. `outline` is a stub that says so and exits 0. Fixture files per stack pin the output.
 

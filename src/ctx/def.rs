@@ -24,10 +24,11 @@ pub struct Def {
     pub path: String,
     pub line: u64,
     pub kind: &'static str,
-    /// The signature line, trimmed: the first line of the definition node,
-    /// or the match line in a file that does not parse cleanly.
+    /// The signature line, trimmed: the line of the definition's name, or
+    /// the match line in a file that does not parse cleanly.
     pub signature: String,
-    /// The lines after the signature line, dedented by its indentation.
+    /// The lines after the signature line, dedented by its indentation;
+    /// the node's whole range when it opens above the name (AD-9003).
     pub body: Vec<String>,
     /// A heuristic body stopped at [`BODY_LINES`] before it ended.
     pub cut: bool,
@@ -262,20 +263,25 @@ impl File<'_> {
         Some(f)
     }
 
-    /// A confirmed definition: the signature is the first line of the
-    /// node's range, the body its other lines, the last one cut where the
-    /// node ends.
+    /// A confirmed definition: the location and signature are the name's
+    /// line, as `outline` prints them; the body is the node's other lines,
+    /// the last one cut where the node ends. A node that opens above its
+    /// name (PHP attributes, a TypeScript class decorator) prints its whole
+    /// range as the body, the signature line included, so the attributes
+    /// stay in place (AD-9003).
     fn node_def(&self, starts: &[usize], d: &Definition) -> Def {
         let text = self.text;
         let first = line_of(starts, d.range.start);
         let last = line_of(starts, d.range.end.max(d.range.start + 1) - 1);
+        let at = line_of(starts, d.name.start).clamp(first, last);
         let line = |i: usize| {
             let to = starts.get(i + 1).copied().unwrap_or(text.len());
             &text[starts[i]..to]
         };
-        let head = line(first);
+        let head = line(at);
         let indent = indent(head);
-        let body = (first + 1..=last)
+        let from = if at == first { first + 1 } else { first };
+        let body = (from..=last)
             .map(|i| {
                 let l = if i == last {
                     &text[starts[i]..d.range.end.max(starts[i])]
@@ -287,7 +293,7 @@ impl File<'_> {
             .collect();
         Def {
             path: self.shown.clone(),
-            line: first as u64 + 1,
+            line: at as u64 + 1,
             kind: d.kind,
             signature: head.trim().to_string(),
             body,
