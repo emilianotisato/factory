@@ -1,4 +1,6 @@
-//! The `factory` CLI surface before any subcommand is built (slice 01 task 1).
+//! The `factory` CLI surface (slice 01 task 1): the eight subcommands, and
+//! "not built yet" from each one no slice has shaped yet. `run` and `stop`
+//! left this list in slice 02; see `tests/run.rs`.
 use std::process::Command;
 
 const BIN: &str = env!("CARGO_BIN_EXE_factory");
@@ -21,12 +23,10 @@ fn help_lists_the_eight_subcommands() {
 
 #[test]
 fn every_subcommand_says_not_built_yet_and_exits_2() {
-    let calls: [&[&str]; 10] = [
-        &["run", "001"],
+    let calls: [&[&str]; 8] = [
         &["wait"],
         &["answer", "1", "2"],
         &["status"],
-        &["stop"],
         &["report", "--run", "x"],
         &["ctx", "def", "Foo"],
         &["ctx", "refs", "Foo"],

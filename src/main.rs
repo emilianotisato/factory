@@ -1,5 +1,9 @@
-use clap::{Args, Parser, Subcommand};
+use std::io::{stderr, stdout};
 use std::process::ExitCode;
+
+use clap::{Args, Parser, Subcommand};
+
+use factory::cli;
 
 /// Drives unattended feature delivery: spawns coding-agent workers with
 /// context packs, runs the gate itself and keeps the record.
@@ -13,7 +17,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Start or resume the unattended run of a feature
-    Run(Passthrough),
+    Run(cli::run::RunArgs),
     /// Block until the run needs the owner or ends
     Wait(Passthrough),
     /// Answer an open blocker so its lane resumes
@@ -21,7 +25,7 @@ enum Command {
     /// Show the board of the live run
     Status(Passthrough),
     /// Stop the live run
-    Stop(Passthrough),
+    Stop(cli::stop::StopArgs),
     /// Print the metrics report of a run
     Report(Passthrough),
     /// Code lookups for workers: definitions, references, outlines
@@ -53,18 +57,25 @@ struct Passthrough {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    let (slice, args) = match cli.command {
-        Command::Run(p) | Command::Stop(p) => (3, p.args),
-        Command::Answer(p) => (4, p.args),
-        Command::Report(p) => (8, p.args),
-        Command::Wait(p) | Command::Status(p) => (10, p.args),
+    let result = match cli.command {
+        Command::Run(a) => cli::run::run(&a, &mut stdout(), &mut stderr()),
+        Command::Stop(a) => cli::stop::stop(&a, &mut stdout()),
+        Command::Answer(p) => return not_built(4, &p.args),
+        Command::Report(p) => return not_built(8, &p.args),
+        Command::Wait(p) | Command::Status(p) => return not_built(10, &p.args),
         Command::Ctx { verb } => match verb {
-            CtxVerb::Def(p) | CtxVerb::Refs(p) => (11, p.args),
-            CtxVerb::Outline(p) => (12, p.args),
+            CtxVerb::Def(p) | CtxVerb::Refs(p) => return not_built(11, &p.args),
+            CtxVerb::Outline(p) => return not_built(12, &p.args),
         },
-        Command::Hook(p) => (13, p.args),
+        Command::Hook(p) => return not_built(13, &p.args),
     };
-    not_built(slice, &args)
+    match result {
+        Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
+        Err(e) => {
+            eprintln!("factory: {e}");
+            ExitCode::from(1)
+        }
+    }
 }
 
 fn not_built(slice: u8, args: &[String]) -> ExitCode {
