@@ -4,6 +4,7 @@ slug: driver
 status: in-progress
 owns_fr: [1-12]
 retired_fr: []
+reviewed: 2026-10-10
 ---
 
 # PRD-001 — Driver: the unattended deliver loop
