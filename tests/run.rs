@@ -787,3 +787,108 @@ fn stop_during_a_slice_lets_the_worker_finish_then_ends_the_run() {
         stdout(&out)
     );
 }
+
+// ── polish: the driver commits on the run's branch and nowhere else ──────────
+
+#[test]
+fn resume_refuses_off_the_runs_branch_and_on_the_default_branch() {
+    let fx = Fixture::new("resume-branch");
+    let data = data_dir(&fx);
+    let run = Run::create(&data, fx.path(), "001", Some("feat/fixture".into()), 0).unwrap();
+    let dir = run.dir().to_path_buf();
+    let id = run.id().to_string();
+    drop(run);
+    set_pid(&dir, dead_pid());
+    let before = state(&dir);
+
+    // HEAD on main, the run on feat/fixture: no adopt, no resume.
+    assert_eq!(head(&fx), "main");
+    let out = factory(&fx, &["run", "001", "--foreground"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+    assert!(
+        stdout(&out).contains(&format!(
+            "run {id} not resumed: HEAD is on main, not the run's branch feat/fixture"
+        )),
+        "{}",
+        stdout(&out)
+    );
+    assert_eq!(state(&dir), before);
+    assert!(!kinds(&dir).contains(&"run_resumed".to_string()));
+
+    // A run whose branch is the default branch never resumes.
+    fx.git(&["switch", "-q", "-c", "feat/fixture"]);
+    fs::write(
+        dir.join("preflight.json"),
+        json!({"branch": {"current": "feat/fixture", "default": "feat/fixture"}}).to_string(),
+    )
+    .unwrap();
+    let out = factory(&fx, &["run", "001", "--foreground"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+    assert!(
+        stdout(&out).contains("the run's branch feat/fixture is the default branch"),
+        "{}",
+        stdout(&out)
+    );
+    assert_eq!(state(&dir), before);
+
+    // And a new run refuses to make the default branch its feature branch.
+    let same = Branch {
+        current: Some("main".into()),
+        default: Some("main".into()),
+        feature: Some("main".into()),
+        alt: None,
+        feature_exists: true,
+    };
+    let err = ensure_branch(fx.path(), &same).unwrap_err().to_string();
+    assert!(err.contains("is the default branch"), "{err}");
+}
+
+#[test]
+fn a_branch_switch_mid_run_parks_and_nothing_commits_off_the_branch() {
+    let fx = Fixture::new("off-branch");
+    fx.chain();
+    fx.write_plan(&[
+        json!({"outcome": "done", "delay_ms": 2500}),
+        json!({"outcome": "done"}),
+        json!({"outcome": "done"}),
+    ]);
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let dir = run_dirs(&fx).remove(0);
+    let id = dir.file_name().unwrap().to_str().unwrap().to_string();
+    let base = fx.git(&["rev-parse", "main"]);
+    wait_until("slice 01 to be building", 20, || {
+        fx.calls().len() == 1 && fx.slice_status(1) == "building"
+    });
+    assert_eq!(fx.git(&["rev-parse", "feat/fixture"]), base);
+
+    // The owner switches away while the worker runs: the run parks, the
+    // worker's exit is not routed, nothing commits and nothing spawns.
+    fx.git(&["switch", "-q", "main"]);
+    wait_until("the run to park off its branch", 20, || {
+        state(&dir)["phase"] == "waiting-owner"
+    });
+    wait_until("the worker to mark slice 01 done", 20, || {
+        fx.slice_status(1) == "done"
+    });
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+    assert_eq!(fx.calls().len(), 1);
+    assert_eq!(fx.git(&["rev-parse", "main"]), base);
+    assert_eq!(fx.git(&["rev-parse", "feat/fixture"]), base);
+    assert!(!kinds(&dir).contains(&"slice_committed".to_string()));
+
+    // Back on the branch: the slice commits there, and only there.
+    fx.git(&["switch", "-q", "feat/fixture"]);
+    wait_until("slice 01 to be committed", 20, || {
+        kinds(&dir).contains(&"slice_committed".to_string())
+    });
+    assert_eq!(fx.git(&["rev-parse", "main"]), base);
+    let subjects = fx.git(&["log", "--format=%s", "main..feat/fixture"]);
+    assert!(subjects.contains("feat: "), "{subjects}");
+
+    let out = factory(&fx, &["stop", &id]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    wait_until("the run to finish", 40, || {
+        state(&dir)["phase"] == "finished"
+    });
+}

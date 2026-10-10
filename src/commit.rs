@@ -12,8 +12,9 @@
 //! and the checkpoint worker's files as `docs: checkpoint n`.
 use std::collections::HashSet;
 use std::fs;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::Mutex;
 
 use crate::docs::{Docs, Status};
 use crate::error::io;
@@ -199,9 +200,17 @@ pub struct Committed {
 /// paths the repo ignores are dropped first — `git add` refuses either. A
 /// tracked path the worker deleted stays and stages the deletion. `None`
 /// when nothing was staged.
+///
+/// A repo held to a branch ([`hold_branch`]) refuses with an error while
+/// HEAD is anywhere else.
 pub fn commit(repo: &Path, paths: &[String], message: &str) -> Result<Option<Committed>> {
     if paths.is_empty() {
         return Ok(None);
+    }
+    if let Some((branch, default)) = held(repo)
+        && let Some(why) = branch_refusal(repo, &branch, default.as_deref())?
+    {
+        return Err(Error::Msg(format!("commit refused: {why}")));
     }
     let mut ls = vec![
         "ls-files",
@@ -238,6 +247,61 @@ pub fn commit(repo: &Path, paths: &[String], message: &str) -> Result<Option<Com
     git(repo, &commit)?;
     let sha = git(repo, &["rev-parse", "HEAD"])?.trim().to_string();
     Ok(Some(Committed { sha, files }))
+}
+
+/// The branch HEAD is on; `None` when HEAD is detached.
+pub fn head_branch(repo: &Path) -> Result<Option<String>> {
+    let out = run_git(repo, &["symbolic-ref", "-q", "--short", "HEAD"])?;
+    let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    Ok((out.status.success() && !name.is_empty()).then_some(name))
+}
+
+/// Why the driver may not commit for a run on `branch`: the branch is the
+/// repo's default branch, or HEAD is on another branch or detached (the
+/// owner switched mid-run). `None` when a commit may land.
+pub fn branch_refusal(repo: &Path, branch: &str, default: Option<&str>) -> Result<Option<String>> {
+    if default == Some(branch) {
+        return Ok(Some(format!(
+            "the run's branch {branch} is the default branch — the driver commits only on a \
+             feature branch, and the owner decides which one"
+        )));
+    }
+    Ok(match head_branch(repo)? {
+        Some(head) if head == branch => None,
+        Some(head) => Some(format!(
+            "HEAD is on {head}, not the run's branch {branch} — `git switch {branch}`"
+        )),
+        None => Some(format!(
+            "HEAD is detached, not on the run's branch {branch} — `git switch {branch}`"
+        )),
+    })
+}
+
+/// The branch each repo's commits are held to in this process.
+static HELD: Mutex<Vec<(PathBuf, String, Option<String>)>> = Mutex::new(Vec::new());
+
+/// Hold every later [`commit`] in `repo` by this process to `branch` (and
+/// refuse them all when `branch` is `default`). The driver calls it once it
+/// knows the run's branch, so a slice, fix, checkpoint, polish, ship or CI
+/// commit errors instead of landing on a branch the owner switched to
+/// between the driver's check and the commit.
+pub fn hold_branch(repo: &Path, branch: &str, default: Option<&str>) {
+    let key = canonical(repo);
+    let mut held = HELD.lock().unwrap_or_else(|p| p.into_inner());
+    held.retain(|(r, _, _)| *r != key);
+    held.push((key, branch.to_string(), default.map(str::to_string)));
+}
+
+fn held(repo: &Path) -> Option<(String, Option<String>)> {
+    let key = canonical(repo);
+    let held = HELD.lock().unwrap_or_else(|p| p.into_inner());
+    held.iter()
+        .find(|(r, _, _)| *r == key)
+        .map(|(_, b, d)| (b.clone(), d.clone()))
+}
+
+fn canonical(repo: &Path) -> PathBuf {
+    repo.canonicalize().unwrap_or_else(|_| repo.to_path_buf())
 }
 
 /// What `git` knows under `paths`: tracked files and untracked files it does
@@ -525,6 +589,40 @@ mod tests {
         // Nothing changed: no commit.
         assert_eq!(commit(r, &paths, "feat: again").unwrap(), None);
         assert_eq!(commit(r, &[], "feat: none").unwrap(), None);
+    }
+
+    #[test]
+    fn a_repo_held_to_a_branch_refuses_commits_anywhere_else() {
+        let dir = repo();
+        let r = dir.path();
+        git(r, &["switch", "-q", "-c", "feat/x"]).unwrap();
+        hold_branch(r, "feat/x", Some("main"));
+        let mine = vec!["kept.txt".to_string()];
+        fs::write(r.join("kept.txt"), "k2\n").unwrap();
+
+        git(r, &["switch", "-q", "main"]).unwrap();
+        let err = commit(r, &mine, "feat: wrong").unwrap_err().to_string();
+        assert!(
+            err.contains("HEAD is on main, not the run's branch feat/x"),
+            "{err}"
+        );
+        let head = git(r, &["rev-parse", "HEAD"]).unwrap();
+        git(r, &["switch", "-q", "--detach", head.trim()]).unwrap();
+        let err = commit(r, &mine, "feat: detached").unwrap_err().to_string();
+        assert!(err.contains("HEAD is detached"), "{err}");
+        assert_eq!(
+            git(r, &["rev-list", "--count", "HEAD"]).unwrap().trim(),
+            "1"
+        );
+
+        git(r, &["switch", "-q", "feat/x"]).unwrap();
+        assert!(commit(r, &mine, "feat: right").unwrap().is_some());
+
+        // A run whose branch is the default branch commits nothing.
+        hold_branch(r, "feat/x", Some("feat/x"));
+        fs::write(r.join("kept.txt"), "k3\n").unwrap();
+        let err = commit(r, &mine, "feat: default").unwrap_err().to_string();
+        assert!(err.contains("is the default branch"), "{err}");
     }
 
     #[test]

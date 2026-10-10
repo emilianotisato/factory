@@ -31,3 +31,11 @@
 **Because:** `entries` and `resolve` split the heading on ` · `. A `·` in a gate's last line shifted the phase and `open` fields, so the block no longer parsed as open. A 2000-char compiler line in a heading also helps nobody. The full output stays in the body and the transcript.
 **Undo:** use the raw `format!` titles in `checkpoint::run` and `block_on_refusal`.
 **Review:** no
+
+### AD-20005 — What does the driver do when HEAD leaves the run's branch? · polish · 2026-10-10
+
+**Chose:** two guards. Each tick, before the reap, the driver checks HEAD against the run's branch. Off the branch, it parks in `waiting-owner` with a line naming `git switch <branch>`. In-flight workers finish but are not routed, nothing spawns, and the run goes on by itself once HEAD is back. Every `commit::commit` in the driver process is also held to the run's branch (`commit::hold_branch`, a process-wide table keyed by repo), so a switch between the check and a commit errors instead of landing a commit. That error fails the run. `factory run NNN` refuses a resume off the branch before it adopts anything. A run whose branch is the preflight's default branch refuses at creation, at resume and at every commit.
+**Over:** a BLOCK-n the owner answers after switching back; failing the run on the first tick off the branch; or checking only in the four driver commit sites of my files.
+**Because:** switching back is the whole fix, so a block and an answer would add a step without adding information. A park that clears itself keeps the run. The process-wide hold also covers the polish, ship and CI-fix commits in `closeout.rs`, which this fixer may not edit.
+**Undo:** drop the `branch_refusal` block at the top of the `drive_inner` loop, and the `held` check in `commit::commit`.
+**Review:** fyi

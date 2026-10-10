@@ -27,7 +27,9 @@
 //! FR-5: a worker whose slice reads `done` has its slice committed by
 //! pathspec before the next board read — the paths its stream named, the
 //! slice file and its fragment, nothing with `-A` since another lane may be
-//! mid-write.
+//! mid-write. Every commit lands on the run's branch: HEAD anywhere else
+//! parks the run until the owner switches back, with nothing reaped or
+//! spawned meanwhile (AD-20005).
 //!
 //! FR-4: when the board says `checkpoint_due` nothing new spawns; once the
 //! table is empty the loop hands the run to [`checkpoint::run`] — the gate,
@@ -118,11 +120,44 @@ fn drive_inner(run: &mut Run, docs: &Docs, cfg: &Config, out: &mut dyn Write) ->
     // A resumed parked run stays parked without a second `run_waiting`.
     let mut parked = run.state().phase == Phase::WaitingOwner;
     let mut announced = false;
+    // Every commit this process makes is held to the run's branch.
+    let repo = run.state().repo.clone();
+    let default = crate::cli::run::load_preflight(run.dir())?.and_then(|pf| pf.branch.default);
+    if let Some(b) = run.state().branch.clone() {
+        commit::hold_branch(&repo, &b, default.as_deref());
+    }
+    let mut off_branch = false;
     if !parked && run.state().branch.is_some() && run.state().paused_until.is_none() {
         run.set_phase(Phase::Building)?;
     }
     loop {
         run.reload()?;
+        // HEAD off the run's branch: nothing is reaped (a reap commits),
+        // nothing spawns; the run parks until the owner switches back.
+        if let Some(b) = run.state().branch.clone() {
+            if let Some(why) = commit::branch_refusal(&repo, &b, default.as_deref())? {
+                if run.state().stop_requested && table.values().all(|r| r.exit.is_some()) {
+                    return stopped(run, out);
+                }
+                if !off_branch {
+                    parked = false;
+                    announced = false;
+                    off_branch = true;
+                }
+                park_with(run, &mut parked, &mut announced, &[], &[], &why, out)?;
+                if table.is_empty() {
+                    slow_tick(run)?;
+                } else {
+                    poll(&mut table, TICK)?;
+                }
+                continue;
+            }
+            if off_branch {
+                say(out, &format!("HEAD is back on {b} — the run goes on"))?;
+                off_branch = false;
+                announced = false;
+            }
+        }
         reap(run, docs, &feature, &mut table, out)?;
 
         // A run parked on preflight asks has no branch yet (FR-1): it starts
@@ -476,6 +511,7 @@ fn start_after_asks(run: &mut Run, docs: &Docs, out: &mut dyn Write) -> Result<(
     };
     say(out, "every ask answered — the run proceeds")?;
     let branch = crate::cli::run::ensure_branch(&repo, &pf.branch)?;
+    commit::hold_branch(&repo, &branch, pf.branch.default.as_deref());
     run.set_branch(branch)?;
     for text in &pf.judge {
         run.emit(EventKind::JudgeNoted { text: text.clone() })?;

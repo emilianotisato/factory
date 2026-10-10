@@ -1,7 +1,8 @@
 //! `factory run NNN [--budget N]` up to the first board read (PRD §3 FR-1).
 //!
-//! A live run for this repo and feature refuses. An unfinished one resumes:
-//! no preflight, `run_resumed`, the board. Otherwise `docs preflight --json`
+//! A live run for this repo and feature refuses. An unfinished one resumes —
+//! unless HEAD is off the run's branch, which refuses (the driver commits
+//! only there): no preflight, `run_resumed`, the board. Otherwise `docs preflight --json`
 //! decides: `refuse[]` prints the tool's own lines and exits 1 with no run
 //! directory; `ask[]` parks a new run on one `ASK-n` per item (the answer
 //! path is slice 04); `judge[]` lines are noted as events and never waited on
@@ -21,7 +22,7 @@ use crate::docs::{Branch, Docs, Preflight};
 use crate::error::{io, json};
 use crate::events::EventKind;
 use crate::run::{Phase, Run};
-use crate::{Error, Result, config, daemon, paths, scheduler};
+use crate::{Error, Result, commit, config, daemon, paths, scheduler};
 
 #[derive(Args, Debug, Clone)]
 pub struct RunArgs {
@@ -65,6 +66,16 @@ pub fn run(args: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i
         return Ok(1);
     }
     if let Some(mut run) = Run::find_resumable(&data_dir, &repo, &feature)? {
+        // The driver commits on the run's branch and nowhere else: a tree the
+        // owner switched away (or a branch that is the default) refuses the
+        // resume before the run is touched.
+        if let Some(branch) = run.state().branch.clone() {
+            let default = load_preflight(run.dir())?.and_then(|pf| pf.branch.default);
+            if let Some(why) = commit::branch_refusal(&repo, &branch, default.as_deref())? {
+                writeln!(out, "run {} not resumed: {why}", run.id()).map_err(io("stdout"))?;
+                return Ok(1);
+            }
+        }
         run.adopt()?;
         if let Some(b) = args.budget {
             run.set_budget(b)?;
@@ -210,7 +221,8 @@ pub fn load_preflight(run_dir: &Path) -> Result<Option<Preflight>> {
 /// Follow `branch.feature` from preflight (today's `/deliver` §0 rule): on the
 /// default branch, create the feature branch or switch to the existing one; on
 /// the feature branch already, nothing; anywhere else, refuse naming the two
-/// acceptable branches. Returns the branch the repo is now on.
+/// acceptable branches. A feature branch that is the default branch refuses:
+/// the driver never commits there. Returns the branch the repo is now on.
 pub fn ensure_branch(repo: &Path, b: &Branch) -> Result<String> {
     let feature = b
         .feature
@@ -218,6 +230,12 @@ pub fn ensure_branch(repo: &Path, b: &Branch) -> Result<String> {
         .ok_or_else(|| Error::Msg("preflight named no feature branch".into()))?;
     let current = b.current.as_deref().unwrap_or("");
     let default = b.default.as_deref().unwrap_or("the default branch");
+    if b.default.as_deref() == Some(feature) {
+        return Err(Error::Msg(format!(
+            "the feature branch {feature} is the default branch — the driver commits only on a \
+             feature branch, and the owner decides which one"
+        )));
+    }
     if current == feature {
         return Ok(feature.to_string());
     }
