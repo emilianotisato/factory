@@ -1,7 +1,7 @@
 ---
 number: 001
 slug: driver
-status: in-progress
+status: shipped
 owns_fr: [1-12]
 retired_fr: []
 reviewed: 2026-10-10
@@ -10,7 +10,7 @@ reviewed: 2026-10-10
 # PRD-001 — Driver: the unattended deliver loop
 
 **Type**: Feature — a new Rust binary, `factory`, that replaces the `/deliver` orchestration session. New repo, no migrations. It consumes the existing `docs.mjs` JSON contract and the existing feature-docs v2 files; it changes neither.
-**Status**: **IN-PROGRESS** — unattended `/deliver` run started 2026-10-09, approved for delivery the same day. Interview 2026-10-09, four rounds. Adversarial pass 2026-10-09: Cursor (`grok-4.7-high`) timed out at 15 minutes with no result; a fresh Claude reviewer with no interview context found 19 items, 13 confirmed against the sources, every one corrected inline or pinned for slice entry (marked *Corrected 2026-10-09*). OPEN-16 closed 2026-10-09 by a research workflow over 55 of the owner's sessions and four surveys (memo: [`ctx-research.md`](ctx-research.md)); a thin `factory ctx` enters as FR-12. Cut 2026-10-09: the closeout worker folded into polish, the gate cache made path-aware; the other extras kept with their evidence (§15). Sliced 2026-10-09 into 13 slices (§17); one fact corrected at slicing (§4, permissions).
+**Status**: **SHIPPED 2026-10-10** — pending owner review. Landed: the Rust `factory` binary. A detached driver runs `claude -p` workers with context packs, under a hook that denies any `gh` and any `git push`. Lanes park on a block, and commits go by pathspec, on the feature branch only. Also in: checkpoints, a quota pause plus a per-run budget, SQLite metrics, the closeout with PR and a bounded CI watch, the cockpit skill, and `factory ctx` (`def`, `refs`, `outline`). 13 slices, 7 checkpoints, polish with 5 fixers; 253 tests green. Human QA pending: FR-7 (Remote Control, about 40 min) and FR-11 (A/B, two days). Before ship: unattended `/deliver` run started 2026-10-09, approved for delivery the same day. Interview 2026-10-09, four rounds. Adversarial pass 2026-10-09: Cursor (`grok-4.7-high`) timed out at 15 minutes with no result; a fresh Claude reviewer with no interview context found 19 items, 13 confirmed against the sources, every one corrected inline or pinned for slice entry (marked *Corrected 2026-10-09*). OPEN-16 closed 2026-10-09 by a research workflow over 55 of the owner's sessions and four surveys (memo: [`ctx-research.md`](ctx-research.md)); a thin `factory ctx` enters as FR-12. Cut 2026-10-09: the closeout worker folded into polish, the gate cache made path-aware; the other extras kept with their evidence (§15). Sliced 2026-10-09 into 13 slices (§17); one fact corrected at slicing (§4, permissions).
 **Created**: 2026-10-09
 **Author**: Emiliano (with Claude)
 
