@@ -798,3 +798,96 @@ fn block_answered_is_logged_before_the_slice_flips() {
     assert_eq!(answered[0]["id"], "BLOCK-401");
     assert_eq!(answered[0]["slice"], 4);
 }
+
+/// Lane files for lanes 1 and 2 whose setup appends a line to
+/// `scenario/lane-setup.log`, committed.
+fn lanes_with_setup(fx: &Fixture) {
+    let lanes = fx.path().join("docs/reference/lanes");
+    fs::create_dir_all(&lanes).unwrap();
+    for n in 1..=2 {
+        fs::write(
+            lanes.join(format!("lane-{n}.md")),
+            format!(
+                "---\nlane: {n}\nenv: [FACTORY_LANE_DB=fixture_{n}]\nsetup: echo \"setup $FACTORY_LANE\" >> scenario/lane-setup.log\n---\n\nLane {n} of the fixture.\n"
+            ),
+        )
+        .unwrap();
+    }
+    fx.git(&["add", "-A"]);
+    fx.git(&["commit", "-q", "-m", "chore: lane files"]);
+}
+
+#[test]
+fn a_resumed_run_does_not_run_a_lanes_setup_again() {
+    let fx = Fixture::with_index("lanes-setup-resume", &[("checkpoint_every", "10")]);
+    lanes_with_setup(&fx);
+    fx.chain();
+    fx.write_plan(&[
+        json!({"outcome": "done", "delay_ms": 3000}),
+        json!({"outcome": "done", "delay_ms": 3000}),
+    ]);
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let dir = only_run_dir(&fx);
+    let driver = state(&dir)["pid"].as_u64().unwrap() as u32;
+    wait_until(&fx, &dir, "slice 01's worker", 20, || {
+        fx.calls().len() == 1 && fx.slice_status(1) == "building"
+    });
+    assert_eq!(fx.read("scenario/lane-setup.log"), "setup 1\n");
+    assert_eq!(state(&dir)["lanes_set_up"], json!([1]));
+    assert_eq!(unsafe { libc::kill(driver as i32, libc::SIGKILL) }, 0);
+    wait_until(&fx, &dir, "the driver to die", 5, || !pid_alive(driver));
+
+    // The resumed driver settles 01's orphan and spawns 02 on lane 1 again:
+    // the lane is set up for this run already.
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    wait_until(&fx, &dir, "slice 02's worker", 30, || {
+        fx.calls().len() == 2 && fx.slice_status(2) == "building"
+    });
+    assert_eq!(slice_lane(&fx, 2), Some(1));
+    assert_eq!(fx.read("scenario/lane-setup.log"), "setup 1\n");
+    assert_eq!(state(&dir)["lanes_set_up"], json!([1]));
+
+    let out = factory(&fx, &["stop", &run_id(&dir)]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    wait_until(&fx, &dir, "the run to stop", 30, || {
+        state(&dir)["phase"] == "finished"
+    });
+}
+
+#[test]
+fn a_failing_driver_kills_and_settles_its_live_worker() {
+    let fx = Fixture::with_index("lanes-abandon", &[("checkpoint_every", "10")]);
+    fx.chain();
+    fx.write_plan(&[json!({"outcome": "done", "delay_ms": 20000})]);
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let dir = only_run_dir(&fx);
+    wait_until(&fx, &dir, "slice 01's worker", 20, || {
+        fx.calls().len() == 1
+            && state(&dir)["workers"]
+                .as_array()
+                .is_some_and(|w| w.len() == 1)
+    });
+    let worker = state(&dir)["workers"][0]["pid"].as_u64().unwrap() as u32;
+    assert!(pid_alive(worker));
+
+    // The board can no longer be read: the driver's next tick fails the run.
+    let docs = fx.path().join(".docs/bin/docs.mjs");
+    fs::rename(&docs, docs.with_extension("mjs.away")).unwrap();
+    let started = Instant::now();
+    wait_until(&fx, &dir, "the run to fail", 15, || {
+        state(&dir)["phase"] == "failed"
+    });
+    // Killed, not left to build on unwatched for the rest of its 20 s.
+    wait_until(&fx, &dir, "the worker to die", 5, || !pid_alive(worker));
+    assert!(started.elapsed() < Duration::from_secs(15));
+    assert_eq!(state(&dir)["workers"][0]["outcome"], "failed");
+    let rows = db(&fx).workers(&run_id(&dir)).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].outcome.as_deref(), Some("failed"));
+    assert!(rows[0].ended_at.is_some(), "{:?}", rows[0]);
+    let log = driver_log(&dir);
+    assert!(log.contains("slice 01: worker"), "{log}");
+}

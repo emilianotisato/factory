@@ -132,6 +132,10 @@ pub struct RunState {
     /// once-only respawn cap across driver restarts.
     #[serde(default)]
     pub workers: Vec<WorkerRef>,
+    /// FR-3: the lanes whose `setup:` ran for this run, so a resumed driver
+    /// does not run it again.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lanes_set_up: Vec<u32>,
 }
 
 /// One spawned worker as `state.json` remembers it. A build worker has a
@@ -274,6 +278,7 @@ impl Run {
             paused_until: None,
             pr_url: None,
             workers: Vec::new(),
+            lanes_set_up: Vec::new(),
         };
         write_state(&dir, &state)?;
         fs::write(dir.join(events::FILE), "")
@@ -402,6 +407,15 @@ impl Run {
 
     pub fn add_worker(&mut self, w: WorkerRef) -> Result<()> {
         self.update(|s| s.workers.push(w))
+    }
+
+    /// FR-3: lane `n`'s setup ran for this run.
+    pub fn mark_lane_set_up(&mut self, n: u32) -> Result<()> {
+        self.update(|s| {
+            if !s.lanes_set_up.contains(&n) {
+                s.lanes_set_up.push(n);
+            }
+        })
     }
 
     /// Settle a worker: `done`, `blocked`, `dead` or `failed`.

@@ -96,7 +96,8 @@ enum Orphans {
 /// does not return: the driver waits for the owner's answer. On an error the
 /// run is marked `failed` with a `run_failed` event before the error returns.
 pub fn drive(run: &mut Run, docs: &Docs, cfg: &Config, out: &mut dyn Write) -> Result<Phase> {
-    match drive_inner(run, docs, cfg, out) {
+    let mut table: Table = HashMap::new();
+    match drive_inner(run, docs, cfg, &mut table, out) {
         Ok(phase) => Ok(phase),
         Err(e) => {
             // Another process adopted the run: it is theirs, failed or not.
@@ -108,6 +109,7 @@ pub fn drive(run: &mut Run, docs: &Docs, cfg: &Config, out: &mut dyn Write) -> R
                 );
                 return Err(e);
             }
+            abandon(run, &mut table, out);
             let _ = run.set_phase(Phase::Failed);
             let _ = run.emit(EventKind::RunFailed {
                 error: e.to_string(),
@@ -118,7 +120,53 @@ pub fn drive(run: &mut Run, docs: &Docs, cfg: &Config, out: &mut dyn Write) -> R
     }
 }
 
-fn drive_inner(run: &mut Run, docs: &Docs, cfg: &Config, out: &mut dyn Write) -> Result<Phase> {
+/// A failed driver's workers: the live ones killed and reaped, every one
+/// settled `failed`, so nothing builds on unwatched and no row stays open.
+/// Best effort: the run is failing already.
+fn abandon(run: &mut Run, table: &mut Table, out: &mut dyn Write) {
+    for (slice, r) in table.drain() {
+        let (session_id, row_id, pid) =
+            (r.worker.session_id.clone(), r.worker.row_id, r.worker.pid);
+        let exit = match r.exit {
+            Some(exit) => exit,
+            None => {
+                // SAFETY: kill(2) on this process's own child, not yet reaped,
+                // so the pid is still that child's.
+                unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+                match r.worker.wait() {
+                    Ok(exit) => exit,
+                    Err(_) => continue,
+                }
+            }
+        };
+        settle_failed(run, row_id, &session_id, &exit.summary);
+        let _ = say(
+            out,
+            &format!("slice {slice:02}: worker {session_id} (pid {pid}) stopped — the run failed"),
+        );
+    }
+}
+
+/// Settle a worker `failed` unless something settled it already: the
+/// failing driver's last word on it. Best effort.
+fn settle_failed(run: &mut Run, row_id: i64, session_id: &str, summary: &Summary) {
+    let open = run
+        .state()
+        .workers
+        .iter()
+        .any(|w| w.session_id == session_id && w.outcome.is_none());
+    if open {
+        let _ = settle(run, row_id, session_id, summary, WorkerOutcome::Failed);
+    }
+}
+
+fn drive_inner(
+    run: &mut Run,
+    docs: &Docs,
+    cfg: &Config,
+    table: &mut Table,
+    out: &mut dyn Write,
+) -> Result<Phase> {
     let feature = run.state().feature.clone();
     // FR-8: the gate pair, read once, so a worker's `Bash` call that runs
     // it settles as a `gates` row with source `worker` (`metrics`).
@@ -128,8 +176,6 @@ fn drive_inner(run: &mut Run, docs: &Docs, cfg: &Config, out: &mut dyn Write) ->
         let inner = docs.gate_inner().ok().filter(|s| !s.is_empty());
         run.set_gate_cmds(GateCmds { gate, inner });
     }
-    let mut table: Table = HashMap::new();
-    let mut set_up: HashSet<u32> = HashSet::new();
     // A resumed parked run stays parked without a second `run_waiting`.
     let mut parked = run.state().phase == Phase::WaitingOwner;
     let mut announced = false;
@@ -167,7 +213,7 @@ fn drive_inner(run: &mut Run, docs: &Docs, cfg: &Config, out: &mut dyn Write) ->
                 if table.is_empty() {
                     slow_tick(run)?;
                 } else {
-                    poll(&mut table, TICK)?;
+                    poll(table, TICK)?;
                 }
                 continue;
             }
@@ -177,7 +223,7 @@ fn drive_inner(run: &mut Run, docs: &Docs, cfg: &Config, out: &mut dyn Write) ->
                 announced = false;
             }
         }
-        reap(run, docs, &feature, &mut table, out)?;
+        reap(run, docs, &feature, table, out)?;
 
         // A run parked on preflight asks has no branch yet (FR-1): it starts
         // when the last one is answered, and not before.
@@ -202,7 +248,7 @@ fn drive_inner(run: &mut Run, docs: &Docs, cfg: &Config, out: &mut dyn Write) ->
             if table.is_empty() {
                 return stopped(run, out);
             }
-            poll(&mut table, TICK)?;
+            poll(table, TICK)?;
             continue;
         }
 
@@ -217,13 +263,13 @@ fn drive_inner(run: &mut Run, docs: &Docs, cfg: &Config, out: &mut dyn Write) ->
                 if table.is_empty() {
                     quota::pause_tick(run, until)?;
                 } else {
-                    poll(&mut table, TICK)?;
+                    poll(table, TICK)?;
                 }
                 continue;
             }
             Some(Hold::Budget { weighted, budget }) => {
                 if !table.is_empty() {
-                    poll(&mut table, TICK)?;
+                    poll(table, TICK)?;
                     continue;
                 }
                 return quota::park_budget(run, weighted, budget, out);
@@ -249,7 +295,7 @@ fn drive_inner(run: &mut Run, docs: &Docs, cfg: &Config, out: &mut dyn Write) ->
             Orphans::Settled => board = docs.status(&feature)?,
         }
 
-        let mut free = free_lanes(&board, &table);
+        let mut free = free_lanes(&board, table);
         // A `building` slice with nothing alive on it is either answered
         // (an `answers/BLOCK-n.json` names it) or a worker that died below
         // the cap: either way it gets a fresh worker, on the lane it holds.
@@ -299,8 +345,7 @@ fn drive_inner(run: &mut Run, docs: &Docs, cfg: &Config, out: &mut dyn Write) ->
                 b.number,
                 lane,
                 answer.as_ref(),
-                &mut table,
-                &mut set_up,
+                table,
                 out,
             )?;
         }
@@ -322,18 +367,7 @@ fn drive_inner(run: &mut Run, docs: &Docs, cfg: &Config, out: &mut dyn Write) ->
                     &slice_file(run, &board, r.number)?,
                     &[("status", "building"), ("lane", &lane.to_string())],
                 )?;
-                spawn_on(
-                    run,
-                    docs,
-                    cfg,
-                    &board,
-                    r.number,
-                    lane,
-                    None,
-                    &mut table,
-                    &mut set_up,
-                    out,
-                )?;
+                spawn_on(run, docs, cfg, &board, r.number, lane, None, table, out)?;
             }
         }
 
@@ -343,7 +377,7 @@ fn drive_inner(run: &mut Run, docs: &Docs, cfg: &Config, out: &mut dyn Write) ->
             }
             parked = false;
             announced = false;
-            poll(&mut table, TICK)?;
+            poll(table, TICK)?;
             continue;
         }
         // The lanes are drained with a checkpoint due (FR-4): the driver
@@ -410,19 +444,27 @@ fn reap(
     let mut slices: Vec<u32> = table.keys().copied().collect();
     slices.sort_unstable();
     for slice in slices {
+        // The worker stays in the table until it is routed, so a failing
+        // driver still finds it (`abandon`).
         let r = table.get_mut(&slice).expect("key from the table");
-        let exit = match r.exit.take() {
-            Some(e) => Some(e),
-            None => r.worker.try_wait()?,
-        };
-        let Some(exit) = exit else { continue };
-        let r = table.remove(&slice).expect("key from the table");
+        if r.exit.is_none() {
+            r.exit = r.worker.try_wait()?;
+        }
+        if r.exit.is_none() {
+            continue;
+        }
         let board = docs.status(feature)?;
+        let mut r = table.remove(&slice).expect("key from the table");
+        let exit = r.exit.take().expect("checked above");
         let live: HashSet<String> = table
             .values()
             .map(|o| o.worker.session_id.clone())
             .collect();
-        route_exit(run, &board, &r, exit, &live, out)?;
+        if let Err(e) = route_exit(run, &board, &r, exit, &live, out) {
+            let summary = worker::summary_from_disk(run.dir(), &r.worker.session_id);
+            settle_failed(run, r.worker.row_id, &r.worker.session_id, &summary);
+            return Err(e);
+        }
     }
     Ok(())
 }
@@ -564,7 +606,10 @@ fn has_unsettled(run: &Run, slice: u32) -> bool {
         .any(|w| w.slice == Some(slice) && w.outcome.is_none())
 }
 
-/// Pack and spawn `slice` on `lane`; the lane's setup runs once per run.
+/// Pack and spawn `slice` on `lane`; the lane's setup runs once per run,
+/// recorded in `state.json` once it succeeded (a failed setup runs again).
+/// The worker is in the table the moment it runs, so an error after the
+/// spawn still finds it.
 #[allow(clippy::too_many_arguments)]
 fn spawn_on(
     run: &mut Run,
@@ -575,16 +620,16 @@ fn spawn_on(
     lane: u32,
     answer: Option<&Answer>,
     table: &mut Table,
-    set_up: &mut HashSet<u32>,
     out: &mut dyn Write,
 ) -> Result<()> {
     let repo = run.state().repo.clone();
     let lane_def = lanes::load(&repo, lane)?;
-    if set_up.insert(lane)
-        && let Some(cmd) = &lane_def.setup
-    {
-        lane_def.setup(&repo)?;
-        say(out, &format!("lane {lane} setup ran: {cmd}"))?;
+    if !run.state().lanes_set_up.contains(&lane) {
+        if let Some(cmd) = &lane_def.setup {
+            lane_def.setup(&repo)?;
+            say(out, &format!("lane {lane} setup ran: {cmd}"))?;
+        }
+        run.mark_lane_set_up(lane)?;
     }
     let block = match answer {
         Some(a) => Some(block_section(&repo, board, a)?),
@@ -619,16 +664,13 @@ fn spawn_on(
         &cfg.workers.build,
         &lane_def.env(),
     )?;
-    say(
-        out,
-        &format!(
-            "slice {slice:02} → worker {} (pid {}), lane {lane}{}, pack {}",
-            w.session_id,
-            w.pid,
-            if block.is_some() { ", answered" } else { "" },
-            pack.path.display()
-        ),
-    )?;
+    let line = format!(
+        "slice {slice:02} → worker {} (pid {}), lane {lane}{}, pack {}",
+        w.session_id,
+        w.pid,
+        if block.is_some() { ", answered" } else { "" },
+        pack.path.display()
+    );
     table.insert(
         slice,
         Running {
@@ -638,7 +680,7 @@ fn spawn_on(
             changed_before,
         },
     );
-    Ok(())
+    say(out, &line)
 }
 
 /// The `# Block and answer` section for an answered slice: the entry with its
