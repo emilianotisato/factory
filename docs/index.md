@@ -31,9 +31,9 @@ inner: cargo test
 
 | # | Feature | Status | PRD | FR refs | Notes |
 |---|---|---|---|---|---|
-| 001 | [Driver: the unattended deliver loop](features/001-driver/prd.md) | **draft** | created 2026-10-09 | FR-1 … FR-11 | Rust `factory` binary replaces the `/deliver` session. Detached driver, `claude -p` workers with context packs, lanes that park on a block and keep going, gates/commits/log merge/CI/PR run by the driver at zero tokens, thin Claude Code cockpit for blocks and the closing review (phone), SQLite metrics, quota pause plus per-run budget. Calls `docs.mjs` as a subprocess; the port is PRD-002. Proof: stub harness in `cargo test`, then A/B against `/deliver` on icg-cloud and arca-api (tokens −40%, owner questionnaire). OPEN-16 `factory ctx` awaits research. Gate declared, no crate yet. |
+| 001 | [Driver: the unattended deliver loop](features/001-driver/prd.md) | **draft** | created 2026-10-09 | FR-1 … FR-12 | Rust `factory` binary replaces the `/deliver` session. Detached driver, `claude -p` workers with context packs, lanes that park on a block and keep going, gates/commits/log merge/CI/PR run by the driver at zero tokens, thin Claude Code cockpit for blocks and the closing review (phone), SQLite metrics, quota pause plus per-run budget. Calls `docs.mjs` as a subprocess; the port is PRD-002. Proof: stub harness in `cargo test`, then A/B against `/deliver` on icg-cloud and arca-api (tokens −40%, owner questionnaire). FR-12 `factory ctx` (`def`/`refs`/`outline`, ripgrep crates + tree-sitter tags, no LSP) after a 27-agent research pass over 55 owner sessions: lookups are 56–74% of worker calls and 92% of result bytes. Cut 2026-10-09: closeout worker folded into polish, gate cache keyed on code paths only. All 16 OPENs closed. Gate declared, no crate yet. |
 
-**Next free PRD number: 002.** **Next free FR: FR-12.**
+**Next free PRD number: 002.** **Next free FR: FR-13.**
 
 **Build order:** _(state it here when more than one feature is live, and say why — shared files, migration risk, whichever ships second eats the merge.)_
 
