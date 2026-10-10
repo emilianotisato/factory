@@ -39,6 +39,10 @@ What this repo does that cost a builder a run and will cost the next one too: a 
 - **The agent-log Trap "a fixture run ends at phase `checkpoint`, never `finished`" is over as of this slice**: the end of the run is the last checkpoint, so a run with every slice done finishes (`finished (every slice done)`), and `factory run NNN` on a delivered feature finishes at once without a spawn.
 - **`checkpoint_every: 10` in a fixture index now means "one checkpoint at the end", not "no checkpoint"**: every loop/lanes/commits plan needs a trailing `checkpoint` step and every exact event tail ends `checkpoint_started, gate_run, log_merged, checkpoint_spawned, checkpoint_done, run_finished`.
 
+- **The closing checkpoint is a stub call (2026-10-10)**: with `checkpoint_every: 10` the fixture still runs one checkpoint after the last slice, and its worker is a recorded `calls/n.json` — a `calls().len()` expectation is builds + 1. Cost one red run in `tests/quota.rs`.
+
+- **`Fixture::calls()` can read a call file mid-write (2026-10-10)**: `a_run_killed_during_the_checkpoint_worker_resumes_at_the_checkpoint` kills the driver while a stub worker runs; once in ten runs `calls/3.json` was empty when the harness parsed it (`EOF while parsing a value`) and the test passed on three reruns. A flake of the harness, not of the slice under test; rerun before chasing it.
+
 ## Blockers
 
 ### BLOCK-201 — FR-1's "`judge[]` parks the run" rule parks every run, including the fixture's · slice-02 · resolved
@@ -50,6 +54,10 @@ What this repo does that cost a builder a run and will cost the next one too: a 
 3. Make `docs.mjs` emit judge lines only when there is something to judge (a harness that disagrees with the QA plan, a rubric the PRD asked for) — outside this repo (feature-docs skill), a PRD-002 of its own; this slice would wait on it.
 **Recommended:** 1, because `judge` is already defined by `/deliver` as "the orchestrator decides, the owner is not asked", and the driver is the orchestrator; it keeps slices 03–10 testable on the fixture and the run unattended, and nothing of what was built here changes shape — only the routing of one list.
 **Resolution (2026-10-09):** owner: "Deliver should be unattended" → option 1. Only `ask[]` parks; `judge[]` lines are logged as one `judge_noted` event each, shown by the cockpit, never waited on. FR-1 and FR-7's `wait` line corrected inline in `prd.md`; slice 02 task 3, slice 04 and slice 10 updated to match.
+
+_(none)_
+
+_(none)_
 
 ## Decisions
 
@@ -381,6 +389,86 @@ What this repo does that cost a builder a run and will cost the next one too: a 
 **Undo:** `checkpoint::last_checkpoint_answer`.
 **Review:** no
 
+### AD-701 — What does `run_paused.resets_at` carry when the stream gave no `resetsAt`? · slice-07 · 2026-10-10
+
+**Chose:** `resets_at` is always the epoch second spawning may resume (u64, the same clock as `paused_until`): the stream's `resetsAt` when it is still ahead, else now + 900. A second limited worker that was already in flight when the pause began extends `paused_until` silently; a worker limited after the pause lifted starts a new pause with its own `run_paused`.
+**Over:** `resets_at: null` for the no-reset case, with the 15-minute retry implied. A consumer (slice 10's cockpit) would then have to know the retry constant to show a countdown.
+**Because:** FR-9 names the payload `{literal, resets_at}` and says "no resetsAt → retry every 15 min" without saying what the event carries then; "one `run_paused` per pause" settles the in-flight case.
+**Undo:** one line in `quota::pause` and the test's `(880..=900)` window.
+**Review:** no
+
+### AD-702 — Which worker streams count as a usage limit? · slice-07 · 2026-10-10
+
+**Chose:** a `rate_limit_event` whose `status` does not start with `allowed` (so `allowed_warning` is not a limit), carrying its `resetsAt`; else a `result` with `is_error` and `api_error_status` 429, or `is_error` and text matching `usage limit|rate limit` (case-insensitive) — these two pause with no reset, so the 15-minute retry applies. The board's word wins where it has one: a slice `done` or `blocked`, a `CP-n`, a new block settle as such even if the stream also showed a limit; a fix worker has no board signal, so its stream decides before the dead/done split.
+**Over:** the slice's literal "anything other than `allowed`" (would pause on every `allowed_warning`, which the recording shows at 21 % utilisation on a healthy session); and pausing on any limit regardless of outcome (would stall a run on a worker that nonetheless finished).
+**Because:** FR-9 lists the three triggers but not the `allowed_warning` literal nor the finished-anyway case; §4 FR-2 bullet 5 only says the fields are recorded.
+**Undo:** `quota::Limit::from` and the three call sites (`scheduler::route_exit`, `settle_orphans`, `settle_checkpoint_orphan`; `checkpoint::fix_once` and the checkpoint-worker loop).
+**Review:** decide
+
+### AD-703 — Does a budget park keep the driver up like a block park? · slice-07 · 2026-10-10
+
+**Chose:** no — `quota::park_budget` emits `run_parked {reason: "budget", weighted, budget}`, sets `waiting-owner`, and the driver returns, so the process exits once nothing is in flight (inside a checkpoint the step reports `Outcome::Budget` up to the scheduler, which parks the same way; the checkpoint runs again on resume).
+**Over:** staying up on the slow tick like a block park. `factory run NNN --budget <n>` is the resume FR-9 names, and `cli::run` refuses a live run ("stop it first") before it reads `--budget`; keeping the driver up would make the owner `factory stop` first, which FR-9 does not say.
+**Because:** FR-9 says "parks" and "`factory run NNN --budget <n>` resumes" without saying how those meet a live driver.
+**Undo:** replace the two `return quota::park_budget(..)` with `enter_park` + a budget re-check on the tick, and teach `cli::run` to apply `--budget` to a live run.
+**Review:** fyi
+
+### AD-704 — How do the tests wait out a 15-minute pause in seconds? · slice-07 · 2026-10-10
+
+**Chose:** a scaled clock in `clock::unix_now()`: with `FACTORY_CLOCK_SCALE=S` (integer > 1) and `FACTORY_CLOCK_ANCHOR=<wall epoch>` it reports `anchor + (wall − anchor) × S`, read once per process. The driver, a resumed driver and the stub worker inherit the two variables, so `resetsAt`, `paused_until` and every event `ts` sit on one clock; the pause waits in 250 ms wall slices until `unix_now() >= paused_until`. Unset, the clock is the wall clock and the binary behaves as before.
+**Over:** a clock trait threaded through `Run`/scheduler (touches every `now` call and the stub still needs the same scale by env); or shortening `RETRY_SECS` under `cfg(test)` (integration tests run the real binary, so `cfg(test)` does not reach it).
+**Because:** FR-9's acceptance ("no spawn until the reset time", the 15-minute retry) needs real elapsed time the tests cannot afford; PRD §16's "wall-clock timing" fixture note settles nothing about pauses.
+**Undo:** delete `clock::scale`/`wall_now`, make `unix_now` the wall clock, and give `tests/quota.rs` another way to pass time (slower tests or a trait).
+**Review:** decide
+
+### AD-801 — Where are `tool_calls` and the worker gate rows written, and where does the gate string come from? · slice-08 · 2026-10-10
+
+**Chose:** `metrics::record_exit(run, worker_id, summary)` from both `settle`s (`scheduler::settle`, `checkpoint::settle`) right after `finish_worker`, so every closed row — build, fix, checkpoint, dead or limited — gets its calls in one transaction and its inner runs as `gates` rows. The gate pair comes from `docs gate` / `docs gate --inner` once per driver process at the top of `scheduler::drive_inner` and rides on `Run` as a non-persisted `gate_cmds` field (`None` in `Run::create`/`open`, so a `factory report` process never asks for it).
+**Over:** classifying in `stream::Collector` (it would need the gate string at spawn, threaded through `Worker::spawn` and the pack); or re-running `docs gate` at every worker exit (a node process per exit).
+**Because:** §10 says the rows exist and what they hold, not where the driver learns the gate command or when it writes; the slice only says "inserted when the worker's stream is parsed on exit".
+**Undo:** move the call into `Db::finish_worker` and pass the gate pair as an argument.
+**Review:** no
+
+### AD-802 — Does the report stop at §10's twenty-one keys? · slice-08 · 2026-10-10
+
+**Chose:** no — after `score` and the twenty keys, in that order, it prints `worker_gate_runs`, `worker_gate_red` and `cockpit_peak_context` (`0 (no --cockpit)` without the flag; `null` in `--json`). Task 3's text says worker runs "are reported separately as `worker_gate_runs`" and task 4 says `--cockpit` "sets `cockpit_tokens` and `cockpit_peak_context`", while task 3's acceptance says "exactly the 12 + 8 keys in that order". The first twenty-one lines satisfy the order; the extras follow so nothing the tasks named is lost. `tests/metrics.rs` pins both halves.
+**Over:** exactly the 12 + 8 keys, dropping the three the task text names.
+**Because:** the slice contradicts itself between its task text and its acceptance; §10 lists keys without saying "only these".
+**Undo:** delete the three `format!` lines at the end of `Report::lines` and the three fields; `KEYS`/`EXTRA_KEYS` in `cli::report` name them.
+**Review:** decide
+
+### AD-803 — What do a worker gate row's `minutes` and `red` carry? · slice-08 · 2026-10-10
+
+**Chose:** `minutes` is the gap from the `Bash` call's `timestamp` to its `tool_result`'s, else to the next call's, else `0.0` — the column is `REAL NOT NULL` since slice 02, so the slice's "else null" cannot land without a schema change; `at` is the call's timestamp (now, without one). `red` is the `tool_result`'s `is_error`, or a line starting `FAIL` or `Exit code <n≠0>` in the first 4096 characters of the result (`stream::ToolUse.result_head`, kept for every call; `result_chars` still counts the whole). `kind` is `slice`, `cmd` the command as issued.
+**Over:** making `minutes` nullable (an `ALTER` on a column slice 06 reads as `f64` everywhere); keeping the whole result text in the summary (a worker's `cat` of a large file would sit in memory for nothing).
+**Because:** §10 says the rows exist with `cmd, red, minutes`; neither it nor the slice says what a timestamp-less stream yields on a `NOT NULL` column, nor how much of a result to keep.
+**Undo:** a nullable `minutes` is one guarded `ALTER` plus `GateInsert.minutes: Option<f64>`; `RESULT_HEAD` is one constant.
+**Review:** decide
+
+### AD-804 — Where does the report's `start_context` come from? · slice-08 · 2026-10-10
+
+**Chose:** a `workers.start_context INTEGER` column (guarded `ALTER`, `SCHEMA_VERSION` unchanged) filled by `finish_worker` from `Summary.start_context`, the first assistant message's `ctx` as `measure.py` defines it. The report's `start_context` is the smallest across the run's workers; `peak_context` stays `MAX(peak_context)`.
+**Over:** re-parsing the worker's stream at report time (§10 "written as events happen, not reconstructed"; the slice says the report is a `SELECT`); or using the result's usage (the last turn's context, not the first).
+**Because:** §10 names `start_context` among the keys and the `workers` columns it lists stop at `peak_context`; nothing says where a per-worker first-message context lives.
+**Undo:** drop the column from the `ALTER` list and compute 0; `tests/metrics.rs` asserts the column is set.
+**Review:** decide
+
+### AD-805 — How far does the `measure.py` port go? · slice-08 · 2026-10-10
+
+**Chose:** `measure.rs` ports `assistant_msgs` (assistant rows with `usage` and `timestamp`, deduped by `message.id` with the last occurrence winning as a dict assignment does, sorted by time), `ctx`, `totals`, the `skills/deliver` start marker, the `<session>/subagents/*.jsonl` sum with peak as max, and `combine` (tokens add, start from the first path, peak the max). It also sums `input_tokens`, which `measure.py` does not, so `cockpit_tokens` can be weighted with slice 07's weights as task 4 asks. The build/polish minute markers (`skills/polish`, `docs.mjs ship`, `Agent` descriptions) stay out: the driver has its own clock for `build_minutes` and `polish_minutes`. The script lives at `~/Dropbox/dev/claude-code-skills/deliver/bin/measure.py`, not the slice's `~/.claude/skills/feature-docs/bin/measure.py`; the pinned command in `measure::tests` names the real path.
+**Over:** a line-for-line port including the minute markers (dead code: the report never reads them).
+**Because:** task 4 cites `measure.py:42-67, 87-150` for the token keys only; §10 asks for "the same way `measure.py` does" about `cockpit_tokens`.
+**Undo:** add the marker scan to `measure::measure`; nothing else depends on its absence.
+**Review:** no
+
+### AD-806 — Kinds and repeat flags §10 leaves open · slice-08 · 2026-10-10
+
+**Chose:** a tool §10 does not name (`Agent`, `Skill`, `WebFetch`, …) is kind `other` with target = tool name plus its input serialised, so it hashes and repeats like the rest; a `Bash` call is classified in the slice's order (lookup word first, then the gate strings, else `run`), so `cat ./gate.sh` is `bash-cat` and `./gate.sh --inner | tee out` is `run-gate`; the first word is read after `cd …` segments, `env`, `time` and `VAR=value` tokens, with any directory prefix dropped (`/usr/bin/rg` is `rg`). `repeat_in_run` means "the same target seen earlier in this run by any worker, this one included" (so it is never below `repeat_in_worker`); `repeat_rate` divides the lookup rows with `repeat_in_worker = 1` by the lookup rows, the in-worker literal re-hit rate `ctx-research.md` measured.
+**Over:** refusing or dropping unknown tools (every call must have a row, §10); `repeat_in_run` as "seen by an earlier worker only" (reads cleaner but loses the superset the acceptance's second-worker case still satisfies).
+**Because:** §10 lists six kinds and two flags without the unknown-tool case or the flags' overlap.
+**Undo:** `metrics::classify`'s fallback arm and the `seen_run.insert` inside `call_rows`.
+**Review:** fyi
+
 ## Checkpoints
 
 ### CP-1 — after slice-02 · 2026-10-09
@@ -402,6 +490,13 @@ What this repo does that cost a builder a run and will cost the next one too: a 
 **Covers:** slices 05, 06
 **Gate:** 1 runs, 0 red, <1 min (15.0 s wall clock, warm target dir; 59 tests in 10 binaries) — caught: nothing (both builders ran fmt and clippy before committing, the slice-05 Trap; the tree under test was HEAD c8c8bb0, the merge being docs only)
 **Prove:** FR-5 (`tests/commits.rs::two_lanes_commit_out_of_order_and_each_commit_takes_only_its_own_files` on the kept fixture, `lanes: 2`: `git log --stat --format='%h %s'` shows `feat: B`, `feat: C`, `feat: A` in that order — lane 2's two commits before lane 1's, whose worker was still writing — each exactly its own `src/<x>.txt`, slice file and fragment and never a sibling's, then `docs: checkpoint 1` with the three fragments' deletions; `%b` empty throughout, `git status --porcelain` empty, `git fsck --strict` exit 0 with one dangling tree that is the gate cache's `write-tree` (AD-607), the merged `agent-log.md` holding AD-101, AD-201, AD-301), FR-4 (`tests/checkpoints.rs::red_red_green_runs_two_fix_workers_and_three_gates_before_the_cp`: four `gates` rows all `source driver`, checkpoint 1 attempts 1–3 `red` 1, 1, 0 and checkpoint 2 attempt 1 green, none cached, one row per `./gate.sh` line in `gate.log`; two `fix` worker rows whose `commit_sha` are the two `fix: gate red at checkpoint 1` commits touching only `src/lib.txt`; `docs: checkpoint 1` carrying `CP-1 — after slice-02`; and the row's "red ×3" half through `three_reds_block_the_run_and_the_answer_reruns_the_gate`: three reds, two fix workers, `checkpoint_blocked` BLOCK-1 and `run_waiting` with no fourth gate until `factory answer`, then `checkpoint_resumed`, attempt 4 green and the run finishes) — evidence: `evidence/cp-3-gate.txt`, `evidence/cp-3-fr5-two-lanes-git-log.txt`, `evidence/cp-3-fr4-red-red-green-gates.txt`, `evidence/cp-3-fr4-three-reds-block.txt`. FR-10's "CI run" piece stays unreached until slice 09 opens the PR. `docs log merge 001` folded `log-slice-05.md` (AD-501–506, Traps) and `log-slice-06.md` (AD-601–609, Traps) with no number clash and nothing to drop; the Traps line "a fixture run ends at phase `checkpoint`, never `finished`" stays as written, superseded by slice 06's line beneath it.
+**Fixed:** none
+
+### CP-4 — after slice-08 · 2026-10-10
+
+**Covers:** slices 07, 08
+**Gate:** 1 runs, 0 red, <1 min (24.0 s wall clock, warm target dir; 86 tests in 12 binaries) — caught: nothing (both builders ran fmt and clippy before committing, the slice-05 Trap; the tree under test was HEAD b83a34a, the merge being docs only; the slice-08 Trap's `Fixture::calls()` flake did not show)
+**Prove:** FR-9 (`tests/quota.rs::a_rate_limited_worker_pauses_the_run_until_the_reset` on a kept fixture at clock ×20: exactly one `run_paused` with `literal: rejected` and `resets_at` 120 s after its `ts`, not one event between it and `run_resumed_from_pause`, whose `ts` equals `resets_at`, the stub call count held at 1 across the pause, then three `slice_spawned`, workers `rate_limited, done, done, done` + a green checkpoint, no `worker_dead`; and `a_spent_budget_parks_the_run_and_a_higher_budget_resumes_it`: `run_parked {reason: budget, weighted: 11609, budget: 1}` after exactly one spawn, 11609 the hand sum over the one `workers` row, the driver gone, then `--budget 100000000` resumes the same run to `run_finished`), FR-8 (`tests/metrics.rs`, four tests, on the report test's kept fixture: `SELECT count(*)` 4 of 4 workers with non-null usage, 4 `gates` rows — three `source='worker'` inner runs with red 0, 1, 0 and the driver's one checkpoint gate, matching the fixture `gate.log` — and 19 `tool_calls` rows, every one with a kind, `edit` 10, `read` 6, `run-gate` 3; `factory report 001-20261010-6f12` prints the 21 keys in order then AD-802's three with `slices: 3`, `checkpoints: 1`, `workers: 4 (build 3, checkpoint 1)`, `weighted_tokens: 46438`, `--json` one object, `--cockpit` on the fixture transcript `63828` / `58351`) — evidence: `evidence/cp-4-gate.txt`, `evidence/cp-4-fr9-rate-limit-pause.txt`, `evidence/cp-4-fr9-budget-park.txt`, `evidence/cp-4-fr8-report-and-counts.txt`. FR-8's 2% `measure.py` comparison on a real cockpit transcript is the owner's `qa-guide.md` step 6 row, not driven here. FR-10's "CI run" piece stays unreached until slice 09 opens the PR. `docs log merge 001` folded `log-slice-07.md` (AD-701–704, Traps) and `log-slice-08.md` (AD-801–806, Traps) with no number clash; it first refused both for the `# Agent log — slice NN` title line each carried above `## Traps`, which no earlier fragment had — that one line was dropped from each and nothing in any entry touched; the two slices' Progress links to the deleted fragments now point at `agent-log.md`.
 **Fixed:** none
 
 ---
