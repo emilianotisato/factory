@@ -1,0 +1,182 @@
+# FR-4 (second half) — gate scripted red ×3 → the run blocks after two fix workers, no 4th gate until the owner answers; the answer reruns the gate
+date: 2026-10-10T04:19:53-06:00  branch: feat/driver  HEAD: c8c8bb0 + the uncommitted log merge (docs only)
+$ FACTORY_KEEP_FIXTURE=1 cargo test --test checkpoints -- --exact --nocapture three_reds_block_the_run_and_the_answer_reruns_the_gate
+fixture kept at /tmp/factory-cp-block-0qNlZK (fx.chain(): 01 → 02 → 03 one at a time; checkpoint_every 2); run dir: data/runs/001-20261010-334d
+scenario/gate: red, red, red (green by default once the lines are used up). plan: done, done, fix, fix, checkpoint, done, checkpoint. The test waits for phase waiting-owner, asserts the park, then runs `factory answer BLOCK-1 "fixed the runner by hand"` and waits for finished.
+
+## acceptance
+red ×3 → blocked: `gates` rows 1–3 — source driver, kind checkpoint, checkpoint 1, attempt 1, 2, 3, red 1, 1, 1; two fix workers (workers rows 3 and 4, each committed `fix: gate red at checkpoint 1` touching only src/lib.txt) ran between the reds; after the third red the driver spawned no third fix worker and wrote BLOCK-1 (`gate red three times at checkpoint 1: FAIL tests/fake.rs: expected 2 got 3`, phase checkpoint, the gate tail under Happened) to the fixture's agent-log.md — events seq 20 checkpoint_blocked {n 1, block_id BLOCK-1}, seq 21 run_waiting
+no 4th gate: at the park the stub had been called 4 times (build, build, fix, fix) and scenario/gate.log held 3 lines — the test asserts both (`prompts == [build(1), build(2), fix(1), fix(1)]`, `gate_log().len() == 3`); fragments 01 and 02 were still in place (no merge before green)
+the answer reruns the gate: block_answered (seq 22) → checkpoint_resumed {n 1} (23) → gate_run attempt 4, red false (24): a real run, not a cache hit — the tree had not changed since the third red, and AD-602 keeps a cached red from being trusted on an answer → log_merged, checkpoint worker, `docs: checkpoint 1` with CP-1 (Covers 01, 02); then slice 03, checkpoint 2, run_finished. Five `gates` rows and five gate.log lines in all (exit 1, 1, 1, 0, 0); BLOCK-1 ends `resolved` with `**Resolution (2026-10-10):** fixed the runner by hand`
+acceptance HOLDS
+
+## transcript
+        Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+         Running tests/checkpoints.rs (/mnt/devcache/emiliano/cargo-target/debug/deps/checkpoints-d3c2bd664929771e)
+    
+    running 1 test
+    fixture cp-block kept at /tmp/factory-cp-block-0qNlZK
+    test three_reds_block_the_run_and_the_answer_reruns_the_gate ... ok
+    
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 2.29s
+    
+
+## state.json phase at the end: finished
+
+## gates rows (sqlite3 /tmp/factory-cp-block-0qNlZK/data/factory.db)
+id  source     kind     checkpoint  attempt  red  cached  minutes     cmd              at
+--  ------  ----------  ----------  -------  ---  ------  -------  ---------  --------------------
+ 1  driver  checkpoint           1        1    1       0  0.0002   ./gate.sh  2026-10-10T10:19:54Z
+ 2  driver  checkpoint           1        2    1       0  0.0002   ./gate.sh  2026-10-10T10:19:54Z
+ 3  driver  checkpoint           1        3    1       0  0.0002   ./gate.sh  2026-10-10T10:19:54Z
+ 4  driver  checkpoint           1        4    0       0  0.0002   ./gate.sh  2026-10-10T10:19:55Z
+ 5  driver  checkpoint           2        1    0       0  0.0002   ./gate.sh  2026-10-10T10:19:55Z
+
+## workers rows
+id     role     slice  checkpoint  outcome                 commit_sha
+--  ----------  -----  ----------  -------  ----------------------------------------
+ 1  build           1              done     d4ad0895867eaf638f1a1defb3e471e89322e567
+ 2  build           2              done     65a0cc397815e851a7859172fed6933492149da8
+ 3  fix                         1  done     b545f8883fd8841aff6a2b9d21c024ec06717719
+ 4  fix                         1  done     76e5a0b9ec8b99c986d472bd0d1b7b497c8a6063
+ 5  checkpoint                  1  done     e67fe33106a42ce8656621fec7cb6e4c160925be
+ 6  build           3              done     0e5d79f672838fa918c5ae395f154c279c74978f
+ 7  checkpoint                  2  done     494f896ff100fadbe14a19ab02e6b07dfa527b0e
+
+## git log --stat --format='%h %s'  (in /tmp/factory-cp-block-0qNlZK/repo; the fixture's base commit 4c4c2be left out)
+494f896 docs: checkpoint 2
+
+ docs/features/001-fixture/agent-log.md    | 15 +++++++++++++++
+ docs/features/001-fixture/log-slice-03.md |  9 ---------
+ docs/features/001-fixture/prd.md          |  2 +-
+ 3 files changed, 16 insertions(+), 10 deletions(-)
+0e5d79f feat: C
+
+ docs/features/001-fixture/log-slice-03.md | 9 +++++++++
+ docs/features/001-fixture/slice-03-c.md   | 5 +++--
+ src/lib.txt                               | 1 +
+ 3 files changed, 13 insertions(+), 2 deletions(-)
+e67fe33 docs: checkpoint 1
+
+ docs/features/001-fixture/agent-log.md    | 40 +++++++++++++++++++++++++++++++
+ docs/features/001-fixture/log-slice-01.md |  9 -------
+ docs/features/001-fixture/log-slice-02.md |  9 -------
+ docs/features/001-fixture/prd.md          |  4 ++--
+ 4 files changed, 42 insertions(+), 20 deletions(-)
+76e5a0b fix: gate red at checkpoint 1
+
+ src/lib.txt | 1 +
+ 1 file changed, 1 insertion(+)
+b545f88 fix: gate red at checkpoint 1
+
+ src/lib.txt | 1 +
+ 1 file changed, 1 insertion(+)
+65a0cc3 feat: B
+
+ docs/features/001-fixture/log-slice-02.md | 9 +++++++++
+ docs/features/001-fixture/slice-02-b.md   | 5 +++--
+ src/lib.txt                               | 1 +
+ 3 files changed, 13 insertions(+), 2 deletions(-)
+d4ad089 feat: A
+
+ docs/features/001-fixture/log-slice-01.md | 9 +++++++++
+ docs/features/001-fixture/slice-01-a.md   | 5 +++--
+ src/lib.txt                               | 1 +
+ 3 files changed, 13 insertions(+), 2 deletions(-)
+caecd63 chore: chain the fixture slices
+
+ docs/features/001-fixture/prd.md        | 2 +-
+ docs/features/001-fixture/slice-02-b.md | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+## scenario/gate.log — `<epoch> gate <exit>` per invocation of ./gate.sh; the first three are before the park, the last two after the answer
+1791627594 gate 1
+1791627594 gate 1
+1791627594 gate 1
+1791627595 gate 0
+1791627595 gate 0
+
+## per-attempt gate logs (runs/001-20261010-334d/gates/)
+--- 1-1.log (37 bytes)
+FAIL tests/fake.rs: expected 2 got 3
+--- 1-2.log (37 bytes)
+FAIL tests/fake.rs: expected 2 got 3
+--- 1-3.log (37 bytes)
+FAIL tests/fake.rs: expected 2 got 3
+--- 1-4.log (0 bytes)
+--- 2-1.log (0 bytes)
+
+## events.jsonl from checkpoint_started (seq 12–36 of 36)
+12 2026-10-10T10:19:54Z checkpoint_started {"covers": [1, 2], "n": 1}
+13 2026-10-10T10:19:54Z gate_run {"attempt": 1, "log": "gates/1-1.log", "minutes": 0.00022603418333333333, "n": 1, "red": true}
+14 2026-10-10T10:19:54Z fix_spawned {"attempt": 1, "n": 1, "pid": 407485, "session_id": "439d706b-d67a-4c03-88b5-87d265c801f2"}
+15 2026-10-10T10:19:54Z fix_committed {"attempt": 1, "files": ["src/lib.txt"], "n": 1, "sha": "b545f8883fd8841aff6a2b9d21c024ec06717719"}
+16 2026-10-10T10:19:54Z gate_run {"attempt": 2, "log": "gates/1-2.log", "minutes": 0.00022306448333333332, "n": 1, "red": true}
+17 2026-10-10T10:19:54Z fix_spawned {"attempt": 2, "n": 1, "pid": 407533, "session_id": "0cedeebd-773e-455a-b752-5ea01f402a0a"}
+18 2026-10-10T10:19:54Z fix_committed {"attempt": 2, "files": ["src/lib.txt"], "n": 1, "sha": "76e5a0b9ec8b99c986d472bd0d1b7b497c8a6063"}
+19 2026-10-10T10:19:54Z gate_run {"attempt": 3, "log": "gates/1-3.log", "minutes": 0.00016707786666666667, "n": 1, "red": true}
+20 2026-10-10T10:19:54Z checkpoint_blocked {"block_id": "BLOCK-1", "n": 1, "question": "gate red three times at checkpoint 1: FAIL tests/fake.rs: expected 2 got 3"}
+21 2026-10-10T10:19:54Z run_waiting {"asks": [], "blocked": []}
+22 2026-10-10T10:19:54Z block_answered {"id": "BLOCK-1", "slice": null, "text": "fixed the runner by hand"}
+23 2026-10-10T10:19:55Z checkpoint_resumed {"covers": [1, 2], "n": 1}
+24 2026-10-10T10:19:55Z gate_run {"attempt": 4, "log": "gates/1-4.log", "minutes": 0.00016068335, "n": 1, "red": false}
+25 2026-10-10T10:19:55Z log_merged {"fragments": ["docs/features/001-fixture/log-slice-01.md", "docs/features/001-fixture/log-slice-02.md"]}
+26 2026-10-10T10:19:55Z checkpoint_spawned {"attempt": 1, "n": 1, "pid": 407624, "session_id": "980b11c0-aa7b-440f-9539-4b173a356618"}
+27 2026-10-10T10:19:55Z checkpoint_done {"n": 1, "sha": "e67fe33106a42ce8656621fec7cb6e4c160925be"}
+28 2026-10-10T10:19:55Z slice_spawned {"pid": 407689, "session_id": "71477d35-5999-40f5-966e-68873a5e0d02", "slice": 3}
+29 2026-10-10T10:19:55Z slice_done {"slice": 3}
+30 2026-10-10T10:19:55Z slice_committed {"files": ["src/lib.txt", "docs/features/001-fixture/log-slice-03.md", "docs/features/001-fixture/slice-03-c.md"], "sha": "0e5d79f672838fa918c5ae395f154c279c74978f", "slice": 3}
+31 2026-10-10T10:19:55Z checkpoint_started {"covers": [3], "n": 2}
+32 2026-10-10T10:19:55Z gate_run {"attempt": 1, "log": "gates/2-1.log", "minutes": 0.0001523226166666667, "n": 2, "red": false}
+33 2026-10-10T10:19:55Z log_merged {"fragments": ["docs/features/001-fixture/log-slice-03.md"]}
+34 2026-10-10T10:19:55Z checkpoint_spawned {"attempt": 1, "n": 2, "pid": 407759, "session_id": "d275c552-64c1-4898-ac64-1d513d67e0ae"}
+35 2026-10-10T10:19:55Z checkpoint_done {"n": 2, "sha": "494f896ff100fadbe14a19ab02e6b07dfa527b0e"}
+36 2026-10-10T10:19:55Z run_finished 
+
+## the answer file (runs/001-20261010-334d/answers/BLOCK-1.json)
+{
+  "id": "BLOCK-1",
+  "slice": null,
+  "text": "fixed the runner by hand",
+  "at": "2026-10-10T10:19:54Z"
+}
+
+
+## fixture agent-log.md — § Blockers (the driver's BLOCK-1, resolved by the answer) and § Checkpoints
+## Blockers
+
+### BLOCK-1 — gate red three times at checkpoint 1: FAIL tests/fake.rs: expected 2 got 3 · checkpoint · resolved
+
+**Happened:** the gate (`./gate.sh`) was red 3 times in a row at checkpoint 1; 2 fix worker(s) ran between the runs. The last transcript (/tmp/factory-cp-block-0qNlZK/data/runs/001-20261010-334d/gates/1-3.log) ends:
+  FAIL tests/fake.rs: expected 2 got 3
+**Options:**
+1. fix the failure by hand, leave the tree as the commit should be, answer this block — the gate runs again
+2. revert the covered slices' commits and set their slices back to `pending`
+**Recommended:** 1 — three fix workers in a row saw the same red; the cause is outside what the failing output names.
+**Resolution (2026-10-10):** fixed the runner by hand
+
+## Checkpoints
+
+### CP-1 — after slice-02 · 2026-10-10
+
+**Covers:** slices 01, 02
+**Gate:** 1 runs, 0 red, 0 min — caught: nothing (driver-run)
+**Prove:** FR-1 — evidence: none (stub)
+**Fixed:** none
+
+### CP-2 — after slice-03 · 2026-10-10
+
+**Covers:** slices 03
+**Gate:** 1 runs, 0 red, 0 min — caught: nothing (driver-run)
+**Prove:** FR-1 — evidence: none (stub)
+**Fixed:** none
+
+## stub claude calls — the prompt per call (no third fix worker: calls 3 and 4 are the two fixes, call 5 is the checkpoint worker after the answer)
+1.json 'Build slice 01 of PRD-001 as the appended system prompt says. Return the STATUS block.'
+2.json 'Build slice 02 of PRD-001 as the appended system prompt says. Return the STATUS block.'
+3.json 'Fix the red gate at checkpoint 1 of PRD-001 as the appended system prompt says. Return the STATUS block.'
+4.json 'Fix the red gate at checkpoint 1 of PRD-001 as the appended system prompt says. Return the STATUS block.'
+5.json 'Run checkpoint 1 of PRD-001 as the appended system prompt says. Return the STATUS block.'
+6.json 'Build slice 03 of PRD-001 as the appended system prompt says. Return the STATUS block.'
+7.json 'Run checkpoint 2 of PRD-001 as the appended system prompt says. Return the STATUS block.'
+
+## tree after the run: git status --porcelain is 0 lines; log-slice-*.md left: 0
