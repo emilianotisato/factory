@@ -6,7 +6,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 use crate::run::RunState;
 use crate::stream::Summary;
@@ -246,8 +246,12 @@ impl Db {
         Ok(db)
     }
 
+    /// One migrator at a time: the column check and its `ALTER` run in one
+    /// write transaction, so two first opens (a driver and a hook) cannot
+    /// both see a column missing and the second fail on a duplicate.
     fn migrate(&self) -> Result<()> {
-        self.conn.execute_batch(SCHEMA)?;
+        let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        tx.execute_batch(SCHEMA)?;
         // Columns added after a table shipped: `ALTER TABLE` is not
         // `IF NOT EXISTS`, so each is guarded by the live column list.
         for (table, column, decl) in [
@@ -262,16 +266,17 @@ impl Db {
             ("tool_calls", "pack_doc", "INTEGER"),
         ] {
             if !self.has_column(table, column)? {
-                self.conn.execute(
+                tx.execute(
                     &format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"),
                     [],
                 )?;
             }
         }
-        self.conn.execute(
+        tx.execute(
             "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (?1, ?2)",
             params![SCHEMA_VERSION, clock::now_rfc3339()],
         )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -666,5 +671,33 @@ impl Db {
         )?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn first_opens_that_race_all_migrate() {
+        for _ in 0..20 {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("factory.db");
+            let gate = std::sync::Arc::new(std::sync::Barrier::new(6));
+            let opens: Vec<_> = (0..6)
+                .map(|_| {
+                    let (path, gate) = (path.clone(), gate.clone());
+                    std::thread::spawn(move || {
+                        gate.wait();
+                        Db::open(&path).map(|_| ()).map_err(|e| e.to_string())
+                    })
+                })
+                .collect();
+            for open in opens {
+                open.join().unwrap().unwrap();
+            }
+            let db = Db::open(&path).unwrap();
+            assert!(db.has_column("tool_calls", "pack_doc").unwrap());
+        }
     }
 }
