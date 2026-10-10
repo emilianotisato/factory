@@ -1,7 +1,7 @@
 ---
 number: 001
 slug: driver
-status: draft
+status: ready
 owns_fr: [1-12]
 retired_fr: []
 ---
@@ -9,7 +9,7 @@ retired_fr: []
 # PRD-001 — Driver: the unattended deliver loop
 
 **Type**: Feature — a new Rust binary, `factory`, that replaces the `/deliver` orchestration session. New repo, no migrations. It consumes the existing `docs.mjs` JSON contract and the existing feature-docs v2 files; it changes neither.
-**Status**: **DRAFT** — interview 2026-10-09, four rounds. Adversarial pass 2026-10-09: Cursor (`grok-4.7-high`) timed out at 15 minutes with no result; a fresh Claude reviewer with no interview context found 19 items, 13 confirmed against the sources, every one corrected inline or pinned for slice entry (marked *Corrected 2026-10-09*). OPEN-16 closed 2026-10-09 by a research workflow over 55 of the owner's sessions and four surveys (memo: [`ctx-research.md`](ctx-research.md)); a thin `factory ctx` enters as FR-12. Cut 2026-10-09: the closeout worker folded into polish, the gate cache made path-aware; the other extras kept with their evidence (§15). Sliced 2026-10-09 into 13 slices (§17); one fact corrected at slicing (§4, permissions).
+**Status**: **READY** — approved for unattended delivery 2026-10-09. Interview 2026-10-09, four rounds. Adversarial pass 2026-10-09: Cursor (`grok-4.7-high`) timed out at 15 minutes with no result; a fresh Claude reviewer with no interview context found 19 items, 13 confirmed against the sources, every one corrected inline or pinned for slice entry (marked *Corrected 2026-10-09*). OPEN-16 closed 2026-10-09 by a research workflow over 55 of the owner's sessions and four surveys (memo: [`ctx-research.md`](ctx-research.md)); a thin `factory ctx` enters as FR-12. Cut 2026-10-09: the closeout worker folded into polish, the gate cache made path-aware; the other extras kept with their evidence (§15). Sliced 2026-10-09 into 13 slices (§17); one fact corrected at slicing (§4, permissions).
 **Created**: 2026-10-09
 **Author**: Emiliano (with Claude)
 
