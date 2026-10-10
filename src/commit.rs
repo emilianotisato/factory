@@ -384,6 +384,10 @@ mod tests {
             name: name.to_string(),
             input: json!({ "file_path": file_path }),
             result_chars: None,
+            ts: None,
+            result_ts: None,
+            result_error: false,
+            result_head: None,
         }
     }
 

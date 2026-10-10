@@ -24,10 +24,9 @@ fn help_lists_the_eight_subcommands() {
 
 #[test]
 fn every_subcommand_says_not_built_yet_and_exits_2() {
-    let calls: [&[&str]; 7] = [
+    let calls: [&[&str]; 6] = [
         &["wait"],
         &["status"],
-        &["report", "--run", "x"],
         &["ctx", "def", "Foo"],
         &["ctx", "refs", "Foo"],
         &["ctx", "outline", "src/lib.rs"],

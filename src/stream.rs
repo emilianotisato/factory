@@ -151,7 +151,19 @@ pub struct ToolUse {
     /// Characters of the matching `tool_result` content; `None` when the
     /// stream ended before it came back.
     pub result_chars: Option<u64>,
+    /// The `timestamp` of the assistant line that issued the call (FR-8).
+    pub ts: Option<String>,
+    /// The `timestamp` of the user line that carried the result.
+    pub result_ts: Option<String>,
+    /// The `tool_result` block's `is_error`.
+    pub result_error: bool,
+    /// The first [`RESULT_HEAD`] characters of the result text, for the
+    /// gate verdict (`metrics::is_red`); `result_chars` counts the whole.
+    pub result_head: Option<String>,
 }
+
+/// How much of a `tool_result` the summary keeps as text.
+pub const RESULT_HEAD: usize = 4096;
 
 /// What one worker's stream amounts to.
 #[derive(Debug, Clone, Default)]
@@ -171,6 +183,9 @@ pub struct Summary {
     pub result_text: Option<String>,
     pub status_hint: Option<StatusHint>,
     pub peak_context: Option<u64>,
+    /// The first assistant message's context (`measure.py` start): what the
+    /// worker read before it did anything (FR-8 `start_context`).
+    pub start_context: Option<u64>,
     pub tool_uses: Vec<ToolUse>,
     /// The last `rate_limit_event` seen (FR-9); `None` when the stream had none.
     pub rate_limit: Option<RateLimit>,
@@ -246,12 +261,14 @@ impl Collector {
     pub fn push(&mut self, ev: &StreamEvent) {
         self.summary.events += 1;
         match ev {
-            StreamEvent::Assistant { message, .. } => {
+            StreamEvent::Assistant { message, rest } => {
                 if let Some(u) = &message.usage {
                     let ctx = u.context();
                     self.summary.peak_context =
                         Some(self.summary.peak_context.map_or(ctx, |p| p.max(ctx)));
+                    self.summary.start_context.get_or_insert(ctx);
                 }
+                let ts = timestamp(rest);
                 for block in &message.content {
                     if block.get("type").and_then(Value::as_str) != Some("tool_use") {
                         continue;
@@ -272,13 +289,18 @@ impl Collector {
                             .to_string(),
                         input: block.get("input").cloned().unwrap_or(Value::Null),
                         result_chars: None,
+                        ts: ts.clone(),
+                        result_ts: None,
+                        result_error: false,
+                        result_head: None,
                     });
                 }
             }
-            StreamEvent::User { message, .. } => {
+            StreamEvent::User { message, rest } => {
                 let Some(blocks) = message.get("content").and_then(Value::as_array) else {
                     return;
                 };
+                let ts = timestamp(rest);
                 for b in blocks {
                     if b.get("type").and_then(Value::as_str) != Some("tool_result") {
                         continue;
@@ -287,8 +309,11 @@ impl Collector {
                         continue;
                     };
                     if let Some(&i) = self.pending.get(id) {
-                        self.summary.tool_uses[i].result_chars =
-                            Some(content_chars(b.get("content")));
+                        let t = &mut self.summary.tool_uses[i];
+                        t.result_chars = Some(content_chars(b.get("content")));
+                        t.result_ts = ts.clone();
+                        t.result_error = b.get("is_error").and_then(Value::as_bool) == Some(true);
+                        t.result_head = Some(content_head(b.get("content")));
                     }
                 }
             }
@@ -324,8 +349,33 @@ impl Collector {
     }
 }
 
+/// A line's `timestamp`, when the stream carries one (`--verbose` does).
+fn timestamp(rest: &Map<String, Value>) -> Option<String> {
+    rest.get("timestamp")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+/// The first [`RESULT_HEAD`] characters of a `tool_result` content's text.
+fn content_head(content: Option<&Value>) -> String {
+    let text = match content {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(blocks)) => blocks
+            .iter()
+            .map(|b| match b.get("text") {
+                Some(Value::String(s)) => s.clone(),
+                _ => b.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Some(other) => other.to_string(),
+        None => String::new(),
+    };
+    text.chars().take(RESULT_HEAD).collect()
+}
+
 /// Characters of a `tool_result` content: a string, or text blocks.
-fn content_chars(content: Option<&Value>) -> u64 {
+pub fn content_chars(content: Option<&Value>) -> u64 {
     match content {
         Some(Value::String(s)) => s.chars().count() as u64,
         Some(Value::Array(blocks)) => blocks

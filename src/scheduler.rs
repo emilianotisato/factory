@@ -46,10 +46,10 @@ use crate::error::io;
 use crate::events::EventKind;
 use crate::pack::{BlockSection, Pack};
 use crate::quota::{self, Hold, Limit};
-use crate::run::{Phase, Run, WorkerOutcome, WorkerRef, pid_alive};
+use crate::run::{GateCmds, Phase, Run, WorkerOutcome, WorkerRef, pid_alive};
 use crate::stream::Summary;
 use crate::worker::{self, Exit, Job, Worker};
-use crate::{Result, clock, lanes};
+use crate::{Result, clock, lanes, metrics};
 
 /// Deaths on one slice before it is blocked: respawn once, then block.
 pub const DEATH_CAP: usize = 2;
@@ -100,6 +100,14 @@ pub fn drive(run: &mut Run, docs: &Docs, cfg: &Config, out: &mut dyn Write) -> R
 
 fn drive_inner(run: &mut Run, docs: &Docs, cfg: &Config, out: &mut dyn Write) -> Result<Phase> {
     let feature = run.state().feature.clone();
+    // FR-8: the gate pair, read once, so a worker's `Bash` call that runs
+    // it settles as a `gates` row with source `worker` (`metrics`).
+    if run.gate_cmds().is_none()
+        && let Ok(gate) = docs.gate()
+    {
+        let inner = docs.gate_inner().ok().filter(|s| !s.is_empty());
+        run.set_gate_cmds(GateCmds { gate, inner });
+    }
     let mut table: Table = HashMap::new();
     let mut set_up: HashSet<u32> = HashSet::new();
     // A resumed parked run stays parked without a second `run_waiting`.
@@ -995,6 +1003,7 @@ fn settle(
 ) -> Result<()> {
     run.db()
         .finish_worker(row_id, summary, outcome.as_str(), &clock::now_rfc3339())?;
+    metrics::record_exit(run, row_id, summary)?;
     run.set_worker_outcome(session_id, outcome.as_str())
 }
 

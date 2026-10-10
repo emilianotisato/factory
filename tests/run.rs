@@ -249,7 +249,14 @@ fn opening_the_store_twice_applies_the_schema_once() {
     assert_eq!(versions, 1);
     assert_eq!(
         b.tables().unwrap(),
-        ["events", "gates", "runs", "schema_version", "workers"]
+        [
+            "events",
+            "gates",
+            "runs",
+            "schema_version",
+            "tool_calls",
+            "workers"
+        ]
     );
 }
 

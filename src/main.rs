@@ -27,7 +27,7 @@ enum Command {
     /// Stop the live run
     Stop(cli::stop::StopArgs),
     /// Print the metrics report of a run
-    Report(Passthrough),
+    Report(cli::report::ReportArgs),
     /// Code lookups for workers: definitions, references, outlines
     Ctx {
         #[command(subcommand)]
@@ -65,7 +65,7 @@ fn main() -> ExitCode {
         Command::Stop(a) => cli::stop::stop(&a, &mut stdout()),
         Command::Daemon(a) => cli::run::daemon(&a, &mut stdout(), &mut stderr()),
         Command::Answer(a) => cli::answer::answer(&a, &mut stdout()),
-        Command::Report(p) => return not_built(8, &p.args),
+        Command::Report(a) => cli::report::report(&a, &mut stdout()),
         Command::Wait(p) | Command::Status(p) => return not_built(10, &p.args),
         Command::Ctx { verb } => match verb {
             CtxVerb::Def(p) | CtxVerb::Refs(p) => return not_built(11, &p.args),

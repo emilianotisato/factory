@@ -29,6 +29,8 @@
 // (`resetsAt` 120 s ahead on the driver's clock, or none), an error result
 // naming the limit, exit 1, and nothing on the board moves (FR-9). Later
 // slices add the outcomes they consume (PRD §17).
+// Slice 08 adds `inner: "red"`: the stream's one `Bash ./gate.sh --inner`
+// call (every `done` build and fix) returns the gate's failure text, exit 1.
 const fs = require('node:fs')
 const path = require('node:path')
 const crypto = require('node:crypto')
@@ -107,11 +109,24 @@ const tpl = JSON.parse(fs.readFileSync(path.join(__dirname, 'stream.json'), 'utf
 let seq = 0
 const init = { ...tpl.init, cwd, session_id: sessionId, uuid: crypto.randomUUID() }
 if (flags['--model']) init.model = flags['--model']
-const tool = (name, input) => {
+// `res` overrides the tool_result: `{ text, error }`.
+const tool = (name, input, res) => {
   const id = `toolu_stub_${n}_${++seq}`
   emit(assistant([{ type: 'tool_use', id, name, input }]))
-  emit(user(id, name === 'Edit' ? `The file ${input.file_path} has been updated.` : `File written: ${input.file_path}`))
+  const text = res?.text ?? (name === 'Edit' ? `The file ${input.file_path} has been updated.` : `File written: ${input.file_path}`)
+  emit(user(id, text, res?.error ?? false))
 }
+// FR-8 (slice 08): the worker's own inner-loop run, one `Bash` call whose
+// command is the fixture's inner command. Not executed (scenario/inner and
+// gate.log stay the test's); `inner: "red"` on the step makes its result the
+// gate's failure text with a non-zero exit.
+const innerRun = (step) =>
+  tool(
+    'Bash',
+    { command: './gate.sh --inner', description: 'inner loop' },
+    step.inner === 'red' ? { text: 'FAIL tests/fake.rs: expected 2 got 3\n\nExit code 1', error: true } : { text: 'ok' },
+  )
+const readFile = (file) => tool('Read', { file_path: file }, { text: fs.readFileSync(file, 'utf8') })
 const result = (lines) => emit({ ...tpl.result, session_id: sessionId, uuid: crypto.randomUUID(), result: lines.join('\n') })
 
 // ── FR-9 (slice 07): a worker that hit a usage limit ─────────────────────────
@@ -162,10 +177,11 @@ if (role === 'fix') {
   const rel = touched.map((f) => path.relative(cwd, f)).join(', ')
   emit(init)
   for (const f of touched) tool('Write', { file_path: f, content: `fixed by spawn ${n}\n` })
+  innerRun(step)
   emit(assistant([{ type: 'text', text: 'STATUS: done' }]))
   result([
     'STATUS: done',
-    'INNER: 1 runs, 0 red, 0 min — caught: nothing',
+    `INNER: 1 runs, ${step.inner === 'red' ? 1 : 0} red, 0 min — caught: nothing`,
     `FIXED: ${rel} — stub fix (spawn ${n})`,
     'DECISIONS: none',
     'BLOCK: none',
@@ -301,15 +317,18 @@ setStatus(slicePath, 'done')
 
 // ── 5. the stream ────────────────────────────────────────────────────────────
 emit(init)
+readFile(path.join(featureDir, 'prd.md'))
+readFile(slicePath)
 for (const f of touched) tool('Write', { file_path: f, content: `touched by spawn ${n}\n` })
 tool('Write', { file_path: fragment, content: fs.readFileSync(fragment, 'utf8') })
+innerRun(step)
 tool('Edit', { file_path: slicePath, old_string: 'status: building', new_string: 'status: done' })
 emit(assistant([{ type: 'text', text: 'STATUS: done' }]))
 const resultText = [
   'STATUS: done',
   'COMMIT: none',
   `LANE: ${process.env.FACTORY_LANE ?? 1}`,
-  'INNER: 0 runs, 0 red, 0 min — caught: nothing',
+  `INNER: 1 runs, ${step.inner === 'red' ? 1 : 0} red, 0 min — caught: nothing`,
   'PROVE: none: stub worker',
   `DECISIONS: AD-${ad}`,
   'BLOCK: none',
@@ -419,10 +438,10 @@ function assistant(content) {
   }
 }
 
-function user(toolUseId, text) {
+function user(toolUseId, text, isError = false) {
   return {
     ...tpl.user,
-    message: { role: 'user', content: [{ tool_use_id: toolUseId, type: 'tool_result', content: text, is_error: false }] },
+    message: { role: 'user', content: [{ tool_use_id: toolUseId, type: 'tool_result', content: text, is_error: isError }] },
     session_id: sessionId,
     uuid: crypto.randomUUID(),
     timestamp: new Date().toISOString(),

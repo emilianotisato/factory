@@ -110,8 +110,15 @@ fn db(fx: &Fixture) -> Db {
     Db::open(&data_dir(fx).join("factory.db")).unwrap()
 }
 
+/// The driver's gate rows. Since slice 08 a worker's own inner-loop run is
+/// a `gates` row too (source `worker`, FR-8); this file is about the driver's.
 fn gates(fx: &Fixture, dir: &Path) -> Vec<GateRow> {
-    db(fx).gates(&run_id(dir)).unwrap()
+    db(fx)
+        .gates(&run_id(dir))
+        .unwrap()
+        .into_iter()
+        .filter(|g| g.source == "driver")
+        .collect()
 }
 
 fn driver_log(dir: &Path) -> String {

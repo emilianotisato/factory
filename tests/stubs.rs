@@ -46,7 +46,8 @@ fn tool_use_paths(events: &[Value]) -> Vec<String> {
                 .unwrap_or_default()
         })
         .filter(|c| c["type"] == "tool_use")
-        .map(|c| c["input"]["file_path"].as_str().unwrap().to_string())
+        // Slice 08's stream also has a `Bash` inner run, which names no file.
+        .filter_map(|c| c["input"]["file_path"].as_str().map(str::to_string))
         .collect()
 }
 
@@ -127,7 +128,9 @@ fn stub_claude_flips_the_slice_then_replays_a_result() {
         paths.contains(&slice.to_str().unwrap().to_string()),
         "{paths:?}"
     );
-    assert_eq!(events.iter().filter(|e| e["type"] == "user").count(), 3);
+    // One tool_result per tool_use: two Reads, two Writes, the inner run,
+    // the Edit (slice 08 added the Reads and the `Bash ./gate.sh --inner`).
+    assert_eq!(events.iter().filter(|e| e["type"] == "user").count(), 6);
 
     // The side effects: the board moved before the stream was printed.
     assert_eq!(fx.slice_status(1), "done");

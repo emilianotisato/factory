@@ -35,7 +35,7 @@ use crate::run::{Phase, Run, WorkerOutcome};
 use crate::scheduler::{self, DEATH_CAP, append_under, pad_list, say, short};
 use crate::stream::Summary;
 use crate::worker::{Exit, Job, Worker};
-use crate::{Result, clock};
+use crate::{Result, clock, metrics};
 
 /// Consecutive red gates at one checkpoint before the run blocks.
 pub const RED_CAP: u32 = 3;
@@ -808,6 +808,7 @@ fn settle(
 ) -> Result<()> {
     run.db()
         .finish_worker(row_id, summary, outcome.as_str(), &clock::now_rfc3339())?;
+    metrics::record_exit(run, row_id, summary)?;
     run.set_worker_outcome(session_id, outcome.as_str())
 }
 

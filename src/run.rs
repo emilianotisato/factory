@@ -195,6 +195,17 @@ pub struct Run {
     dir: PathBuf,
     state: RunState,
     db: Db,
+    /// The gate and inner commands the feature declares, read once per
+    /// driver process (FR-8: a worker's `Bash` call containing one is an
+    /// inner-loop run). Not persisted: `None` until the scheduler sets it.
+    gate_cmds: Option<GateCmds>,
+}
+
+/// The feature's `gate` and `inner` command strings, as `docs gate` prints them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GateCmds {
+    pub gate: String,
+    pub inner: Option<String>,
 }
 
 impl Run {
@@ -246,7 +257,12 @@ impl Run {
             .map_err(io(format!("create {}", dir.join(events::FILE).display())))?;
         let db = Db::open(&Self::db_path(data_dir))?;
         db.insert_run(&state)?;
-        Ok(Run { dir, state, db })
+        Ok(Run {
+            dir,
+            state,
+            db,
+            gate_cmds: None,
+        })
     }
 
     /// The run `id` under `data_dir`.
@@ -260,7 +276,12 @@ impl Run {
         }
         let state = load_state(&dir)?;
         let db = Db::open(&Self::db_path(data_dir))?;
-        Ok(Run { dir, state, db })
+        Ok(Run {
+            dir,
+            state,
+            db,
+            gate_cmds: None,
+        })
     }
 
     /// The run for this repo and feature whose process is alive, if any.
@@ -301,6 +322,14 @@ impl Run {
 
     pub fn id(&self) -> &RunId {
         &self.state.id
+    }
+
+    pub fn gate_cmds(&self) -> Option<&GateCmds> {
+        self.gate_cmds.as_ref()
+    }
+
+    pub fn set_gate_cmds(&mut self, cmds: GateCmds) {
+        self.gate_cmds = Some(cmds);
     }
 
     /// Append to `events.jsonl` and the `events` table.

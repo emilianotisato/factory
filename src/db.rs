@@ -2,7 +2,7 @@
 //! `workers`, `gates`, `events`, written as events happen. Migrations are
 //! idempotent: `CREATE TABLE IF NOT EXISTS` plus a `schema_version` row, and
 //! a guarded `ALTER TABLE` per column added after a table shipped.
-//! `tool_calls` is slice 08's.
+//! `tool_calls` landed in slice 08.
 use std::path::Path;
 use std::time::Duration;
 
@@ -75,6 +75,21 @@ CREATE TABLE IF NOT EXISTS events (
   kind    TEXT NOT NULL,
   payload TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS tool_calls (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id           TEXT NOT NULL REFERENCES runs(id),
+  worker_id        INTEGER NOT NULL REFERENCES workers(id),
+  seq              INTEGER NOT NULL,
+  tool             TEXT NOT NULL,
+  kind             TEXT NOT NULL,
+  result_chars     INTEGER,
+  target_hash      TEXT NOT NULL,
+  repeat_in_worker INTEGER NOT NULL DEFAULT 0,
+  repeat_in_run    INTEGER NOT NULL DEFAULT 0,
+  ts               TEXT,
+  label_followup   INTEGER,
+  label_expanded   INTEGER
+);
 ";
 
 pub struct Db {
@@ -130,15 +145,48 @@ pub struct WorkerRow {
     pub commit_sha: Option<String>,
     /// The checkpoint a `fix` or `checkpoint` worker served (FR-4).
     pub checkpoint: Option<u32>,
+    /// The first assistant message's context (FR-8 `start_context`).
+    pub start_context: Option<i64>,
+}
+
+/// One `tool_calls` row to insert (FR-8).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolCallInsert<'a> {
+    pub run_id: &'a str,
+    pub worker_id: i64,
+    pub seq: u32,
+    pub tool: &'a str,
+    pub kind: &'a str,
+    pub result_chars: Option<i64>,
+    pub target_hash: &'a str,
+    pub repeat_in_worker: bool,
+    pub repeat_in_run: bool,
+    pub ts: Option<&'a str>,
+}
+
+/// One `tool_calls` row, as tests and the report read it back.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolCallRow {
+    pub id: i64,
+    pub run_id: String,
+    pub worker_id: i64,
+    pub seq: u32,
+    pub tool: String,
+    pub kind: String,
+    pub result_chars: Option<i64>,
+    pub target_hash: String,
+    pub repeat_in_worker: bool,
+    pub repeat_in_run: bool,
+    pub ts: Option<String>,
 }
 
 /// One `gates` row to insert (FR-4, FR-8).
 #[derive(Debug, Clone, PartialEq)]
 pub struct GateInsert<'a> {
     pub run_id: &'a str,
-    /// `driver` for the checkpoint gate; slice 08 adds the workers' inner runs.
+    /// `driver` for the checkpoint gate, `worker` for a worker's inner run.
     pub source: &'a str,
-    /// `checkpoint`, later `inner`, `ci`.
+    /// `checkpoint` for the driver's, `slice` for a worker's, later `ci`.
     pub kind: &'a str,
     pub cmd: &'a str,
     pub red: bool,
@@ -192,6 +240,7 @@ impl Db {
             ("gates", "cached", "INTEGER NOT NULL DEFAULT 0"),
             ("gates", "checkpoint", "INTEGER"),
             ("gates", "attempt", "INTEGER"),
+            ("workers", "start_context", "INTEGER"),
         ] {
             if !self.has_column(table, column)? {
                 self.conn.execute(
@@ -368,7 +417,8 @@ impl Db {
         self.conn.execute(
             "UPDATE workers SET input = ?2, cache_write = ?3, cache_read = ?4, output = ?5,
                                 thinking = ?6, cost_usd = ?7, num_turns = ?8, duration_ms = ?9,
-                                terminal_reason = ?10, outcome = ?11, peak_context = ?12, ended_at = ?13
+                                terminal_reason = ?10, outcome = ?11, peak_context = ?12, ended_at = ?13,
+                                start_context = ?14
              WHERE id = ?1",
             params![
                 id,
@@ -384,6 +434,7 @@ impl Db {
                 outcome,
                 as_i64(summary.peak_context),
                 ended_at,
+                as_i64(summary.start_context),
             ],
         )?;
         Ok(())
@@ -403,7 +454,7 @@ impl Db {
         let mut stmt = self.conn.prepare(
             "SELECT id, run_id, role, slice, session_id, model, effort, input, cache_write, cache_read,
                     output, thinking, cost_usd, num_turns, duration_ms, terminal_reason, outcome,
-                    peak_context, started_at, ended_at, commit_sha, checkpoint
+                    peak_context, started_at, ended_at, commit_sha, checkpoint, start_context
              FROM workers WHERE run_id = ?1 ORDER BY id",
         )?;
         let rows = stmt.query_map([run_id], |r| {
@@ -430,6 +481,7 @@ impl Db {
                 ended_at: r.get(19)?,
                 commit_sha: r.get(20)?,
                 checkpoint: r.get::<_, Option<i64>>(21)?.map(|n| n as u32),
+                start_context: r.get(22)?,
             })
         })?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
@@ -480,6 +532,70 @@ impl Db {
             })
         })?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// A worker's tool calls as one transaction (FR-8): one `INSERT` per
+    /// call, all or none.
+    pub fn insert_tool_calls(&self, rows: &[ToolCallInsert]) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO tool_calls (run_id, worker_id, seq, tool, kind, result_chars, target_hash,
+                                         repeat_in_worker, repeat_in_run, ts)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            )?;
+            for t in rows {
+                stmt.execute(params![
+                    t.run_id,
+                    t.worker_id,
+                    i64::from(t.seq),
+                    t.tool,
+                    t.kind,
+                    t.result_chars,
+                    t.target_hash,
+                    t.repeat_in_worker as i64,
+                    t.repeat_in_run as i64,
+                    t.ts,
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// A run's tool calls in insertion order.
+    pub fn tool_calls(&self, run_id: &str) -> Result<Vec<ToolCallRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, run_id, worker_id, seq, tool, kind, result_chars, target_hash,
+                    repeat_in_worker, repeat_in_run, ts
+             FROM tool_calls WHERE run_id = ?1 ORDER BY id",
+        )?;
+        let rows = stmt.query_map([run_id], |r| {
+            Ok(ToolCallRow {
+                id: r.get(0)?,
+                run_id: r.get(1)?,
+                worker_id: r.get(2)?,
+                seq: r.get::<_, i64>(3)? as u32,
+                tool: r.get(4)?,
+                kind: r.get(5)?,
+                result_chars: r.get(6)?,
+                target_hash: r.get(7)?,
+                repeat_in_worker: r.get::<_, i64>(8)? != 0,
+                repeat_in_run: r.get::<_, i64>(9)? != 0,
+                ts: r.get(10)?,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// The distinct `target_hash` values a run's earlier workers hit
+    /// (`repeat_in_run`, FR-8).
+    pub fn run_targets(&self, run_id: &str) -> Result<std::collections::HashSet<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT DISTINCT target_hash FROM tool_calls WHERE run_id = ?1")?;
+        let rows = stmt.query_map([run_id], |r| r.get::<_, String>(0))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
     /// The user tables, for a schema check.

@@ -20,6 +20,8 @@ pub mod error;
 pub mod events;
 pub mod gatecache;
 pub mod lanes;
+pub mod measure;
+pub mod metrics;
 pub mod pack;
 pub mod paths;
 pub mod quota;
