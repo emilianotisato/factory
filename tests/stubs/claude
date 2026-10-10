@@ -1,0 +1,218 @@
+#!/usr/bin/env node
+'use strict'
+// Stub `claude` for the cargo test harness (PRD-001 FR-10, slice 01).
+//
+// Order matters, and it is the order a real worker leaves on disk: record the
+// call, pick the scenario step, apply the side effects to the fixture repo
+// (slice frontmatter, log fragment, touched code file), then replay a stream
+// cut from a real `claude -p --output-format stream-json` recording. The board
+// moves before a single event is printed, so a driver that reads the frontmatter
+// after `docs status --json` sees the truth even if it never parses the stream.
+//
+// Scenario steps come from $FACTORY_STUB_DIR/plan.jsonl, one JSON object per
+// spawn, read by spawn number (call n takes line n); past the end every spawn
+// is `{"outcome":"done"}`. Slice 01 supports `outcome: "done"`, `touch: [...]`
+// and `delay_ms`; later slices add the outcomes they consume (PRD §17).
+const fs = require('node:fs')
+const path = require('node:path')
+const crypto = require('node:crypto')
+
+const argv = process.argv.slice(2)
+const cwd = process.cwd()
+const stubDir = process.env.FACTORY_STUB_DIR
+if (!stubDir) fail(64, 'FACTORY_STUB_DIR is not set — the harness sets it (tests/harness/mod.rs)')
+
+// ── 1. record the call ───────────────────────────────────────────────────────
+const flags = parseFlags(argv)
+let pack = null
+let packSource = null
+if (flags['--append-system-prompt-file'] !== undefined) {
+  const file = flags['--append-system-prompt-file']
+  if (!fs.existsSync(file)) fail(66, `--append-system-prompt-file ${file} does not exist`)
+  pack = fs.readFileSync(file, 'utf8')
+  packSource = 'file'
+} else if (flags['--append-system-prompt'] !== undefined) {
+  pack = flags['--append-system-prompt']
+  packSource = 'inline'
+}
+const callsDir = path.join(stubDir, 'calls')
+fs.mkdirSync(callsDir, { recursive: true })
+// The first free number, claimed atomically: two lanes may spawn at once.
+let n = 1
+let fd
+for (;;) {
+  try {
+    fd = fs.openSync(path.join(callsDir, `${n}.json`), 'wx')
+    break
+  } catch (e) {
+    if (e.code !== 'EEXIST') throw e
+    n++
+  }
+}
+const factoryEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith('FACTORY_')))
+const sessionId = flags['--session-id'] ?? crypto.randomUUID()
+fs.writeSync(fd, JSON.stringify({
+  n,
+  argv,
+  cwd,
+  env: factoryEnv,
+  prompt: flags['-p'] ?? null,
+  pack,
+  pack_source: packSource,
+  session_id: sessionId,
+  model: flags['--model'] ?? null,
+  effort: flags['--effort'] ?? null,
+  settings: flags['--settings'] ?? null,
+}, null, 2))
+fs.closeSync(fd)
+
+// ── 2. pick the step ─────────────────────────────────────────────────────────
+let step = { outcome: 'done' }
+const planPath = path.join(stubDir, 'plan.jsonl')
+if (fs.existsSync(planPath)) {
+  const lines = fs.readFileSync(planPath, 'utf8').split('\n').filter((l) => l.trim())
+  if (lines[n - 1]) step = JSON.parse(lines[n - 1])
+}
+if (step.outcome !== 'done') fail(65, `outcome "${step.outcome}" is not built yet — a later slice adds it (PRD-001 §17)`)
+
+// ── 3. find the slice ────────────────────────────────────────────────────────
+if (pack === null) fail(65, 'no pack: pass --append-system-prompt-file <path> or --append-system-prompt <text>')
+const m = pack.match(/((?:\/|\.\/)?[\w./-]*slice-(\d{2})-[\w-]+\.md)/)
+if (!m) fail(65, 'the pack names no slice-NN-*.md file')
+const nn = m[2]
+let slicePath = path.isAbsolute(m[1]) ? m[1] : path.resolve(cwd, m[1])
+if (!fs.existsSync(slicePath)) {
+  const base = path.basename(m[1])
+  const features = path.join(cwd, 'docs', 'features')
+  const hit = fs.existsSync(features)
+    ? fs.readdirSync(features).map((d) => path.join(features, d, base)).find((p) => fs.existsSync(p))
+    : null
+  if (!hit) fail(65, `slice file ${m[1]} not found under ${cwd}`)
+  slicePath = hit
+}
+const featureDir = path.dirname(slicePath)
+
+// ── 4. side effects ──────────────────────────────────────────────────────────
+setStatus(slicePath, 'building')
+if (step.delay_ms) sleep(Number(step.delay_ms))
+const touched = (step.touch ?? ['src/lib.txt']).map((f) => path.resolve(cwd, f))
+for (const f of touched) {
+  fs.mkdirSync(path.dirname(f), { recursive: true })
+  fs.appendFileSync(f, `touched by spawn ${n}\n`)
+}
+const touchedRel = touched.map((f) => path.relative(cwd, f)).join(', ')
+const fragment = path.join(featureDir, `log-slice-${nn}.md`)
+const ad = writeFragment(fragment, nn, n, touchedRel)
+progress(slicePath, n, touchedRel, ad, nn)
+setStatus(slicePath, 'done')
+
+// ── 5. the stream ────────────────────────────────────────────────────────────
+const tpl = JSON.parse(fs.readFileSync(path.join(__dirname, 'stream.json'), 'utf8'))
+let seq = 0
+const init = { ...tpl.init, cwd, session_id: sessionId, uuid: crypto.randomUUID() }
+if (flags['--model']) init.model = flags['--model']
+emit(init)
+const tool = (name, input) => {
+  const id = `toolu_stub_${n}_${++seq}`
+  emit(assistant([{ type: 'tool_use', id, name, input }]))
+  emit(user(id, name === 'Edit' ? `The file ${input.file_path} has been updated.` : `File written: ${input.file_path}`))
+}
+for (const f of touched) tool('Write', { file_path: f, content: `touched by spawn ${n}\n` })
+tool('Write', { file_path: fragment, content: fs.readFileSync(fragment, 'utf8') })
+tool('Edit', { file_path: slicePath, old_string: 'status: building', new_string: 'status: done' })
+emit(assistant([{ type: 'text', text: 'STATUS: done' }]))
+const resultText = [
+  'STATUS: done',
+  'COMMIT: none',
+  'LANE: 1',
+  'INNER: 0 runs, 0 red, 0 min — caught: nothing',
+  'PROVE: none: stub worker',
+  `DECISIONS: AD-${ad}`,
+  'BLOCK: none',
+].join('\n')
+emit({ ...tpl.result, session_id: sessionId, uuid: crypto.randomUUID(), result: resultText })
+process.exit(0)
+
+// ── helpers ──────────────────────────────────────────────────────────────────
+function parseFlags(args) {
+  const out = {}
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]
+    if (!a.startsWith('-')) continue
+    const eq = a.indexOf('=')
+    if (eq !== -1) { out[a.slice(0, eq)] = a.slice(eq + 1); continue }
+    const next = args[i + 1]
+    if (next !== undefined && !next.startsWith('-')) { out[a] = next; i++ } else out[a] = true
+  }
+  return out
+}
+
+function setStatus(file, status) {
+  const text = fs.readFileSync(file, 'utf8')
+  const end = text.startsWith('---\n') ? text.indexOf('\n---', 4) : -1
+  if (end === -1) fail(65, `${file} has no frontmatter`)
+  fs.writeFileSync(file, text.slice(0, end).replace(/^status:.*$/m, `status: ${status}`) + text.slice(end))
+}
+
+function writeFragment(file, nn, spawn, rel) {
+  const today = new Date().toISOString().slice(0, 10)
+  const existing = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : ''
+  const count = (existing.match(/^### AD-/gm) ?? []).length
+  const ad = Number(`${nn}01`) + count
+  const entry = [
+    `### AD-${ad} — Which code file does the stub worker touch? · slice-${nn} · ${today}`,
+    '',
+    `**Chose:** append one line to ${rel} (spawn ${spawn})`,
+    '**Over:** a new file per spawn, which the driver could not name in its pathspec',
+    '**Because:** FR-10 leaves the touched set to the scenario step; the fixture has one code file on purpose',
+    '**Undo:** drop the appended line',
+    '**Review:** no',
+    '',
+  ].join('\n')
+  fs.writeFileSync(file, existing ? `${existing.trimEnd()}\n\n${entry}` : `## Decisions\n\n${entry}`)
+  return ad
+}
+
+function progress(file, spawn, rel, ad, nn) {
+  const text = fs.readFileSync(file, 'utf8')
+  const line = `**Progress**: built by the stub claude (spawn ${spawn}) — appended to ${rel}; AD-${ad} in log-slice-${nn}.md.`
+  const re = /^\*\*Progress\*\*:.*$/m
+  const out = re.test(text)
+    ? text.replace(re, (cur) => (/_\(written as it lands/.test(cur) ? line : `${cur} · stub spawn ${spawn}`))
+    : `${text.trimEnd()}\n\n${line}\n`
+  fs.writeFileSync(file, out)
+}
+
+function sleep(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+function assistant(content) {
+  return {
+    ...tpl.assistant,
+    message: { ...tpl.assistant.message, id: `msg_stub_${n}_${++seq}`, content },
+    session_id: sessionId,
+    uuid: crypto.randomUUID(),
+    timestamp: new Date().toISOString(),
+    request_id: `req_stub_${n}_${seq}`,
+  }
+}
+
+function user(toolUseId, text) {
+  return {
+    ...tpl.user,
+    message: { role: 'user', content: [{ tool_use_id: toolUseId, type: 'tool_result', content: text, is_error: false }] },
+    session_id: sessionId,
+    uuid: crypto.randomUUID(),
+    timestamp: new Date().toISOString(),
+  }
+}
+
+function emit(event) {
+  process.stdout.write(`${JSON.stringify(event)}\n`)
+}
+
+function fail(code, msg) {
+  console.error(`stub claude: ${msg}`)
+  process.exit(code)
+}

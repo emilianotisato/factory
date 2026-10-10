@@ -1,0 +1,26 @@
+#!/usr/bin/env node
+'use strict'
+// Stub `gh` for the cargo test harness (PRD-001 FR-10). Records every call to
+// $FACTORY_STUB_DIR/gh.log, one argv line each, and answers the few verbs the
+// driver reads. CI scenarios (`pr checks --watch`, `run rerun`) are slice 09's.
+const fs = require('node:fs')
+const path = require('node:path')
+
+const argv = process.argv.slice(2)
+const stubDir = process.env.FACTORY_STUB_DIR
+if (stubDir) {
+  fs.mkdirSync(stubDir, { recursive: true })
+  const line = argv.map((a) => (a === '' || /\s/.test(a) ? JSON.stringify(a) : a)).join(' ')
+  fs.appendFileSync(path.join(stubDir, 'gh.log'), `${line}\n`)
+} else {
+  console.error('stub gh: FACTORY_STUB_DIR is not set — the call is not recorded')
+}
+
+const URL = 'https://example.invalid/pr/1'
+const [a, b] = argv
+if (a === 'pr' && b === 'create') console.log(URL)
+else if (a === 'pr' && b === 'view' && argv.includes('--json')) {
+  console.log(JSON.stringify({ number: 1, url: URL, state: 'OPEN', isDraft: true, headRefName: 'feat/fixture' }))
+}
+// `auth status`, `pr edit` and everything else: exit 0 with empty output.
+process.exit(0)
