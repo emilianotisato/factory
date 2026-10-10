@@ -1720,19 +1720,22 @@ fn block(
 ) -> Result<Outcome> {
     let agent_log = feature_dir.join("agent-log.md");
     let id = format!("BLOCK-{}", lowest_free_block(feature_dir)?);
+    // Titles carry tool output (a refusal's first line, a check's name): a
+    // `·` or a newline there would break the heading's fields.
+    let title = answers::block_title(title);
     let entry = format!("### {id} — {title} · {phase} · open\n\n{body}");
     append_under(&agent_log, "## Blockers", &entry)?;
     run.emit(EventKind::CloseoutBlocked {
         phase: phase.to_string(),
         block_id: id.clone(),
-        question: title.to_string(),
+        question: title.clone(),
     })?;
     say(
         out,
         &format!("closeout ({phase}) blocked — {id} written to agent-log.md: {title}"),
     )?;
     Ok(Outcome::Parked {
-        what: park_line(&id, title, phase),
+        what: park_line(&id, &title, phase),
         id,
         fresh: true,
     })
@@ -1977,6 +1980,38 @@ pub fn pr_body_path(run_dir: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_block_title_from_tool_output_keeps_the_heading_parseable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        let feature_dir = repo.join("docs/features/001-x");
+        fs::create_dir_all(&feature_dir).unwrap();
+        let mut run = Run::create(&tmp.path().join("data"), &repo, "001", None, 1).unwrap();
+        let mut out = Vec::new();
+        block(
+            &mut run,
+            &feature_dir,
+            "ci",
+            "flaky check test · linux\nsecond line",
+            "**Happened:** x\n",
+            &mut out,
+        )
+        .unwrap();
+        let open = open_blocks(&feature_dir).unwrap();
+        assert_eq!(open.len(), 1, "{open:?}");
+        assert_eq!(open[0].phase, "ci");
+        assert_eq!(open[0].title, "flaky check test - linux second line");
+        let question = run
+            .events()
+            .unwrap()
+            .into_iter()
+            .find_map(|e| match e.kind {
+                EventKind::CloseoutBlocked { question, .. } => Some(question),
+                _ => None,
+            });
+        assert_eq!(question.as_deref(), Some(open[0].title.as_str()));
+    }
 
     #[test]
     fn the_pr_title_drops_the_prd_prefix() {
