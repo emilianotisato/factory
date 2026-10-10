@@ -588,6 +588,8 @@ impl Recon {
     pub fn of(repo: &Path, slice_text: &str) -> Result<Recon> {
         let (paths, symbols) = cited_in(current_code(slice_text));
         let opts = walk::WalkOpts { vendor: false };
+        // The trailers name the running binary, as `# Lookup` does.
+        let factory = crate::paths::factory_command();
         let mut defs = String::new();
         let mut def_files: Vec<String> = Vec::new();
         for name in &symbols {
@@ -608,7 +610,7 @@ impl Recon {
                 print::defs(name, &found, true).trim_end()
             ));
         }
-        let (defs, defs_cut) = cap(&defs, DEF_CAP, "factory ctx def <symbol>");
+        let (defs, defs_cut) = cap(&defs, DEF_CAP, &format!("{factory} ctx def <symbol>"));
         if defs_cut {
             def_files.retain(|f| defs.contains(&format!("{f}:")));
         }
@@ -632,7 +634,11 @@ impl Recon {
             outlines.push_str(&print::outline(&found));
             outlined.push(p.clone());
         }
-        let (outlines, outlines_cut) = cap(&outlines, OUTLINE_CAP, "factory ctx outline <path>");
+        let (outlines, outlines_cut) = cap(
+            &outlines,
+            OUTLINE_CAP,
+            &format!("{factory} ctx outline <path>"),
+        );
         if outlines_cut {
             outlined.retain(|f| outlines.contains(&format!("== {f} ==")));
         }
