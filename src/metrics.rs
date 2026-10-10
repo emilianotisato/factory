@@ -151,36 +151,13 @@ pub fn bash_kind(command: &str, gate: Option<&GateCmds>) -> Kind {
     Kind::Run
 }
 
-/// The first command word after leading `cd … &&` (or `;`) segments, `env`
-/// and `VAR=value` tokens, with any directory prefix dropped.
+/// The first command word after leading `cd … &&` (or `;`) segments, `env`,
+/// `time` and `VAR=value` prefixes, with any directory prefix dropped: the
+/// shell reading `ctx_kind` and the hook use, so a quoted prefix such as
+/// `FOO="a b" grep …` still finds `grep` (AD-40006).
 pub fn first_word(command: &str) -> Option<String> {
-    let mut tokens = command.split_whitespace().peekable();
-    loop {
-        let tok = *tokens.peek()?;
-        if tok == "cd" || tok == "pushd" {
-            for t in tokens.by_ref() {
-                if t == "&&" || t == ";" || t == "||" || t.ends_with(';') {
-                    break;
-                }
-            }
-            continue;
-        }
-        if tok == "env" || tok == "time" || is_assignment(tok) {
-            tokens.next();
-            continue;
-        }
-        let word = tok.rsplit('/').next().unwrap_or(tok);
-        return Some(word.to_string());
-    }
-}
-
-fn is_assignment(tok: &str) -> bool {
-    let Some((name, _)) = tok.split_once('=') else {
-        return false;
-    };
-    !name.is_empty()
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-        && !name.starts_with(|c: char| c.is_ascii_digit())
+    let (words, _) = shell::first_command(command);
+    words.first().map(|w| shell::program(w).to_string())
 }
 
 fn collapse(s: &str) -> String {
@@ -458,17 +435,15 @@ pub fn pack_doc(t: &ToolUse, kind: Kind, held: &[String], repo: &Path) -> bool {
         return false;
     }
     let repo = repo.to_string_lossy();
+    let repo = repo.trim_end_matches('/');
+    let at_root = |p: &str| format!("{repo}/{}", p.trim_start_matches("./"));
     read_paths(t).iter().any(|p| {
         let full = if p.starts_with('/') {
             p.clone()
         } else {
-            format!(
-                "{}/{}",
-                repo.trim_end_matches('/'),
-                p.trim_start_matches("./")
-            )
+            at_root(p)
         };
-        held.iter().any(|h| names(&full, h))
+        held.iter().any(|h| full == at_root(h))
     })
 }
 
@@ -573,6 +548,11 @@ mod tests {
         assert_eq!(k("cd /r && ./gate.sh 2>&1 | tee out"), Kind::RunGate);
         assert_eq!(k("cat ./gate.sh"), Kind::BashCat);
         assert_eq!(k("cargo build"), Kind::Run);
+        // A quoted prefix, a glued operator, a time prefix (AD-40006).
+        assert_eq!(k("FOO=\"a b\" grep x ."), Kind::BashGrep);
+        assert_eq!(k("cd /r&&sed -n 1p f"), Kind::BashSed);
+        assert_eq!(k("time head -5 f"), Kind::BashCat);
+        assert_eq!(k("echo grep"), Kind::Run);
         assert_eq!(k(""), Kind::Run);
         assert_eq!(bash_kind("./gate.sh", None), Kind::Run);
     }
@@ -763,6 +743,18 @@ mod tests {
             "sed is not counted"
         );
         assert!(!r(&read("/repo/docs/features/002-y/prd.md", None)));
+        // Anchored at the repo root: the same tail under another directory,
+        // or another checkout, is not the held file.
+        assert!(!r(&read("/repo/vendor/docs/features/001-x/prd.md", None)));
+        assert!(!r(&read("/other/docs/features/001-x/prd.md", None)));
+        assert!(!r(&bash("cat sub/docs/features/001-x/prd.md")));
+        assert!(r(&bash("cat ./docs/features/001-x/prd.md")));
+        assert!(pack_doc(
+            &read("/repo/docs/features/001-x/prd.md", None),
+            Kind::Read,
+            &held,
+            Path::new("/repo/")
+        ));
         assert!(!pack_doc(
             &read("/repo/docs/features/001-x/prd.md", None),
             Kind::Read,
