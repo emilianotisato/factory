@@ -1,6 +1,6 @@
 ---
 slice: 02
-status: done
+status: blocked
 lane: 1
 depends_on: [1]
 ---
