@@ -30,7 +30,8 @@ use crate::error::io;
 use crate::events::EventKind;
 use crate::gatecache::{self, Entry, GateCache};
 use crate::pack::Pack;
-use crate::run::{Phase, Run};
+use crate::quota::{self, Hold, Limit};
+use crate::run::{Phase, Run, WorkerOutcome};
 use crate::scheduler::{self, DEATH_CAP, append_under, pad_list, say, short};
 use crate::stream::Summary;
 use crate::worker::{Exit, Job, Worker};
@@ -58,6 +59,9 @@ pub enum Outcome {
     },
     /// `factory stop` arrived between steps.
     Stopped,
+    /// FR-9: the weighted tokens passed the budget between steps; the
+    /// scheduler parks the run and the checkpoint runs again on resume.
+    Budget { weighted: u64, budget: u64 },
 }
 
 /// Run the checkpoint the board says is due.
@@ -182,10 +186,17 @@ pub fn run(
                 fresh: true,
             });
         }
-        if run.state().stop_requested {
-            return Ok(Outcome::Stopped);
+        // quota: rate_limited is not a red (FR-9). A limited fix worker
+        // pauses the run; the same gate attempt gets a fresh fix worker once
+        // the pause lifts, and `reds` does not move.
+        loop {
+            if let Some(o) = await_quota(run, out)? {
+                return Ok(o);
+            }
+            if fix_once(run, docs, cfg, board, n, result.attempt, &result.log, out)? {
+                break;
+            }
         }
-        fix_once(run, docs, cfg, board, n, result.attempt, &result.log, out)?;
     }
 
     // Green: fold the slice logs before the worker reads agent-log.md.
@@ -213,8 +224,8 @@ pub fn run(
 
     // The checkpoint worker: once more after a death, then the block.
     loop {
-        if run.state().stop_requested {
-            return Ok(Outcome::Stopped);
+        if let Some(o) = await_quota(run, out)? {
+            return Ok(o);
         }
         let since = last_checkpoint_answer(run)?;
         let mine = |w: &crate::run::WorkerRef| {
@@ -226,7 +237,7 @@ pub fn run(
             .state()
             .workers
             .iter()
-            .filter(|w| mine(w) && matches!(w.outcome.as_deref(), Some("dead" | "failed")))
+            .filter(|w| mine(w) && w.died())
             .count();
         if deaths >= DEATH_CAP {
             let id = format!("BLOCK-{}", lowest_free_block(&feature_dir)?);
@@ -235,7 +246,7 @@ pub fn run(
                 .state()
                 .workers
                 .iter()
-                .filter(|w| mine(w) && matches!(w.outcome.as_deref(), Some("dead" | "failed")))
+                .filter(|w| mine(w) && w.died())
                 .map(|w| {
                     format!(
                         "`{}` ({})",
@@ -311,7 +322,7 @@ pub fn run(
         green_cached = true; // a respawn reads the same transcript
         let after = docs.status(&feature)?;
         if after.checkpoints.iter().any(|c| c.n == n) {
-            settle(run, row_id, &session_id, &exit.summary, "done")?;
+            settle(run, row_id, &session_id, &exit.summary, WorkerOutcome::Done)?;
             let spec = Pathspec::from_stream(&exit.summary, board, &repo);
             let sha = commit_checkpoint(run, docs, board, n, row_id, &spec, out)?;
             run.emit(EventKind::CheckpointDone { n, sha })?;
@@ -322,7 +333,13 @@ pub fn run(
             .into_iter()
             .find(|(id, _)| !open_before.contains(id))
         {
-            settle(run, row_id, &session_id, &exit.summary, "blocked")?;
+            settle(
+                run,
+                row_id,
+                &session_id,
+                &exit.summary,
+                WorkerOutcome::Blocked,
+            )?;
             run.emit(EventKind::CheckpointBlocked {
                 n,
                 block_id: id.clone(),
@@ -340,7 +357,56 @@ pub fn run(
                 fresh: true,
             });
         }
+        // FR-9: a limit is not a death — pause, then a fresh worker.
+        if let Some(limit) = Limit::from(&exit.summary) {
+            settle(
+                run,
+                row_id,
+                &session_id,
+                &exit.summary,
+                WorkerOutcome::RateLimited,
+            )?;
+            let until = quota::pause(run, &limit, out)?;
+            say(
+                out,
+                &format!(
+                    "checkpoint {n}: worker {session_id} hit a usage limit ({}) — paused until {}, a fresh worker follows",
+                    limit.literal,
+                    clock::rfc3339(until)
+                ),
+            )?;
+            continue;
+        }
         settle_dead(run, &agent_log, n, &session_id, row_id, &exit, out)?;
+    }
+}
+
+/// FR-9 between the checkpoint's steps: wait out a pause (phase `paused`,
+/// then back to `checkpoint`), hand a spent budget up to the scheduler, or
+/// go on (`None`).
+fn await_quota(run: &mut Run, out: &mut dyn Write) -> Result<Option<Outcome>> {
+    loop {
+        run.reload()?;
+        if run.state().stop_requested {
+            return Ok(Some(Outcome::Stopped));
+        }
+        match quota::hold(run)? {
+            Some(Hold::Budget { weighted, budget }) => {
+                return Ok(Some(Outcome::Budget { weighted, budget }));
+            }
+            Some(Hold::Paused { until }) => {
+                if run.state().phase != Phase::Paused {
+                    run.set_phase(Phase::Paused)?;
+                }
+                quota::pause_tick(run, until)?;
+            }
+            None => {
+                if run.state().paused_until.is_some() {
+                    quota::resume(run, Phase::Checkpoint, out)?;
+                }
+                return Ok(None);
+            }
+        }
     }
 }
 
@@ -486,7 +552,9 @@ fn gate_once(
 
 /// A fix worker on the red transcript; its files committed when it returns.
 /// A dead worker is settled and counted by the gate that follows (a tree it
-/// did not change is a cache hit, red again).
+/// did not change is a cache hit, red again). `false` when the worker hit a
+/// usage limit (FR-9): the run is paused and this attempt gets another fix
+/// worker, no gate run between.
 #[allow(clippy::too_many_arguments)]
 fn fix_once(
     run: &mut Run,
@@ -497,7 +565,7 @@ fn fix_once(
     attempt: u32,
     gate_log: &Path,
     out: &mut dyn Write,
-) -> Result<()> {
+) -> Result<bool> {
     let repo = run.state().repo.clone();
     let spawn = run.state().workers.len() as u32 + 1;
     let packs = scheduler::packs_dir(run.dir());
@@ -523,8 +591,27 @@ fn fix_once(
         ),
     )?;
     let exit = worker.wait()?;
+    if let Some(limit) = Limit::from(&exit.summary) {
+        settle(
+            run,
+            row_id,
+            &session_id,
+            &exit.summary,
+            WorkerOutcome::RateLimited,
+        )?;
+        let until = quota::pause(run, &limit, out)?;
+        say(
+            out,
+            &format!(
+                "checkpoint {n}: fix worker {session_id} hit a usage limit ({}) — paused until {}, the fix runs again",
+                limit.literal,
+                clock::rfc3339(until)
+            ),
+        )?;
+        return Ok(false);
+    }
     if exit.summary.is_dead() {
-        settle(run, row_id, &session_id, &exit.summary, "dead")?;
+        settle(run, row_id, &session_id, &exit.summary, WorkerOutcome::Dead)?;
         run.emit(EventKind::WorkerDead {
             slice: None,
             session_id: session_id.clone(),
@@ -538,9 +625,9 @@ fn fix_once(
                     .map_or("code unknown".to_string(), |c| format!("exit {c}"))
             ),
         )?;
-        return Ok(());
+        return Ok(true);
     }
-    settle(run, row_id, &session_id, &exit.summary, "done")?;
+    settle(run, row_id, &session_id, &exit.summary, WorkerOutcome::Done)?;
     let spec = Pathspec::from_stream(&exit.summary, board, &repo);
     for path in &spec.protected {
         say(
@@ -578,7 +665,7 @@ fn fix_once(
             &format!("checkpoint {n}: fix worker {session_id} changed nothing to commit"),
         )?,
     }
-    Ok(())
+    Ok(true)
 }
 
 /// `render --write`, then one commit of the feature folder, `docs/index.md`
@@ -679,9 +766,9 @@ fn settle_dead(
     out: &mut dyn Write,
 ) -> Result<()> {
     let outcome = if exit.summary.is_dead() {
-        "dead"
+        WorkerOutcome::Dead
     } else {
-        "failed"
+        WorkerOutcome::Failed
     };
     settle(run, row_id, session_id, &exit.summary, outcome)?;
     run.emit(EventKind::WorkerDead {
@@ -717,11 +804,11 @@ fn settle(
     row_id: i64,
     session_id: &str,
     summary: &Summary,
-    outcome: &str,
+    outcome: WorkerOutcome,
 ) -> Result<()> {
     run.db()
-        .finish_worker(row_id, summary, outcome, &clock::now_rfc3339())?;
-    run.set_worker_outcome(session_id, outcome)
+        .finish_worker(row_id, summary, outcome.as_str(), &clock::now_rfc3339())?;
+    run.set_worker_outcome(session_id, outcome.as_str())
 }
 
 /// `(id, title)` of every unresolved `BLOCK-n` with phase `checkpoint` in

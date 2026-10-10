@@ -172,10 +172,32 @@ pub struct Summary {
     pub status_hint: Option<StatusHint>,
     pub peak_context: Option<u64>,
     pub tool_uses: Vec<ToolUse>,
+    /// The last `rate_limit_event` seen (FR-9); `None` when the stream had none.
+    pub rate_limit: Option<RateLimit>,
     /// Lines seen, including unknown kinds.
     pub events: usize,
     /// Lines that were not JSON objects; counted, never fatal.
     pub bad_lines: usize,
+}
+
+/// `rate_limit_event.rate_limit_info` as FR-9 reads it: the `status` literal
+/// (`allowed`, `allowed_warning`, `rejected`, …) and `resetsAt` in epoch
+/// seconds when the stream gave one.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RateLimit {
+    pub status: Option<String>,
+    pub resets_at: Option<u64>,
+}
+
+impl RateLimit {
+    fn from_event(rest: &Map<String, Value>) -> RateLimit {
+        let info = rest.get("rate_limit_info");
+        let field = |k: &str| info.and_then(|i| i.get(k));
+        RateLimit {
+            status: field("status").and_then(Value::as_str).map(str::to_string),
+            resets_at: field("resetsAt").and_then(Value::as_u64),
+        }
+    }
 }
 
 impl Summary {
@@ -286,9 +308,10 @@ impl Collector {
                 s.result_text = r.result.clone();
                 s.status_hint = r.result.as_deref().and_then(StatusHint::from_result);
             }
-            StreamEvent::System { .. }
-            | StreamEvent::RateLimitEvent { .. }
-            | StreamEvent::Unknown => {}
+            StreamEvent::RateLimitEvent { rest } => {
+                self.summary.rate_limit = Some(RateLimit::from_event(rest));
+            }
+            StreamEvent::System { .. } | StreamEvent::Unknown => {}
         }
     }
 

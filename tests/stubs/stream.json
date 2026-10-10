@@ -203,5 +203,28 @@
     "first_content_frame_ms": 1370,
     "queued_turn_count": 0,
     "result_index": 0
+  },
+  "rate_limit_event": {
+    "type": "rate_limit_event",
+    "rate_limit_info": {
+      "status": "allowed",
+      "resetsAt": 1791592200,
+      "rateLimitType": "five_hour",
+      "overageStatus": "rejected",
+      "overageDisabledReason": "org_level_disabled",
+      "isUsingOverage": false,
+      "unifiedWindows": {
+        "five_hour": {
+          "utilization": 0.21,
+          "resetsAt": 1791592200
+        },
+        "seven_day": {
+          "utilization": 0.24,
+          "resetsAt": 1792044000
+        }
+      }
+    },
+    "uuid": "{{UUID}}",
+    "session_id": "{{SESSION_ID}}"
   }
 }

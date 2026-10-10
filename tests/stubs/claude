@@ -24,7 +24,11 @@
 // `touch` or src/lib.txt, `dead` exits 137), a `# Gate transcript` pack is a
 // checkpoint worker (`checkpoint`/`done` writes `CP-n` under `## Checkpoints`
 // in agent-log.md, `blocked` writes a `BLOCK-n · checkpoint · open` there,
-// `dead` exits 137). Later slices add the outcomes they consume (PRD §17).
+// `dead` exits 137). Slice 07 adds `rate_limited` / `rate_limited_no_reset`
+// for every role: init, one `rate_limit_event` with `status: rejected`
+// (`resetsAt` 120 s ahead on the driver's clock, or none), an error result
+// naming the limit, exit 1, and nothing on the board moves (FR-9). Later
+// slices add the outcomes they consume (PRD §17).
 const fs = require('node:fs')
 const path = require('node:path')
 const crypto = require('node:crypto')
@@ -94,8 +98,9 @@ if (pack === null) fail(65, 'no pack: pass --append-system-prompt-file <path> or
 // The role is the pack's first section (slice 06): the driver's packs for the
 // checkpoint's workers carry no slice file.
 const role = /^# Gate failure$/m.test(pack) ? 'fix' : /^# Gate transcript$/m.test(pack) ? 'checkpoint' : 'slice'
-const allowed = { slice: ['done', 'dead', 'blocked'], fix: ['fix', 'done', 'dead'], checkpoint: ['checkpoint', 'done', 'dead', 'blocked'] }
-if (!['done', 'dead', 'blocked', 'fix', 'checkpoint'].includes(step.outcome)) fail(65, `outcome "${step.outcome}" is not built yet — a later slice adds it (PRD-001 §17)`)
+const limited = ['rate_limited', 'rate_limited_no_reset']
+const allowed = { slice: ['done', 'dead', 'blocked', ...limited], fix: ['fix', 'done', 'dead', ...limited], checkpoint: ['checkpoint', 'done', 'dead', 'blocked', ...limited] }
+if (!['done', 'dead', 'blocked', 'fix', 'checkpoint', ...limited].includes(step.outcome)) fail(65, `outcome "${step.outcome}" is not built yet — a later slice adds it (PRD-001 §17)`)
 if (!allowed[role].includes(step.outcome)) fail(65, `outcome "${step.outcome}" on step ${n} does not fit a ${role} worker — the plan's order and the driver's spawn order disagree`)
 
 const tpl = JSON.parse(fs.readFileSync(path.join(__dirname, 'stream.json'), 'utf8'))
@@ -109,8 +114,41 @@ const tool = (name, input) => {
 }
 const result = (lines) => emit({ ...tpl.result, session_id: sessionId, uuid: crypto.randomUUID(), result: lines.join('\n') })
 
+// ── FR-9 (slice 07): a worker that hit a usage limit ─────────────────────────
+// The driver may run on a scaled clock (src/clock.rs: FACTORY_CLOCK_SCALE with
+// FACTORY_CLOCK_ANCHOR); `resetsAt` has to be on that same clock.
+const now = () => {
+  const wall = Math.floor(Date.now() / 1000)
+  const scale = Number(process.env.FACTORY_CLOCK_SCALE ?? 1)
+  if (!(scale > 1)) return wall
+  const anchor = Number(process.env.FACTORY_CLOCK_ANCHOR ?? wall)
+  return anchor + (wall - anchor) * scale
+}
+// Session opened, one `rate_limit_event` with `status: rejected` (resetsAt
+// `reset_s` ahead, default 120; absent for `rate_limited_no_reset`), then an
+// error result naming the limit, exit 1. Nothing on the board moves.
+const rateLimited = (step) => {
+  if (step.delay_ms) sleep(Number(step.delay_ms))
+  emit(init)
+  const info = { ...tpl.rate_limit_event.rate_limit_info, status: 'rejected' }
+  if (step.outcome === 'rate_limited_no_reset') delete info.resetsAt
+  else info.resetsAt = now() + Number(step.reset_s ?? 120)
+  emit({ ...tpl.rate_limit_event, rate_limit_info: info, session_id: sessionId, uuid: crypto.randomUUID() })
+  emit({
+    ...tpl.result,
+    session_id: sessionId,
+    uuid: crypto.randomUUID(),
+    subtype: 'error_during_execution',
+    is_error: true,
+    num_turns: 1,
+    result: "You've hit your usage limit. Your limit will reset at the time above.",
+  })
+  process.exit(1)
+}
+
 // ── 3a. a fix worker (slice 06) ──────────────────────────────────────────────
 if (role === 'fix') {
+  if (limited.includes(step.outcome)) rateLimited(step)
   if (step.delay_ms) sleep(Number(step.delay_ms))
   if (step.outcome === 'dead') {
     emit(init)
@@ -144,6 +182,7 @@ if (role === 'checkpoint') {
   if (!dirM) fail(65, 'the checkpoint pack names no docs/features/<dir>/ file')
   const cpDir = path.resolve(cwd, dirM[1])
   const log = path.join(cpDir, 'agent-log.md')
+  if (limited.includes(step.outcome)) rateLimited(step)
   if (step.delay_ms) sleep(Number(step.delay_ms))
   if (step.outcome === 'dead') {
     emit(init)
@@ -207,6 +246,7 @@ if (!fs.existsSync(slicePath)) {
 const featureDir = path.dirname(slicePath)
 
 // ── 4. side effects ──────────────────────────────────────────────────────────
+if (limited.includes(step.outcome)) rateLimited(step)
 setStatus(slicePath, 'building')
 if (step.delay_ms) sleep(Number(step.delay_ms))
 if (step.outcome === 'dead') {

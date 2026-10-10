@@ -105,6 +105,10 @@ pub struct RunState {
     pub updated_at: String,
     pub budget_weighted_tokens: u64,
     pub stop_requested: bool,
+    /// FR-9: no spawn until this epoch second; `None` when not paused. Kept
+    /// in `state.json` so a resumed driver honours a pause it did not see.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused_until: Option<u64>,
     /// Every worker this run spawned, in order (slice 03). A resume reads the
     /// pids to tell a dead worker from a live one; the outcomes carry the
     /// once-only respawn cap across driver restarts.
@@ -126,8 +130,64 @@ pub struct WorkerRef {
     /// The `workers` table row.
     pub row_id: i64,
     pub spawned_at: String,
-    /// `None` while running or unsettled; `done`, `blocked`, `dead`, `failed`.
+    /// `None` while running or unsettled; else a [`WorkerOutcome`] literal.
     pub outcome: Option<String>,
+}
+
+impl WorkerRef {
+    /// Counts toward a death cap (FR-1, FR-4). Routed through
+    /// [`WorkerOutcome::counts_as_death`] so a new outcome has to decide.
+    pub fn died(&self) -> bool {
+        self.outcome
+            .as_deref()
+            .and_then(WorkerOutcome::parse)
+            .is_some_and(WorkerOutcome::counts_as_death)
+    }
+}
+
+/// How a worker ended, as `state.json` and the `workers` table spell it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerOutcome {
+    Done,
+    Blocked,
+    Dead,
+    Failed,
+    /// FR-9: the worker hit a usage limit; the run pauses, the slice goes
+    /// back to `pending`.
+    RateLimited,
+}
+
+impl WorkerOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WorkerOutcome::Done => "done",
+            WorkerOutcome::Blocked => "blocked",
+            WorkerOutcome::Dead => "dead",
+            WorkerOutcome::Failed => "failed",
+            WorkerOutcome::RateLimited => "rate_limited",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<WorkerOutcome> {
+        Some(match s {
+            "done" => WorkerOutcome::Done,
+            "blocked" => WorkerOutcome::Blocked,
+            "dead" => WorkerOutcome::Dead,
+            "failed" => WorkerOutcome::Failed,
+            "rate_limited" => WorkerOutcome::RateLimited,
+            _ => return None,
+        })
+    }
+
+    /// FR-9: a pause counts toward no cap. Exhaustive on purpose: a new
+    /// outcome must say whether the once-only respawn (FR-1) and the three
+    /// red gates (FR-4) see it.
+    pub fn counts_as_death(self) -> bool {
+        match self {
+            WorkerOutcome::Dead | WorkerOutcome::Failed => true,
+            WorkerOutcome::Done | WorkerOutcome::Blocked | WorkerOutcome::RateLimited => false,
+        }
+    }
 }
 
 /// An open run: its directory, its state and the store.
@@ -178,6 +238,7 @@ impl Run {
             updated_at: now,
             budget_weighted_tokens,
             stop_requested: false,
+            paused_until: None,
             workers: Vec::new(),
         };
         write_state(&dir, &state)?;
@@ -269,6 +330,12 @@ impl Run {
 
     pub fn request_stop(&mut self) -> Result<()> {
         self.state.stop_requested = true;
+        self.save()
+    }
+
+    /// FR-9: set or clear the pause.
+    pub fn set_paused_until(&mut self, until: Option<u64>) -> Result<()> {
+        self.state.paused_until = until;
         self.save()
     }
 

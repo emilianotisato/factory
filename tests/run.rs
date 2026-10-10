@@ -402,7 +402,9 @@ fn run_on_the_clean_fixture_starts_notes_the_judge_lines_then_resumes() {
         !pid_alive(driver) && !pid_alive(worker)
     });
     assert_eq!(state(dir)["phase"], "checkpoint");
-    let out = factory(&fx, &["run", "001", "--budget", "9"]);
+    // A budget the three workers so far fit under: FR-9 (slice 07) parks a
+    // resumed run whose weighted tokens already pass it.
+    let out = factory(&fx, &["run", "001", "--budget", "90000000"]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     let text = stdout(&out);
     assert_eq!(run_dirs(&fx).len(), 1);
@@ -414,7 +416,7 @@ fn run_on_the_clean_fixture_starts_notes_the_judge_lines_then_resumes() {
         !text.contains("judge_noted") && !text.contains("  · "),
         "{text}"
     );
-    assert_eq!(state(dir)["budget_weighted_tokens"], 9);
+    assert_eq!(state(dir)["budget_weighted_tokens"], 90_000_000);
     wait_until("the resumed run to finish", 40, || {
         state(dir)["phase"] == "finished"
     });
@@ -580,7 +582,9 @@ fn budget_comes_from_the_flag_then_the_config_then_the_default() {
     )
     .unwrap();
     // In the foreground the loop runs through both checkpoints before `run`
-    // returns, so every step below sees a finished run.
+    // returns, so every step below sees a finished run. The first run's
+    // budget has to hold its five workers (FR-9, slice 07: over budget parks);
+    // the later runs spawn nothing, so theirs can stay small.
     fx.write_plan(&[
         json!({"outcome": "done"}),
         json!({"outcome": "done"}),
@@ -588,7 +592,7 @@ fn budget_comes_from_the_flag_then_the_config_then_the_default() {
         json!({"outcome": "done"}),
         json!({"outcome": "checkpoint"}),
     ]);
-    let out = factory(&fx, &["run", "001", "--budget", "7", "--foreground"]);
+    let out = factory(&fx, &["run", "001", "--budget", "70000000", "--foreground"]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     assert!(
         String::from_utf8_lossy(&out.stderr).contains("unknown key `extra` ignored"),
@@ -597,7 +601,7 @@ fn budget_comes_from_the_flag_then_the_config_then_the_default() {
     );
     let first = run_dirs(&fx);
     assert_eq!(first.len(), 1, "{first:?}");
-    assert_eq!(state(&first[0])["budget_weighted_tokens"], 7);
+    assert_eq!(state(&first[0])["budget_weighted_tokens"], 70_000_000);
     assert_eq!(state(&first[0])["phase"], "finished");
     assert_eq!(fx.calls().len(), 5);
 
@@ -616,7 +620,7 @@ fn budget_comes_from_the_flag_then_the_config_then_the_default() {
     let second = newest(&first);
     assert_eq!(state(&second)["budget_weighted_tokens"], 5);
     assert_eq!(state(&second)["phase"], "finished");
-    assert_eq!(state(&first[0])["budget_weighted_tokens"], 7);
+    assert_eq!(state(&first[0])["budget_weighted_tokens"], 70_000_000);
 
     // The flag over the config file, on a new run too.
     let out = factory(&fx, &["run", "001", "--budget", "9", "--foreground"]);

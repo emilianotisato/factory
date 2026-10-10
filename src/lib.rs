@@ -22,6 +22,7 @@ pub mod gatecache;
 pub mod lanes;
 pub mod pack;
 pub mod paths;
+pub mod quota;
 pub mod run;
 pub mod scheduler;
 pub mod stream;

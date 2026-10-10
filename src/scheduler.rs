@@ -45,7 +45,8 @@ use crate::docs::{Docs, Status};
 use crate::error::io;
 use crate::events::EventKind;
 use crate::pack::{BlockSection, Pack};
-use crate::run::{Phase, Run, WorkerRef, pid_alive};
+use crate::quota::{self, Hold, Limit};
+use crate::run::{Phase, Run, WorkerOutcome, WorkerRef, pid_alive};
 use crate::stream::Summary;
 use crate::worker::{self, Exit, Job, Worker};
 use crate::{Result, clock, lanes};
@@ -104,7 +105,7 @@ fn drive_inner(run: &mut Run, docs: &Docs, cfg: &Config, out: &mut dyn Write) ->
     // A resumed parked run stays parked without a second `run_waiting`.
     let mut parked = run.state().phase == Phase::WaitingOwner;
     let mut announced = false;
-    if !parked && run.state().branch.is_some() {
+    if !parked && run.state().branch.is_some() && run.state().paused_until.is_none() {
         run.set_phase(Phase::Building)?;
     }
     loop {
@@ -136,6 +137,35 @@ fn drive_inner(run: &mut Run, docs: &Docs, cfg: &Config, out: &mut dyn Write) ->
             }
             poll(&mut table, TICK)?;
             continue;
+        }
+
+        // FR-9: a pause or a spent budget holds every spawn. Workers in
+        // flight finish; a paused run with nothing alive sleeps until the
+        // reset, a run over budget parks and the driver exits (AD-703).
+        match quota::hold(run)? {
+            Some(Hold::Paused { until }) => {
+                if run.state().phase != Phase::Paused {
+                    run.set_phase(Phase::Paused)?;
+                }
+                if table.is_empty() {
+                    quota::pause_tick(run, until)?;
+                } else {
+                    poll(&mut table, TICK)?;
+                }
+                continue;
+            }
+            Some(Hold::Budget { weighted, budget }) => {
+                if !table.is_empty() {
+                    poll(&mut table, TICK)?;
+                    continue;
+                }
+                return quota::park_budget(run, weighted, budget, out);
+            }
+            None => {
+                if run.state().paused_until.is_some() {
+                    quota::resume(run, Phase::Building, out)?;
+                }
+            }
         }
 
         let mut board = docs.status(&feature)?;
@@ -246,6 +276,9 @@ fn drive_inner(run: &mut Run, docs: &Docs, cfg: &Config, out: &mut dyn Write) ->
                     continue;
                 }
                 Outcome::Stopped => return finish(run, out, "stop requested"),
+                Outcome::Budget { weighted, budget } => {
+                    return quota::park_budget(run, weighted, budget, out);
+                }
             }
         }
         if !board.blocked.is_empty() {
@@ -548,7 +581,7 @@ fn route_exit(
     let row_id = r.worker.row_id;
     match slice_status(board, slice) {
         "done" => {
-            settle(run, row_id, &session_id, &exit.summary, "done")?;
+            settle(run, row_id, &session_id, &exit.summary, WorkerOutcome::Done)?;
             run.emit(EventKind::SliceDone { slice })?;
             say(
                 out,
@@ -574,7 +607,13 @@ fn route_exit(
             )?;
         }
         "blocked" => {
-            settle(run, row_id, &session_id, &exit.summary, "blocked")?;
+            settle(
+                run,
+                row_id,
+                &session_id,
+                &exit.summary,
+                WorkerOutcome::Blocked,
+            )?;
             let block = open_block(run, board, slice)?;
             emit_blocked(run, slice, block.as_ref())?;
             say(
@@ -591,7 +630,12 @@ fn route_exit(
         }
         _ => {
             let w = find_ref(run, &session_id);
-            settle_dead(run, board, &w, slice, exit.code, exit.summary, out)?;
+            match Limit::from(&exit.summary) {
+                Some(limit) => settle_limited(run, board, &w, slice, &exit.summary, &limit, out)?,
+                None => {
+                    settle_dead(run, board, &w, slice, exit.code, exit.summary, out)?;
+                }
+            }
         }
     }
     Ok(())
@@ -770,7 +814,7 @@ fn settle_orphans(
         };
         match slice_status(board, slice) {
             "done" => {
-                settle(run, w.row_id, &w.session_id, &summary, "done")?;
+                settle(run, w.row_id, &w.session_id, &summary, WorkerOutcome::Done)?;
                 run.emit(EventKind::SliceDone { slice })?;
                 say(
                     out,
@@ -792,13 +836,22 @@ fn settle_orphans(
                 )?;
             }
             "blocked" => {
-                settle(run, w.row_id, &w.session_id, &summary, "blocked")?;
+                settle(
+                    run,
+                    w.row_id,
+                    &w.session_id,
+                    &summary,
+                    WorkerOutcome::Blocked,
+                )?;
                 let block = open_block(run, board, slice)?;
                 emit_blocked(run, slice, block.as_ref())?;
             }
-            _ => {
-                settle_dead(run, board, &w, slice, None, summary, out)?;
-            }
+            _ => match Limit::from(&summary) {
+                Some(limit) => settle_limited(run, board, &w, slice, &summary, &limit, out)?,
+                None => {
+                    settle_dead(run, board, &w, slice, None, summary, out)?;
+                }
+            },
         }
     }
     Ok(Orphans::Settled)
@@ -826,7 +879,7 @@ fn settle_checkpoint_orphan(
     let n = w.checkpoint.unwrap_or(0);
     let repo = run.state().repo.clone();
     if w.role == "checkpoint" && board.checkpoints.iter().any(|c| c.n == n) {
-        settle(run, w.row_id, &w.session_id, &summary, "done")?;
+        settle(run, w.row_id, &w.session_id, &summary, WorkerOutcome::Done)?;
         say(
             out,
             &format!(
@@ -836,8 +889,30 @@ fn settle_checkpoint_orphan(
         )?;
         return Ok(());
     }
+    // FR-9: a limit is not a death; the checkpoint runs again after the pause.
+    if let Some(limit) = Limit::from(&summary) {
+        settle(
+            run,
+            w.row_id,
+            &w.session_id,
+            &summary,
+            WorkerOutcome::RateLimited,
+        )?;
+        let until = quota::pause(run, &limit, out)?;
+        say(
+            out,
+            &format!(
+                "checkpoint {n}: {} worker {} of an earlier driver hit a usage limit ({}) — paused until {}, the checkpoint runs again",
+                w.role,
+                w.session_id,
+                limit.literal,
+                clock::rfc3339(until)
+            ),
+        )?;
+        return Ok(());
+    }
     if w.role == "fix" && !summary.is_dead() {
-        settle(run, w.row_id, &w.session_id, &summary, "done")?;
+        settle(run, w.row_id, &w.session_id, &summary, WorkerOutcome::Done)?;
         let spec = Pathspec::from_stream(&summary, board, &repo);
         let attempt = run
             .db()
@@ -871,7 +946,11 @@ fn settle_checkpoint_orphan(
         }
         return Ok(());
     }
-    let outcome = if summary.is_dead() { "dead" } else { "failed" };
+    let outcome = if summary.is_dead() {
+        WorkerOutcome::Dead
+    } else {
+        WorkerOutcome::Failed
+    };
     settle(run, w.row_id, &w.session_id, &summary, outcome)?;
     run.emit(EventKind::WorkerDead {
         slice: None,
@@ -897,8 +976,10 @@ fn settle_checkpoint_orphan(
     say(
         out,
         &format!(
-            "checkpoint {n}: {} worker {} of an earlier driver is gone ({outcome}) — the checkpoint runs again",
-            w.role, w.session_id
+            "checkpoint {n}: {} worker {} of an earlier driver is gone ({}) — the checkpoint runs again",
+            w.role,
+            w.session_id,
+            outcome.as_str()
         ),
     )?;
     Ok(())
@@ -910,11 +991,46 @@ fn settle(
     row_id: i64,
     session_id: &str,
     summary: &Summary,
-    outcome: &str,
+    outcome: WorkerOutcome,
 ) -> Result<()> {
     run.db()
-        .finish_worker(row_id, summary, outcome, &clock::now_rfc3339())?;
-    run.set_worker_outcome(session_id, outcome)
+        .finish_worker(row_id, summary, outcome.as_str(), &clock::now_rfc3339())?;
+    run.set_worker_outcome(session_id, outcome.as_str())
+}
+
+/// FR-9: a build worker gone on a usage limit. Not a death: the slice goes
+/// back to `pending` with its lane freed, and the run pauses until the
+/// reset. The next spawn of the slice is a fresh worker on a fresh lane.
+#[allow(clippy::too_many_arguments)]
+fn settle_limited(
+    run: &mut Run,
+    board: &Status,
+    w: &WorkerRef,
+    slice: u32,
+    summary: &Summary,
+    limit: &Limit,
+    out: &mut dyn Write,
+) -> Result<()> {
+    settle(
+        run,
+        w.row_id,
+        &w.session_id,
+        summary,
+        WorkerOutcome::RateLimited,
+    )?;
+    let file = slice_file(run, board, slice)?;
+    set_frontmatter(&file, &[("status", "pending")])?;
+    remove_frontmatter_keys(&file, &["lane"])?;
+    let until = quota::pause(run, limit, out)?;
+    say(
+        out,
+        &format!(
+            "slice {slice:02}: worker {} hit a usage limit ({}) — back to pending, paused until {}",
+            w.session_id,
+            limit.literal,
+            clock::rfc3339(until)
+        ),
+    )
 }
 
 /// A worker gone with the slice neither `done` nor `blocked`. Returns `true`
@@ -929,7 +1045,11 @@ fn settle_dead(
     summary: Summary,
     out: &mut dyn Write,
 ) -> Result<bool> {
-    let outcome = if summary.is_dead() { "dead" } else { "failed" };
+    let outcome = if summary.is_dead() {
+        WorkerOutcome::Dead
+    } else {
+        WorkerOutcome::Failed
+    };
     settle(run, w.row_id, &w.session_id, &summary, outcome)?;
     run.emit(EventKind::WorkerDead {
         slice: Some(slice),
@@ -940,9 +1060,7 @@ fn settle_dead(
         .state()
         .workers
         .iter()
-        .filter(|x| {
-            x.slice == Some(slice) && matches!(x.outcome.as_deref(), Some("dead" | "failed"))
-        })
+        .filter(|x| x.slice == Some(slice) && x.died())
         .count();
     let repo = run.state().repo.clone();
     let fragment = repo
@@ -972,9 +1090,7 @@ fn settle_dead(
             .state()
             .workers
             .iter()
-            .filter(|x| {
-                x.slice == Some(slice) && matches!(x.outcome.as_deref(), Some("dead" | "failed"))
-            })
+            .filter(|x| x.slice == Some(slice) && x.died())
             .map(|x| {
                 format!(
                     "`{}` ({})",
@@ -1141,6 +1257,26 @@ pub fn set_slice_status(path: &Path, status: &str) -> Result<()> {
 /// rewritten in place, a missing one appended before the closing `---`.
 /// Nothing below the frontmatter is touched.
 pub fn set_frontmatter(path: &Path, pairs: &[(&str, &str)]) -> Result<()> {
+    edit_frontmatter(path, |lines| {
+        for (key, value) in pairs {
+            let prefix = format!("{key}:");
+            match lines.iter_mut().find(|l| l.starts_with(&prefix)) {
+                Some(l) => *l = format!("{key}: {value}"),
+                None => lines.push(format!("{key}: {value}")),
+            }
+        }
+    })
+}
+
+/// Drop `key:` lines from a slice file's frontmatter (FR-9 clears `lane`
+/// when a limited worker's slice goes back to `pending`).
+pub fn remove_frontmatter_keys(path: &Path, keys: &[&str]) -> Result<()> {
+    edit_frontmatter(path, |lines| {
+        lines.retain(|l| !keys.iter().any(|k| l.starts_with(&format!("{k}:"))));
+    })
+}
+
+fn edit_frontmatter(path: &Path, edit: impl FnOnce(&mut Vec<String>)) -> Result<()> {
     let text = fs::read_to_string(path).map_err(io(format!("read {}", path.display())))?;
     let rest = text
         .strip_prefix("---\n")
@@ -1150,13 +1286,7 @@ pub fn set_frontmatter(path: &Path, pairs: &[(&str, &str)]) -> Result<()> {
         .ok_or_else(|| crate::Error::Msg(format!("{} has no frontmatter end", path.display())))?;
     let fm = &rest[..end];
     let mut lines: Vec<String> = fm.lines().map(str::to_string).collect();
-    for (key, value) in pairs {
-        let prefix = format!("{key}:");
-        match lines.iter_mut().find(|l| l.starts_with(&prefix)) {
-            Some(l) => *l = format!("{key}: {value}"),
-            None => lines.push(format!("{key}: {value}")),
-        }
-    }
+    edit(&mut lines);
     let out = format!("---\n{}{}", lines.join("\n"), &rest[end..]);
     fs::write(path, out).map_err(io(format!("write {}", path.display())))
 }

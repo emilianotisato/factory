@@ -82,6 +82,23 @@ pub enum EventKind {
         session_id: String,
         exit_code: Option<i32>,
     },
+    /// FR-9: a worker hit a usage limit; the driver spawns nothing until
+    /// `resets_at` (epoch seconds; now + 15 min when the stream gave none —
+    /// AD-701). `literal` is the stream's `status`, or what matched in a
+    /// `result` when there was no `rate_limit_event`.
+    RunPaused {
+        literal: String,
+        resets_at: u64,
+    },
+    /// FR-9: `paused_until` passed; spawning resumes.
+    RunResumedFromPause,
+    /// FR-9: the weighted token sum passed the budget; in-flight workers
+    /// finish, nothing new spawns, `factory run NNN --budget <n>` resumes.
+    RunParked {
+        reason: String,
+        weighted: u64,
+        budget: u64,
+    },
     /// The slice cites a `§n` that `prd.md` lacks (FR-2: a warning, not a crash).
     PackSectionMissing {
         slice: u32,
