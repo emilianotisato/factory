@@ -48,7 +48,8 @@ CREATE TABLE IF NOT EXISTS workers (
   outcome         TEXT,
   peak_context    INTEGER,
   started_at      TEXT NOT NULL,
-  ended_at        TEXT
+  ended_at        TEXT,
+  commit_sha      TEXT
 );
 CREATE TABLE IF NOT EXISTS gates (
   id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -120,6 +121,8 @@ pub struct WorkerRow {
     pub peak_context: Option<i64>,
     pub started_at: String,
     pub ended_at: Option<String>,
+    /// The slice's commit (FR-5), once the driver made it.
+    pub commit_sha: Option<String>,
 }
 
 impl Db {
@@ -138,11 +141,30 @@ impl Db {
 
     fn migrate(&self) -> Result<()> {
         self.conn.execute_batch(SCHEMA)?;
+        // Columns added after a table shipped: `ALTER TABLE` is not
+        // `IF NOT EXISTS`, so each is guarded by the live column list.
+        if !self.has_column("workers", "commit_sha")? {
+            self.conn
+                .execute("ALTER TABLE workers ADD COLUMN commit_sha TEXT", [])?;
+        }
         self.conn.execute(
             "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (?1, ?2)",
             params![SCHEMA_VERSION, clock::now_rfc3339()],
         )?;
         Ok(())
+    }
+
+    fn has_column(&self, table: &str, column: &str) -> Result<bool> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!("SELECT name FROM pragma_table_info('{table}')"))?;
+        let names = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        for n in names {
+            if n? == column {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     pub fn conn(&self) -> &Connection {
@@ -302,12 +324,21 @@ impl Db {
         Ok(())
     }
 
+    /// The slice's commit on the worker that built it (FR-5).
+    pub fn set_worker_commit(&self, id: i64, sha: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE workers SET commit_sha = ?2 WHERE id = ?1",
+            params![id, sha],
+        )?;
+        Ok(())
+    }
+
     /// A run's workers in spawn order.
     pub fn workers(&self, run_id: &str) -> Result<Vec<WorkerRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, run_id, role, slice, session_id, model, effort, input, cache_write, cache_read,
                     output, thinking, cost_usd, num_turns, duration_ms, terminal_reason, outcome,
-                    peak_context, started_at, ended_at
+                    peak_context, started_at, ended_at, commit_sha
              FROM workers WHERE run_id = ?1 ORDER BY id",
         )?;
         let rows = stmt.query_map([run_id], |r| {
@@ -332,6 +363,7 @@ impl Db {
                 peak_context: r.get(17)?,
                 started_at: r.get(18)?,
                 ended_at: r.get(19)?,
+                commit_sha: r.get(20)?,
             })
         })?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)

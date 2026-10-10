@@ -496,7 +496,8 @@ fn a_blocked_slice_parks_its_lane_and_the_answer_respawns_it() {
     assert_eq!(db(&fx).run_row(&id).unwrap().unwrap().phase, "checkpoint");
     let log = driver_log(&dir);
     assert!(log.contains("lane 1, answered, pack"), "{log}");
-    let frag = fx.read(FRAGMENT);
+    // The run reached the checkpoint: the fragment is merged (slice 05).
+    let frag = fx.read(AGENT_LOG);
     assert!(
         frag.contains("## Decisions\n"),
         "the done worker's AD lands too: {frag}"

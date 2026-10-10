@@ -10,6 +10,7 @@
 pub mod answers;
 pub mod cli;
 pub mod clock;
+pub mod commit;
 pub mod config;
 pub mod daemon;
 pub mod db;

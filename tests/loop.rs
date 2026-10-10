@@ -25,6 +25,7 @@ const RECORDING: &str = "docs/features/001-driver/recordings/claude-p-oneshot-2.
 const PROMPT: &str =
     "Build slice {NN} of PRD-001 as the appended system prompt says. Return the STATUS block.";
 const FRAGMENT: &str = "docs/features/001-fixture/log-slice-01.md";
+const AGENT_LOG: &str = "docs/features/001-fixture/agent-log.md";
 
 fn factory(fx: &Fixture, args: &[&str]) -> Output {
     fx.command(BIN).args(args).output().unwrap()
@@ -386,10 +387,14 @@ fn run_drives_three_slices_through_the_detached_driver() {
         [
             "slice_spawned",
             "slice_done",
+            "slice_committed",
             "slice_spawned",
             "slice_done",
+            "slice_committed",
             "slice_spawned",
             "slice_done",
+            "slice_committed",
+            "log_merged",
             "checkpoint_due"
         ]
     );
@@ -523,10 +528,14 @@ fn a_dead_worker_is_noted_and_respawned_once() {
             "worker_dead",
             "slice_spawned",
             "slice_done",
+            "slice_committed",
             "slice_spawned",
             "slice_done",
+            "slice_committed",
             "slice_spawned",
             "slice_done",
+            "slice_committed",
+            "log_merged",
             "checkpoint_due"
         ]
     );
@@ -538,8 +547,9 @@ fn a_dead_worker_is_noted_and_respawned_once() {
     assert_eq!(dead_ev["session_id"], sid0.as_str());
     assert_eq!(dead_ev["exit_code"], 137);
 
-    let frag = fx.read(FRAGMENT);
-    assert!(frag.starts_with("## "), "{frag}");
+    // Merged into agent-log.md at the checkpoint (slice 05); the merge
+    // itself refuses a fragment with content above its first heading.
+    let frag = fx.read(AGENT_LOG);
     assert!(frag.contains("## Traps\n"), "{frag}");
     assert!(
         frag.contains("- **Dead worker (")
@@ -821,7 +831,7 @@ fn the_driver_killed_mid_slice_resumes_and_finishes() {
     let i_dead = k.iter().position(|k| k == "worker_dead").unwrap();
     assert!(i_resumed < i_dead, "{k:?}");
 
-    let frag = fx.read(FRAGMENT);
+    let frag = fx.read(AGENT_LOG);
     assert!(
         frag.contains(&format!(
             "session {sid0} exited (code unknown) with no result; respawned."

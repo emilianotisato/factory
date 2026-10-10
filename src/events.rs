@@ -84,6 +84,38 @@ pub enum EventKind {
         slice: u32,
         section: u32,
     },
+    /// FR-5: the slice's commit — the stream's written paths plus the slice
+    /// file and its fragment, by pathspec; `files` is what was staged.
+    SliceCommitted {
+        slice: u32,
+        sha: String,
+        files: Vec<String>,
+    },
+    /// Files that appeared in the tree while the worker ran and that no tool
+    /// call named: listed in the fragment under `## Untracked leftovers`,
+    /// never committed (FR-5).
+    UntrackedLeftovers {
+        slice: u32,
+        files: Vec<String>,
+    },
+    /// The stream names one of the three files no worker may write
+    /// (`prd.md`, `agent-log.md`, `docs/index.md`); left out of the commit.
+    WorkerWroteProtectedFile {
+        slice: u32,
+        path: String,
+    },
+    /// The lanes drained: `docs log merge` folded the fragments and the
+    /// merged `agent-log.md` is committed (FR-5).
+    LogMerged {
+        sha: String,
+        fragments: Vec<String>,
+    },
+    /// `docs log merge` refused (an AD clash): `block_id` is the `BLOCK-n`
+    /// written to `agent-log.md` for the owner; the run parks on it.
+    MergeRefused {
+        block_id: String,
+        detail: String,
+    },
     /// The board says a checkpoint is due; slice 06 runs it, this slice stops.
     CheckpointDue {
         unverified: Vec<u32>,

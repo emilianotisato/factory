@@ -326,10 +326,20 @@ fn run_on_the_clean_fixture_starts_notes_the_judge_lines_then_resumes() {
     // tick and finish in either order (slice 04).
     wait_until("the checkpoint", 40, || state(dir)["phase"] == "checkpoint");
     let k = kinds(dir);
-    assert_eq!(k.len(), 10, "{k:?}");
+    assert_eq!(k.len(), 12, "{k:?}");
     assert!(k[5..7].iter().all(|k| k == "slice_spawned"), "{k:?}");
-    assert!(k[7..9].iter().all(|k| k == "slice_done"), "{k:?}");
-    assert_eq!(k[9], "checkpoint_due", "{k:?}");
+    // Each reap commits the slice right after `slice_done` (slice 05).
+    assert_eq!(
+        k[7..11],
+        [
+            "slice_done",
+            "slice_committed",
+            "slice_done",
+            "slice_committed"
+        ],
+        "{k:?}"
+    );
+    assert_eq!(k[11], "checkpoint_due", "{k:?}");
     assert_eq!(fx.slice_status(1), "done");
     assert_eq!(fx.slice_status(2), "done");
     assert_eq!(fx.slice_status(3), "pending");
@@ -343,7 +353,7 @@ fn run_on_the_clean_fixture_starts_notes_the_judge_lines_then_resumes() {
     let row = db.run_row(&id).unwrap().unwrap();
     assert_eq!(row.phase, "checkpoint");
     assert_eq!(row.branch.as_deref(), Some("feat/fixture"));
-    assert_eq!(db.events(&id).unwrap().len(), 10);
+    assert_eq!(db.events(&id).unwrap().len(), 12);
 
     // A live pid: refused, naming the run and `factory stop`.
     set_pid(dir, std::process::id());
@@ -371,10 +381,10 @@ fn run_on_the_clean_fixture_starts_notes_the_judge_lines_then_resumes() {
         "{text}"
     );
     wait_until("the resumed driver to stop at the checkpoint", 20, || {
-        kinds(dir).len() == 12 && state(dir)["phase"] == "checkpoint"
+        kinds(dir).len() == 14 && state(dir)["phase"] == "checkpoint"
     });
     let k = kinds(dir);
-    assert_eq!(k[10..], ["run_resumed", "checkpoint_due"], "{k:?}");
+    assert_eq!(k[12..], ["run_resumed", "checkpoint_due"], "{k:?}");
     assert_eq!(fx.calls().len(), 2);
     // The resumer adopted the run: the planted pid is gone from the state file.
     assert_ne!(state(dir)["pid"], Value::from(planted));
@@ -536,14 +546,14 @@ fn budget_comes_from_the_flag_then_the_config_then_the_default() {
         "checkpoint_every 2: two slices, then nothing on a resume"
     );
 
-    // A new run (the old one finished) reads the config file. The workers
-    // left the tree dirty (slice 05 commits); preflight wants it clean.
+    // A new run (the old one finished) reads the config file. The driver
+    // committed each slice as it finished (slice 05), so the tree is clean
+    // for the preflight.
     factory(
         &fx,
         &["stop", dirs[0].file_name().unwrap().to_str().unwrap()],
     );
-    fx.git(&["add", "-A"]);
-    fx.git(&["commit", "-q", "-m", "test: built slices"]);
+    assert_eq!(fx.git(&["status", "--porcelain"]), "");
     let out = factory(&fx, &["run", "001", "--foreground"]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     let dirs = run_dirs(&fx);
@@ -659,6 +669,7 @@ fn stop_during_a_slice_lets_the_worker_finish_then_ends_the_run() {
             "slice_spawned",
             "stop_requested",
             "slice_done",
+            "slice_committed",
             "run_finished"
         ],
         "{k:?}"

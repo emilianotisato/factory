@@ -1,6 +1,7 @@
 ---
 slice: 05
-status: pending
+status: done
+lane: 1
 depends_on: [4]
 ---
 
@@ -9,7 +10,7 @@ depends_on: [4]
 **Source**: [`prd.md`](prd.md) → §7 FR-5 (all bullets and acceptance); §4 FR-2 bullet 5 (the stream is the record; `tool_use` events carry the file paths). **Depends on**: 04 (two lanes must exist for the interleaving acceptance; and the commit path has to coexist with a parked lane's uncommitted log edit).
 **Created**: 2026-10-09 · **Status**: pending
 
-**Progress**: _(written as it lands)_
+**Progress**: built — `src/commit.rs` (`Pathspec`, `untracked`, `commit`, `merge_logs`), `commit_sha` on `workers` (guarded `ALTER`, schema stays 1), five events, scheduler `commit_slice` / `leftovers` / `merge_or_block` / `park_on_merge`, stub keys `stray` and `ad`, `tests/commits.rs` (chain, two lanes, clash-and-answer) · inner loop: 5 runs, 4 red, ~2 min — red caught: `lanes: 1` opens a preflight ask so the sequential test uses `fx.chain()`; slice titles are `A`/`B`/`C`; `render --write` left `docs/index.md` unchanged so the merge commit holds `prd.md` instead; `tests/run.rs`'s hand-made "built slices" commit had nothing left to commit; fmt reflowed 3 files, clippy clean · deviations: block id `BLOCK-n`, not `BLOCK-<NNN>-merge` (AD-501); `Pathspec::from(summary, board, slice, repo)` takes the board and the repo root (title, feature dir, protected files) instead of `(summary, slice)`; the merge commit also stages the merged fragments' deletions (AD-504); `log_merged` event (AD-502); leftovers are measured against a spawn-time snapshot and the live lanes' streams (AD-505) · earlier-slice tests moved: `tests/loop.rs` (two exact sequences gain `slice_committed` / `log_merged`; two fragment reads after a checkpoint now read `agent-log.md`), `tests/run.rs` (event counts 10→12 and 12→14; the stop sequence gains `slice_committed`; the budget test asserts a clean tree instead of committing one), `tests/lanes.rs` (one fragment read after a checkpoint reads `agent-log.md`) · Prove (task 6, QA row FR-5) at the checkpoint.
 
 **Slice**: After this slice the run leaves a readable history: one commit per slice, made by the driver from the files the worker's stream says it touched, plus that slice's file and log fragment. Two lanes interleave without stepping on each other because each commit is a pathspec, never `git add -A`. When all lanes are drained the driver runs `docs log merge NNN` and commits the merged `agent-log.md`; slice 06 moves that merge to every checkpoint. An AD-number clash is a block, not a silent renumber.
 

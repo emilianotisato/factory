@@ -21,6 +21,13 @@
 //! the second blocks the slice with `BLOCK-NN02`. The count lives in
 //! `state.json` `workers[]`, so a resume after a kill counts the killed worker.
 //!
+//! FR-5: a worker whose slice reads `done` has its slice committed by
+//! pathspec before the next board read — the paths its stream named, the
+//! slice file and its fragment, nothing with `-A` since another lane may be
+//! mid-write. When every slice is done and the lanes drain, the fragments
+//! are folded into `agent-log.md` and committed; a refused merge (an AD
+//! clash) is a `BLOCK-n` in `agent-log.md` the run parks on.
+//!
 //! Slice 06 runs the checkpoint where this loop stops at `checkpoint_due`.
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -29,6 +36,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::answers::{self, Answer};
+use crate::commit::{self, Merge, Pathspec};
 use crate::config::Config;
 use crate::docs::{Docs, Status};
 use crate::error::io;
@@ -53,6 +61,9 @@ struct Running {
     lane: u32,
     /// Set by `poll` when the process exited; routed on the next reap.
     exit: Option<Exit>,
+    /// Untracked files in the tree at spawn: what the worker leaves beyond
+    /// these and its stream's paths is an "untracked leftover" (FR-5).
+    untracked_before: HashSet<String>,
 }
 
 type Table = HashMap<u32, Running>;
@@ -213,6 +224,26 @@ fn drive_inner(run: &mut Run, docs: &Docs, cfg: &Config, out: &mut dyn Write) ->
             poll(&mut table, TICK)?;
             continue;
         }
+        // Every slice done and the lanes drained: fold the fragments into
+        // agent-log.md (FR-5) before the checkpoint reads it.
+        if board.all_done {
+            match merge_or_block(run, docs, &board, &feature, out)? {
+                MergeStep::Proceed => {}
+                MergeStep::Refused(id) => {
+                    // A fresh refusal after an answer parks anew.
+                    parked = false;
+                    announced = false;
+                    park_on_merge(run, &mut parked, &mut announced, &id, out)?;
+                    slow_tick(run)?;
+                    continue;
+                }
+                MergeStep::StillRefused(id) => {
+                    park_on_merge(run, &mut parked, &mut announced, &id, out)?;
+                    slow_tick(run)?;
+                    continue;
+                }
+            }
+        }
         if board.checkpoint_due {
             say(
                 out,
@@ -255,7 +286,11 @@ fn reap(
         let Some(exit) = exit else { continue };
         let r = table.remove(&slice).expect("key from the table");
         let board = docs.status(feature)?;
-        route_exit(run, &board, &r, exit, out)?;
+        let live: HashSet<String> = table
+            .values()
+            .map(|o| o.worker.session_id.clone())
+            .collect();
+        route_exit(run, &board, &r, exit, &live, out)?;
     }
     Ok(())
 }
@@ -310,6 +345,44 @@ fn enter_park(
     asks: &[String],
     out: &mut dyn Write,
 ) -> Result<()> {
+    let what = if asks.is_empty() {
+        format!(
+            "slice {} blocked — open blocks wait for the owner: `factory answer BLOCK-n \"<text>\"`",
+            pad_list(blocked)
+        )
+    } else {
+        format!(
+            "{} waiting — the run starts when every ask is answered: `factory answer ASK-n \"<text>\"`",
+            asks.join(", ")
+        )
+    };
+    park_with(run, parked, announced, blocked, asks, &what, out)
+}
+
+/// Park on a refused log merge: no slice is blocked, the `BLOCK-n` lives in
+/// `agent-log.md` (the `merge_refused` event names it).
+fn park_on_merge(
+    run: &mut Run,
+    parked: &mut bool,
+    announced: &mut bool,
+    id: &str,
+    out: &mut dyn Write,
+) -> Result<()> {
+    let what = format!(
+        "log merge refused — {id} in agent-log.md waits for the owner: `factory answer {id} \"<text>\"`"
+    );
+    park_with(run, parked, announced, &[], &[], &what, out)
+}
+
+fn park_with(
+    run: &mut Run,
+    parked: &mut bool,
+    announced: &mut bool,
+    blocked: &[u32],
+    asks: &[String],
+    what: &str,
+    out: &mut dyn Write,
+) -> Result<()> {
     if !*parked {
         run.emit(EventKind::RunWaiting {
             blocked: blocked.to_vec(),
@@ -319,17 +392,6 @@ fn enter_park(
         *parked = true;
     }
     if !*announced {
-        let what = if asks.is_empty() {
-            format!(
-                "slice {} blocked — open blocks wait for the owner: `factory answer BLOCK-n \"<text>\"`",
-                pad_list(blocked)
-            )
-        } else {
-            format!(
-                "{} waiting — the run starts when every ask is answered: `factory answer ASK-n \"<text>\"`",
-                asks.join(", ")
-            )
-        };
         say(
             out,
             &format!("run {} parked (waiting-owner): {what}", run.id()),
@@ -429,6 +491,8 @@ fn spawn_on(
             &format!("slice {slice:02} cites §{section}, which prd.md does not have"),
         )?;
     }
+    // The tree's untracked files before the worker touches it (FR-5).
+    let untracked_before: HashSet<String> = commit::untracked(&repo)?.into_iter().collect();
     let w = Worker::spawn(
         run,
         "build",
@@ -453,6 +517,7 @@ fn spawn_on(
             worker: w,
             lane,
             exit: None,
+            untracked_before,
         },
     );
     Ok(())
@@ -493,6 +558,7 @@ fn route_exit(
     board: &Status,
     r: &Running,
     exit: Exit,
+    live: &HashSet<String>,
     out: &mut dyn Write,
 ) -> Result<()> {
     let slice = r.worker.slice;
@@ -513,6 +579,16 @@ fn route_exit(
                         .unwrap_or("none"),
                     r.lane
                 ),
+            )?;
+            commit_slice(
+                run,
+                board,
+                slice,
+                row_id,
+                &exit.summary,
+                &r.untracked_before,
+                live,
+                out,
             )?;
         }
         "blocked" => {
@@ -552,6 +628,230 @@ fn emit_blocked(run: &mut Run, slice: u32, block: Option<&(String, String)>) -> 
         question: block.map(|(_, q)| q.clone()),
     })?;
     Ok(())
+}
+
+/// FR-5: the slice's commit, right after the board read `done`. The paths
+/// its stream named go in (less the three protected files), then the slice
+/// file and the fragment. Files that appeared in the tree unnamed are listed
+/// in the fragment under `## Untracked leftovers` first, so the list is in
+/// the commit and the files are not.
+#[allow(clippy::too_many_arguments)]
+fn commit_slice(
+    run: &mut Run,
+    board: &Status,
+    slice: u32,
+    row_id: i64,
+    summary: &Summary,
+    baseline: &HashSet<String>,
+    live: &HashSet<String>,
+    out: &mut dyn Write,
+) -> Result<()> {
+    let repo = run.state().repo.clone();
+    let spec = Pathspec::from(summary, board, slice, &repo);
+    for path in &spec.protected {
+        run.emit(EventKind::WorkerWroteProtectedFile {
+            slice,
+            path: path.clone(),
+        })?;
+        say(
+            out,
+            &format!("slice {slice:02} wrote {path}, which no worker may — left out of the commit"),
+        )?;
+    }
+    for path in &spec.outside {
+        say(
+            out,
+            &format!("slice {slice:02} wrote {path}, outside the repo — left out of the commit"),
+        )?;
+    }
+    let left = leftovers(run, board, slice, &spec, baseline, live)?;
+    if !left.is_empty() {
+        let fragment = repo.join(commit::fragment_path(board, slice));
+        let body: String = left.iter().map(|p| format!("- {p}\n")).collect();
+        append_under(&fragment, "## Untracked leftovers", &body)?;
+        run.emit(EventKind::UntrackedLeftovers {
+            slice,
+            files: left.clone(),
+        })?;
+        say(
+            out,
+            &format!(
+                "slice {slice:02} left {} untracked file(s) no tool call named — listed in its fragment, not committed: {}",
+                left.len(),
+                left.join(", ")
+            ),
+        )?;
+    }
+    let title = board
+        .slices
+        .iter()
+        .find(|s| s.number == slice)
+        .and_then(|s| s.title.clone())
+        .unwrap_or_else(|| format!("slice {slice:02}"));
+    match commit::commit(&repo, &spec.paths, &format!("feat: {title}"))? {
+        Some(c) => {
+            run.db().set_worker_commit(row_id, &c.sha)?;
+            say(
+                out,
+                &format!(
+                    "slice {slice:02} committed {} — {} file(s): {}",
+                    short(&c.sha),
+                    c.files.len(),
+                    c.files.join(", ")
+                ),
+            )?;
+            run.emit(EventKind::SliceCommitted {
+                slice,
+                sha: c.sha,
+                files: c.files,
+            })?;
+        }
+        None => say(out, &format!("slice {slice:02}: nothing to commit"))?,
+    }
+    Ok(())
+}
+
+/// Untracked files in the tree now that were not there at spawn, that the
+/// stream does not name, that are not another slice's file or fragment and
+/// that no live worker's stream names so far — the other lane's half-written
+/// work is its own, not this slice's leftover.
+fn leftovers(
+    run: &Run,
+    board: &Status,
+    slice: u32,
+    spec: &Pathspec,
+    baseline: &HashSet<String>,
+    live: &HashSet<String>,
+) -> Result<Vec<String>> {
+    let repo = run.state().repo.clone();
+    let canon = repo.canonicalize().unwrap_or_else(|_| repo.clone());
+    let mut skip: HashSet<String> = baseline.clone();
+    skip.extend(spec.paths.iter().cloned());
+    skip.extend(spec.protected.iter().cloned());
+    for s in &board.slices {
+        if s.number != slice {
+            skip.insert(format!("docs/features/{}", s.file));
+            skip.insert(commit::fragment_path(board, s.number));
+        }
+    }
+    for sid in live {
+        let other = worker::summary_from_disk(run.dir(), sid);
+        skip.extend(
+            commit::written_paths(&other).filter_map(|raw| commit::relativize(&repo, &canon, raw)),
+        );
+    }
+    Ok(commit::untracked(&repo)?
+        .into_iter()
+        .filter(|p| !skip.contains(p))
+        .collect())
+}
+
+fn short(sha: &str) -> &str {
+    &sha[..sha.len().min(7)]
+}
+
+/// The title prefix of a merge-refusal block in `agent-log.md`.
+const MERGE_REFUSED: &str = "log merge refused";
+
+/// What the drained-lanes merge decided.
+enum MergeStep {
+    /// Merged, or nothing to merge: on to the checkpoint.
+    Proceed,
+    /// `docs log merge` refused just now: its block is written, park on it.
+    Refused(String),
+    /// A refusal's block is still open: stay parked, do not merge again.
+    StillRefused(String),
+}
+
+/// Every slice done and the lanes drained (FR-5): `docs log merge`, `render
+/// --write`, one commit. A refusal is an AD clash the driver never fixes by
+/// renumbering: it becomes a `BLOCK-n` in `agent-log.md` (phase `checkpoint`,
+/// outside any slice's range) and the run parks until `factory answer`.
+fn merge_or_block(
+    run: &mut Run,
+    docs: &Docs,
+    board: &Status,
+    feature: &str,
+    out: &mut dyn Write,
+) -> Result<MergeStep> {
+    let repo = run.state().repo.clone();
+    let feature_dir = repo.join(&board.dir);
+    let agent_log = feature_dir.join("agent-log.md");
+    if agent_log.exists()
+        && let Some(open) = answers::entries(&agent_log)?.into_iter().find(|e| {
+            !e.resolved
+                && e.phase.as_deref() == Some("checkpoint")
+                && e.title.starts_with(MERGE_REFUSED)
+        })
+    {
+        return Ok(MergeStep::StillRefused(open.id));
+    }
+    match commit::merge_logs(docs, &repo, board, feature)? {
+        Merge::Nothing => Ok(MergeStep::Proceed),
+        Merge::Merged { sha, fragments } => {
+            say(
+                out,
+                &format!(
+                    "slice logs merged into agent-log.md, committed {} ({})",
+                    short(&sha),
+                    fragments.join(", ")
+                ),
+            )?;
+            run.emit(EventKind::LogMerged { sha, fragments })?;
+            Ok(MergeStep::Proceed)
+        }
+        Merge::Refused { detail } => {
+            let id = format!("BLOCK-{}", lowest_free_block(&feature_dir)?);
+            let clashes: Vec<&str> = detail
+                .lines()
+                .map(str::trim)
+                .filter_map(|l| l.strip_prefix("✗ "))
+                .collect();
+            let question = if clashes.is_empty() {
+                detail
+                    .lines()
+                    .map(str::trim)
+                    .find(|l| !l.is_empty())
+                    .unwrap_or("docs log merge failed")
+                    .to_string()
+            } else {
+                clashes.join("; ")
+            };
+            let quoted: String = detail.lines().map(|l| format!("  {l}\n")).collect();
+            let entry = format!(
+                "### {id} — {MERGE_REFUSED}: {question} · checkpoint · open\n\n\
+                 **Happened:** every slice is done and the lanes are drained; \
+                 `docs log merge {feature}` merged nothing:\n{quoted}\
+                 **Options:**\n\
+                 1. renumber the clashing entry in the later fragment into its slice's range (`NN01`, `NN02`, …)\n\
+                 2. drop the later entry if it only repeats the earlier one\n\
+                 **Recommended:** 1 — the driver never renumbers (FR-5); each builder's seed is its slice's range. \
+                 Answer this block once the fragment is fixed and the merge runs again.\n"
+            );
+            append_under(&agent_log, "## Blockers", &entry)?;
+            run.emit(EventKind::MergeRefused {
+                block_id: id.clone(),
+                detail,
+            })?;
+            say(
+                out,
+                &format!("log merge refused — {id} written to agent-log.md: {question}"),
+            )?;
+            Ok(MergeStep::Refused(id))
+        }
+    }
+}
+
+/// The lowest `n ≥ 1` no `BLOCK-n` in the feature's logs uses. A builder's
+/// blocks are `NN01`, `NN02`, …; the driver's own stay below 100.
+fn lowest_free_block(feature_dir: &Path) -> Result<u32> {
+    let mut used: HashSet<u32> = HashSet::new();
+    for path in answers::log_files(feature_dir)? {
+        used.extend(answers::entries(&path)?.into_iter().map(|e| e.n));
+    }
+    Ok((1..)
+        .find(|n| !used.contains(n))
+        .expect("an unused block number"))
 }
 
 /// Workers `state.json` says are unsettled and this driver did not spawn: a
@@ -594,6 +894,17 @@ fn settle_orphans(
                         "slice {:02} done by worker {} of an earlier driver",
                         w.slice, w.session_id
                     ),
+                )?;
+                // No snapshot from before this worker: a dead driver took it.
+                commit_slice(
+                    run,
+                    board,
+                    w.slice,
+                    w.row_id,
+                    &summary,
+                    &HashSet::new(),
+                    live,
+                    out,
                 )?;
             }
             "blocked" => {
