@@ -2,7 +2,6 @@
 //! `{seq, ts, kind, ...payload}`. Every event is also a row in the `events`
 //! table, written by the same [`emit`]; nothing writes one without the other.
 //! The cockpit replays the file; the metrics read the table.
-use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::Path;
@@ -15,23 +14,6 @@ use crate::{Result, clock};
 
 pub const FILE: &str = "events.jsonl";
 
-/// Where a parked question came from: preflight's `ask[]` or `judge[]`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AskSource {
-    Ask,
-    Judge,
-}
-
-impl fmt::Display for AskSource {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            AskSource::Ask => "ask",
-            AskSource::Judge => "judge",
-        })
-    }
-}
-
 /// The event kinds, serialized `snake_case` under `kind` with the payload
 /// flattened beside it. Later slices add theirs (`slice_spawned`, …).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,10 +21,14 @@ impl fmt::Display for AskSource {
 pub enum EventKind {
     RunStarted,
     RunResumed,
-    /// A preflight `ask[]` or `judge[]` item the run waits on (`ASK-n`).
+    /// A preflight `ask[]` item the run waits on (`ASK-n`); slice 04 answers it.
     AskOpened {
         id: String,
-        source: AskSource,
+        text: String,
+    },
+    /// A preflight `judge[]` line: logged for the cockpit, never waited on
+    /// (FR-1 as corrected by BLOCK-201 — the driver is the judge).
+    JudgeNoted {
         text: String,
     },
     StopRequested,

@@ -3,9 +3,11 @@
 //! A live run for this repo and feature refuses. An unfinished one resumes:
 //! no preflight, `run_resumed`, the board. Otherwise `docs preflight --json`
 //! decides: `refuse[]` prints the tool's own lines and exits 1 with no run
-//! directory; `ask[]` and `judge[]` park a new run on one `ASK-n` per item
-//! (the answer path is slice 04); `pass` creates or switches to the feature
-//! branch, creates the run, emits `run_started` and prints the ready slices.
+//! directory; `ask[]` parks a new run on one `ASK-n` per item (the answer
+//! path is slice 04); `judge[]` lines are noted as events and never waited on
+//! (BLOCK-201); `pass` creates or switches to the feature branch, creates the
+//! run, emits `judge_noted` per line and `run_started`, and prints the ready
+//! slices.
 //! Slice 03 replaces the final exit with the loop.
 use std::io::Write;
 use std::path::Path;
@@ -15,7 +17,7 @@ use clap::Args;
 
 use crate::docs::{Branch, Docs};
 use crate::error::io;
-use crate::events::{AskSource, EventKind};
+use crate::events::EventKind;
 use crate::run::{Phase, Run};
 use crate::{Error, Result, config, paths};
 
@@ -69,21 +71,14 @@ pub fn run(args: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i
         writeln!(out, "\nrefused: {} blocker(s)", pf.refuse.len()).map_err(io("stdout"))?;
         return Ok(1);
     }
-    let asks: Vec<(AskSource, &String)> = pf
-        .ask
-        .iter()
-        .map(|t| (AskSource::Ask, t))
-        .chain(pf.judge.iter().map(|t| (AskSource::Judge, t)))
-        .collect();
-    if !asks.is_empty() {
+    if !pf.ask.is_empty() {
         let mut run = Run::create(&data_dir, &repo, &feature, None, budget)?;
-        for (i, (source, text)) in asks.iter().enumerate() {
+        for (i, text) in pf.ask.iter().enumerate() {
             let id = format!("ASK-{}", i + 1);
-            writeln!(out, "{id} ({source}): {text}").map_err(io("stdout"))?;
+            writeln!(out, "{id}: {text}").map_err(io("stdout"))?;
             run.emit(EventKind::AskOpened {
                 id,
-                source: *source,
-                text: (*text).clone(),
+                text: text.clone(),
             })?;
         }
         run.set_phase(Phase::WaitingOwner)?;
@@ -92,7 +87,7 @@ pub fn run(args: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i
             "\nrun {} waits for the owner: {} question(s) before it starts — \
              `factory answer ASK-n \"<text>\"`; \"proceed\" is always an option",
             run.id(),
-            asks.len()
+            pf.ask.len()
         )
         .map_err(io("stdout"))?;
         return Ok(0);
@@ -100,6 +95,12 @@ pub fn run(args: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i
 
     let branch = ensure_branch(&repo, &pf.branch)?;
     let mut run = Run::create(&data_dir, &repo, &feature, Some(branch), budget)?;
+    // The driver is the judge: each line is noted for the cockpit and the run
+    // goes on (FR-1, BLOCK-201).
+    for text in &pf.judge {
+        writeln!(out, "  · {text}").map_err(io("stdout"))?;
+        run.emit(EventKind::JudgeNoted { text: text.clone() })?;
+    }
     begin(&mut run, &docs, out)
 }
 
