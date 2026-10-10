@@ -51,7 +51,7 @@ use crate::closeout;
 use crate::commit::{self, Pathspec};
 use crate::config::Config;
 use crate::docs::{Docs, Status};
-use crate::error::io;
+use crate::error::{io, json};
 use crate::events::EventKind;
 use crate::pack::{BlockSection, Pack};
 use crate::quota::{self, Hold, Limit};
@@ -592,8 +592,10 @@ fn spawn_on(
             &format!("slice {slice:02} cites §{section}, which prd.md does not have"),
         )?;
     }
-    // The tree's untracked files before the worker touches it (FR-5).
+    // The tree's untracked files before the worker touches it (FR-5), kept
+    // on disk too for a resumed driver that settles this worker.
     let untracked_before: HashSet<String> = commit::untracked(&repo)?.into_iter().collect();
+    save_baseline(run.dir(), slice, &untracked_before)?;
     let w = Worker::spawn(
         run,
         Job::Build { slice },
@@ -728,6 +730,40 @@ fn route_exit(
         }
     }
     Ok(())
+}
+
+/// `runs/<id>/untracked-before/slice-NN.json`: the tree's untracked files
+/// at the spawn of the slice's current worker. One worker runs per slice, and
+/// a respawn waits for the last one to be settled, so the slice keys it.
+fn baseline_path(run_dir: &Path, slice: u32) -> PathBuf {
+    run_dir
+        .join("untracked-before")
+        .join(format!("slice-{slice:02}.json"))
+}
+
+fn save_baseline(run_dir: &Path, slice: u32, files: &HashSet<String>) -> Result<()> {
+    let path = baseline_path(run_dir, slice);
+    let dir = path.parent().expect("a file in a dir");
+    fs::create_dir_all(dir).map_err(io(format!("create {}", dir.display())))?;
+    let mut sorted: Vec<&String> = files.iter().collect();
+    sorted.sort();
+    let text = serde_json::to_string(&sorted).map_err(json("serialize the untracked baseline"))?;
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, text).map_err(io(format!("write {}", tmp.display())))?;
+    fs::rename(&tmp, &path).map_err(io(format!("rename {}", tmp.display())))
+}
+
+/// The saved baseline; empty when none was saved (a run from before it was).
+fn load_baseline(run_dir: &Path, slice: u32) -> Result<HashSet<String>> {
+    let path = baseline_path(run_dir, slice);
+    match fs::read_to_string(&path) {
+        Ok(t) => Ok(serde_json::from_str::<Vec<String>>(&t)
+            .map_err(json(format!("parse {}", path.display())))?
+            .into_iter()
+            .collect()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(HashSet::new()),
+        Err(e) => Err(io(format!("read {}", path.display()))(e)),
+    }
 }
 
 /// Whether `slice_done` is already logged for this worker of `slice`: a
@@ -933,17 +969,9 @@ fn settle_orphans(
                         slice, w.session_id
                     ),
                 )?;
-                // No snapshot from before this worker: a dead driver took it.
-                commit_slice(
-                    run,
-                    board,
-                    slice,
-                    w.row_id,
-                    &summary,
-                    &HashSet::new(),
-                    live,
-                    out,
-                )?;
+                // The snapshot the dead driver saved at this worker's spawn.
+                let baseline = load_baseline(run.dir(), slice)?;
+                commit_slice(run, board, slice, w.row_id, &summary, &baseline, live, out)?;
                 settle(run, w.row_id, &w.session_id, &summary, WorkerOutcome::Done)?;
             }
             "blocked" => {

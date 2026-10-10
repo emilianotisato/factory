@@ -555,3 +555,44 @@ fn a_driver_killed_at_the_slice_commit_leaves_the_worker_for_the_resume() {
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     wait_phase(&fx, &dir, "finished", 30);
 }
+
+#[test]
+fn a_resumed_driver_judges_an_orphans_leftovers_against_its_spawn_baseline() {
+    let fx = Fixture::with_index("orphan-baseline", &[("checkpoint_every", "10")]);
+    fx.chain();
+    // Slice 01 leaves notes.txt untracked; slice 02's worker outlives a
+    // killed driver, so the resumed one settles it.
+    fx.write_plan(&[
+        json!({"outcome": "done", "stray": ["notes.txt"]}),
+        json!({"outcome": "done", "delay_ms": 3000}),
+    ]);
+    let dir = start(&fx);
+    let driver = state(&dir)["pid"].as_u64().unwrap() as u32;
+    wait_until(&fx, &dir, "slice 02's worker to spawn", 20, || {
+        fx.calls().len() == 2 && fx.slice_status(2) == "building"
+    });
+    assert_eq!(unsafe { libc::kill(driver as i32, libc::SIGKILL) }, 0);
+    wait_until(&fx, &dir, "the driver to die", 5, || !pid_alive(driver));
+    wait_until(&fx, &dir, "the orphan to finish slice 02", 20, || {
+        fx.slice_status(2) == "done"
+    });
+
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    wait_until(&fx, &dir, "slice 02 to be committed", 20, || {
+        count(&kinds(&dir), "slice_committed") == 2
+    });
+    // notes.txt was there before slice 02's worker: slice 01's leftover only.
+    let leftovers: Vec<Value> = events(&dir)
+        .into_iter()
+        .filter(|e| e["kind"] == "untracked_leftovers")
+        .collect();
+    assert_eq!(leftovers.len(), 1, "{leftovers:?}");
+    assert_eq!(leftovers[0]["slice"], 1);
+    let frag = fx.read(&fragment(2));
+    assert!(!frag.contains("Untracked leftovers"), "{frag}");
+
+    let out = factory(&fx, &["stop", &run_id(&dir)]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    wait_phase(&fx, &dir, "finished", 30);
+}
