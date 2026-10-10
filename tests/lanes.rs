@@ -666,3 +666,135 @@ fn answering_every_ask_starts_the_parked_run() {
         "{log}"
     );
 }
+
+// ── polish: which block `factory answer BLOCK-n` resolves ────────────────────
+
+/// `### BLOCK-101 — … · slice-01 · {state}` under `## Blockers`.
+fn block_fragment(state: &str) -> String {
+    format!("## Blockers\n\n### BLOCK-101 — Which store? · slice-01 · {state}\n\n**Happened:** x\n")
+}
+
+/// A run of feature 001 parked in `waiting-owner`, its pid this test's.
+fn parked_run(fx: &Fixture) -> factory::run::Run {
+    let mut run = factory::run::Run::create(
+        &data_dir(fx),
+        fx.path(),
+        harness::FEATURE,
+        Some("feat/fixture".into()),
+        0,
+    )
+    .unwrap();
+    run.set_phase(factory::run::Phase::WaitingOwner).unwrap();
+    run
+}
+
+#[test]
+fn answer_takes_the_open_block_and_prefers_the_parked_feature() {
+    let fx = Fixture::new("answer-pick");
+    let one = fx.path().join(harness::FEATURE_DIR);
+    let two = fx.path().join("docs/features/002-other");
+    fs::create_dir_all(&two).unwrap();
+    fs::write(
+        two.join("slice-01-x.md"),
+        "---\nstatus: blocked\nlane: 1\n---\n# Slice 01\n",
+    )
+    .unwrap();
+    let status_two = || {
+        let t = fs::read_to_string(two.join("slice-01-x.md")).unwrap();
+        t.lines()
+            .find_map(|l| l.strip_prefix("status: "))
+            .unwrap()
+            .to_string()
+    };
+
+    // 001's BLOCK-101 is resolved, 002's is open: the open one is answered,
+    // not refused as "already resolved" on the first folder's match.
+    fs::write(one.join("log-slice-01.md"), block_fragment("resolved")).unwrap();
+    fs::write(two.join("log-slice-01.md"), block_fragment("open")).unwrap();
+    let out = factory(&fx, &["answer", "BLOCK-101", "use sqlite"]);
+    let text = stdout(&out);
+    assert_eq!(out.status.code(), Some(0), "{text}");
+    assert!(
+        text.contains("BLOCK-101 resolved (docs/features/002-other/log-slice-01.md line 3)"),
+        "{text}"
+    );
+    assert!(text.contains("no open run for PRD-002"), "{text}");
+    assert!(
+        fs::read_to_string(two.join("log-slice-01.md"))
+            .unwrap()
+            .contains("· slice-01 · resolved\n"),
+    );
+    assert_eq!(
+        fs::read_to_string(one.join("log-slice-01.md")).unwrap(),
+        block_fragment("resolved"),
+        "the resolved block is untouched"
+    );
+    assert_eq!(status_two(), "building");
+
+    // Two open BLOCK-101s and no parked run: refused with both named,
+    // nothing resolved.
+    fs::write(one.join("log-slice-01.md"), block_fragment("open")).unwrap();
+    fs::write(two.join("log-slice-01.md"), block_fragment("open")).unwrap();
+    let out = factory(&fx, &["answer", "BLOCK-101", "use sqlite"]);
+    let text = stdout(&out);
+    assert_eq!(out.status.code(), Some(1), "{text}");
+    assert!(text.contains("BLOCK-101 is open in 2 places"), "{text}");
+    assert!(
+        text.contains("docs/features/001-fixture/log-slice-01.md line 3 — Which store?"),
+        "{text}"
+    );
+    assert!(
+        text.contains("docs/features/002-other/log-slice-01.md line 3 — Which store?"),
+        "{text}"
+    );
+    for dir in [&one, &two] {
+        assert_eq!(
+            fs::read_to_string(dir.join("log-slice-01.md")).unwrap(),
+            block_fragment("open")
+        );
+    }
+
+    // 001's run is parked: its block is the one the owner means.
+    let run = parked_run(&fx);
+    let out = factory(&fx, &["answer", "BLOCK-101", "use sqlite"]);
+    let text = stdout(&out);
+    assert_eq!(out.status.code(), Some(0), "{text}");
+    assert!(
+        text.contains("BLOCK-101 resolved (docs/features/001-fixture/log-slice-01.md line 3)"),
+        "{text}"
+    );
+    assert!(
+        fx.read(&format!("{}/log-slice-01.md", harness::FEATURE_DIR))
+            .contains("· slice-01 · resolved\n")
+    );
+    assert_eq!(
+        fs::read_to_string(two.join("log-slice-01.md")).unwrap(),
+        block_fragment("open")
+    );
+    assert_eq!(fx.slice_status(1), "building");
+    assert!(run.dir().join("answers/BLOCK-101.json").is_file());
+    assert_eq!(count(&kinds(run.dir()), "block_answered"), 1);
+}
+
+#[test]
+fn block_answered_is_logged_before_the_slice_flips() {
+    // The flip is what a live driver acts on; an event logged after it can
+    // land behind the `slice_spawned` it caused. A block on slice 04, which
+    // has no file, makes the flip fail: whatever was logged before it shows.
+    let fx = Fixture::new("answer-order");
+    fs::write(
+        fx.path().join(harness::FEATURE_DIR).join("log-slice-04.md"),
+        "## Blockers\n\n### BLOCK-401 — Which store? · slice-04 · open\n",
+    )
+    .unwrap();
+    let run = parked_run(&fx);
+    let out = factory(&fx, &["answer", "BLOCK-401", "use sqlite"]);
+    assert_ne!(out.status.code(), Some(0), "{}", stdout(&out));
+    let answered: Vec<Value> = events(run.dir())
+        .into_iter()
+        .filter(|e| e["kind"] == "block_answered")
+        .collect();
+    assert_eq!(answered.len(), 1, "{:?}", kinds(run.dir()));
+    assert_eq!(answered[0]["id"], "BLOCK-401");
+    assert_eq!(answered[0]["slice"], 4);
+}

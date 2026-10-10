@@ -229,12 +229,18 @@ pub fn log_files(feature_dir: &Path) -> Result<Vec<PathBuf>> {
 
 /// The entry `id` (`BLOCK-n`) anywhere in the feature's log files.
 pub fn find(feature_dir: &Path, id: &str) -> Result<Option<BlockEntry>> {
+    Ok(find_all(feature_dir, id)?.into_iter().next())
+}
+
+/// Every entry `id` (`BLOCK-n`) in the feature's log files, open or not, in
+/// [`log_files`] order: a builder's `BLOCK-101` and a resolved one of an
+/// earlier run can share a number, so `factory answer` must see them all.
+pub fn find_all(feature_dir: &Path, id: &str) -> Result<Vec<BlockEntry>> {
+    let mut out = Vec::new();
     for file in log_files(feature_dir)? {
-        if let Some(e) = entries(&file)?.into_iter().find(|e| e.id == id) {
-            return Ok(Some(e));
-        }
+        out.extend(entries(&file)?.into_iter().filter(|e| e.id == id));
     }
-    Ok(None)
+    Ok(out)
 }
 
 /// The open block of `slice`: the last `open` entry naming `slice-NN`, the

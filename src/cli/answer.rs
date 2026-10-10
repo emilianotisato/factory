@@ -60,14 +60,13 @@ fn answer_block(
     text: &str,
     out: &mut dyn Write,
 ) -> Result<i32> {
-    let mut found = None;
+    let mut hits: Vec<(PathBuf, answers::BlockEntry)> = Vec::new();
     for dir in feature_dirs(repo)? {
-        if let Some(e) = answers::find(&dir, id)? {
-            found = Some((dir, e));
-            break;
+        for e in answers::find_all(&dir, id)? {
+            hits.push((dir.clone(), e));
         }
     }
-    let Some((feature_dir, entry)) = found else {
+    if hits.is_empty() {
         writeln!(
             out,
             "no {id} under {}: a block is a `### {id} — …` heading in a log-*.md fragment or agent-log.md",
@@ -75,23 +74,57 @@ fn answer_block(
         )
         .map_err(io("stdout"))?;
         return Ok(1);
-    };
-    let where_ = format!("{} line {}", rel(repo, &entry.path), entry.start + 1);
-    if entry.resolved {
-        writeln!(out, "{id} is already resolved ({where_})").map_err(io("stdout"))?;
+    }
+    let at = |e: &answers::BlockEntry| format!("{} line {}", rel(repo, &e.path), e.start + 1);
+    // Only an open block takes an answer; a resolved one of the same number
+    // (an earlier feature's, or a phase block of this one) is not a target.
+    let mut open: Vec<(PathBuf, answers::BlockEntry)> =
+        hits.iter().filter(|(_, e)| !e.resolved).cloned().collect();
+    if open.is_empty() {
+        writeln!(out, "{id} is already resolved ({})", at(&hits[0].1)).map_err(io("stdout"))?;
         return Ok(1);
     }
+    if open.len() > 1 {
+        // The parked run's feature first: that is the block a driver waits on.
+        let mut parked = Vec::new();
+        for (dir, e) in &open {
+            let feature = feature_number(dir)?;
+            if Run::find_resumable(data_dir, repo, &feature)?
+                .is_some_and(|r| r.state().phase == Phase::WaitingOwner)
+            {
+                parked.push((dir.clone(), e.clone()));
+            }
+        }
+        if !parked.is_empty() {
+            open = parked;
+        }
+    }
+    if open.len() > 1 {
+        writeln!(
+            out,
+            "{id} is open in {} places — nothing resolved; resolve the one you mean by hand:",
+            open.len()
+        )
+        .map_err(io("stdout"))?;
+        for (_, e) in &open {
+            writeln!(out, "  {} — {}", at(e), e.title).map_err(io("stdout"))?;
+        }
+        return Ok(1);
+    }
+    let (feature_dir, entry) = open.remove(0);
+    let where_ = at(&entry);
     let now = clock::now_rfc3339();
     let date = now[..10].to_string();
     answers::resolve(&entry, text, &date)?;
     writeln!(out, "{id} resolved ({where_}): {text}").map_err(io("stdout"))?;
 
     let feature = feature_number(&feature_dir)?;
-    let run = Run::find_resumable(data_dir, repo, &feature)?;
-    // The answer file before the slice flips: a driver that reads `building`
-    // must already find the answer, or it would take the slice for a dead
-    // worker's (slice 04 task 3's trap).
-    if let Some(run) = &run {
+    let mut run = Run::find_resumable(data_dir, repo, &feature)?;
+    // The answer file and `block_answered` before the slice flips: a driver
+    // that reads `building` must already find the answer, or it would take
+    // the slice for a dead worker's (slice 04 task 3's trap), and the log
+    // must read `block_answered` before the `slice_spawned` it causes.
+    if let Some(run) = &mut run {
         answers::write(
             run.dir(),
             &Answer {
@@ -101,6 +134,11 @@ fn answer_block(
                 at: now.clone(),
             },
         )?;
+        run.emit(EventKind::BlockAnswered {
+            id: id.to_string(),
+            slice: entry.slice,
+            text: text.to_string(),
+        })?;
     }
     if let Some(n) = entry.slice {
         let slice_file = slice_file(&feature_dir, n)?;
@@ -116,14 +154,7 @@ fn answer_block(
             )
             .map_err(io("stdout"))?;
         }
-        Some(mut run) => {
-            run.emit(EventKind::BlockAnswered {
-                id: id.to_string(),
-                slice: entry.slice,
-                text: text.to_string(),
-            })?;
-            wake(&run, out)?;
-        }
+        Some(run) => wake(&run, out)?,
     }
     Ok(0)
 }
