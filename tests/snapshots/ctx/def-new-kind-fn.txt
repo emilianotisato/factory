@@ -1,0 +1,8 @@
+rs/config.rs:10  method  pub fn new(root: PathBuf) -> Self {
+        Self {
+            root,
+            verbose: false,
+        }
+    }
+
+1 definition (searched 48 files)

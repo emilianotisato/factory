@@ -1,12 +1,14 @@
 //! `factory ctx refs` (PRD §14 FR-12): a word-boundary search over the walk,
 //! collapsed per file and capped, so a symbol with three hundred callers
 //! answers in ten lines and a trailer. Test files are left out unless
-//! `--tests`: they are the noisiest callers in the transcripts. Dropping
-//! hits inside comments and strings is slice 12's.
+//! `--tests`: they are the noisiest callers in the transcripts. Each file
+//! with hits is parsed once and a hit line is dropped when every match on
+//! it lies inside a comment or a string, before the caps.
 use std::path::Path;
 
-use super::def::{dedent, escape, indent};
-use super::walk::{self, WalkOpts};
+use super::def::{dedent, escape, indent, words};
+use super::lang::{Unit, line_starts};
+use super::walk::{self, Lang, WalkOpts};
 use super::{Searched, matcher, matching_lines, rel};
 use crate::Result;
 
@@ -39,22 +41,46 @@ pub struct Found {
     pub more_files: usize,
     /// Hits in test files, left out without `--tests`.
     pub test_hits: usize,
+    /// Hit lines inside comments or strings, dropped before the caps.
+    pub dropped: usize,
+    /// Files whose tree holds a syntax error: their hits kept unfiltered.
+    pub unparsed: usize,
     pub searched: Searched,
+}
+
+/// One file's share of [`Found`].
+struct InFile {
+    test: bool,
+    hits: usize,
+    dropped: usize,
+    unparsed: bool,
+    first: Vec<Ref>,
 }
 
 /// The references to `name` under `root`, with paths relative to `base`.
 pub fn find(base: &Path, root: &Path, name: &str, caps: Caps, opts: &WalkOpts) -> Result<Found> {
     let m = matcher(&format!(r"\b{}\b", escape(name)))?;
     let walked = walk::walk(root, opts);
-    let (per_file, binary) = walk::scan(&walked.files, |path, _, bytes| {
+    let (per_file, binary) = walk::scan(&walked.files, |path, lang, bytes| {
         let numbers = matching_lines(&m, bytes);
         if numbers.is_empty() {
             return None;
         }
         let test = is_test(&path.strip_prefix(root).unwrap_or(path).to_string_lossy());
+        if test && !caps.tests {
+            return Some(InFile {
+                test,
+                hits: numbers.len(),
+                dropped: 0,
+                unparsed: false,
+                first: Vec::new(),
+            });
+        }
         let text = String::from_utf8_lossy(bytes);
+        let all = numbers.len();
+        let (kept, unparsed) = code_lines(path, lang, &text, name, numbers);
         let lines: Vec<&str> = text.lines().collect();
-        let first = numbers
+        let first = kept
             .iter()
             .take(caps.per_file)
             .filter_map(|&n| {
@@ -71,7 +97,13 @@ pub fn find(base: &Path, root: &Path, name: &str, caps: Caps, opts: &WalkOpts) -
                 })
             })
             .collect::<Vec<_>>();
-        Some((test, numbers.len(), first))
+        Some(InFile {
+            test,
+            hits: kept.len(),
+            dropped: all - kept.len(),
+            unparsed,
+            first,
+        })
     });
     let mut found = Found {
         searched: Searched {
@@ -81,22 +113,63 @@ pub fn find(base: &Path, root: &Path, name: &str, caps: Caps, opts: &WalkOpts) -
         },
         ..Found::default()
     };
-    for (_, (test, hits, first)) in per_file {
-        if test && !caps.tests {
-            found.test_hits += hits;
+    for (_, f) in per_file {
+        if f.test && !caps.tests {
+            found.test_hits += f.hits;
             continue;
         }
-        found.total += hits;
+        found.dropped += f.dropped;
+        found.unparsed += usize::from(f.unparsed);
+        if f.hits == 0 {
+            continue;
+        }
+        found.total += f.hits;
         found.files += 1;
         let room = caps.max.saturating_sub(found.shown.len());
-        let shown = first.len().min(room);
-        found.shown.extend(first.into_iter().take(shown));
-        if shown < hits {
+        let shown = f.first.len().min(room);
+        found.shown.extend(f.first.into_iter().take(shown));
+        if shown < f.hits {
             found.more_files += 1;
         }
     }
     found.more_hits = found.total - found.shown.len();
     Ok(found)
+}
+
+/// The hit lines holding a whole-word `name` outside every comment and
+/// string, and whether the file's tree holds a syntax error (then every
+/// line is kept: a broken tree misplaces strings). A Vue hit outside the
+/// `<script>` block is kept.
+fn code_lines(
+    path: &Path,
+    lang: Lang,
+    text: &str,
+    name: &str,
+    numbers: Vec<u64>,
+) -> (Vec<u64>, bool) {
+    let Some(unit) = Unit::of(path, lang, text) else {
+        return (numbers, false);
+    };
+    let Some(tree) = unit.parse().filter(|t| !t.root_node().has_error()) else {
+        return (numbers, true);
+    };
+    let starts = line_starts(text);
+    let kept = numbers
+        .into_iter()
+        .filter(|&n| {
+            let at = usize::try_from(n).ok().and_then(|n| n.checked_sub(1));
+            let Some(from) = at.and_then(|at| starts.get(at).copied()) else {
+                return true;
+            };
+            let to = at
+                .and_then(|at| starts.get(at + 1).copied())
+                .unwrap_or(text.len());
+            let mut at = words(&text[from..to], name).peekable();
+            at.peek().is_none()
+                || at.any(|i| !unit.in_comment_or_string(&tree, from + i..from + i + name.len()))
+        })
+        .collect();
+    (kept, false)
 }
 
 /// A test path, relative to the search root: `tests?/|spec|_test\.go|\.test\.|\.spec\.`

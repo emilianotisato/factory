@@ -1,0 +1,7 @@
+== rs/config.rs ==
+4  class  pub struct Config {
+9  impl  impl Config {
+  10  method  pub fn new(root: PathBuf) -> Self {
+  17  method  pub fn loud(mut self) -> Self {
+23  class  pub trait Load {
+  24  method  fn load(&self) -> Config;

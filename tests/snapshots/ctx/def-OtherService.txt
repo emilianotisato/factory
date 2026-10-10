@@ -11,6 +11,4 @@ php/OtherService.php:7  class  class OtherService implements Notifier
         }
     }
 
-php/UserService.php:9  class  class OtherService, which this one wraps.
-
-2 definitions (searched 48 files)
+1 definition (searched 48 files); 1 textual match dropped: inside comments or strings

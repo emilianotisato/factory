@@ -1,7 +1,8 @@
 //! `factory ctx` (PRD §14 FR-12): code lookups for workers. `def` and `refs`
-//! run the ripgrep crates over an `ignore` walk and print a compact, capped
-//! answer; `outline` waits for tree-sitter (slice 12). Every call re-reads
-//! the tree: no daemon, no index, no cache.
+//! run the ripgrep crates over an `ignore` walk, confirm what they found
+//! with tree-sitter and print a compact, capped answer; `outline` prints a
+//! file's definitions from its grammar's `tags.scm`. Every call re-reads
+//! and re-parses: no daemon, no index, no cache.
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -14,8 +15,11 @@ use crate::error::io;
 use crate::{Error, Result};
 
 pub mod def;
+pub mod lang;
+pub mod outline;
 pub mod print;
 pub mod refs;
+pub mod vue;
 pub mod walk;
 
 #[derive(Subcommand, Debug, Clone)]
@@ -32,7 +36,7 @@ pub enum Verb {
 pub struct DefArgs {
     /// The symbol: a class, function, method or type name
     pub symbol: String,
-    /// Only definitions of this kind (accepted; applied from slice 12)
+    /// Only definitions of this kind (`fn` takes methods too)
     #[arg(long, value_parser = ["class", "fn", "method", "type"])]
     pub kind: Option<String>,
     /// Location and signature only, no body
@@ -66,11 +70,12 @@ pub struct RefsArgs {
 
 #[derive(Args, Debug, Clone)]
 pub struct OutlineArgs {
-    /// The files to outline
+    /// The files to outline; a directory stands for the source files
+    /// directly in it
     #[arg(required = true)]
     pub paths: Vec<PathBuf>,
-    /// How deep to descend into nested definitions
-    #[arg(long, default_value_t = 1)]
+    /// How many levels to print: 1 is the top level, 2 adds class members
+    #[arg(long, default_value_t = 2)]
     pub depth: usize,
 }
 
@@ -91,7 +96,8 @@ pub fn run(verb: &Verb, base: &Path, out: &mut dyn Write, err: &mut dyn Write) -
             if let Some(code) = unreadable(base, base, err)? {
                 return Ok(code);
             }
-            let found = def::find(base, &a.symbol, &walk::WalkOpts { vendor: a.vendor })?;
+            let opts = walk::WalkOpts { vendor: a.vendor };
+            let found = def::find(base, &a.symbol, a.kind.as_deref(), &opts)?;
             print::defs(&a.symbol, &found, !a.no_body)
         }
         Verb::Refs(a) => {
@@ -111,10 +117,14 @@ pub fn run(verb: &Verb, base: &Path, out: &mut dyn Write, err: &mut dyn Write) -
             let found = refs::find(base, &root, &a.symbol, caps, &opts)?;
             print::refs(&a.symbol, &found)
         }
-        Verb::Outline(_) => {
-            writeln!(err, "outline needs tree-sitter (slice 12)").map_err(io("write stderr"))?;
-            return Ok(2);
-        }
+        Verb::Outline(a) => match outline::list(base, &a.paths) {
+            Ok(listing) => print::outline(&outline::find(base, &listing, a.depth)),
+            Err((path, e)) => {
+                writeln!(err, "factory ctx: cannot read {}: {e}", path.display())
+                    .map_err(io("write stderr"))?;
+                return Ok(2);
+            }
+        },
     };
     out.write_all(text.as_bytes()).map_err(io("write stdout"))?;
     Ok(0)

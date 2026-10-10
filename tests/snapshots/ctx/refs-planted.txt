@@ -1,11 +1,11 @@
-refs/caller01.ts:1  ref  // planted is the shared helper every caller sums
-    const label = 'planted';
-
-refs/caller01.ts:2  ref  const label = 'planted';
-    export function sum01(): number {
-
 refs/caller01.ts:5  ref  total += planted(0)
     total += planted(1)
+
+refs/caller01.ts:6  ref  total += planted(1)
+    total += planted(2)
+
+refs/caller01.ts:7  ref  total += planted(2)
+    total += planted(3)
 
 refs/caller02.php:5  ref  $total += planted(0);
     $total += planted(1);
@@ -28,4 +28,4 @@ refs/caller03.go:7  ref  total += planted(2)
 refs/caller04.rs:3  ref  total += planted(0);
     total += planted(1);
 
-290 more hits in 40 files (--max, --per-file to widen); 1 in test files (--tests)
+288 more hits in 40 files (--max, --per-file to widen); 2 dropped (comments/strings); 1 in test files (--tests)

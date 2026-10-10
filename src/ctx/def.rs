@@ -1,17 +1,21 @@
 //! `factory ctx def` (PRD §14 FR-12): one definition regex per language run
-//! through `grep-searcher` and `grep-regex` over the walk. The kind printed
-//! is the keyword the line matched (`class`, `fn`, `function`, `type`, …);
-//! slice 12 maps it to the `--kind` vocabulary and confirms each hit with
-//! tree-sitter. Until then the body is a heuristic window, and a regex hit
-//! inside a docblock is still printed.
+//! through `grep-searcher` and `grep-regex` over the walk finds the
+//! candidates; each candidate file is then tagged with tree-sitter
+//! (`lang.rs`) and a hit is kept only when a definition's name sits on its
+//! line. The body is the definition node's exact range, the kind the tag's
+//! in the `--kind` vocabulary. A file whose tree holds a syntax error keeps
+//! its textual hits with slice 11's heuristic body, so a broken file never
+//! hides a definition.
 use std::path::Path;
 
+use super::lang::{Definition, Unit, kind_matches, line_of, line_starts};
 use super::walk::{self, Lang, WalkOpts};
 use super::{Searched, matcher, matching_lines, rel};
 use crate::Result;
 
 /// The most lines a heuristic body takes, the match line included: the
-/// median body the research measured (`ctx-research.md` §2).
+/// median body the research measured (`ctx-research.md` §2). Only a file
+/// that does not parse cleanly gets a heuristic body.
 pub const BODY_LINES: usize = 25;
 
 /// One definition found.
@@ -20,11 +24,12 @@ pub struct Def {
     pub path: String,
     pub line: u64,
     pub kind: &'static str,
-    /// The match line, trimmed.
+    /// The signature line, trimmed: the first line of the definition node,
+    /// or the match line in a file that does not parse cleanly.
     pub signature: String,
-    /// The lines after the match line, dedented by its indentation.
+    /// The lines after the signature line, dedented by its indentation.
     pub body: Vec<String>,
-    /// The body stopped at [`BODY_LINES`] before it ended.
+    /// A heuristic body stopped at [`BODY_LINES`] before it ended.
     pub cut: bool,
 }
 
@@ -114,15 +119,34 @@ impl Table {
     }
 }
 
-/// What `def` found, in path then line order.
+/// What `def` found, in path then line order, and what it left out.
 #[derive(Debug, Default)]
 pub struct Found {
     pub hits: Vec<Def>,
     pub searched: Searched,
+    /// Textual matches inside a comment or a string (a docblock mention).
+    pub in_comments: usize,
+    /// Textual matches on no definition's name (a call that reads like one).
+    pub not_defs: usize,
+    /// Definitions of a kind `--kind` left out.
+    pub other_kind: usize,
+    /// Files whose tree holds a syntax error: their textual matches kept.
+    pub unparsed: usize,
 }
 
-/// Every definition of `name` under `base`.
-pub fn find(base: &Path, name: &str, opts: &WalkOpts) -> Result<Found> {
+/// One file's share of [`Found`].
+#[derive(Debug, Default)]
+struct InFile {
+    hits: Vec<Def>,
+    in_comments: usize,
+    not_defs: usize,
+    other_kind: usize,
+    unparsed: bool,
+}
+
+/// Every definition of `name` under `base`, of kind `want` when given
+/// (`fn` takes methods too).
+pub fn find(base: &Path, name: &str, want: Option<&str>, opts: &WalkOpts) -> Result<Found> {
     let escaped = escape(name);
     let matchers = Table::ALL
         .iter()
@@ -145,37 +169,184 @@ pub fn find(base: &Path, name: &str, opts: &WalkOpts) -> Result<Found> {
             return None;
         }
         let text = String::from_utf8_lossy(bytes);
-        let lines: Vec<&str> = text.lines().collect();
-        let defs = numbers
-            .into_iter()
-            .filter_map(|n| {
-                let at = usize::try_from(n).ok()?.checked_sub(1)?;
-                let line = *lines.get(at)?;
-                let (end, cut) = body_end(&lines, at);
-                let indent = indent(line);
-                Some(Def {
-                    path: rel(base, path),
-                    line: n,
-                    kind: kind_of(table, line, name),
-                    signature: line.trim().to_string(),
-                    body: lines[at + 1..end]
-                        .iter()
-                        .map(|l| dedent(l, indent))
-                        .collect(),
-                    cut,
-                })
-            })
-            .collect::<Vec<_>>();
-        Some(defs)
+        let file = File {
+            shown: rel(base, path),
+            text: &text,
+            name,
+            want,
+            numbers: &numbers,
+        };
+        Some(
+            file.confirmed(path, lang)
+                .unwrap_or_else(|| file.textual(table)),
+        )
     });
-    Ok(Found {
-        hits: per_file.into_iter().flat_map(|(_, d)| d).collect(),
+    let mut found = Found {
         searched: Searched {
             files: walked.files.len() - binary,
             too_large: walked.too_large,
             binary,
         },
-    })
+        ..Found::default()
+    };
+    for (_, f) in per_file {
+        found.hits.extend(f.hits);
+        found.in_comments += f.in_comments;
+        found.not_defs += f.not_defs;
+        found.other_kind += f.other_kind;
+        found.unparsed += usize::from(f.unparsed);
+    }
+    Ok(found)
+}
+
+/// One candidate file: its text and the lines the regexes matched.
+struct File<'a> {
+    shown: String,
+    text: &'a str,
+    name: &'a str,
+    want: Option<&'a str>,
+    numbers: &'a [u64],
+}
+
+impl File<'_> {
+    /// The hits the file's definition tags confirm; none when its tree holds
+    /// a syntax error or tagging fails. A Vue file without a `<script>`
+    /// block has no definitions.
+    fn confirmed(&self, path: &Path, lang: Lang) -> Option<InFile> {
+        let text = self.text;
+        let unit = Unit::of(path, lang, text);
+        let (defs, broken) = match &unit {
+            Some(u) => u.definitions()?,
+            None => (Vec::new(), false),
+        };
+        if broken {
+            return None;
+        }
+        let starts = line_starts(text);
+        let mut tree = None;
+        let mut f = InFile::default();
+        for &n in self.numbers {
+            let Some(at) = usize::try_from(n).ok().and_then(|n| n.checked_sub(1)) else {
+                continue;
+            };
+            let Some(&from) = starts.get(at) else {
+                continue;
+            };
+            let to = starts.get(at + 1).copied().unwrap_or(text.len());
+            let tag = defs.iter().find(|d| {
+                (from..to).contains(&d.name.start) && text.get(d.name.clone()) == Some(self.name)
+            });
+            match tag {
+                Some(d) if kind_matches(self.want, d.kind) => {
+                    f.hits.push(self.node_def(&starts, d));
+                }
+                Some(_) => f.other_kind += 1,
+                None => {
+                    let inside = unit.as_ref().is_some_and(|u| {
+                        let tree = tree.get_or_insert_with(|| u.parse());
+                        let line = &text[from..to];
+                        word_at(line, self.name)
+                            .zip(tree.as_ref())
+                            .is_some_and(|(i, t)| {
+                                u.in_comment_or_string(t, from + i..from + i + self.name.len())
+                            })
+                    });
+                    if inside {
+                        f.in_comments += 1;
+                    } else {
+                        f.not_defs += 1;
+                    }
+                }
+            }
+        }
+        Some(f)
+    }
+
+    /// A confirmed definition: the signature is the first line of the
+    /// node's range, the body its other lines, the last one cut where the
+    /// node ends.
+    fn node_def(&self, starts: &[usize], d: &Definition) -> Def {
+        let text = self.text;
+        let first = line_of(starts, d.range.start);
+        let last = line_of(starts, d.range.end.max(d.range.start + 1) - 1);
+        let line = |i: usize| {
+            let to = starts.get(i + 1).copied().unwrap_or(text.len());
+            &text[starts[i]..to]
+        };
+        let head = line(first);
+        let indent = indent(head);
+        let body = (first + 1..=last)
+            .map(|i| {
+                let l = if i == last {
+                    &text[starts[i]..d.range.end.max(starts[i])]
+                } else {
+                    line(i)
+                };
+                dedent(l, indent)
+            })
+            .collect();
+        Def {
+            path: self.shown.clone(),
+            line: first as u64 + 1,
+            kind: d.kind,
+            signature: head.trim().to_string(),
+            body,
+            cut: false,
+        }
+    }
+
+    /// Slice 11's output for a file that does not parse cleanly: every
+    /// textual hit, the heuristic body, the keyword's kind. `--kind` still
+    /// filters, but `fn` and `method` pass for each other: the keyword
+    /// cannot tell them apart.
+    fn textual(&self, table: Table) -> InFile {
+        let lines: Vec<&str> = self.text.lines().collect();
+        let mut f = InFile {
+            unparsed: true,
+            ..InFile::default()
+        };
+        for &n in self.numbers {
+            let Some(at) = usize::try_from(n).ok().and_then(|n| n.checked_sub(1)) else {
+                continue;
+            };
+            let Some(&line) = lines.get(at) else {
+                continue;
+            };
+            let kind = vocabulary(table, kind_of(table, line, self.name));
+            let either =
+                matches!(kind, "fn" | "method") && matches!(self.want, Some("fn" | "method"));
+            if !(kind_matches(self.want, kind) || either) {
+                f.other_kind += 1;
+                continue;
+            }
+            let (end, cut) = body_end(&lines, at);
+            let indent = indent(line);
+            f.hits.push(Def {
+                path: self.shown.clone(),
+                line: n,
+                kind,
+                signature: line.trim().to_string(),
+                body: lines[at + 1..end]
+                    .iter()
+                    .map(|l| dedent(l, indent))
+                    .collect(),
+                cut,
+            });
+        }
+        f
+    }
+}
+
+/// A regex keyword in the `--kind` vocabulary, as close as a keyword gets.
+fn vocabulary(table: Table, keyword: &'static str) -> &'static str {
+    match keyword {
+        "class" | "interface" | "trait" | "enum" | "struct" => "class",
+        "const" | "static" if table == Table::Rust => "constant",
+        "function" | "func" | "fn" | "const" | "let" | "var" => "fn",
+        "mod" => "module",
+        "macro_rules" => "macro",
+        other => other,
+    }
 }
 
 /// Escapes the regex metacharacters in a symbol name.
@@ -204,8 +375,13 @@ fn kind_of(table: Table, line: &str, name: &str) -> &'static str {
 
 /// The byte offset of the first whole-word `name` in `line`.
 fn word_at(line: &str, name: &str) -> Option<usize> {
+    words(line, name).next()
+}
+
+/// The byte offsets of every whole-word `name` in `line`.
+pub(crate) fn words<'a>(line: &'a str, name: &'a str) -> impl Iterator<Item = usize> + 'a {
     let is_word = |c: char| c.is_alphanumeric() || c == '_';
-    line.match_indices(name).map(|(i, _)| i).find(|&i| {
+    line.match_indices(name).map(|(i, _)| i).filter(move |&i| {
         let before = line[..i].chars().next_back();
         let after = line[i + name.len()..].chars().next();
         !before.is_some_and(is_word) && !after.is_some_and(is_word)
@@ -332,6 +508,17 @@ mod tests {
             kind_of(Table::Rust, "macro_rules! make {", "make"),
             "macro_rules"
         );
+    }
+
+    #[test]
+    fn a_keyword_maps_to_the_kind_vocabulary() {
+        assert_eq!(vocabulary(Table::Php, "trait"), "class");
+        assert_eq!(vocabulary(Table::Go, "func"), "fn");
+        assert_eq!(vocabulary(Table::Ts, "const"), "fn");
+        assert_eq!(vocabulary(Table::Rust, "const"), "constant");
+        assert_eq!(vocabulary(Table::Rust, "mod"), "module");
+        assert_eq!(vocabulary(Table::Ts, "method"), "method");
+        assert_eq!(vocabulary(Table::Go, "type"), "type");
     }
 
     #[test]

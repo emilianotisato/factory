@@ -1,4 +1,4 @@
-php/UserService.php:19  function  public function handle(array $input): User
+php/UserService.php:19  method  public function handle(array $input): User
     {
         $user = User::create($input);
         $this->mail->welcome($user);

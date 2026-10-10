@@ -1,4 +1,4 @@
-go/client.go:12  func  func NewClient(base string) *Client {
+go/client.go:12  fn  func NewClient(base string) *Client {
     	return &Client{base: base, http: http.DefaultClient}
     }
 

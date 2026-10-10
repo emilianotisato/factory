@@ -1,10 +1,11 @@
-//! `factory ctx def|refs|outline` (PRD §14 FR-12, slice 11): the textual
-//! engine on the fixture files under `tests/fixture/ctx/`, one directory per
-//! stack plus `refs/`, whose symbol `planted` has 300 hits in 40 files (two
-//! of them inside a comment and a string, which slice 12 drops) and one
-//! more in a test file. Each command's full output is pinned in
-//! `tests/snapshots/ctx/`; `FACTORY_BLESS=1 cargo test --test ctx` rewrites
-//! the snapshots after a deliberate change.
+//! `factory ctx def|refs|outline` (PRD §14 FR-12, slices 11 and 12): the
+//! textual engine and its tree-sitter confirmation on the fixture files
+//! under `tests/fixture/ctx/`, one directory per stack plus `refs/`, whose
+//! symbol `planted` has 300 textual hits in 40 files (two of them inside a
+//! comment and a string, which the tree drops) and one more in a test
+//! file. Each command's full output is pinned in `tests/snapshots/ctx/`;
+//! `FACTORY_BLESS=1 cargo test --test ctx` rewrites the snapshots after a
+//! deliberate change.
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -46,7 +47,7 @@ fn hits(out: &str) -> Vec<&str> {
         .collect()
 }
 
-const SNAPSHOTS: [(&str, &[&str]); 12] = [
+const SNAPSHOTS: [(&str, &[&str]); 20] = [
     ("def-UserService", &["def", "UserService"]),
     (
         "def-UserService-no-body",
@@ -58,6 +59,15 @@ const SNAPSHOTS: [(&str, &[&str]); 12] = [
     ("def-Config", &["def", "Config"]),
     ("def-made_by_macro", &["def", "made_by_macro"]),
     ("def-useThing", &["def", "useThing"]),
+    (
+        "def-handle-kind-method",
+        &["def", "handle", "--kind", "method"],
+    ),
+    (
+        "def-handle-kind-class",
+        &["def", "handle", "--kind", "class"],
+    ),
+    ("def-new-kind-fn", &["def", "new", "--kind", "fn"]),
     ("refs-planted", &["refs", "planted"]),
     (
         "refs-planted-max-20-per-file-1",
@@ -71,6 +81,11 @@ const SNAPSHOTS: [(&str, &[&str]); 12] = [
         "refs-planted-in-tests-with-tests",
         &["refs", "planted", "--in", "refs/tests", "--tests"],
     ),
+    ("outline-php", &["outline", "php"]),
+    ("outline-php-depth-1", &["outline", "php", "--depth", "1"]),
+    ("outline-go", &["outline", "go/client.go"]),
+    ("outline-rs", &["outline", "rs/config.rs"]),
+    ("outline-vue", &["outline", "vue/UserCard.vue"]),
 ];
 
 #[test]
@@ -110,22 +125,22 @@ fn def_prints_location_kind_signature_and_body_on_every_stack() {
     let out = ctx(&["def", "handle"]);
     assert_eq!(
         hits(&out),
-        ["php/UserService.php:19  function  public function handle(array $input): User"]
+        ["php/UserService.php:19  method  public function handle(array $input): User"]
     );
 
     let out = ctx(&["def", "NewClient"]);
     assert_eq!(
         hits(&out),
-        ["go/client.go:12  func  func NewClient(base string) *Client {"]
+        ["go/client.go:12  fn  func NewClient(base string) *Client {"]
     );
 
     let out = ctx(&["def", "Config"]);
-    assert_eq!(hits(&out), ["rs/config.rs:4  struct  pub struct Config {"]);
+    assert_eq!(hits(&out), ["rs/config.rs:4  class  pub struct Config {"]);
 
     let out = ctx(&["def", "useThing"]);
     assert_eq!(
         hits(&out),
-        ["vue/UserCard.vue:10  const  const useThing = (prefix: string) => {"]
+        ["vue/UserCard.vue:10  fn  const useThing = (prefix: string) => {"]
     );
 }
 
@@ -139,23 +154,25 @@ fn def_of_a_macro_made_function_finds_nothing_and_exits_0() {
     );
 }
 
-/// Slice 11 state: the textual engine still prints the docblock line that
-/// reads like a definition.
+/// Slice 12 state: of the two textual hits only the class is printed; the
+/// docblock line that reads like a definition is counted, not shown.
 #[test]
-fn def_still_prints_the_docblock_mention() {
+fn def_prints_only_the_definition_node() {
     let out = ctx(&["def", "OtherService"]);
     assert_eq!(
         hits(&out),
-        [
-            "php/OtherService.php:7  class  class OtherService implements Notifier",
-            "php/UserService.php:9  class  class OtherService, which this one wraps.",
-        ]
+        ["php/OtherService.php:7  class  class OtherService implements Notifier"]
+    );
+    assert!(
+        out.ends_with(
+            "1 definition (searched 48 files); 1 textual match dropped: inside comments or strings\n"
+        ),
+        "{out}"
     );
 }
 
 /// Slice 12 state (PRD §14 acceptance: "drops the docblock mention").
 #[test]
-#[ignore = "slice 12: tree-sitter drops hits inside comments"]
 fn def_drops_the_docblock_mention() {
     let out = ctx(&["def", "OtherService"]);
     assert!(!out.contains("UserService.php"), "{out}");
@@ -167,7 +184,7 @@ fn refs_caps_at_10_with_a_trailer() {
     assert_eq!(hits(&out).len(), 10, "{out}");
     let trailer = out.lines().last().unwrap();
     assert!(
-        trailer.starts_with("290 more hits in 40 files (--max, --per-file to widen)"),
+        trailer.starts_with("288 more hits in 40 files (--max, --per-file to widen)"),
         "{trailer}"
     );
 
@@ -191,34 +208,32 @@ fn a_hit_in_a_test_file_shows_only_with_tests() {
     let out = ctx(&all);
     assert!(!out.contains(test_hit));
     assert!(
-        out.ends_with("300 hits in 40 files (searched 48 files); 1 in test files (--tests)\n"),
+        out.ends_with(
+            "298 hits in 40 files (searched 48 files); 2 dropped (comments/strings); 1 in test files (--tests)\n"
+        ),
         "{out}"
     );
     let out = ctx(&[&all[..], &["--tests"]].concat());
     assert!(out.contains(test_hit), "{out}");
     assert!(
-        out.ends_with("301 hits in 41 files (searched 48 files)\n"),
+        out.ends_with("299 hits in 41 files (searched 48 files); 2 dropped (comments/strings)\n"),
         "{out}"
     );
 }
 
-/// Slice 11 state: the comment and string hits are printed.
+/// Slice 12 state: the first hit printed is the first call, not the
+/// comment or the string above it.
 #[test]
-fn refs_still_prints_the_comment_and_string_hits() {
+fn refs_starts_at_the_first_real_hit() {
     let out = ctx(&["refs", "planted"]);
     assert!(
-        out.starts_with("refs/caller01.ts:1  ref  // planted is the shared helper"),
-        "{out}"
-    );
-    assert!(
-        out.contains("refs/caller01.ts:2  ref  const label = 'planted';"),
+        out.starts_with("refs/caller01.ts:5  ref  total += planted(0)\n"),
         "{out}"
     );
 }
 
 /// Slice 12 state (slice 12 task 3).
 #[test]
-#[ignore = "slice 12: tree-sitter drops hits inside comments and strings"]
 fn refs_drops_the_comment_and_string_hits() {
     let out = ctx(&["refs", "planted"]);
     assert!(
@@ -228,12 +243,177 @@ fn refs_drops_the_comment_and_string_hits() {
     assert!(out.contains("2 dropped (comments/strings)"), "{out}");
 }
 
+/// Slice 12 task 2: `--kind` filters; `fn` takes the `impl` method, which
+/// is printed as a `method`.
 #[test]
-fn outline_says_it_needs_tree_sitter_and_exits_2() {
-    let (code, out, err) = ctx_in(&fixture(), &["outline", "php/UserService.php"]);
+fn def_kind_filters_and_fn_takes_methods() {
+    let out = ctx(&["def", "handle", "--kind", "method"]);
     assert_eq!(
-        (code, out.as_str(), err.as_str()),
-        (2, "", "outline needs tree-sitter (slice 12)\n")
+        hits(&out),
+        ["php/UserService.php:19  method  public function handle(array $input): User"]
+    );
+    let out = ctx(&["def", "handle", "--kind", "class"]);
+    assert_eq!(
+        out,
+        "no definition of handle found (searched 48 files); 1 definition of another kind (--kind)\n"
+    );
+    let out = ctx(&["def", "new", "--kind", "fn"]);
+    assert_eq!(
+        hits(&out),
+        ["rs/config.rs:10  method  pub fn new(root: PathBuf) -> Self {"]
+    );
+}
+
+/// Slice 12 task 2: the body is the node's exact range: the class ends at
+/// its closing brace, the struct is whole, a long body is not cut and the
+/// last line stops where the node does.
+#[test]
+fn def_body_is_the_node_range() {
+    let out = ctx(&["def", "UserService"]);
+    assert!(
+        out.ends_with(
+            "            return $user;\n        }\n    }\n\n1 definition (searched 48 files)\n"
+        ),
+        "{out}"
+    );
+    let out = ctx(&["def", "Config"]);
+    assert_eq!(
+        out,
+        "rs/config.rs:4  class  pub struct Config {\n        pub root: PathBuf,\n        pub verbose: bool,\n    }\n\n1 definition (searched 48 files)\n"
+    );
+
+    let tmp = tempfile::tempdir().unwrap();
+    let mut rs = String::from("fn long() {\n");
+    for i in 0..40 {
+        rs.push_str(&format!("    let x{i} = {i};\n"));
+    }
+    rs.push_str("} fn after() {}\n");
+    fs::write(tmp.path().join("long.rs"), &rs).unwrap();
+    let (_, out, _) = ctx_in(tmp.path(), &["def", "long"]);
+    assert_eq!(out.lines().count(), 44, "{out}");
+    assert!(
+        out.ends_with("    let x39 = 39;\n    }\n\n1 definition (searched 1 file)\n"),
+        "{out}"
+    );
+}
+
+/// Slice 12 task 4: classes with their methods indented, the trait and the
+/// interface; no `use` lines, properties or constants; `--depth 1` keeps
+/// the top level.
+#[test]
+fn outline_prints_definitions_and_nothing_else() {
+    let out = ctx(&["outline", "php"]);
+    let heads: Vec<&str> = out.lines().filter(|l| l.starts_with("== ")).collect();
+    assert_eq!(
+        heads,
+        [
+            "== php/HasTimestamps.php ==",
+            "== php/Notifier.php ==",
+            "== php/OtherService.php ==",
+            "== php/UserService.php ==",
+        ]
+    );
+    assert!(
+        out.contains("\n11  class  final class UserService\n  15  method  "),
+        "{out}"
+    );
+    assert!(out.contains("\n5  class  trait HasTimestamps\n"), "{out}");
+    assert!(out.contains("\n7  class  interface Notifier\n"), "{out}");
+    assert!(!out.contains("use ") && !out.contains("namespace"), "{out}");
+    let out = ctx(&["outline", "php", "--depth", "1"]);
+    assert!(!out.contains("method"), "{out}");
+    assert!(
+        out.ends_with("\n6 nested definitions hidden (--depth)\n"),
+        "{out}"
+    );
+
+    let tmp = tempfile::tempdir().unwrap();
+    let php = "<?php\nclass A\n{\n    use T;\n    const X = 1;\n    private int $n = 0;\n    public function b(): int\n    {\n        return $this->n;\n    }\n}\n";
+    fs::write(tmp.path().join("A.php"), php).unwrap();
+    let (code, out, _) = ctx_in(tmp.path(), &["outline", "A.php"]);
+    assert_eq!(
+        (code, out.as_str()),
+        (
+            0,
+            "== A.php ==\n2  class  class A\n  7  method  public function b(): int\n"
+        )
+    );
+}
+
+/// Slice 12 tasks 4 and 5: Go and Rust per language; the Vue `<script>`
+/// block at its real line numbers; an empty file and a template-only Vue
+/// file print their header alone.
+#[test]
+fn outline_covers_go_rust_vue_and_empty_files() {
+    let out = ctx(&["outline", "go/client.go"]);
+    let kinds: Vec<&str> = out
+        .lines()
+        .skip(1)
+        .map(|l| l.split("  ").nth(1).unwrap())
+        .collect();
+    assert_eq!(kinds, ["class", "fn", "method"], "{out}");
+    let out = ctx(&["outline", "rs/config.rs"]);
+    assert!(out.contains("\n4  class  pub struct Config {\n"), "{out}");
+    assert!(out.contains("\n  10  method  pub fn new("), "{out}");
+    assert!(out.contains("\n  17  method  pub fn loud("), "{out}");
+    assert!(out.contains("\n23  class  pub trait Load {\n"), "{out}");
+    assert!(!out.contains("make_fn"), "{out}");
+    let out = ctx(&["outline", "vue/UserCard.vue"]);
+    assert_eq!(
+        out,
+        "== vue/UserCard.vue ==\n6  fn  function greet(name: string): string {\n10  fn  const useThing = (prefix: string) => {\n"
+    );
+
+    let tmp = tempfile::tempdir().unwrap();
+    fs::write(tmp.path().join("empty.rs"), "").unwrap();
+    fs::write(
+        tmp.path().join("Only.vue"),
+        "<template>\n  <p>hi</p>\n</template>\n",
+    )
+    .unwrap();
+    for (file, want) in [
+        ("empty.rs", "== empty.rs ==\n"),
+        ("Only.vue", "== Only.vue ==\n"),
+    ] {
+        let (code, out, err) = ctx_in(tmp.path(), &["outline", file]);
+        assert_eq!((code, out.as_str(), err.as_str()), (0, want, ""));
+    }
+    let (code, out, _) = ctx_in(tmp.path(), &["def", "hi"]);
+    assert_eq!(
+        (code, out.as_str()),
+        (0, "no definition of hi found (searched 2 files)\n")
+    );
+    let (code, _, err) = ctx_in(tmp.path(), &["outline", "empty.rs", "nowhere.rs"]);
+    assert_eq!(code, 2);
+    assert!(
+        err.starts_with("factory ctx: cannot read nowhere.rs: "),
+        "{err}"
+    );
+}
+
+/// Slice 12 task 2: a file with a syntax error keeps slice 11's textual
+/// answer, with a trailer note, so a broken file never hides a definition.
+#[test]
+fn a_file_that_does_not_parse_keeps_its_textual_matches() {
+    let tmp = tempfile::tempdir().unwrap();
+    let php = "<?php\nclass Broken\n{\n    public function run(\n}\n";
+    fs::write(tmp.path().join("Broken.php"), php).unwrap();
+    let (code, out, _) = ctx_in(tmp.path(), &["def", "Broken"]);
+    assert_eq!(code, 0);
+    assert!(
+        out.starts_with("Broken.php:2  class  class Broken\n"),
+        "{out}"
+    );
+    assert!(
+        out.ends_with(
+            "1 definition (searched 1 file); 1 file not parsed cleanly: textual matches kept\n"
+        ),
+        "{out}"
+    );
+    let (_, out, _) = ctx_in(tmp.path(), &["def", "run", "--kind", "method", "--no-body"]);
+    assert!(
+        out.starts_with("Broken.php:4  fn  public function run(\n"),
+        "{out}"
     );
 }
 
@@ -250,8 +430,8 @@ fn a_bad_flag_or_an_unreadable_root_exits_2() {
     let (code, _, _) = ctx_in(&fixture(), &["def", "Config", "--kind", "struct"]);
     assert_eq!(code, 2);
     let (code, out, _) = ctx_in(&fixture(), &["def", "Config", "--kind", "class"]);
-    assert_eq!(code, 0, "--kind is accepted until slice 12 applies it");
-    assert!(out.contains("rs/config.rs:4  struct"), "{out}");
+    assert_eq!(code, 0, "--kind class is a valid kind");
+    assert!(out.contains("rs/config.rs:4  class"), "{out}");
 }
 
 fn copy_tree(from: &Path, to: &Path) {

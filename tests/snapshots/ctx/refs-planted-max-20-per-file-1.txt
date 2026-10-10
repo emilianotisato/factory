@@ -1,5 +1,5 @@
-refs/caller01.ts:1  ref  // planted is the shared helper every caller sums
-    const label = 'planted';
+refs/caller01.ts:5  ref  total += planted(0)
+    total += planted(1)
 
 refs/caller02.php:5  ref  $total += planted(0);
     $total += planted(1);
@@ -58,4 +58,4 @@ refs/caller19.go:5  ref  total += planted(0)
 refs/caller20.rs:3  ref  total += planted(0);
     total += planted(1);
 
-280 more hits in 40 files (--max, --per-file to widen); 1 in test files (--tests)
+278 more hits in 40 files (--max, --per-file to widen); 2 dropped (comments/strings); 1 in test files (--tests)
