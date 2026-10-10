@@ -124,15 +124,13 @@ pub fn drive(run: &mut Run, docs: &Docs, cfg: &Config, out: &mut dyn Write) -> R
 /// settled `failed`, so nothing builds on unwatched and no row stays open.
 /// Best effort: the run is failing already.
 fn abandon(run: &mut Run, table: &mut Table, out: &mut dyn Write) {
-    for (slice, r) in table.drain() {
+    for (slice, mut r) in table.drain() {
         let (session_id, row_id, pid) =
             (r.worker.session_id.clone(), r.worker.row_id, r.worker.pid);
         let exit = match r.exit {
             Some(exit) => exit,
             None => {
-                // SAFETY: kill(2) on this process's own child, not yet reaped,
-                // so the pid is still that child's.
-                unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+                r.worker.kill();
                 match r.worker.wait() {
                     Ok(exit) => exit,
                     Err(_) => continue,

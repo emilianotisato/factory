@@ -297,6 +297,12 @@ impl Worker {
         Ok(self.exit(status))
     }
 
+    /// SIGKILL the process; [`Worker::wait`] then reaps it. Best effort: a
+    /// process that already exited is not an error.
+    pub fn kill(&mut self) {
+        let _ = self.child.kill();
+    }
+
     /// Has the process exited? `Some` reads the stream and settles the
     /// worker; `None` leaves it running. The scheduler polls its table with
     /// this between board reads.
