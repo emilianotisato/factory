@@ -1152,9 +1152,9 @@ fn a_resumed_driver_settles_an_orphan_whose_pid_was_reused() {
 #[test]
 fn a_resumed_driver_settles_a_dead_orphan_beside_a_live_one() {
     let fx = Fixture::with_index("orphans-mixed", &[("checkpoint_every", "10")]);
-    // 01 and 02 are independent: both build at once, 01 for 8 s.
+    // 01 and 02 are independent: both build at once, 01 until it is killed.
     fx.write_plan(&[
-        json!({"outcome": "done", "delay_ms": 8000}),
+        json!({"outcome": "done", "delay_ms": 120000}),
         json!({"outcome": "done", "delay_ms": 1000}),
     ]);
     let out = factory(&fx, &["run", "001"]);
@@ -1181,16 +1181,21 @@ fn a_resumed_driver_settles_a_dead_orphan_beside_a_live_one() {
     assert!(pid_alive(first), "slice 01's worker outlived the commit");
     assert_eq!(state(&dir)["workers"][1]["outcome"], "done");
 
-    wait_until("slice 01 to be committed", 20, || committed(&dir, 1));
+    // A few ticks of waiting on 01, said once.
+    std::thread::sleep(std::time::Duration::from_millis(2500));
     let log = fs::read_to_string(dir.join("driver.log")).unwrap();
     let waits = log
         .lines()
         .filter(|l| l.contains("of an earlier driver is still running"))
         .count();
     assert_eq!(waits, 1, "{log}");
+    assert_eq!(state(&dir)["workers"][0]["outcome"], Value::Null);
+
     let out = factory(&fx, &["stop", dir.file_name().unwrap().to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    assert_eq!(unsafe { libc::kill(first as i32, libc::SIGKILL) }, 0);
     wait_until("the run to stop", 30, || state(&dir)["phase"] == "finished");
+    assert_eq!(state(&dir)["workers"][0]["outcome"], "dead");
 }
 
 // ── finding K2: the final event lands before the final phase ─────────────────

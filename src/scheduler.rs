@@ -248,6 +248,14 @@ fn drive_inner(
 
         if run.state().stop_requested {
             if table.is_empty() {
+                // An earlier driver's workers are in flight too: a live one
+                // finishes, a dead one is settled, before the run ends.
+                let board = docs.status(&feature)?;
+                let none = HashSet::new();
+                if settle_orphans(run, docs, &board, &none, &mut waiting, out)? == Orphans::Live {
+                    std::thread::sleep(TICK);
+                    continue;
+                }
                 return stopped(run, out);
             }
             poll(table, TICK)?;
