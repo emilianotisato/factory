@@ -1380,3 +1380,56 @@ fn a_due_checkpoint_runs_before_a_dead_slice_respawns() {
         driver_log(&dir)
     );
 }
+
+#[test]
+fn a_resumed_checkpoint_counts_the_reds_its_dead_driver_saw() {
+    let fx = Fixture::new("cp-reds-resume");
+    fx.chain();
+    fx.script_gate(&["red", "red", "red", "red", "red"]);
+    fx.write_plan(&[
+        done(),
+        done(),
+        step("fix"),
+        json!({"outcome": "fix", "delay_ms": 3000}),
+        step("fix"),
+        step("fix"),
+    ]);
+    let dir = start(&fx);
+    let driver = state(&dir)["pid"].as_u64().unwrap() as u32;
+    // Two reds, the second fix worker running: the driver dies there.
+    wait_until(&fx, &dir, "the second fix worker", 60, || {
+        count(&kinds(&dir), "fix_spawned") == 2
+    });
+    assert_eq!(unsafe { libc::kill(driver as i32, libc::SIGKILL) }, 0);
+    wait_until(&fx, &dir, "the driver to die", 5, || !pid_alive(driver));
+    let fixer = state(&dir)["workers"].as_array().unwrap().last().unwrap()["pid"]
+        .as_u64()
+        .unwrap() as u32;
+    wait_until(&fx, &dir, "the orphan fix worker to exit", 20, || {
+        !pid_alive(fixer)
+    });
+
+    // The resume's gate run is the third red in a row: the checkpoint
+    // blocks, no third fix worker.
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    wait_phase(&fx, &dir, "waiting-owner", 60);
+    assert_eq!(
+        count(&kinds(&dir), "fix_spawned"),
+        2,
+        "{}",
+        driver_log(&dir)
+    );
+    let rows = gates(&fx, &dir);
+    assert_eq!(gate_shape(&rows, 1).len(), 3, "{rows:?}");
+    let log = fx.read(AGENT_LOG);
+    assert!(
+        log.contains("was red 3 times in a row at checkpoint 1; 2 fix worker(s) ran"),
+        "{log}"
+    );
+    assert!(
+        log.contains("the gate stayed red through 2 fix worker(s)"),
+        "{log}"
+    );
+    assert_eq!(count(&kinds(&dir), "checkpoint_blocked"), 1);
+}

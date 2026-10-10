@@ -127,21 +127,24 @@ pub fn run(
     // The gate, until green or three reds. A cached red is reused only
     // between fix workers of this entry: an owner's answer or a resume runs
     // the gate again whatever the tree says (the fix may be outside it).
+    // The reds count from the events, so a resumed driver goes on from the
+    // reds its predecessor saw.
     let gate = docs.gate()?.trim().to_string();
-    let mut reds = 0u32;
+    let mut ran_red = false;
     let green_log: PathBuf;
     let mut green_cached;
     loop {
         if run.state().stop_requested {
             return Ok(Outcome::Stopped);
         }
-        let result = gate_once(run, &repo, &gate, n, reds > 0, out)?;
+        let result = gate_once(run, &repo, &gate, n, ran_red, out)?;
         if !result.red {
             green_log = result.log;
             green_cached = result.cached;
             break;
         }
-        reds += 1;
+        ran_red = true;
+        let (reds, fixes) = reds_in_a_row(run, n)?;
         if reds >= RED_CAP {
             let tail = fs::read_to_string(&result.log).unwrap_or_default();
             let line = tail
@@ -165,8 +168,7 @@ pub fn run(
                  **Options:**\n\
                  1. fix the failure by hand, leave the tree as the commit should be, answer this block — the gate runs again\n\
                  2. revert the covered slices' commits and set their slices back to `pending`\n\
-                 **Recommended:** 1 — three fix workers in a row saw the same red; the cause is outside what the failing output names.\n",
-                fixes = reds - 1,
+                 **Recommended:** 1 — the gate stayed red through {fixes} fix worker(s); the cause is outside what the failing output names.\n",
                 log = result.log.display(),
             );
             append_under(&agent_log, "## Blockers", &entry)?;
@@ -423,6 +425,46 @@ struct GateResult {
 
 /// The cache, or `sh -c <gate>`; either way a `gates` row and an event. A
 /// cached red counts only with `trust_red` (a fix worker just ran on it).
+/// The gate's reds in a row at checkpoint `n`, and the fix workers that
+/// ran between them (a rate-limited one did not), read from the events:
+/// since the gate was last green there, or since the owner answered one of
+/// this checkpoint's blocks.
+fn reds_in_a_row(run: &Run, n: u32) -> Result<(u32, u32)> {
+    let limited: HashSet<String> = run
+        .state()
+        .workers
+        .iter()
+        .filter(|w| w.outcome.as_deref() == Some(WorkerOutcome::RateLimited.as_str()))
+        .map(|w| w.session_id.clone())
+        .collect();
+    let mut blocks: HashSet<String> = HashSet::new();
+    let (mut reds, mut fixes) = (0u32, 0u32);
+    for e in run.events()? {
+        match e.kind {
+            EventKind::GateRun { n: m, red, .. } | EventKind::GateCached { n: m, red, .. }
+                if m == n =>
+            {
+                if red {
+                    reds += 1;
+                } else {
+                    (reds, fixes) = (0, 0);
+                }
+            }
+            EventKind::FixSpawned {
+                n: m, session_id, ..
+            } if m == n && !limited.contains(&session_id) => fixes += 1,
+            EventKind::CheckpointBlocked { n: m, block_id, .. } if m == n => {
+                blocks.insert(block_id);
+            }
+            EventKind::BlockAnswered { id, .. } if blocks.contains(&id) => {
+                (reds, fixes) = (0, 0);
+            }
+            _ => {}
+        }
+    }
+    Ok((reds, fixes))
+}
+
 fn gate_once(
     run: &mut Run,
     repo: &Path,
