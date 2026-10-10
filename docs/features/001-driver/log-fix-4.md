@@ -47,3 +47,27 @@ _(none)_
 **Because:** PRD §9 says a dead cockpit reattaches by calling `wait`; the cursor only knows what was printed, not what reached the owner, and an open question is still owed whoever saw it.
 **Undo:** drop `cockpit::owed` from `src/cli/wait.rs` and restore the exit-3 step in `tests/cockpit.rs` and the skill's "Wait again either way."
 **Review:** decide — deviates from slice 10's acceptance (second `wait` exits 3 on an open block) and amends AD-1004's "relays the park once"
+
+### AD-40006 — Which shell reading picks the `grep`/`sed`/`cat` kinds? · polish · 2026-10-10
+
+**Chose:** `metrics::first_word` is now `shell::first_command`'s first word with its directory dropped, the reading `ctx_kind` and the hook already use: quotes, glued operators (`cd /r&&sed …`) and quoted prefixes (`FOO="a b" grep …`) read as a shell would.
+**Over:** AD-1309's "the other kinds keep slice 08's whitespace reading", which made `FOO="a b" grep x .` a `run` and kept two readings of one command line.
+**Because:** one command line should get one first word; the research's counts compare on the commands both readings agree on, which are nearly all of them.
+**Undo:** restore the whitespace loop and `is_assignment` in `src/metrics.rs`.
+**Review:** fyi — supersedes AD-1309's whitespace clause; `src/shell.rs`'s module doc still describes the old split and is not in this fixer's files
+
+### AD-40007 — What does a threshold line say with nothing to compare? · polish · 2026-10-10
+
+**Chose:** `n/a`, in the text and as the JSON string `"n/a"`: the follow-up line when the run made no ctx call, the `ctx_share` and `repeat_rate` lines when it made no lookup. A run with lookups and no ctx call still reads `ctx_share … under`: that is a measurement.
+**Over:** JSON `null` for the absent value, which would change the field's type for readers that switch on the three words.
+**Because:** `ok` on a 0-of-0 share read as a pass for the reversal rule; the string keeps every reader's field a string.
+**Undo:** `Thresholds::of` in `src/cli/report.rs` back to plain `f64`s.
+**Review:** no
+
+### AD-40008 — Does `/factory-deliver NNN` authorize its one push as `/deliver NNN` does? · polish · 2026-10-10
+
+**Chose:** no change: the skill's §3 "Push once." stays, on the reading that the owner typing `/factory-deliver NNN` is the same authorization as `/deliver NNN` — the same feature, the same `feat/*` branch, the same review interview it copies — and the global `pre-push` guard still refuses a force-push or a push to the default branch.
+**Over:** "ask before pushing" in §3, which would stop an unattended review at its last step; and naming `/factory-deliver` in the owner's global instructions, which this run cannot edit.
+**Because:** the global rule names `/deliver NNN` only, so whether a push from this skill is asked for is the owner's call, not the skill's; leaving the text as it is keeps the behaviour the slice wrote until he says.
+**Undo:** replace "Push once." with "Ask the owner, then push once." in `skills/factory-deliver/SKILL.md`.
+**Review:** decide — the owner's push exception names `/deliver NNN`; extend it to `/factory-deliver NNN`, or make the skill ask?
