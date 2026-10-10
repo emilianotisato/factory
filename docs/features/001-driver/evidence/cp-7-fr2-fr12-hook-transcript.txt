@@ -1,0 +1,72 @@
+# CP-7 — slice-13 task 1: the `factory hook` transcript
+date: 2026-10-10T09:04:50-06:00  branch: feat/driver  HEAD: bf172e2 + the uncommitted log merge (docs only)
+binary: /mnt/devcache/emiliano/cargo-target/debug/factory (the debug build the gate just made)
+Each input is the PreToolUse JSON Claude Code sends (session_id, transcript_path, cwd, permission_mode, hook_event_name, tool_name, tool_input), piped to `factory hook` with FACTORY_PACK set to the slice-01 pack of the kept fixture run (cp-7-fr12-fr8-report-per-worker.txt), and cwd set to that fixture repo.
+The pack holds docs/features/001-fixture/slice-01-a.md (under "# Slice") and prd.md (always passes). Timing is wall clock per call, process start included.
+Task 1's acceptance list: the repo-wide grep, rg and a whole Read of the held slice file are denied with their hints; grep over one file, a grep in a pipe, a ranged Read, a Read of prd.md and an unrelated call are allowed; malformed stdin is allowed with exit 0 and one line on stderr. All twelve answer as listed; every exit is 0.
+
+FACTORY_PACK=/tmp/factory-metrics-ctx-T384za/data/runs/001-20261010-e57b/packs/slice-01-1.md
+pack header: <!-- factory-pack files: docs/features/001-fixture/slice-01-a.md,docs/features/001-fixture/prd.md -->
+cwd in every input: /tmp/factory-metrics-ctx-T384za/repo
+
+## repo-wide grep -> deny with the ctx refs hint
+$ echo '{"session_id":"cp7-hook","transcript_path":"/dev/null","cwd":"/tmp/factory-metrics-ctx-T384za/repo","permission_mode":"bypassPermissions","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"grep -rn foo src"}}' | FACTORY_PACK=$PACK factory hook
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"use: factory ctx refs <word> (or ctx def <symbol>); grep only for literal strings and log output"}}
+exit 0 · 5156 µs
+
+## repo-wide grep over . -> deny
+$ echo '{"session_id":"cp7-hook","transcript_path":"/dev/null","cwd":"/tmp/factory-metrics-ctx-T384za/repo","permission_mode":"bypassPermissions","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"grep -rn foo ."}}' | FACTORY_PACK=$PACK factory hook
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"use: factory ctx refs <word> (or ctx def <symbol>); grep only for literal strings and log output"}}
+exit 0 · 5016 µs
+
+## rg with no path -> deny
+$ echo '{"session_id":"cp7-hook","transcript_path":"/dev/null","cwd":"/tmp/factory-metrics-ctx-T384za/repo","permission_mode":"bypassPermissions","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"rg foo"}}' | FACTORY_PACK=$PACK factory hook
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"use: factory ctx refs <word> (or ctx def <symbol>); grep only for literal strings and log output"}}
+exit 0 · 5533 µs
+
+## grep behind cd and an env prefix -> deny
+$ echo '{"session_id":"cp7-hook","transcript_path":"/dev/null","cwd":"/tmp/factory-metrics-ctx-T384za/repo","permission_mode":"bypassPermissions","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"cd src && LC_ALL=C grep -R foo ."}}' | FACTORY_PACK=$PACK factory hook
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"use: factory ctx refs <word> (or ctx def <symbol>); grep only for literal strings and log output"}}
+exit 0 · 4927 µs
+
+## whole-file Read of the held slice file -> deny naming # Slice
+$ echo '{"session_id":"cp7-hook","transcript_path":"/dev/null","cwd":"/tmp/factory-metrics-ctx-T384za/repo","permission_mode":"bypassPermissions","hook_event_name":"PreToolUse","tool_name":"Read","tool_input":{"file_path":"/tmp/factory-metrics-ctx-T384za/repo/docs/features/001-fixture/slice-01-a.md"}}' | FACTORY_PACK=$PACK factory hook
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"that file is in your pack under \"# Slice\"; read a range if you need more"}}
+exit 0 · 5036 µs
+
+## unpiped cat of the held slice file -> deny naming # Slice
+$ echo '{"session_id":"cp7-hook","transcript_path":"/dev/null","cwd":"/tmp/factory-metrics-ctx-T384za/repo","permission_mode":"bypassPermissions","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"cat docs/features/001-fixture/slice-01-a.md"}}' | FACTORY_PACK=$PACK factory hook
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"that file is in your pack under \"# Slice\"; read a range if you need more"}}
+exit 0 · 4792 µs
+
+## ranged Read of the held slice file -> allow
+$ echo '{"session_id":"cp7-hook","transcript_path":"/dev/null","cwd":"/tmp/factory-metrics-ctx-T384za/repo","permission_mode":"bypassPermissions","hook_event_name":"PreToolUse","tool_name":"Read","tool_input":{"file_path":"/tmp/factory-metrics-ctx-T384za/repo/docs/features/001-fixture/slice-01-a.md","offset":10,"limit":40}}' | FACTORY_PACK=$PACK factory hook
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}
+exit 0 · 5003 µs
+
+## whole Read of prd.md -> allow
+$ echo '{"session_id":"cp7-hook","transcript_path":"/dev/null","cwd":"/tmp/factory-metrics-ctx-T384za/repo","permission_mode":"bypassPermissions","hook_event_name":"PreToolUse","tool_name":"Read","tool_input":{"file_path":"/tmp/factory-metrics-ctx-T384za/repo/docs/features/001-fixture/prd.md"}}' | FACTORY_PACK=$PACK factory hook
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}
+exit 0 · 4880 µs
+
+## grep over a single file -> allow
+$ echo '{"session_id":"cp7-hook","transcript_path":"/dev/null","cwd":"/tmp/factory-metrics-ctx-T384za/repo","permission_mode":"bypassPermissions","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"grep -n foo src/lib.txt"}}' | FACTORY_PACK=$PACK factory hook
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}
+exit 0 · 4421 µs
+
+## grep in a pipe -> allow
+$ echo '{"session_id":"cp7-hook","transcript_path":"/dev/null","cwd":"/tmp/factory-metrics-ctx-T384za/repo","permission_mode":"bypassPermissions","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"cat src/lib.txt | grep foo"}}' | FACTORY_PACK=$PACK factory hook
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}
+exit 0 · 4318 µs
+
+## an unrelated call -> allow
+$ echo '{"session_id":"cp7-hook","transcript_path":"/dev/null","cwd":"/tmp/factory-metrics-ctx-T384za/repo","permission_mode":"bypassPermissions","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"cargo test"}}' | FACTORY_PACK=$PACK factory hook
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}
+exit 0 · 4804 µs
+
+## malformed stdin -> allow, exit 0, a line on stderr
+$ echo '{"tool_name":"Bash","tool_input":' | FACTORY_PACK=$PACK factory hook
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}
+exit 0 · 4684 µs
+stderr: factory hook: cannot parse stdin (EOF while parsing a value at line 2 column 0); allowed
+

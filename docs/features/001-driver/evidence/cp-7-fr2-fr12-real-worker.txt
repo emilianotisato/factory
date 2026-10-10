@@ -1,0 +1,77 @@
+# CP-7 — slice-13 task 7: the hook's deny under bypassPermissions on a real one-turn worker
+date: 2026-10-10, run started 09:03:04 -06:00, ended 09:03:17 (13 s)  branch: feat/driver  HEAD: bf172e2 + the uncommitted log merge (docs only)
+stream: docs/features/001-driver/recordings/claude-p-hook-grep-deny-haiku-2.1.280.jsonl (32 lines, kept as written)
+claude: 2.1.280 (Claude Code), model resolved to claude-haiku-4-5-20251001 (init line 9), permissionMode bypassPermissions
+
+## where it ran
+A throwaway directory from `mktemp -d -t factory-cp7-worker-XXXXXX` (/tmp/factory-cp7-worker-CncUSH) holding only a copy of tests/fixture/ (cockpit-session.jsonl, ctx/, .docs/, gate.sh) plus a fresh `git init` and one commit. It was not in this repo and not in any of the owner's projects. It was deleted right after the run (`rm -rf`; `ls` then said "No such file or directory").
+The settings file and the pack sat outside it, in the session scratchpad, as the driver keeps them in the run dir outside the repo:
+- worker.settings.json: a byte copy of the file the driver wrote for worker 1 of the kept fixture run (data/runs/001-20261010-e57b/workers/03533997-….settings.json, shown in cp-7-fr12-fr8-report-per-worker.txt): permissions.deny Bash(gh pr merge*), Bash(git push --force*), Bash(git push -f*); hooks.PreToolUse matcher "Bash|Read", command "/mnt/devcache/emiliano/cargo-target/debug/factory hook", timeout 5.
+- pack.md: a copy of that run's slice-01 pack, set as FACTORY_PACK as the driver does.
+
+## the command (run once; it did not fail, so there was no second run)
+$ cd /tmp/factory-cp7-worker-CncUSH && env -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_SESSION_ID -u CLAUDE_PID -u CLAUDE_EFFORT \
+    -u CLAUDE_CODE_MESSAGING_SOCKET -u CLAUDE_CODE_BRIDGE_SESSION_ID -u CLAUDE_CODE_SESSION_ATTENDED -u CLAUDE_CODE_ENTRYPOINT \
+    -u CLAUDE_CODE_EXECPATH -u CLAUDE_PLUGIN_DATA -u CLAUDE_CODE_MESSAGING_TOKEN \
+    FACTORY_PACK=<scratchpad>/cp7-run/pack.md \
+  claude -p "run: grep -rn foo ." --output-format stream-json --verbose --permission-mode bypassPermissions \
+    --session-id 25eaa738-6f33-4970-a16f-c7ac0f9d983c --model haiku --settings <scratchpad>/cp7-run/worker.settings.json \
+    --max-budget-usd 0.25 < /dev/null > recordings/claude-p-hook-grep-deny-haiku-2.1.280.jsonl
+exit 0; stderr empty.
+- The prompt is the slice's, exactly: `run: grep -rn foo .`.
+- The flags are the driver's (`Worker::spawn`, src/worker.rs:194-218): -p, --output-format stream-json --verbose, --permission-mode bypassPermissions, --session-id, --model, --settings <file>, stdin null, CLAUDECODE and CLAUDE_* removed from the env, and FACTORY_PACK set.
+- Left out:
+  - --append-system-prompt-file <pack>, because the prompt was to be the slice's with nothing added;
+  - --effort, because the brief sized the run by --model haiku alone.
+- --max-budget-usd 0.25 was accepted.
+- --max-turns is not in `claude -p --help` 2.1.280, so it was not passed. The run took 4 turns under the $0.25 cap.
+
+## acceptance: a permission_denials entry for the grep
+result (line 32): subtype success, is_error false, num_turns 4, stop_reason end_turn, total_cost_usd 0.0621477 (Haiku 4.5: input 34, output 884, cache read 72577, cache write 25218)
+permission_denials:
+  [0] {"tool_name":"Bash","tool_use_id":"toolu_01WT2ccPSw38sozFUfj7tEzd","tool_input":{"command":"grep -rn foo .", …}}   <- the slice's grep, denied
+  [1] {"tool_name":"Bash","tool_use_id":"toolu_01WMKesjk7P3PeqnZffP2kKn","tool_input":{"command":"grep -rn \"foo\" . 2>/dev/null | head -20", …}}   <- the model's retry, denied too (grep is the first stage, AD-1305)
+- The deny came from `factory hook`. The tool_result of both calls is the hook's reason, verbatim: "PreToolUse:Bash hook error: use: factory ctx refs <word> (or ctx def <symbol>); grep only for literal strings and log output".
+- The owner's ~/.claude/settings.json has no PreToolUse hook (read, not written), so nothing else could have answered.
+- No `hook_response` line exists for PreToolUse. 2.1.280 streams hook_started and hook_response for the SessionStart hooks only (lines 1-8). The deny shows as permission_denials plus the is_error tool_result.
+
+## the stream, event by event (python summary of the jsonl)
+ 1 system hook_started SessionStart:startup
+ 2 system hook_started SessionStart:startup
+ 3 system hook_started SessionStart:startup
+ 4 system hook_started SessionStart:startup
+ 5 system hook_response SessionStart:startup error
+ 6 system hook_response SessionStart:startup success
+ 7 system hook_response SessionStart:startup success
+ 8 system hook_response SessionStart:startup success
+ 9 system init  model=claude-haiku-4-5-20251001 permissionMode=bypassPermissions version=2.1.280
+10 system thinking_tokens 
+11 system thinking_tokens 
+12 assistant thinking
+13 assistant tool_use Bash 'grep -rn foo .'
+14 rate_limit_event
+15 user tool_result is_error=True 'PreToolUse:Bash hook error: use: factory ctx refs <word> (or ctx def <symbol>); grep only for literal strings and log output'
+16 system thinking_tokens 
+17 system thinking_tokens 
+18 system thinking_tokens 
+19 assistant thinking
+20 assistant tool_use Bash 'factory ctx refs foo'
+21 user tool_result is_error=True 'Exit code 127\n/usr/bin/bash: line 3: factory: command not found'
+22 system thinking_tokens 
+23 system thinking_tokens 
+24 assistant thinking
+25 assistant text "That hook requires a factory tool that isn't installed here. Let me try the grep search as a literal string:"
+26 assistant tool_use Bash 'grep -rn "foo" . 2>/dev/null | head -20'
+27 user tool_result is_error=True 'PreToolUse:Bash hook error: use: factory ctx refs <word> (or ctx def <symbol>); grep only for literal strings and log output'
+28 system thinking_tokens 
+29 system thinking_tokens 
+30 assistant thinking
+31 assistant text '**→ Hook blocks grep here.** Your bash hook requires a `factory` tool for code searches ("factory ctx refs foo"), but it\'s not installed. The hook says grep onl'
+32 result success num_turns=4 cost=0.0621477 permission_denials=2
+
+## what else the run showed
+- The hint was read and followed. Turn 2 ran `factory ctx refs foo`, the verb the reason names, and it failed with exit 127: `factory: command not found`. `factory` is not installed on this machine (`which factory`: none; no ~/.cargo/bin/factory). The hook resolved because the settings name the binary by its absolute path (AD-1309), but the hint and the pack's `# Lookup` name the bare `factory`.
+  - qa-guide.md lists "`factory` installed" as a precondition of a real run, so on the owner's runs the verb resolves. This is a fact about the probe, not a driver defect, and it is not fixed here.
+  - A driver started from an uninstalled build, such as `cargo run` or the target dir, leaves its workers with a hint they cannot follow.
+- Claude Code prefixes the reason with "PreToolUse:Bash hook error:". Haiku read it as a block, not a crash ("Hook blocks grep here"), and asked whether factory is installed.
+- AD-1304 (a build worker must Read its slice by range before its first Edit) is NOT confirmed by this run. The fixed prompt has no Edit, and a second real run with another prompt is out of bounds for this checkpoint. Unreached here; it is a check in the owner's A/B (qa-guide.md, FR-11 step 6).

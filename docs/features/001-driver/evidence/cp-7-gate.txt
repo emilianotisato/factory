@@ -1,0 +1,60 @@
+# CP-7 — full gate at the checkpoint (after slice-13)
+date: 2026-10-10, run 1 started 09:00:31 -06:00, ended 09:01:07  branch: feat/driver  HEAD before the checkpoint commit: bf172e2 (feat(001): slice-13 ctx pack, hook and labels)
+$ time (cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test)
+target dir: /mnt/devcache/emiliano/cargo-target (warm)
+
+1 run, 0 red, 35.5 s of gate wall clock (~0.6 min). The slice commit was green as committed.
+
+run 1: exit 0. Wall clock 35.454 s (user 32.5 s, sys 9.5 s), green.
+- Tree: HEAD bf172e2 plus the uncommitted result of `docs log merge 001`. Nothing under test differs from HEAD; the merge is docs only:
+  - agent-log.md gained slice-13's Trap and AD-1301–1309;
+  - log-slice-13.md was deleted;
+  - there was no AD-number clash and nothing was renumbered.
+- 155 tests in 16 binaries, 0 ignored, 0 warnings:
+  - lib 74, main 0;
+  - checkpoints 6, cli 3, closeout 9, cockpit 4, commits 3, ctx 17, docs 2, harness 1;
+  - lanes 3, loop 8, metrics 5, quota 5, run 11, stubs 4;
+  - doc-tests 0.
+- fmt and clippy printed nothing.
+- Nothing was caught.
+No second run: the checkpoint changed no code. Everything after run 1 is docs, evidence and one recording, and the gate reads none of it.
+
+Run 1's summary lines, as printed:
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.08s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+     Running unittests src/lib.rs 
+test result: ok. 74 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+     Running unittests src/main.rs 
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/checkpoints.rs 
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.41s
+     Running tests/cli.rs 
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+     Running tests/closeout.rs 
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.73s
+     Running tests/cockpit.rs 
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.81s
+     Running tests/commits.rs 
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.95s
+     Running tests/ctx.rs 
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.74s
+     Running tests/docs.rs 
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.45s
+     Running tests/harness.rs 
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.64s
+     Running tests/lanes.rs 
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.97s
+     Running tests/loop.rs 
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.95s
+     Running tests/metrics.rs 
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.47s
+     Running tests/quota.rs 
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.80s
+     Running tests/run.rs 
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.40s
+     Running tests/stubs.rs 
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.25s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+real	0m35.454s
+user	0m32.515s
+sys	0m9.469s

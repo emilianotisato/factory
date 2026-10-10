@@ -1,0 +1,219 @@
+# CP-7 — FR-12 tail and FR-8 tail: `factory report --per-worker` on the fixture run
+date: 2026-10-10T09:04:42-06:00  branch: feat/driver  HEAD: bf172e2 (feat(001): slice-13 ctx pack, hook and labels) + the uncommitted log merge (docs only)
+$ FACTORY_KEEP_FIXTURE=1 cargo test -q --test metrics ctx_calls_are_labelled_and_the_report_reads_the_reversal_rule -- --nocapture --test-threads=1
+  -> test result: ok. 1 passed; "fixture metrics-ctx kept at /tmp/factory-metrics-ctx-T384za"
+The run: fx.chain(), plan [done{ctx: true}, done, done, checkpoint]; `factory run 001 --budget 70000000 --foreground`; then the polish worker. Run dir data/runs/001-20261010-e57b.
+Slice 01's stub stream calls `factory ctx refs` (its answer names src/lib.txt), then `Read src/lib.txt`, then `factory ctx outline` followed by two Writes: one ctx call with a follow-up read, one without.
+The report below was taken with the fixture's own environment (PATH with tests/stubs first, FACTORY_DATA_DIR, FACTORY_CONFIG_DIR, FACTORY_STUB_DIR, GIT_CONFIG_GLOBAL, GIT_CONFIG_NOSYSTEM=1), cwd the fixture repo, binary /mnt/devcache/emiliano/cargo-target/debug/factory.
+
+## acceptance (task 5 and task 7)
+- followup_reads: "1 of 2 ctx calls (50%)", and the line "followup threshold 30%: over" (50% > 30%).
+- pack_doc_read_chars: 14124 = the sum of result_chars over the seven pack_doc=1 rows below (2292+1645 + 2292+1646 + 2292+1647 + 2310): every build's Read of prd.md and of its slice, and the polish worker's Read of prd.md.
+- ctx_share per worker with --per-worker: worker 1 is 0.400 (2 ctx rows of 5 lookups), the rest 0.000; run-level ctx_share 0.200 (2 of 10 lookups); repeat_rate per worker, all 0.000 (no lookup repeats inside a worker on this run).
+- the three threshold lines follow the keys: followup over, ctx_share ok (0.200 >= 10%), repeat_rate lower (0.000 < 26.7%).
+- --json carries followup_reads {count, ctx_calls, share}, pack_doc_read_chars, thresholds and per_worker.
+- The real A/B figures are the owner's rows (qa-guide.md FR-11 steps 6 and 8); these are the fixture's.
+
+## $ factory report 001-20261010-e57b --per-worker
+score: 
+gate_runs: 1
+gate_red: 0
+gate_minutes: 0.00
+ci_cycles: 0
+slices: 3
+checkpoints: 1
+build_minutes: 0.19
+polish_minutes: 0.06
+out_tokens: 910
+cache_read_tokens: 208370
+start_context: 24215
+peak_context: 24215
+input_tokens: 90
+cache_write_tokens: 32570
+weighted_tokens: 58047
+cockpit_tokens: 0 (no --cockpit)
+workers: 5 (build 3, checkpoint 1, polish 1)
+lookup_chars: 14273
+ctx_share: 0.200
+repeat_rate: 0.000
+followup_reads: 1 of 2 ctx calls (50%)
+pack_doc_read_chars: 14124
+worker_gate_runs: 4
+worker_gate_red: 0
+cockpit_peak_context: 0 (no --cockpit)
+lookup_share_chars: 0.923
+followup threshold 30%: over
+ctx_share threshold 10%: ok
+repeat_rate vs 26.7%: lower
+worker 1 build slice 01 (03533997): lookups 5, ctx_share 0.400, repeat_rate 0.000
+worker 2 build slice 02 (e9d98042): lookups 2, ctx_share 0.000, repeat_rate 0.000
+worker 3 build slice 03 (c2714c6b): lookups 2, ctx_share 0.000, repeat_rate 0.000
+worker 4 checkpoint (90b2ca84): lookups 0, ctx_share 0.000, repeat_rate 0.000
+worker 5 polish (29047a3d): lookups 1, ctx_share 0.000, repeat_rate 0.000
+(exit 0)
+
+## $ factory report 001-20261010-e57b --per-worker --json
+{
+  "score": null,
+  "gate_runs": 1,
+  "gate_red": 0,
+  "gate_minutes": 0.0,
+  "ci_cycles": 0,
+  "slices": 3,
+  "checkpoints": 1,
+  "build_minutes": 0.19,
+  "polish_minutes": 0.06,
+  "out_tokens": 910,
+  "cache_read_tokens": 208370,
+  "start_context": 24215,
+  "peak_context": 24215,
+  "input_tokens": 90,
+  "cache_write_tokens": 32570,
+  "weighted_tokens": 58047,
+  "cockpit_tokens": null,
+  "workers": {
+    "total": 5,
+    "build": 3,
+    "checkpoint": 1,
+    "polish": 1
+  },
+  "lookup_chars": 14273,
+  "ctx_share": 0.2,
+  "repeat_rate": 0.0,
+  "followup_reads": {
+    "count": 1,
+    "ctx_calls": 2,
+    "share": 0.5
+  },
+  "pack_doc_read_chars": 14124,
+  "worker_gate_runs": 4,
+  "worker_gate_red": 0,
+  "cockpit_peak_context": null,
+  "lookup_share_chars": 0.923,
+  "thresholds": {
+    "followup": "over",
+    "ctx_share": "ok",
+    "repeat_rate": "lower"
+  },
+  "per_worker": [
+    {
+      "id": 1,
+      "role": "build",
+      "slice": 1,
+      "session_id": "03533997-8046-41e6-ba85-b65c01357aa8",
+      "lookups": 5,
+      "ctx_calls": 2,
+      "ctx_share": 0.4,
+      "repeat_rate": 0.0
+    },
+    {
+      "id": 2,
+      "role": "build",
+      "slice": 2,
+      "session_id": "e9d98042-b05e-42da-bb32-fa328f0aa60a",
+      "lookups": 2,
+      "ctx_calls": 0,
+      "ctx_share": 0.0,
+      "repeat_rate": 0.0
+    },
+    {
+      "id": 3,
+      "role": "build",
+      "slice": 3,
+      "session_id": "c2714c6b-1a14-4777-b1a9-f6e1275e0eb5",
+      "lookups": 2,
+      "ctx_calls": 0,
+      "ctx_share": 0.0,
+      "repeat_rate": 0.0
+    },
+    {
+      "id": 4,
+      "role": "checkpoint",
+      "slice": null,
+      "session_id": "90b2ca84-15aa-40ef-9f27-b0ec645c687e",
+      "lookups": 0,
+      "ctx_calls": 0,
+      "ctx_share": 0.0,
+      "repeat_rate": 0.0
+    },
+    {
+      "id": 5,
+      "role": "polish",
+      "slice": null,
+      "session_id": "29047a3d-476d-44f1-9e98-e52ab4cd2bae",
+      "lookups": 1,
+      "ctx_calls": 0,
+      "ctx_share": 0.0,
+      "repeat_rate": 0.0
+    }
+  ]
+}
+(exit 0)
+
+## tool_calls — sqlite3 data/factory.db (labels and pack_doc as stored)
+id  w  seq  tool      kind      chars  followup  expanded  pack_doc  riw  rir
+--  -  ---  -----  -----------  -----  --------  --------  --------  ---  ---
+ 1  1    1  Read   read          2292                   0         1    0    0
+ 2  1    2  Read   read          1645                   0         1    0    0
+ 3  1    3  Bash   ctx-refs        73         1         0         0    0    0
+ 4  1    4  Read   read            37                   0         0    0    0
+ 5  1    5  Bash   ctx-outline     39         0                   0    0    0
+ 6  1    6  Write  edit            62                             0    1    1
+ 7  1    7  Write  edit            92                             0    0    0
+ 8  1    8  Bash   run-gate         2                             0    0    0
+ 9  1    9  Edit   edit           103                             0    1    1
+10  2    1  Read   read          2292                   0         1    0    1
+11  2    2  Read   read          1646                   0         1    0    0
+12  2    3  Write  edit            62                             0    0    1
+13  2    4  Write  edit            92                             0    0    0
+14  2    5  Bash   run-gate         2                             0    0    1
+15  2    6  Edit   edit           103                             0    1    1
+16  3    1  Read   read          2292                   0         1    0    1
+17  3    2  Read   read          1647                   0         1    0    0
+18  3    3  Write  edit            62                             0    0    1
+19  3    4  Write  edit            92                             0    0    0
+20  3    5  Bash   run-gate         2                             0    0    1
+21  3    6  Edit   edit           103                             0    1    1
+22  4    1  Write  edit            89                             0    0    0
+23  5    1  Read   read          2310                   0         1    0    1
+24  5    2  Write  edit            62                             0    0    1
+25  5    3  Bash   run-gate         2                             0    0    1
+26  5    4  Write  edit            85                             0    0    0
+27  5    5  Edit   edit            96                             0    1    1
+28  5    6  Write  edit            84                             0    0    0
+
+## workers.pack_files
+1|build|1|["docs/features/001-fixture/slice-01-a.md","docs/features/001-fixture/prd.md"]
+2|build|2|["docs/features/001-fixture/slice-02-b.md","docs/features/001-fixture/prd.md"]
+3|build|3|["docs/features/001-fixture/slice-03-c.md","docs/features/001-fixture/prd.md"]
+4|checkpoint||["docs/features/001-fixture/slice-01-a.md","docs/features/001-fixture/slice-02-b.md","docs/features/001-fixture/slice-03-c.md","docs/features/001-fixture/prd.md"]
+5|polish||["docs/features/001-fixture/prd.md"]
+
+## the settings the driver wrote for worker 1 — data/runs/001-20261010-e57b/workers/03533997-8046-41e6-ba85-b65c01357aa8.settings.json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "/mnt/devcache/emiliano/cargo-target/debug/factory hook",
+            "timeout": 5,
+            "type": "command"
+          }
+        ],
+        "matcher": "Bash|Read"
+      }
+    ]
+  },
+  "permissions": {
+    "deny": [
+      "Bash(gh pr merge*)",
+      "Bash(git push --force*)",
+      "Bash(git push -f*)"
+    ]
+  }
+}
+
+## the stub's argv for worker 1 (calls/1.json): --settings and FACTORY_PACK
+--settings /tmp/factory-metrics-ctx-T384za/data/runs/001-20261010-e57b/workers/03533997-8046-41e6-ba85-b65c01357aa8.settings.json
+FACTORY_PACK= /tmp/factory-metrics-ctx-T384za/data/runs/001-20261010-e57b/packs/slice-01-1.md

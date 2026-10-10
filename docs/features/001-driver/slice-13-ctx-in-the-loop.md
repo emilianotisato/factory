@@ -102,11 +102,70 @@ depends_on: [10, 12]
     - AD-1305: a lexical "over the repo".
     - AD-1306: `def` hit files are outlined too.
     - AD-1307: `followup_reads` is a count, not count and chars.
-- **Prove (task 7), left for the checkpoint:**
-  - the FR-12 tail: `factory report --per-worker` on the fixture run;
-  - the FR-8 tail: `followup_reads` and `pack_doc_read_chars` in that report;
-  - the task 1 hook transcript;
-  - the real one-turn worker, Haiku-sized, with the injected settings under `bypassPermissions`, kept under `recordings/`. It also confirms that AD-1304's ranged read of the slice is not a problem for a real worker.
+- **Prove (task 7), CP-7 (2026-10-10):**
+  - **FR-12 tail and FR-8 tail: `factory report --per-worker` on the fixture run.**
+    - The fixture was kept with `FACTORY_KEEP_FIXTURE=1 cargo test --test metrics ctx_calls_are_labelled_and_the_report_reads_the_reversal_rule`: three builds, one checkpoint and a polish. Slice 01's stub stream makes two `factory ctx` calls and one follow-up `Read`.
+    - `pack_doc_read_chars` 14124 is the sum of the seven `pack_doc = 1` rows.
+    - The report as printed:
+      ```
+      lookup_chars: 14273
+      ctx_share: 0.200
+      repeat_rate: 0.000
+      followup_reads: 1 of 2 ctx calls (50%)
+      pack_doc_read_chars: 14124
+      worker_gate_runs: 4
+      worker_gate_red: 0
+      cockpit_peak_context: 0 (no --cockpit)
+      lookup_share_chars: 0.923
+      followup threshold 30%: over
+      ctx_share threshold 10%: ok
+      repeat_rate vs 26.7%: lower
+      worker 1 build slice 01 (03533997): lookups 5, ctx_share 0.400, repeat_rate 0.000
+      worker 2 build slice 02 (e9d98042): lookups 2, ctx_share 0.000, repeat_rate 0.000
+      worker 3 build slice 03 (c2714c6b): lookups 2, ctx_share 0.000, repeat_rate 0.000
+      worker 4 checkpoint (90b2ca84): lookups 0, ctx_share 0.000, repeat_rate 0.000
+      worker 5 polish (29047a3d): lookups 1, ctx_share 0.000, repeat_rate 0.000
+      ```
+      The 19 keys before `lookup_chars` are omitted here; the full text is in the evidence file.
+    - The evidence file also holds the full text, `--json` (`followup_reads {count, ctx_calls, share}`, `thresholds`, `per_worker`), the `tool_calls` rows with their labels, `workers.pack_files`, the settings file the driver wrote, and the stub's `--settings` and `FACTORY_PACK`.
+    - Evidence: [`evidence/cp-7-fr12-fr8-report-per-worker.txt`](evidence/cp-7-fr12-fr8-report-per-worker.txt).
+  - **Task 1 hook transcript.**
+    - `factory hook` was fed Claude Code's PreToolUse JSON, with `FACTORY_PACK` set to the kept run's slice-01 pack and `cwd` set to the fixture repo.
+    - Every exit was 0, at about 5 ms each with process start.
+    - Denied with `use: factory ctx refs <word> (or ctx def <symbol>); grep only for literal strings and log output`:
+      - `grep -rn foo src`;
+      - `grep -rn foo .`;
+      - `rg foo`;
+      - `cd src && LC_ALL=C grep -R foo .`.
+    - Denied with `that file is in your pack under "# Slice"; read a range if you need more`:
+      - a whole `Read` of the held `slice-01-a.md`;
+      - `cat` of it.
+    - Allowed:
+      - the same `Read` with `offset: 10, limit: 40`;
+      - a whole `Read` of `prd.md`;
+      - `grep -n foo src/lib.txt`;
+      - `cat src/lib.txt | grep foo`;
+      - `cargo test`;
+      - malformed stdin, with `factory hook: cannot parse stdin (…); allowed` on stderr.
+    - Evidence: [`evidence/cp-7-fr2-fr12-hook-transcript.txt`](evidence/cp-7-fr2-fr12-hook-transcript.txt).
+  - **The real one-turn worker.**
+    - It ran once with the slice's own prompt, `claude -p "run: grep -rn foo ."`, on Claude Code 2.1.280 with `--model haiku` (`claude-haiku-4-5-20251001`).
+    - Its flags were the driver's: `--output-format stream-json --verbose --permission-mode bypassPermissions --session-id <uuid> --settings <the driver-written settings file>`, plus `--max-budget-usd 0.25`. The 2.1.280 `--help` lists no `--max-turns`, so that flag was not passed.
+    - The env matched the driver's: `CLAUDECODE` and `CLAUDE_*` removed, and `FACTORY_PACK` set.
+    - It ran in a `mktemp -d` copy of `tests/fixture/` with a fresh `git init`. That directory was deleted afterwards.
+    - The result: 4 turns, $0.0621.
+    - **`permission_denials` holds the grep** (`toolu_01WT2ccPSw38sozFUfj7tEzd`, `grep -rn foo .`) and the model's retry, `grep -rn "foo" . 2>/dev/null | head -20`. Both tool results carry the hook's reason, verbatim and prefixed `PreToolUse:Bash hook error:`.
+    - No PreToolUse `hook_response` line is streamed; 2.1.280 streams those for SessionStart only.
+    - The model followed the hint: `factory ctx refs foo` exited 127 with `factory: command not found`.
+      - `factory` is not installed on this machine. The hook ran because the settings name it by absolute path (AD-1309).
+      - qa-guide.md requires `factory` to be installed for real runs.
+      - It is recorded, not fixed.
+    - Stream: [`recordings/claude-p-hook-grep-deny-haiku-2.1.280.jsonl`](recordings/claude-p-hook-grep-deny-haiku-2.1.280.jsonl).
+    - Evidence: [`evidence/cp-7-fr2-fr12-real-worker.txt`](evidence/cp-7-fr2-fr12-real-worker.txt).
+  - **Unreached:**
+    - **AD-1304's ranged read of the slice before an `Edit`.** This real worker's fixed prompt makes no `Edit`, and a second real run with another prompt was out of bounds. It is now a check in [`qa-guide.md`](qa-guide.md), FR-11 step 6.
+    - **The A/B figures** (`ctx_share` and `repeat_rate` on real runs). They are the owner's rows.
+  - Gate: [`evidence/cp-7-gate.txt`](evidence/cp-7-gate.txt).
 
 **Slice**: After this slice the worker meets `factory ctx` three ways: the pack opens with an Outline of every recon file and the `def` of every cited symbol, plus a Lookup section with the three verbs; a PreToolUse hook injected through `--settings` denies `grep -r` and `rg` over the repo with a one-line hint naming the verb, and denies whole-file reads of files the pack already holds with a hint naming the pack section; and the same settings carry the two permission deny rules so a worker is guarded on any project. The `tool_calls` table gains the `ctx-*` kinds and the two follow-up labels, and `factory report` prints `followup_reads` and `pack_doc_read_chars` with the three threshold lines the reversal rule reads. The A/B numbers themselves are the owner's (qa-guide.md).
 
