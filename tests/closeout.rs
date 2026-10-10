@@ -843,8 +843,63 @@ fn two_dead_polish_workers_block_and_the_answer_spawns_a_third() {
     assert_eq!(events(&dir).pop().unwrap()["kind"], "run_finished");
 }
 
+/// What in `text` (one source file) asks GitHub to merge a PR or mark one
+/// ready, or `None`. Every way the driver could: the `gh` subcommand as one
+/// string, as an args array (read with whitespace removed, so rustfmt's
+/// one-arg-per-line split reads as one), the REST merge endpoint, the
+/// GraphQL mutations, and a `pr create` args array without `--draft`, which
+/// opens the PR ready (K3).
+fn merges_or_readies(text: &str) -> Option<&'static str> {
+    let spaced = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let packed: String = text.split_whitespace().collect();
+    for (form, hay) in [
+        ("pr merge", &spaced),
+        ("pr ready", &spaced),
+        ("\"pr\",\"merge\"", &packed),
+        ("\"pr\",\"ready\"", &packed),
+        ("/merge", &spaced),
+        ("mergePullRequest", &packed),
+        ("markPullRequestReadyForReview", &packed),
+        ("enablePullRequestAutoMerge", &packed),
+    ] {
+        if hay.contains(form) {
+            return Some(form);
+        }
+    }
+    let create = "\"pr\",\"create\"";
+    for (at, _) in packed.match_indices(create) {
+        let args = &packed[at..];
+        let args = &args[..args.find(']').unwrap_or(args.len())];
+        if !args.contains("\"--draft\"") {
+            return Some("pr create without --draft");
+        }
+    }
+    None
+}
+
 #[test]
 fn the_driver_never_merges_or_readies_a_pr() {
+    // The scan catches each form, and passes the one `pr create` the
+    // driver runs (`ci::pr_create`, one arg per line).
+    for (text, form) in [
+        ("gh(repo, &[\"pr\", \"merge\", pr])", "\"pr\",\"merge\""),
+        (
+            "gh(\n    repo,\n    &[\n        \"pr\",\n        \"ready\",\n    ],\n)",
+            "\"pr\",\"ready\"",
+        ),
+        ("sh(\"gh pr  merge 1 --squash\")", "pr merge"),
+        ("format!(\"repos/{o}/pulls/{n}/merge\")", "/merge"),
+        ("\"mutation { mergePullRequest }\"", "mergePullRequest"),
+        (
+            "&[\"pr\", \"create\", \"--base\", base]",
+            "pr create without --draft",
+        ),
+    ] {
+        assert_eq!(merges_or_readies(text), Some(form), "{text}");
+    }
+    let draft = "&[\n \"pr\",\n \"create\",\n \"--draft\",\n \"--base\",\n base,\n]";
+    assert_eq!(merges_or_readies(draft), None);
+
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut stack = vec![src];
     let mut hits = Vec::new();
@@ -854,19 +909,16 @@ fn the_driver_never_merges_or_readies_a_pr() {
             if p.is_dir() {
                 stack.push(p);
             } else if p.extension().is_some_and(|x| x == "rs") {
-                // The one allowed mention is the deny rule slice 13 injects
-                // into every worker's settings: it forbids the merge.
-                let text = fs::read_to_string(&p)
-                    .unwrap()
-                    .replace("\"Bash(gh pr merge*)\"", "");
-                if text.contains("pr merge") || text.contains("pr ready") {
-                    hits.push(p);
+                // No exception: the worker deny rules cover any `gh`, so no
+                // source names a merge, not even to forbid it.
+                if let Some(form) = merges_or_readies(&fs::read_to_string(&p).unwrap()) {
+                    hits.push((p, form));
                 }
             }
         }
     }
     assert!(
         hits.is_empty(),
-        "the driver names `gh pr merge`/`pr ready`: {hits:?}"
+        "the driver asks GitHub to merge or ready a PR: {hits:?}"
     );
 }
