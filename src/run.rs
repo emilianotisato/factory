@@ -105,6 +105,25 @@ pub struct RunState {
     pub updated_at: String,
     pub budget_weighted_tokens: u64,
     pub stop_requested: bool,
+    /// Every worker this run spawned, in order (slice 03). A resume reads the
+    /// pids to tell a dead worker from a live one; the outcomes carry the
+    /// once-only respawn cap across driver restarts.
+    #[serde(default)]
+    pub workers: Vec<WorkerRef>,
+}
+
+/// One spawned worker as `state.json` remembers it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkerRef {
+    pub slice: u32,
+    pub role: String,
+    pub session_id: String,
+    pub pid: u32,
+    /// The `workers` table row.
+    pub row_id: i64,
+    pub spawned_at: String,
+    /// `None` while running or unsettled; `done`, `blocked`, `dead`, `failed`.
+    pub outcome: Option<String>,
 }
 
 /// An open run: its directory, its state and the store.
@@ -155,6 +174,7 @@ impl Run {
             updated_at: now,
             budget_weighted_tokens,
             stop_requested: false,
+            workers: Vec::new(),
         };
         write_state(&dir, &state)?;
         fs::write(dir.join(events::FILE), "")
@@ -248,6 +268,25 @@ impl Run {
         self.save()
     }
 
+    pub fn add_worker(&mut self, w: WorkerRef) -> Result<()> {
+        self.state.workers.push(w);
+        self.save()
+    }
+
+    /// Settle a worker: `done`, `blocked`, `dead` or `failed`.
+    pub fn set_worker_outcome(&mut self, session_id: &str, outcome: &str) -> Result<()> {
+        if let Some(w) = self
+            .state
+            .workers
+            .iter_mut()
+            .rev()
+            .find(|w| w.session_id == session_id)
+        {
+            w.outcome = Some(outcome.to_string());
+        }
+        self.save()
+    }
+
     /// This process takes the run over (a resume): `pid` becomes ours.
     pub fn adopt(&mut self) -> Result<()> {
         self.state.pid = std::process::id();
@@ -261,6 +300,11 @@ impl Run {
     }
 
     fn save(&mut self) -> Result<()> {
+        // `factory stop` writes `stop_requested` from another process while
+        // the loop runs; a save from the loop's stale copy must not undo it.
+        if let Ok(disk) = load_state(&self.dir) {
+            self.state.stop_requested |= disk.stop_requested;
+        }
         self.state.updated_at = clock::now_rfc3339();
         write_state(&self.dir, &self.state)?;
         self.db.update_run(&self.state)

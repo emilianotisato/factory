@@ -15,7 +15,7 @@ use crate::{Result, clock};
 pub const FILE: &str = "events.jsonl";
 
 /// The event kinds, serialized `snake_case` under `kind` with the payload
-/// flattened beside it. Later slices add theirs (`slice_spawned`, …).
+/// flattened beside it. Later slices add theirs (`checkpoint_*`, `gate_*`, …).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EventKind {
@@ -32,6 +32,41 @@ pub enum EventKind {
         text: String,
     },
     StopRequested,
+    /// A worker started on a slice (FR-2); `pid` is the `claude -p` process.
+    SliceSpawned {
+        slice: u32,
+        session_id: String,
+        pid: u32,
+    },
+    /// The board read `done` after the worker exited.
+    SliceDone {
+        slice: u32,
+    },
+    /// The board read `blocked` after the worker exited, or the driver blocked
+    /// the slice itself after a second dead worker (FR-1).
+    SliceBlocked {
+        slice: u32,
+    },
+    /// Process gone with no `result` line, or with one and the slice neither
+    /// `done` nor `blocked` (FR-1: "a dead worker is treated as today").
+    WorkerDead {
+        slice: u32,
+        session_id: String,
+        exit_code: Option<i32>,
+    },
+    /// The slice cites a `§n` that `prd.md` lacks (FR-2: a warning, not a crash).
+    PackSectionMissing {
+        slice: u32,
+        section: u32,
+    },
+    /// The board says a checkpoint is due; slice 06 runs it, this slice stops.
+    CheckpointDue {
+        unverified: Vec<u32>,
+    },
+    RunFinished,
+    RunFailed {
+        error: String,
+    },
 }
 
 impl EventKind {

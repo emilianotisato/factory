@@ -35,6 +35,9 @@ enum Command {
     },
     /// The PreToolUse hook the driver injects into every worker
     Hook(Passthrough),
+    /// The detached driver `factory run` starts; not for hands
+    #[command(hide = true)]
+    Daemon(cli::run::DaemonArgs),
 }
 
 #[derive(Subcommand)]
@@ -60,6 +63,7 @@ fn main() -> ExitCode {
     let result = match cli.command {
         Command::Run(a) => cli::run::run(&a, &mut stdout(), &mut stderr()),
         Command::Stop(a) => cli::stop::stop(&a, &mut stdout()),
+        Command::Daemon(a) => cli::run::daemon(&a, &mut stdout(), &mut stderr()),
         Command::Answer(p) => return not_built(4, &p.args),
         Command::Report(p) => return not_built(8, &p.args),
         Command::Wait(p) | Command::Status(p) => return not_built(10, &p.args),

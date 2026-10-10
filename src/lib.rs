@@ -10,11 +10,16 @@
 pub mod cli;
 pub mod clock;
 pub mod config;
+pub mod daemon;
 pub mod db;
 pub mod docs;
 pub mod error;
 pub mod events;
+pub mod pack;
 pub mod paths;
 pub mod run;
+pub mod scheduler;
+pub mod stream;
+pub mod worker;
 
 pub use error::{Error, Result};

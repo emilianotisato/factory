@@ -8,6 +8,7 @@ use std::time::Duration;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::run::RunState;
+use crate::stream::Summary;
 use crate::{Result, clock};
 
 pub const SCHEMA_VERSION: i64 = 1;
@@ -94,6 +95,31 @@ pub struct RunRow {
     pub finished_at: Option<String>,
     pub phase: String,
     pub budget_weighted_tokens: u64,
+}
+
+/// One `workers` row.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorkerRow {
+    pub id: i64,
+    pub run_id: String,
+    pub role: String,
+    pub slice: Option<u32>,
+    pub session_id: Option<String>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub input: Option<i64>,
+    pub cache_write: Option<i64>,
+    pub cache_read: Option<i64>,
+    pub output: Option<i64>,
+    pub thinking: Option<i64>,
+    pub cost_usd: Option<f64>,
+    pub num_turns: Option<i64>,
+    pub duration_ms: Option<i64>,
+    pub terminal_reason: Option<String>,
+    pub outcome: Option<String>,
+    pub peak_context: Option<i64>,
+    pub started_at: String,
+    pub ended_at: Option<String>,
 }
 
 impl Db {
@@ -216,6 +242,96 @@ impl Db {
                 ts: r.get(1)?,
                 kind: r.get(2)?,
                 payload: r.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// A worker at spawn: `outcome = running`, usage still null. Returns the row id.
+    #[allow(clippy::too_many_arguments)]
+    pub fn insert_worker(
+        &self,
+        run_id: &str,
+        role: &str,
+        slice: u32,
+        session_id: &str,
+        model: &str,
+        effort: &str,
+        started_at: &str,
+    ) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO workers (run_id, role, slice, session_id, model, effort, outcome, started_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'running', ?7)",
+            params![run_id, role, slice as i64, session_id, model, effort, started_at],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// The row completed from the stream's `result` (FR-2, FR-8). A dead
+    /// worker's usage stays null; its `outcome` says why.
+    pub fn finish_worker(
+        &self,
+        id: i64,
+        summary: &Summary,
+        outcome: &str,
+        ended_at: &str,
+    ) -> Result<()> {
+        let u = summary.usage.as_ref();
+        let as_i64 = |v: Option<u64>| v.map(|n| n as i64);
+        self.conn.execute(
+            "UPDATE workers SET input = ?2, cache_write = ?3, cache_read = ?4, output = ?5,
+                                thinking = ?6, cost_usd = ?7, num_turns = ?8, duration_ms = ?9,
+                                terminal_reason = ?10, outcome = ?11, peak_context = ?12, ended_at = ?13
+             WHERE id = ?1",
+            params![
+                id,
+                as_i64(u.and_then(|u| u.input_tokens)),
+                as_i64(u.and_then(|u| u.cache_creation_input_tokens)),
+                as_i64(u.and_then(|u| u.cache_read_input_tokens)),
+                as_i64(u.and_then(|u| u.output_tokens)),
+                as_i64(u.and_then(|u| u.thinking())),
+                summary.cost_usd,
+                as_i64(summary.num_turns),
+                as_i64(summary.duration_ms),
+                summary.terminal_reason,
+                outcome,
+                as_i64(summary.peak_context),
+                ended_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// A run's workers in spawn order.
+    pub fn workers(&self, run_id: &str) -> Result<Vec<WorkerRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, run_id, role, slice, session_id, model, effort, input, cache_write, cache_read,
+                    output, thinking, cost_usd, num_turns, duration_ms, terminal_reason, outcome,
+                    peak_context, started_at, ended_at
+             FROM workers WHERE run_id = ?1 ORDER BY id",
+        )?;
+        let rows = stmt.query_map([run_id], |r| {
+            Ok(WorkerRow {
+                id: r.get(0)?,
+                run_id: r.get(1)?,
+                role: r.get(2)?,
+                slice: r.get::<_, Option<i64>>(3)?.map(|n| n as u32),
+                session_id: r.get(4)?,
+                model: r.get(5)?,
+                effort: r.get(6)?,
+                input: r.get(7)?,
+                cache_write: r.get(8)?,
+                cache_read: r.get(9)?,
+                output: r.get(10)?,
+                thinking: r.get(11)?,
+                cost_usd: r.get(12)?,
+                num_turns: r.get(13)?,
+                duration_ms: r.get(14)?,
+                terminal_reason: r.get(15)?,
+                outcome: r.get(16)?,
+                peak_context: r.get(17)?,
+                started_at: r.get(18)?,
+                ended_at: r.get(19)?,
             })
         })?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)

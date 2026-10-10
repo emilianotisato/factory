@@ -1,15 +1,16 @@
 ---
 slice: 03
-status: pending
+status: done
+lane: 1
 depends_on: [2]
 ---
 
 # Slice 03 — One worker end to end (FR-1, FR-2)
 
 **Source**: [`prd.md`](prd.md) → §4 FR-2 bullets 1, 5 and 6 (the `claude -p` command and pack, the stream is the record, slash commands verified at entry); §3 FR-1 bullets 1, 3 and 4 (detached process, resume is the default start, session death is not run death) and its acceptance. **Depends on**: 02 (the wrapper, the run dir, the events and the `workers` table are the things this slice fills).
-**Created**: 2026-10-09 · **Status**: pending
+**Created**: 2026-10-09 · **Status**: done
 
-**Progress**: _(written as it lands)_
+**Progress**: 2026-10-10 — built: `src/pack.rs` (pack = slice file, cited `§n` cuts of `prd.md`, `assets/contract-slice.md`, `assets/autonomy.md`, the `docs gate --inner` command; `{NNN}`/`{NN}`/`{seed}` filled, seed numeric so slice 01 gets `AD-101`; a missing section is a `pack_section_missing` event), `src/stream.rs` (serde enum over `type` with an `Unknown` catch-all, `Collector`/`Summary`, `peak_context` as `measure.py:56-67`), `src/worker.rs` (`claude -p` with FR-2's flags, stdout tee'd to `runs/<id>/workers/<uuid>.jsonl`, stderr beside it, `CLAUDECODE`/`CLAUDE_*` stripped from the worker env, a `workers` row opened at spawn), `src/daemon.rs` (`factory run` re-executes itself as the hidden `factory daemon <id>` under `setsid` with stdio on `runs/<id>/driver.log` and returns once the child has adopted the run; `--foreground` drives in-process), `src/scheduler.rs` (the serial loop: settle a dead driver's workers from `state.json.workers[]` on resume, `blocked` → `waiting-owner`, `building` → respawn, `checkpoint_due` → event + phase `checkpoint`, else `ready[0]`; a dead worker → `worker_dead`, Traps line in the slice's fragment, `outcome` `dead`/`failed`, respawn once; the second death → frontmatter `status: blocked` + `BLOCK-NN02` + `slice_blocked`; `stop_requested` checked each turn and `save()` now re-reads it from disk so `factory stop` is not clobbered), stub `dead` outcome, `tests/loop.rs` (pack snapshot incl. the one-line inner diff, the recording through the parser, argv flag by flag, three slices detached and foreground, dead once, dead twice, kill -9 of the group then resume) and the slice-02 run/budget/stop tests moved onto the loop plus a stop-mid-slice test. Entry checks (2026-10-09, 2.1.280, three Haiku calls not two — the literal force-push probe was inconclusive): `--append-system-prompt-file` accepted; `/polish` among 96 `init.slash_commands`; `--settings` deny holds under `bypassPermissions` — recordings in `recordings/`, §20 annotated. Inner loop: 7 `cargo test` runs, 4 red, ~2 min — caught zero-padded `AD-0101`/`BLOCK-0102` seeds, the tool's all-done checkpoint rule (the fixture ends at `checkpoint`, never `finished`, AD-302), `init` not being the first stream line, and slice-02 tests racing the detached driver. Deviations: AD-301–AD-308 in `log-slice-03.md`; the contract references `# Inner loop` instead of an `{inner}` placeholder (AD-303); re-exec instead of a double fork (AD-304). Prove rows FR-1/FR-2 left for the checkpoint.
 
 **Slice**: After this slice `factory run NNN` on the fixture builds every slice, one at a time, through the stub: it writes a pack, spawns `claude -p` with FR-2's flags, parses the stream into a `workers` row, re-reads the board, commits nothing yet (slice 05), and continues until no slice is ready. The driver detaches from the terminal, survives the death of whoever started it, and a second `factory run NNN` continues from the board after a kill. Lanes stay at one, blocks end the run, and checkpoints are skipped by setting `checkpoint_every` high in the test; slices 04 and 06 bring those.
 

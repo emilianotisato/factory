@@ -14,7 +14,7 @@ use factory::docs::{Branch, Docs};
 use factory::events::EventKind;
 use factory::run::{Phase, Run, pid_alive};
 use harness::Fixture;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 const BIN: &str = env!("CARGO_BIN_EXE_factory");
 
@@ -74,6 +74,17 @@ fn dead_pid() -> u32 {
     let pid = child.id();
     child.wait().unwrap();
     pid
+}
+
+fn wait_until(what: &str, secs: u64, mut ok: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+    while !ok() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out after {secs}s waiting for {what}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
 }
 
 fn head(fx: &Fixture) -> String {
@@ -263,7 +274,10 @@ fn run_refuses_a_dirty_tree_with_no_run_dir_and_no_spawn() {
 
 #[test]
 fn run_on_the_clean_fixture_starts_notes_the_judge_lines_then_resumes() {
+    // The default `checkpoint_every: 2`: the loop builds slices 01 and 02,
+    // then stops at `checkpoint` for slice 06's checkpoint.
     let fx = Fixture::new("run-start");
+    fx.write_plan(&[json!({"outcome": "done"}), json!({"outcome": "done"})]);
     let out = factory(&fx, &["run", "1"]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     let text = stdout(&out);
@@ -277,14 +291,13 @@ fn run_on_the_clean_fixture_starts_notes_the_judge_lines_then_resumes() {
     // the branch is created, the run starts and the board is printed.
     assert_eq!(head(&fx), "feat/fixture");
     let s = state(dir);
-    assert_eq!(s["phase"], "starting");
     assert_eq!(s["feature"], "001");
     assert_eq!(s["branch"], "feat/fixture");
     assert_eq!(s["budget_weighted_tokens"], 30_000_000);
     assert_eq!(s["stop_requested"], false);
     let evs = events(dir);
     let k = kinds(dir);
-    assert_eq!(k.len(), 5, "{k:?}");
+    assert!(k.len() >= 5, "{k:?}");
     assert!(k[..4].iter().all(|k| k == "judge_noted"), "{k:?}");
     assert_eq!(k[4], "run_started");
     for (i, e) in evs.iter().enumerate() {
@@ -306,12 +319,33 @@ fn run_on_the_clean_fixture_starts_notes_the_judge_lines_then_resumes() {
     assert!(text.contains("02 001-fixture/slice-02-b.md"), "{text}");
     assert!(!text.contains("slice-03-c.md"), "{text}");
     assert!(!text.contains("ASK-"), "{text}");
-    assert!(fx.calls().is_empty());
+    assert!(text.contains("driver pid "), "{text}");
+
+    // The detached driver builds to the checkpoint and stops there.
+    wait_until("the checkpoint", 40, || state(dir)["phase"] == "checkpoint");
+    let k = kinds(dir);
+    assert_eq!(
+        k[5..],
+        [
+            "slice_spawned",
+            "slice_done",
+            "slice_spawned",
+            "slice_done",
+            "checkpoint_due"
+        ],
+        "{k:?}"
+    );
+    assert_eq!(fx.slice_status(1), "done");
+    assert_eq!(fx.slice_status(2), "done");
+    assert_eq!(fx.slice_status(3), "pending");
+    assert_eq!(fx.calls().len(), 2);
+    let due = events(dir).into_iter().find(|e| e["kind"] == "checkpoint_due").unwrap();
+    assert_eq!(due["unverified"], json!([1, 2]));
     let db = Db::open(&data_dir(&fx).join("factory.db")).unwrap();
     let row = db.run_row(&id).unwrap().unwrap();
-    assert_eq!(row.phase, "starting");
+    assert_eq!(row.phase, "checkpoint");
     assert_eq!(row.branch.as_deref(), Some("feat/fixture"));
-    assert_eq!(db.events(&id).unwrap().len(), 5);
+    assert_eq!(db.events(&id).unwrap().len(), 10);
 
     // A live pid: refused, naming the run and `factory stop`.
     set_pid(dir, std::process::id());
@@ -322,23 +356,25 @@ fn run_on_the_clean_fixture_starts_notes_the_judge_lines_then_resumes() {
     assert!(text.contains(&format!("factory stop {id}")), "{text}");
     assert_eq!(run_dirs(&fx).len(), 1);
 
-    // The pid gone: the same run resumes, no preflight, the board printed.
+    // The pid gone: the same run resumes, no preflight, the board printed,
+    // and the driver finds the checkpoint still due — no worker spawned.
     let planted = dead_pid();
     set_pid(dir, planted);
     let out = factory(&fx, &["run", "001"]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     let text = stdout(&out);
     assert_eq!(run_dirs(&fx).len(), 1);
-    assert!(text.contains(&format!("run {id} resumed")), "{text}");
-    assert!(text.contains("01 001-fixture/slice-01-a.md"), "{text}");
+    assert!(text.contains(&format!("run {id} resumed (checkpoint)")), "{text}");
     assert!(
         !text.contains("judge_noted") && !text.contains("  · "),
         "{text}"
     );
+    wait_until("the resumed driver to stop at the checkpoint", 20, || {
+        kinds(dir).len() == 12 && state(dir)["phase"] == "checkpoint"
+    });
     let k = kinds(dir);
-    assert_eq!(k.len(), 6, "{k:?}");
-    assert_eq!(k.last().map(String::as_str), Some("run_resumed"), "{k:?}");
-    assert_eq!(state(dir)["phase"], "starting");
+    assert_eq!(k[10..], ["run_resumed", "checkpoint_due"], "{k:?}");
+    assert_eq!(fx.calls().len(), 2);
     // The resumer adopted the run: the planted pid is gone from the state file.
     assert_ne!(state(dir)["pid"], Value::from(planted));
 }
@@ -470,7 +506,10 @@ fn budget_comes_from_the_flag_then_the_config_then_the_default() {
         "budget_weighted_tokens = 5\nextra = true\n",
     )
     .unwrap();
-    let out = factory(&fx, &["run", "001", "--budget", "7"]);
+    // In the foreground the loop runs to the checkpoint before `run` returns,
+    // so every step below sees a settled run.
+    fx.write_plan(&[json!({"outcome": "done"}), json!({"outcome": "done"}), json!({"outcome": "done"})]);
+    let out = factory(&fx, &["run", "001", "--budget", "7", "--foreground"]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     assert!(
         String::from_utf8_lossy(&out.stderr).contains("unknown key `extra` ignored"),
@@ -479,20 +518,24 @@ fn budget_comes_from_the_flag_then_the_config_then_the_default() {
     );
     let dirs = run_dirs(&fx);
     assert_eq!(state(&dirs[0])["budget_weighted_tokens"], 7);
+    assert_eq!(state(&dirs[0])["phase"], "checkpoint");
 
     // A resume without the flag keeps the stored budget; with it, overrides.
-    set_pid(&dirs[0], dead_pid());
-    factory(&fx, &["run", "001"]);
+    factory(&fx, &["run", "001", "--foreground"]);
     assert_eq!(state(&dirs[0])["budget_weighted_tokens"], 7);
-    factory(&fx, &["run", "001", "--budget", "9"]);
+    factory(&fx, &["run", "001", "--budget", "9", "--foreground"]);
     assert_eq!(state(&dirs[0])["budget_weighted_tokens"], 9);
+    assert_eq!(fx.calls().len(), 2, "checkpoint_every 2: two slices, then nothing on a resume");
 
-    // A new run (the old one finished) reads the config file.
+    // A new run (the old one finished) reads the config file. The workers
+    // left the tree dirty (slice 05 commits); preflight wants it clean.
     factory(
         &fx,
         &["stop", dirs[0].file_name().unwrap().to_str().unwrap()],
     );
-    let out = factory(&fx, &["run", "001"]);
+    fx.git(&["add", "-A"]);
+    fx.git(&["commit", "-q", "-m", "test: built slices"]);
+    let out = factory(&fx, &["run", "001", "--foreground"]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     let dirs = run_dirs(&fx);
     assert_eq!(dirs.len(), 2, "{dirs:?}");
@@ -508,9 +551,11 @@ fn budget_comes_from_the_flag_then_the_config_then_the_default() {
 #[test]
 fn stop_finishes_a_dead_run_and_only_flags_a_live_one() {
     let fx = Fixture::new("stop");
-    factory(&fx, &["run", "001"]);
+    fx.write_plan(&[json!({"outcome": "done"}), json!({"outcome": "done"}), json!({"outcome": "done"})]);
+    factory(&fx, &["run", "001", "--foreground"]);
     let dir = run_dirs(&fx).remove(0);
     let id = dir.file_name().unwrap().to_str().unwrap().to_string();
+    assert_eq!(state(&dir)["phase"], "checkpoint");
 
     // Live: the flag is set, the phase is not.
     set_pid(&dir, std::process::id());
@@ -523,7 +568,7 @@ fn stop_finishes_a_dead_run_and_only_flags_a_live_one() {
     );
     let s = state(&dir);
     assert_eq!(s["stop_requested"], true);
-    assert_eq!(s["phase"], "starting");
+    assert_eq!(s["phase"], "checkpoint");
     assert_eq!(
         kinds(&dir).last().map(String::as_str),
         Some("stop_requested")
@@ -562,4 +607,42 @@ fn stop_finishes_a_dead_run_and_only_flags_a_live_one() {
     let out = factory(&fx, &["stop", "001-20000101-dead"]);
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("no run 001-20000101-dead"));
+}
+
+#[test]
+fn stop_during_a_slice_lets_the_worker_finish_then_ends_the_run() {
+    let fx = Fixture::new("stop-live");
+    fx.write_plan(&[
+        json!({"outcome": "done", "delay_ms": 2500}),
+        json!({"outcome": "done"}),
+        json!({"outcome": "done"}),
+    ]);
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let dir = run_dirs(&fx).remove(0);
+    let id = dir.file_name().unwrap().to_str().unwrap().to_string();
+    wait_until("slice 01 to be building", 20, || {
+        fx.calls().len() == 1 && fx.slice_status(1) == "building"
+    });
+    let out = factory(&fx, &["stop", &id]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    assert!(
+        stdout(&out).contains("finishes its in-flight workers"),
+        "{}",
+        stdout(&out)
+    );
+    wait_until("the run to finish", 30, || state(&dir)["phase"] == "finished");
+    assert_eq!(fx.slice_status(1), "done");
+    assert_eq!(fx.slice_status(2), "pending");
+    assert_eq!(fx.slice_status(3), "pending");
+    assert_eq!(fx.calls().len(), 1);
+    let k = kinds(&dir);
+    assert_eq!(
+        k[5..],
+        ["slice_spawned", "stop_requested", "slice_done", "run_finished"],
+        "{k:?}"
+    );
+    // Nothing resumes a finished run: the next `run` is a new one.
+    let out = factory(&fx, &["run", "001"]);
+    assert!(!stdout(&out).contains(&format!("run {id} resumed")), "{}", stdout(&out));
 }

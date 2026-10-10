@@ -12,7 +12,8 @@
 // Scenario steps come from $FACTORY_STUB_DIR/plan.jsonl, one JSON object per
 // spawn, read by spawn number (call n takes line n); past the end every spawn
 // is `{"outcome":"done"}`. Slice 01 supports `outcome: "done"`, `touch: [...]`
-// and `delay_ms`; later slices add the outcomes they consume (PRD §17).
+// and `delay_ms`; slice 03 adds `outcome: "dead"` (init, `building`, exit 137,
+// no result); later slices add the outcomes they consume (PRD §17).
 const fs = require('node:fs')
 const path = require('node:path')
 const crypto = require('node:crypto')
@@ -73,7 +74,7 @@ if (fs.existsSync(planPath)) {
   const lines = fs.readFileSync(planPath, 'utf8').split('\n').filter((l) => l.trim())
   if (lines[n - 1]) step = JSON.parse(lines[n - 1])
 }
-if (step.outcome !== 'done') fail(65, `outcome "${step.outcome}" is not built yet — a later slice adds it (PRD-001 §17)`)
+if (!['done', 'dead'].includes(step.outcome)) fail(65, `outcome "${step.outcome}" is not built yet — a later slice adds it (PRD-001 §17)`)
 
 // ── 3. find the slice ────────────────────────────────────────────────────────
 if (pack === null) fail(65, 'no pack: pass --append-system-prompt-file <path> or --append-system-prompt <text>')
@@ -93,8 +94,18 @@ if (!fs.existsSync(slicePath)) {
 const featureDir = path.dirname(slicePath)
 
 // ── 4. side effects ──────────────────────────────────────────────────────────
+const tpl = JSON.parse(fs.readFileSync(path.join(__dirname, 'stream.json'), 'utf8'))
+let seq = 0
+const init = { ...tpl.init, cwd, session_id: sessionId, uuid: crypto.randomUUID() }
+if (flags['--model']) init.model = flags['--model']
 setStatus(slicePath, 'building')
 if (step.delay_ms) sleep(Number(step.delay_ms))
+if (step.outcome === 'dead') {
+  // FR-1's dead worker (slice 03): the session opened, the slice went
+  // `building`, then the process vanished with no `result` line.
+  emit(init)
+  process.exit(137)
+}
 const touched = (step.touch ?? ['src/lib.txt']).map((f) => path.resolve(cwd, f))
 for (const f of touched) {
   fs.mkdirSync(path.dirname(f), { recursive: true })
@@ -107,10 +118,6 @@ progress(slicePath, n, touchedRel, ad, nn)
 setStatus(slicePath, 'done')
 
 // ── 5. the stream ────────────────────────────────────────────────────────────
-const tpl = JSON.parse(fs.readFileSync(path.join(__dirname, 'stream.json'), 'utf8'))
-let seq = 0
-const init = { ...tpl.init, cwd, session_id: sessionId, uuid: crypto.randomUUID() }
-if (flags['--model']) init.model = flags['--model']
 emit(init)
 const tool = (name, input) => {
   const id = `toolu_stub_${n}_${++seq}`
@@ -169,7 +176,10 @@ function writeFragment(file, nn, spawn, rel) {
     '**Review:** no',
     '',
   ].join('\n')
-  fs.writeFileSync(file, existing ? `${existing.trimEnd()}\n\n${entry}` : `## Decisions\n\n${entry}`)
+  // The fragment may already hold another section (the driver's `## Traps`
+  // after a dead worker): the AD still lands under `## Decisions`.
+  const head = existing.includes('## Decisions') ? '' : '## Decisions\n\n'
+  fs.writeFileSync(file, existing ? `${existing.trimEnd()}\n\n${head}${entry}` : `${head}${entry}`)
   return ad
 }
 

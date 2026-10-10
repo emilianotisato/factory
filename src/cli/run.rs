@@ -7,8 +7,9 @@
 //! path is slice 04); `judge[]` lines are noted as events and never waited on
 //! (BLOCK-201); `pass` creates or switches to the feature branch, creates the
 //! run, emits `judge_noted` per line and `run_started`, and prints the ready
-//! slices.
-//! Slice 03 replaces the final exit with the loop.
+//! slices. Then the loop (slice 03): a daemon re-executed as the hidden
+//! `factory daemon <id>` and detached with `setsid`, or in this process with
+//! `--foreground`.
 use std::io::Write;
 use std::path::Path;
 use std::process::Command;
@@ -19,7 +20,7 @@ use crate::docs::{Branch, Docs};
 use crate::error::io;
 use crate::events::EventKind;
 use crate::run::{Phase, Run};
-use crate::{Error, Result, config, paths};
+use crate::{Error, Result, config, daemon, paths, scheduler};
 
 #[derive(Args, Debug, Clone)]
 pub struct RunArgs {
@@ -28,6 +29,15 @@ pub struct RunArgs {
     /// Weighted-token budget for this run; overrides `config.toml`
     #[arg(long, value_name = "N")]
     pub budget: Option<u64>,
+    /// Keep the driver attached to this terminal instead of detaching it
+    #[arg(long)]
+    pub foreground: bool,
+}
+
+/// `factory daemon <run>`: the detached driver `factory run` starts. Hidden.
+#[derive(Args, Debug, Clone)]
+pub struct DaemonArgs {
+    pub run: String,
 }
 
 /// Run the command from the current directory; returns the exit code.
@@ -60,7 +70,8 @@ pub fn run(args: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i
         }
         run.emit(EventKind::RunResumed)?;
         writeln!(out, "run {} resumed ({})", run.id(), run.state().phase).map_err(io("stdout"))?;
-        return print_board(&docs, &feature, out);
+        print_board(&docs, &feature, out)?;
+        return launch(&mut run, &docs, &loaded.config, args.foreground, out);
     }
 
     let (pf, _code) = docs.preflight(&feature)?;
@@ -101,7 +112,59 @@ pub fn run(args: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i
         writeln!(out, "  · {text}").map_err(io("stdout"))?;
         run.emit(EventKind::JudgeNoted { text: text.clone() })?;
     }
-    begin(&mut run, &docs, out)
+    begin(&mut run, &docs, out)?;
+    launch(&mut run, &docs, &loaded.config, args.foreground, out)
+}
+
+/// Hand the run to the loop: in this process with `--foreground`, else to a
+/// detached daemon, returning once it owns the run.
+pub fn launch(
+    run: &mut Run,
+    docs: &Docs,
+    cfg: &config::Config,
+    foreground: bool,
+    out: &mut dyn Write,
+) -> Result<i32> {
+    if foreground {
+        scheduler::drive(run, docs, cfg, out)?;
+        return Ok(0);
+    }
+    let pid = daemon::spawn(run)?;
+    writeln!(
+        out,
+        "driver pid {pid} — log {}",
+        daemon::log_path(run.dir()).display()
+    )
+    .map_err(io("stdout"))?;
+    Ok(0)
+}
+
+/// The daemon's side: take the run over, then drive it. Errors go to the
+/// driver log; the run is already `failed` by the time one returns.
+pub fn daemon(args: &DaemonArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i32> {
+    let mut run = Run::open(&paths::data_dir(), &args.run)?;
+    run.adopt()?;
+    let loaded = config::load(&paths::config_dir())?;
+    for w in &loaded.warnings {
+        writeln!(err, "factory: {w}").map_err(io("stderr"))?;
+    }
+    let repo = run.state().repo.clone();
+    let docs = Docs::locate(&repo)?;
+    writeln!(
+        out,
+        "{} driver pid {} took run {}",
+        crate::clock::now_rfc3339(),
+        std::process::id(),
+        run.id()
+    )
+    .map_err(io("driver log"))?;
+    match scheduler::drive(&mut run, &docs, &loaded.config, out) {
+        Ok(_) => Ok(0),
+        Err(e) => {
+            writeln!(err, "factory: {e}").map_err(io("stderr"))?;
+            Ok(1)
+        }
+    }
 }
 
 /// The `pass` path once the branch is right: `run_started`, then the board.
