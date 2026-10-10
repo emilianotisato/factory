@@ -751,7 +751,7 @@ fn two_dead_workers_block_the_slice_and_park_the_run() {
     let k = kinds(&dir);
     assert_eq!(
         &k[k.len() - 3..],
-        ["run_resumed", "stop_requested", "run_finished"],
+        ["run_resumed", "stop_requested", "run_stopped"],
         "{k:?}"
     );
     assert_eq!(fx.slice_status(1), "blocked");

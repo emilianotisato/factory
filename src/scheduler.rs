@@ -128,7 +128,7 @@ fn drive_inner(run: &mut Run, docs: &Docs, cfg: &Config, out: &mut dyn Write) ->
             let pending = answers::asks_pending(run)?;
             if !pending.is_empty() {
                 if run.state().stop_requested {
-                    return finish(run, out, "stop requested");
+                    return stopped(run, out);
                 }
                 let ids: Vec<String> = pending.iter().map(|(id, _)| id.clone()).collect();
                 enter_park(run, &mut parked, &mut announced, &[], &ids, out)?;
@@ -143,7 +143,7 @@ fn drive_inner(run: &mut Run, docs: &Docs, cfg: &Config, out: &mut dyn Write) ->
 
         if run.state().stop_requested {
             if table.is_empty() {
-                return finish(run, out, "stop requested");
+                return stopped(run, out);
             }
             poll(&mut table, TICK)?;
             continue;
@@ -285,7 +285,7 @@ fn drive_inner(run: &mut Run, docs: &Docs, cfg: &Config, out: &mut dyn Write) ->
                     slow_tick(run)?;
                     continue;
                 }
-                Outcome::Stopped => return finish(run, out, "stop requested"),
+                Outcome::Stopped => return stopped(run, out),
                 Outcome::Budget { weighted, budget } => {
                     return quota::park_budget(run, weighted, budget, out);
                 }
@@ -310,7 +310,7 @@ fn drive_inner(run: &mut Run, docs: &Docs, cfg: &Config, out: &mut dyn Write) ->
                     slow_tick(run)?;
                     continue;
                 }
-                Outcome::Stopped => return finish(run, out, "stop requested"),
+                Outcome::Stopped => return stopped(run, out),
                 Outcome::Budget { weighted, budget } => {
                     return quota::park_budget(run, weighted, budget, out);
                 }
@@ -1196,11 +1196,13 @@ fn slice_file(run: &Run, board: &Status, slice: u32) -> Result<PathBuf> {
 /// Phase `finished` and the `run_finished` line (FR-7): the PR URL and the
 /// numbers the cockpit reads first, from the store.
 fn finish(run: &mut Run, out: &mut dyn Write, why: &str) -> Result<Phase> {
-    run.set_phase(Phase::Finished)?;
+    // The numbers first, so the phase and the line that says why land back
+    // to back: a reader that sees `finished` finds `run_finished` (AD-1005).
     let r = report::compute(run.db(), run.id().as_str(), None)?;
     let started = clock::from_rfc3339(&run.state().started_at).unwrap_or_else(clock::unix_now);
     let duration_minutes =
         (clock::unix_now().saturating_sub(started) as f64 / 60.0 * 100.0).round() / 100.0;
+    run.set_phase(Phase::Finished)?;
     run.emit(EventKind::RunFinished {
         pr_url: run.state().pr_url.clone(),
         slices: r.slices,
@@ -1221,6 +1223,39 @@ fn finish(run: &mut Run, out: &mut dyn Write, why: &str) -> Result<Phase> {
         ),
     )?;
     Ok(Phase::Finished)
+}
+
+/// `factory stop` honoured (FR-7): the in-flight workers were reaped, their
+/// done slices committed; now phase `finished` with `stopped: true` and
+/// `run_stopped` as the last line — not `run_finished`, which says the run
+/// reached its end (AD-1002). `factory run NNN` resumes from the board.
+fn stopped(run: &mut Run, out: &mut dyn Write) -> Result<Phase> {
+    let slices = mark_stopped(run)?;
+    say(
+        out,
+        &format!(
+            "run {} stopped ({slices} slice(s) done) — factory run {} resumes",
+            run.id(),
+            run.state().feature
+        ),
+    )?;
+    Ok(Phase::Finished)
+}
+
+/// The state and the event of a stopped run; `factory stop` on a run with no
+/// live driver uses it too. Returns the slices done.
+pub fn mark_stopped(run: &mut Run) -> Result<u64> {
+    let r = report::compute(run.db(), run.id().as_str(), None)?;
+    let started = clock::from_rfc3339(&run.state().started_at).unwrap_or_else(clock::unix_now);
+    let duration_minutes =
+        (clock::unix_now().saturating_sub(started) as f64 / 60.0 * 100.0).round() / 100.0;
+    run.set_stopped()?;
+    run.emit(EventKind::RunStopped {
+        slices: r.slices,
+        weighted_tokens: r.weighted_tokens,
+        duration_minutes,
+    })?;
+    Ok(r.slices)
 }
 
 pub fn say(out: &mut dyn Write, line: &str) -> Result<()> {

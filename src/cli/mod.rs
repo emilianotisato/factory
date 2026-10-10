@@ -4,4 +4,6 @@
 pub mod answer;
 pub mod report;
 pub mod run;
+pub mod status;
 pub mod stop;
+pub mod wait;

@@ -19,11 +19,11 @@ enum Command {
     /// Start or resume the unattended run of a feature
     Run(cli::run::RunArgs),
     /// Block until the run needs the owner or ends
-    Wait(Passthrough),
+    Wait(cli::wait::WaitArgs),
     /// Answer an open blocker so its lane resumes
     Answer(cli::answer::AnswerArgs),
     /// Show the board of the live run
-    Status(Passthrough),
+    Status(cli::status::StatusArgs),
     /// Stop the live run
     Stop(cli::stop::StopArgs),
     /// Print the metrics report of a run
@@ -66,7 +66,8 @@ fn main() -> ExitCode {
         Command::Daemon(a) => cli::run::daemon(&a, &mut stdout(), &mut stderr()),
         Command::Answer(a) => cli::answer::answer(&a, &mut stdout()),
         Command::Report(a) => cli::report::report(&a, &mut stdout()),
-        Command::Wait(p) | Command::Status(p) => return not_built(10, &p.args),
+        Command::Wait(a) => cli::wait::wait(&a, &mut stdout()),
+        Command::Status(a) => cli::status::status(&a, &mut stdout()),
         Command::Ctx { verb } => match verb {
             CtxVerb::Def(p) | CtxVerb::Refs(p) => return not_built(11, &p.args),
             CtxVerb::Outline(p) => return not_built(12, &p.args),

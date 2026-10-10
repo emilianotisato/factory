@@ -105,6 +105,10 @@ pub struct RunState {
     pub updated_at: String,
     pub budget_weighted_tokens: u64,
     pub stop_requested: bool,
+    /// FR-7: the run ended on `factory stop`, not at its end. Phase is
+    /// `finished`; `factory run NNN` resumes from the board.
+    #[serde(default)]
+    pub stopped: bool,
     /// FR-9: no spawn until this epoch second; `None` when not paused. Kept
     /// in `state.json` so a resumed driver honours a pause it did not see.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -253,6 +257,7 @@ impl Run {
             updated_at: now,
             budget_weighted_tokens,
             stop_requested: false,
+            stopped: false,
             paused_until: None,
             pr_url: None,
             workers: Vec::new(),
@@ -372,6 +377,13 @@ impl Run {
         self.save()
     }
 
+    /// FR-7: the stop honoured — `finished` with `stopped: true`, one save.
+    pub fn set_stopped(&mut self) -> Result<()> {
+        self.state.stopped = true;
+        self.state.phase = Phase::Finished;
+        self.save()
+    }
+
     /// FR-9: set or clear the pause.
     pub fn set_paused_until(&mut self, until: Option<u64>) -> Result<()> {
         self.state.paused_until = until;
@@ -457,6 +469,15 @@ pub fn list_open(data_dir: &Path, repo: &Path) -> Result<Vec<RunState>> {
 
 /// Every state file for `repo`, oldest first.
 fn list_all(data_dir: &Path, repo: &Path) -> Result<Vec<RunState>> {
+    Ok(list_runs(data_dir)?
+        .into_iter()
+        .filter(|s| s.repo == repo)
+        .collect())
+}
+
+/// Every run under `data_dir`, any repo, oldest first: what `factory status`
+/// lists when it is given no run or an unknown one (FR-7).
+pub fn list_runs(data_dir: &Path) -> Result<Vec<RunState>> {
     let runs = Run::runs_dir(data_dir);
     let entries = match fs::read_dir(&runs) {
         Ok(rd) => rd,
@@ -470,10 +491,7 @@ fn list_all(data_dir: &Path, repo: &Path) -> Result<Vec<RunState>> {
         if !dir.join(STATE_FILE).is_file() {
             continue;
         }
-        let state = load_state(&dir)?;
-        if state.repo == repo {
-            out.push(state);
-        }
+        out.push(load_state(&dir)?);
     }
     out.sort_by(|a, b| {
         a.started_at

@@ -743,7 +743,7 @@ fn stop_during_a_slice_lets_the_worker_finish_then_ends_the_run() {
     let out = factory(&fx, &["stop", &id]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     assert!(
-        stdout(&out).contains("finishes its in-flight workers"),
+        stdout(&out).contains("in flight; the run finishes when"),
         "{}",
         stdout(&out)
     );
@@ -762,10 +762,11 @@ fn stop_during_a_slice_lets_the_worker_finish_then_ends_the_run() {
             "stop_requested",
             "slice_done",
             "slice_committed",
-            "run_finished"
+            "run_stopped"
         ],
         "{k:?}"
     );
+    assert_eq!(state(&dir)["stopped"], true);
     // Nothing resumes a finished run: the next `run` is a new one.
     let out = factory(&fx, &["run", "001"]);
     assert!(

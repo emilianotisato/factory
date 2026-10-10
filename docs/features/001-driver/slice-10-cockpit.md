@@ -1,6 +1,7 @@
 ---
 slice: 10
-status: pending
+status: done
+lane: 1
 depends_on: [9]
 ---
 
@@ -9,7 +10,14 @@ depends_on: [9]
 **Source**: [`prd.md`](prd.md) → §9 FR-7 (all five decisions); §3 FR-1 bullet 4 (`factory stop` ends a run cleanly). **Depends on**: 09 (`wait` must see every event kind, including `run_finished` and the closeout blocks; the skill's review interview needs a finished run).
 **Created**: 2026-10-09 · **Status**: pending
 
-**Progress**: _(written as it lands)_
+**Progress** (2026-10-10, lane 1):
+- **Built.** `factory wait <run> [--timeout S] [--replay]` (`src/cli/wait.rs`, `src/cockpit.rs`): the cockpit kinds of §9 plus `run_stopped` (AD-1002), one line each, cursor in `runs/<id>/cockpit.cursor`, a 2 s poll tail (AD-1001); exit 0 on a batch, 3 with `still running: <status line>` at the timeout, 4 with `driver dead; run: factory run NNN`, 1 for an unknown run; a run that is over prints its ending again (AD-1006); a budget park is not a dead driver (AD-1004); a half-written ending is re-read (AD-1005). `factory status [<run>]` (`src/cli/status.rs`): at most ten lines, the board from `docs status --json`, open questions from the run's events (AD-1003), utilisation from the last `rate_limit_event` (`stream::RateLimit.utilization_pct`); no or unknown id → the live runs, exit 1. `factory stop` prints the in-flight count (again on a second call); the loop ends with `run_stopped`, phase `finished`, `stopped: true` in `state.json`; `factory run NNN` then builds the rest. `skills/factory-deliver/SKILL.md` (42 lines) and `skills/README.md` with the install line.
+- **Background Bash (slice entry):** not tested. This slice was built by an unattended builder with no interactive Claude Code session to watch wake up. The skill uses the 25-minute poll (`--timeout 1500`), which works either way; the live check is FR-7 step 2 in [`qa-guide.md`](qa-guide.md), and the note is in `prd.md` §20 (AD-1007).
+- **Tests.** `tests/cockpit.rs`, four tests: wait, still-running, status, unknown id, dead driver, answer → `finished`, replay without a cursor and with `--replay`, status on the finished run, all on the slice 04 parked fixture; a budget park; stop with a 3 s worker, then a new run that builds 02 and 03; the skill's line count, its commands, the §8 round shape and nothing owner-specific. Unit tests in `cockpit.rs`, `cli/status.rs`, `stream.rs`.
+- **Inner loop:** 4 runs of `cargo test`, 1 red, about 3 min (plus five repeats of `--test checkpoints --test cockpit`, 37 s, all green). The red run was `tests/checkpoints.rs::two_dead_checkpoint_workers_…`: it waits on phase `finished` and read the tail before `run_finished` landed, a race that predates this slice. `scheduler::finish` and `mark_stopped` now compute the report before they save the phase (AD-1005, Trap). `cargo fmt` and `cargo clippy --all-targets -- -D warnings` caught nothing.
+- **Earlier-slice expectation shifts:** `tests/cli.rs` (`wait` and `status` leave the not-built list); `tests/loop.rs::two_dead_workers_block_the_slice_and_park_the_run` (tail ends `run_stopped`); `tests/run.rs::stop_during_a_slice_lets_the_worker_finish_then_ends_the_run` (the stop text, `run_stopped`, `stopped: true`).
+- **Deviations:** AD-1002 (`run_stopped` is cockpit-relevant), AD-1004 (a budget park is not a dead driver; the skill asks for a budget), AD-1007 (poll, entry test not run).
+- **Prove:** left for the checkpoint. The machine half: the `wait`, `status` and `stop` transcripts from the task 1 and task 3 fixture runs. FR-7's human row is in [`qa-guide.md`](qa-guide.md).
 
 **Slice**: After this slice the owner can drive a run from one thin Claude Code session, on a laptop or a phone, without that session reading the board or the log. `factory wait` blocks until the next event the owner must see, or prints `still running` at a timeout; a new session replays what it missed. `factory status` prints the board in ten lines; `factory stop` is honoured between spawns. The cockpit skill, under 60 lines, lives in this repo and is installed by the owner. This closes the spine: FR-1 to FR-10 are built. FR-7's proof is a human row and lands in `qa-guide.md`.
 

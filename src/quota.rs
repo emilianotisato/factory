@@ -234,6 +234,7 @@ mod tests {
             rate_limit: Some(RateLimit {
                 status: Some(status.to_string()),
                 resets_at,
+                utilization_pct: None,
             }),
             ..Summary::default()
         }

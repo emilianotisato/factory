@@ -197,11 +197,14 @@ pub struct Summary {
 
 /// `rate_limit_event.rate_limit_info` as FR-9 reads it: the `status` literal
 /// (`allowed`, `allowed_warning`, `rejected`, …) and `resetsAt` in epoch
-/// seconds when the stream gave one.
+/// seconds when the stream gave one; `utilization_pct` is the window named by
+/// `rateLimitType` in `unifiedWindows` (else the fullest one), in percent,
+/// for `factory status` (FR-7).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RateLimit {
     pub status: Option<String>,
     pub resets_at: Option<u64>,
+    pub utilization_pct: Option<u32>,
 }
 
 impl RateLimit {
@@ -211,8 +214,21 @@ impl RateLimit {
         RateLimit {
             status: field("status").and_then(Value::as_str).map(str::to_string),
             resets_at: field("resetsAt").and_then(Value::as_u64),
+            utilization_pct: utilization(info),
         }
     }
+}
+
+fn utilization(info: Option<&Value>) -> Option<u32> {
+    let windows = info?.get("unifiedWindows")?.as_object()?;
+    let of = |w: &Value| w.get("utilization").and_then(Value::as_f64);
+    let named = info?
+        .get("rateLimitType")
+        .and_then(Value::as_str)
+        .and_then(|k| windows.get(k))
+        .and_then(of);
+    let u = named.or_else(|| windows.values().filter_map(of).reduce(f64::max))?;
+    Some((u * 100.0).round().clamp(0.0, 1000.0) as u32)
 }
 
 impl Summary {
@@ -395,4 +411,28 @@ pub fn parse(text: &str) -> (Vec<StreamEvent>, Summary) {
     let mut c = Collector::new();
     let events = text.lines().filter_map(|l| c.push_line(l)).collect();
     (events, c.finish())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_rate_limit_event_carries_the_named_windows_utilization() {
+        let line =
+            |info: &str| format!(r#"{{"type":"rate_limit_event","rate_limit_info":{info}}}"#);
+        let (_, s) = parse(&line(
+            r#"{"status":"allowed","resetsAt":1791592200,"rateLimitType":"five_hour","unifiedWindows":{"five_hour":{"utilization":0.21},"seven_day":{"utilization":0.5}}}"#,
+        ));
+        let rl = s.rate_limit.unwrap();
+        assert_eq!(rl.status.as_deref(), Some("allowed"));
+        assert_eq!(rl.resets_at, Some(1_791_592_200));
+        assert_eq!(rl.utilization_pct, Some(21));
+        let (_, s) = parse(&line(
+            r#"{"status":"allowed","unifiedWindows":{"a":{"utilization":0.3},"b":{"utilization":0.04}}}"#,
+        ));
+        assert_eq!(s.rate_limit.unwrap().utilization_pct, Some(30));
+        let (_, s) = parse(&line(r#"{"status":"rejected"}"#));
+        assert_eq!(s.rate_limit.unwrap().utilization_pct, None);
+    }
 }

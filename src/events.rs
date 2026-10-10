@@ -273,6 +273,18 @@ pub enum EventKind {
         #[serde(default)]
         duration_minutes: f64,
     },
+    /// FR-7: the run ended on `factory stop` once its in-flight workers had
+    /// exited — phase `finished`, `stopped: true` in `state.json`, and
+    /// `factory run NNN` resumes from the board. The last line of a stopped
+    /// run, in place of `run_finished` (AD-1002).
+    RunStopped {
+        #[serde(default)]
+        slices: u64,
+        #[serde(default)]
+        weighted_tokens: u64,
+        #[serde(default)]
+        duration_minutes: f64,
+    },
     RunFailed {
         error: String,
     },
