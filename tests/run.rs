@@ -1192,3 +1192,39 @@ fn a_resumed_driver_settles_a_dead_orphan_beside_a_live_one() {
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     wait_until("the run to stop", 30, || state(&dir)["phase"] == "finished");
 }
+
+// ── finding K2: the final event lands before the final phase ─────────────────
+
+#[test]
+fn a_stop_that_cannot_save_the_phase_has_logged_run_stopped_already() {
+    let fx = Fixture::new("stop-order");
+    let data = data_dir(&fx);
+    let mut run = Run::create(&data, fx.path(), "001", None, 1).unwrap();
+    run.set_phase(Phase::Building).unwrap();
+    let dir = run.dir().to_path_buf();
+    // A run dir that refuses new files: state.json's temp file cannot be
+    // made, events.jsonl can still be appended to.
+    let mode = |m: u32| {
+        fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(m)).unwrap()
+    };
+    mode(0o555);
+    if fs::write(dir.join("probe"), "").is_ok() {
+        // Root ignores the mode: nothing to see here.
+        mode(0o755);
+        return;
+    }
+    let res = factory::scheduler::mark_stopped(&mut run);
+    mode(0o755);
+    assert!(res.is_err());
+    assert_eq!(kinds(&dir).last().map(String::as_str), Some("run_stopped"));
+    assert_eq!(load_state(&dir).unwrap().phase, Phase::Building);
+
+    // The retry saves the phase and does not log the stop twice.
+    factory::scheduler::mark_stopped(&mut run).unwrap();
+    let s = load_state(&dir).unwrap();
+    assert_eq!((s.phase, s.stopped), (Phase::Finished, true));
+    assert_eq!(
+        kinds(&dir).iter().filter(|k| *k == "run_stopped").count(),
+        1
+    );
+}

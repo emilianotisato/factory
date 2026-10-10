@@ -1592,21 +1592,25 @@ fn slice_file(run: &Run, board: &Status, slice: u32) -> Result<PathBuf> {
 /// Phase `finished` and the `run_finished` line (FR-7): the PR URL and the
 /// numbers the cockpit reads first, from the store.
 fn finish(run: &mut Run, out: &mut dyn Write, why: &str) -> Result<Phase> {
-    // The numbers first, so the phase and the line that says why land back
-    // to back: a reader that sees `finished` finds `run_finished` (AD-1005).
+    // The numbers first, so the event and the phase land back to back; the
+    // event before the phase, so a reader that sees `finished` finds
+    // `run_finished` (AD-1005), and a driver killed in between leaves a run
+    // that resumes and finishes without a second one.
     let r = report::compute(run.db(), run.id().as_str(), None)?;
     let started = clock::from_rfc3339(&run.state().started_at).unwrap_or_else(clock::unix_now);
     let duration_minutes =
         (clock::unix_now().saturating_sub(started) as f64 / 60.0 * 100.0).round() / 100.0;
+    if !logged(run, |k| matches!(k, EventKind::RunFinished { .. }))? {
+        run.emit(EventKind::RunFinished {
+            pr_url: run.state().pr_url.clone(),
+            slices: r.slices,
+            checkpoints: r.checkpoints,
+            ci_cycles: r.ci_cycles,
+            weighted_tokens: r.weighted_tokens,
+            duration_minutes,
+        })?;
+    }
     run.set_phase(Phase::Finished)?;
-    run.emit(EventKind::RunFinished {
-        pr_url: run.state().pr_url.clone(),
-        slices: r.slices,
-        checkpoints: r.checkpoints,
-        ci_cycles: r.ci_cycles,
-        weighted_tokens: r.weighted_tokens,
-        duration_minutes,
-    })?;
     say(
         out,
         &format!(
@@ -1645,13 +1649,21 @@ pub fn mark_stopped(run: &mut Run) -> Result<u64> {
     let started = clock::from_rfc3339(&run.state().started_at).unwrap_or_else(clock::unix_now);
     let duration_minutes =
         (clock::unix_now().saturating_sub(started) as f64 / 60.0 * 100.0).round() / 100.0;
+    // The event first, as in `finish`.
+    if !logged(run, |k| matches!(k, EventKind::RunStopped { .. }))? {
+        run.emit(EventKind::RunStopped {
+            slices: r.slices,
+            weighted_tokens: r.weighted_tokens,
+            duration_minutes,
+        })?;
+    }
     run.set_stopped()?;
-    run.emit(EventKind::RunStopped {
-        slices: r.slices,
-        weighted_tokens: r.weighted_tokens,
-        duration_minutes,
-    })?;
     Ok(r.slices)
+}
+
+/// Some event of the run is of this kind already.
+fn logged(run: &Run, kind: impl Fn(&EventKind) -> bool) -> Result<bool> {
+    Ok(run.events()?.iter().any(|e| kind(&e.kind)))
 }
 
 pub fn say(out: &mut dyn Write, line: &str) -> Result<()> {
