@@ -8,7 +8,7 @@ use std::path::Path;
 
 use crate::error::io;
 use crate::events::{Event, EventKind};
-use crate::run::{self, Run, RunState, pid_alive};
+use crate::run::{self, Run, RunState};
 use crate::{Result, clock};
 
 /// `runs/<id>/cockpit.cursor`: the last `seq` the cockpit was shown.
@@ -88,7 +88,9 @@ pub fn line(ev: &Event, feature: &str) -> Option<String> {
             format!("finished: {}", pr_url.as_deref().unwrap_or("no PR"))
         }
         EventKind::RunStopped { slices, .. } => {
-            format!("stopped: {slices} slice(s) done — factory run {feature} resumes")
+            format!(
+                "stopped: {slices} slice(s) done — factory run {feature} resumes the feature in a new run"
+            )
         }
         EventKind::RunFailed { error } => format!("failed: {}", first_line(error)),
         _ => return None,
@@ -207,7 +209,7 @@ pub fn in_flight(state: &RunState) -> usize {
     state
         .workers
         .iter()
-        .filter(|w| w.outcome.is_none() && pid_alive(w.pid))
+        .filter(|w| w.outcome.is_none() && state.worker_alive(w))
         .count()
 }
 
@@ -230,7 +232,7 @@ pub fn parked_on(state: &RunState, events: &[Event]) -> Option<String> {
 /// a run parked on its budget, which `factory run NNN --budget <n>` resumes
 /// (AD-703, AD-1004).
 pub fn driver_dead(state: &RunState, events: &[Event]) -> bool {
-    if state.phase.is_over() || pid_alive(state.pid) {
+    if state.phase.is_over() || state.driver_alive() {
         return false;
     }
     let asks_open = open_questions(events)
@@ -299,7 +301,7 @@ pub fn list_live(data_dir: &Path, out: &mut dyn Write) -> Result<()> {
             s.phase,
             s.feature,
             s.repo.display(),
-            if pid_alive(s.pid) {
+            if s.driver_alive() {
                 ""
             } else {
                 "  (no driver)"
@@ -421,7 +423,10 @@ mod tests {
                 weighted_tokens: 0,
                 duration_minutes: 0.1,
             }),
-            Some("stopped: 1 slice(s) done — factory run 001 resumes".into())
+            Some(
+                "stopped: 1 slice(s) done — factory run 001 resumes the feature in a new run"
+                    .into()
+            )
         );
         assert_eq!(
             l(EventKind::RunFailed {

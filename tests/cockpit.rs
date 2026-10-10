@@ -389,7 +389,7 @@ fn stop_ends_the_run_after_the_worker_and_the_next_run_builds_the_rest() {
     assert!(stopped["duration_minutes"].as_f64().is_some(), "{stopped}");
     assert!(
         driver_log(&dir).contains(&format!(
-            "run {id} stopped (1 slice(s) done) — factory run 001 resumes"
+            "run {id} stopped (1 slice(s) done) — factory run 001 resumes the feature in a new run"
         )),
         "{}",
         driver_log(&dir)
@@ -399,7 +399,7 @@ fn stop_ends_the_run_after_the_worker_and_the_next_run_builds_the_rest() {
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     assert_eq!(
         stdout(&out),
-        "stopped: 1 slice(s) done — factory run 001 resumes\n"
+        "stopped: 1 slice(s) done — factory run 001 resumes the feature in a new run\n"
     );
     let out = factory(&fx, &["stop", &id]);
     assert_eq!(out.status.code(), Some(0));
