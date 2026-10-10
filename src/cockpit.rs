@@ -106,7 +106,13 @@ pub fn tokens(n: u64) -> String {
             format!("{:.1}M", n as f64 / M as f64)
         }
     } else if n >= K {
-        format!("{:.1}k", n as f64 / K as f64)
+        // Rounded to a tenth of a k first: 999,950 is `1.0M`, not `1000.0k`.
+        let k = (n as f64 / 100.0).round() / 10.0;
+        if k >= K as f64 {
+            format!("{:.1}M", k / K as f64)
+        } else {
+            format!("{k:.1}k")
+        }
     } else {
         n.to_string()
     }
@@ -323,6 +329,11 @@ mod tests {
         assert_eq!(tokens(11_609), "11.6k");
         assert_eq!(tokens(42), "42");
         assert_eq!(tokens(0), "0");
+        // The k range rounds into the M range, not to `1000.0k`.
+        assert_eq!(tokens(999_950), "1.0M");
+        assert_eq!(tokens(999_949), "999.9k");
+        assert_eq!(tokens(1_000), "1.0k");
+        assert_eq!(tokens(999), "999");
     }
 
     #[test]
