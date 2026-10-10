@@ -40,6 +40,14 @@
 **Undo:** drop the `branch_refusal` block at the top of the `drive_inner` loop, and the `held` check in `commit::commit`.
 **Review:** fyi
 
+### AD-20006 — How are emitters in several processes serialised? · polish · 2026-10-10
+
+**Chose:** `flock` on `events.jsonl` itself, through std `File::lock`. It is taken before the last `seq` is read and held until the `events` row is inserted. The line and its newline go out in one `write_all`.
+**Over:** a separate lock file; an in-process mutex, which `factory stop` and `factory answer` never see; or the `fs2`/`fd-lock` crates, a new runtime dependency.
+**Because:** the file is the thing being appended, so locking it needs no second path to create or clean up. Holding the lock through the insert keeps the table's rows in `seq` order with the file. AD-20002's "since the last answer" depends on that order being total. rustc 1.98 has `File::lock` in std.
+**Undo:** drop the `f.lock()` call in `events::emit`.
+**Review:** no
+
 ### AD-20007 — Whose are the tracked files a worker changed without naming them? · polish · 2026-10-10
 
 **Chose:** the worker's, when nothing else ran beside it. A file changed since the worker's spawn baseline that no tool call named goes in the worker's commit if it is tracked, not protected, and no other worker was live. That applies to a slice worker with no sibling, and to every fix and checkpoint worker, since the lanes drain before a checkpoint. With a sibling live, the file is listed (an `untracked_leftovers` event and the fragment's list for a slice, `checkpoint_leftovers` at a checkpoint) and left in the tree. A new, untracked file that no tool call named is always listed, never committed, as before. A file once listed is never swept later. Each checkpoint worker's baseline is saved under `runs/<id>/untracked-before/checkpoint-n-<role>.json`, as a slice's is, so a resumed driver judges an orphan the same way.

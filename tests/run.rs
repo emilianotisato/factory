@@ -1010,3 +1010,41 @@ fn a_detached_driver_whose_run_is_taken_over_stops_without_failing_it() {
     other.kill().unwrap();
     other.wait().unwrap();
 }
+
+// ── finding L10: emitters in several processes share one sequence ───────────
+
+#[test]
+fn concurrent_emitters_never_share_a_seq_or_tear_a_line() {
+    let fx = Fixture::new("emit-race");
+    let data = data_dir(&fx);
+    let run = Run::create(&data, fx.path(), "001", None, 1).unwrap();
+    let id = run.id().as_str().to_string();
+    let dir = run.dir().to_path_buf();
+    drop(run);
+    // Each thread is its own emitter with its own file handle and store
+    // connection, as `factory stop` and `factory answer` are beside the driver.
+    let threads: Vec<_> = (0..4)
+        .map(|t| {
+            let (data, id) = (data.clone(), id.clone());
+            std::thread::spawn(move || {
+                let mut run = Run::open(&data, &id).unwrap();
+                for i in 0..40 {
+                    run.emit(EventKind::JudgeNoted {
+                        text: format!("thread {t} event {i} {}", "x".repeat(2000)),
+                    })
+                    .unwrap();
+                }
+            })
+        })
+        .collect();
+    for t in threads {
+        t.join().unwrap();
+    }
+    let seqs: Vec<u64> = events(&dir)
+        .iter()
+        .map(|e| e["seq"].as_u64().unwrap())
+        .collect();
+    assert_eq!(seqs, (1..=160).collect::<Vec<u64>>());
+    let db = Db::open(&data.join("factory.db")).unwrap();
+    assert_eq!(db.events(&id).unwrap().len(), 160);
+}

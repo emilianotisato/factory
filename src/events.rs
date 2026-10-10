@@ -322,9 +322,18 @@ pub struct Event {
 }
 
 /// Append `kind` to `<run_dir>/events.jsonl` with the next `seq`, and insert
-/// the same event into the `events` table.
+/// the same event into the `events` table. The driver, `factory stop` and
+/// `factory answer` all emit, so the file is held under `flock` from reading
+/// the last `seq` to the table row (AD-20006), and the line goes out in one
+/// `write`: two emitters never share a `seq` or interleave their bytes.
 pub fn emit(run_dir: &Path, db: &Db, run_id: &str, kind: EventKind) -> Result<Event> {
     let path = run_dir.join(FILE);
+    let mut f = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(&path)
+        .map_err(io(format!("open {}", path.display())))?;
+    f.lock().map_err(io(format!("lock {}", path.display())))?;
     let seq = last_seq(&path)? + 1;
     let event = Event {
         seq,
@@ -332,13 +341,9 @@ pub fn emit(run_dir: &Path, db: &Db, run_id: &str, kind: EventKind) -> Result<Ev
         kind,
     };
     let mut value = serde_json::to_value(&event).map_err(json("serialize event"))?;
-    let line = serde_json::to_string(&value).map_err(json("serialize event"))?;
-    let mut f = OpenOptions::new()
-        .append(true)
-        .create(true)
-        .open(&path)
-        .map_err(io(format!("open {}", path.display())))?;
-    writeln!(f, "{line}").map_err(io(format!("append {}", path.display())))?;
+    let line = serde_json::to_string(&value).map_err(json("serialize event"))? + "\n";
+    f.write_all(line.as_bytes())
+        .map_err(io(format!("append {}", path.display())))?;
 
     let name = event.kind.name();
     let payload = match value.as_object_mut() {
@@ -351,6 +356,7 @@ pub fn emit(run_dir: &Path, db: &Db, run_id: &str, kind: EventKind) -> Result<Ev
         None => "{}".to_string(),
     };
     db.insert_event(run_id, seq, &event.ts, &name, &payload)?;
+    drop(f);
     Ok(event)
 }
 
