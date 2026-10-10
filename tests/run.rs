@@ -19,7 +19,19 @@ use serde_json::{Value, json};
 const BIN: &str = env!("CARGO_BIN_EXE_factory");
 
 fn factory(fx: &Fixture, args: &[&str]) -> Output {
-    fx.command(BIN).args(args).output().unwrap()
+    let out = fx.command(BIN).args(args).output().unwrap();
+    // The command and what it said, for a checkpoint's transcript: `cargo test`
+    // keeps it unless `-- --nocapture` (AD-9002).
+    eprintln!(
+        "$ factory {}\n{}{}exit={}",
+        args.join(" "),
+        stdout(&out),
+        String::from_utf8_lossy(&out.stderr),
+        out.status
+            .code()
+            .map_or("signal".to_string(), |c| c.to_string())
+    );
+    out
 }
 
 fn stdout(out: &Output) -> String {

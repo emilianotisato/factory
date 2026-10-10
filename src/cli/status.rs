@@ -207,7 +207,7 @@ fn checkpoints_line(events: &[Event]) -> String {
             minutes,
             ..
         } => Some(format!(
-            "{} (checkpoint {n} attempt {attempt}, {minutes} min)",
+            "{} (checkpoint {n} attempt {attempt}, {minutes:.2} min)",
             if *red { "red" } else { "green" }
         )),
         EventKind::GateCached {

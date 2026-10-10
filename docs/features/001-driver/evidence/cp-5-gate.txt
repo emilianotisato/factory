@@ -1,0 +1,277 @@
+# CP-5 — full gate at the checkpoint (after slice-10)
+date: 2026-10-10T07:22-06:00 (run 1) to 07:29 (the repeat probe)  branch: feat/driver  HEAD before the checkpoint commit: 9248211 (feat(001): slice-10 cockpit wait, status, stop; the slice commits are 69913e8 slice-09 and 9248211 slice-10)
+$ time (cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test)
+target dir: /mnt/devcache/emiliano/cargo-target (warm)
+
+4 runs, 1 red, 101.8 s of gate wall clock in all (~1.7 min). The slice commits were green as committed; the one red run is this checkpoint's own edit.
+
+run 1: exit 0, 32.899 s wall clock (user 23.9 s, sys 8.2 s) — green. Tree: HEAD plus the uncommitted result of `docs log merge 001` (agent-log.md grown by 152 lines: slice-09's and slice-10's Traps, AD-901–911, AD-1001–1007; log-slice-09.md and log-slice-10.md deleted; no AD-number clash, nothing renumbered) — docs only, nothing under test differs from HEAD. 113 tests in 14 binaries: lib 51, checkpoints 6, cli 3, closeout 9, cockpit 4, commits 3, docs 2, harness 1, lanes 3, loop 7, metrics 4, quota 5, run 11, stubs 4 (plus the empty main and doc-tests binaries). fmt and clippy printed nothing. Nothing caught in the slice commits.
+
+run 2: exit 1 after 0.227 s — red at `cargo fmt --check`, on this checkpoint's own edit, not a slice's: the `factory()` helpers of tests/cockpit.rs and tests/run.rs had just been given the transcript echo (AD-9002) so Prove could keep the wait/status/stop output, and its `out.status.code().map_or(…)` line ran past rustfmt's width. Diff (as printed):
+    Diff in /home/emiliano/Projects/factory/tests/cockpit.rs:31:
+             args.join(" "),
+             stdout(&out),
+             String::from_utf8_lossy(&out.stderr),
+    -        out.status.code().map_or("signal".to_string(), |c| c.to_string())
+    +        out.status
+    +            .code()
+    +            .map_or("signal".to_string(), |c| c.to_string())
+         );
+         out
+     }
+    Diff in /home/emiliano/Projects/factory/tests/run.rs:27:
+             args.join(" "),
+             stdout(&out),
+             String::from_utf8_lossy(&out.stderr),
+    -        out.status.code().map_or("signal".to_string(), |c| c.to_string())
+    +        out.status
+    +            .code()
+    +            .map_or("signal".to_string(), |c| c.to_string())
+         );
+         out
+     }
+    
+    real	0m0.227s
+    user	0m0.199s
+    sys	0m0.029s
+fix: `cargo fmt` (the chain split over three lines); no logic change.
+
+run 3: exit 0, 33.750 s wall clock (user 25.0 s, sys 8.4 s) — green, 113 tests, same binaries and counts.
+
+Between runs 3 and 4 the FR-7 Prove drive showed a display defect in `factory status`: the gate on the checkpoints line printed its minutes as a raw f64 (`last gate: green (checkpoint 1 attempt 1, 0.00018016041666666667 min)`) while `factory report` rounds the same field to two places. Fixed in src/cli/status.rs `checkpoints_line` (`{minutes}` → `{minutes:.2}`) and pinned by widening the needle in tests/cockpit.rs::wait_relays_the_block_the_still_running_line_the_dead_driver_and_the_end to `checkpoints: 1 done · last gate: green (checkpoint 1 attempt 1, 0.00 min)`. Slice 10's spec names the checkpoints line, not its number format, so the fix is inside the slice's spec (no AD).
+
+run 4 (the tree that is committed): exit 0, 34.945 s wall clock (user 34.6 s, sys 11.2 s) — green, 113 tests. Transcript below.
+
+## race probe
+The task asked for a race to be chased to its cause, not rerun until green. None tripped in the four runs, so the closeout, cockpit and stop tests (which start a live driver, poll state.json for a phase, then read the events tail) were run on their own, ten times in a row, on the run-4 tree:
+each run: `cargo test --test checkpoints --test closeout --test cockpit --test loop --test run`, then its exit code and a count of the `... ok` and failure lines:
+    run 1 exit=0 37 ok, 0 fail-lines
+    run 2 exit=0 37 ok, 0 fail-lines
+    run 3 exit=0 37 ok, 0 fail-lines
+    run 4 exit=0 37 ok, 0 fail-lines
+    run 5 exit=0 37 ok, 0 fail-lines
+    run 6 exit=0 37 ok, 0 fail-lines
+    run 7 exit=0 37 ok, 0 fail-lines
+    run 8 exit=0 37 ok, 0 fail-lines
+    run 9 exit=0 37 ok, 0 fail-lines
+    run 10 exit=0 37 ok, 0 fail-lines
+10 × 37 = 370 test executions, ~152 s, 0 failures. One latent order is noted and not changed: `scheduler::finish` and `mark_stopped` save state.json (phase `finished`) before they append `run_finished`/`run_stopped` (AD-1005 cut the gap to that one append), so a test that waits for the phase and then reads the tail could in principle see the phase first. The tests that do this (closeout's, cockpit's stop test, run.rs's stop test) leave a window of one file append; none flaked in the 370 executions or the four gates, so there is no failure to trace and nothing was changed.
+
+## run 4 transcript (whole, indented)
+        Checking factory v0.1.0 (/home/emiliano/Projects/factory)
+        Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.76s
+       Compiling factory v0.1.0 (/home/emiliano/Projects/factory)
+        Finished `test` profile [unoptimized + debuginfo] target(s) in 1.28s
+         Running unittests src/lib.rs (/mnt/devcache/emiliano/cargo-target/debug/deps/factory-0515a6f04af08950)
+    
+    running 51 tests
+    test ci::tests::the_failed_run_prefers_the_named_check_then_the_newest_failure ... ok
+    test ci::tests::the_first_fail_row_names_the_check ... ok
+    test ci::tests::the_interval_defaults_and_reads_the_env ... ok
+    test ci::tests::the_pr_number_is_the_last_numeric_segment ... ok
+    test cli::report::tests::the_lines_carry_the_keys_in_order ... ok
+    test cli::status::tests::elapsed_reads_as_minutes_then_hours ... ok
+    test cli::report::tests::workers_text_lists_roles_in_the_table_order ... ok
+    test clock::tests::known_instants ... ok
+    test cli::report::tests::json_round_trips_with_nulls_for_the_absent ... ok
+    test cli::status::tests::the_last_three_events_name_their_subject ... ok
+    test answers::tests::phase_blocks_fences_and_agent_log_order ... ok
+    test clock::tests::rfc3339_round_trips ... ok
+    test answers::tests::answers_round_trip ... ok
+    test cockpit::tests::open_questions_close_on_their_answer ... ok
+    test closeout::tests::the_fallback_template_has_every_key ... ok
+    test cockpit::tests::every_cockpit_kind_has_a_line_and_progress_has_none ... ok
+    test cockpit::tests::tokens_read_like_the_prd ... ok
+    test closeout::tests::the_retro_keys_are_filled_by_name_and_score_stays ... ok
+    test commit::tests::fragment_names ... ok
+    test commit::tests::relativize_keeps_the_repo_and_drops_the_rest ... ok
+    test commit::tests::pathspec_is_the_written_paths_plus_the_slice_file_and_fragment ... ok
+    test lanes::tests::parse_reads_env_and_setup_and_tolerates_the_rest ... ok
+    test measure::tests::a_missing_transcript_is_an_error_not_a_zero ... ok
+    test closeout::tests::the_pr_title_drops_the_prd_prefix ... ok
+    test cockpit::tests::the_cursor_is_zero_until_written ... ok
+    test metrics::tests::red_comes_from_is_error_fail_or_a_nonzero_exit ... ok
+    test answers::tests::entries_find_and_resolve_a_block ... ok
+    test metrics::tests::bash_kinds_follow_the_first_command_after_cd_and_env ... ok
+    test pack::tests::cited_sections_reads_the_top_source_line_once_each ... ok
+    test quota::tests::allowed_statuses_are_not_limits ... ok
+    test pack::tests::cut_section_stops_at_the_next_heading ... ok
+    test metrics::tests::tools_map_to_kinds_and_targets ... ok
+    test gatecache::tests::cache_round_trips_through_the_file ... ok
+    test quota::tests::rejected_status_is_a_limit_with_its_reset ... ok
+    test quota::tests::weights_match_the_prd_formula ... ok
+    test quota::tests::result_paths_pause_without_a_reset ... ok
+    test measure::tests::epoch_secs_reads_fractions_and_rejects_other_shapes ... ok
+    test scheduler::tests::set_slice_status_touches_only_the_status_line ... ok
+    test scheduler::tests::set_frontmatter_rewrites_or_appends_the_lane ... ok
+    test worker::tests::uuids_are_v4_and_distinct ... ok
+    test metrics::tests::minutes_come_from_the_timestamps_when_present ... ok
+    test scheduler::tests::append_under_creates_extends_and_keeps_sections_apart ... ok
+    test scheduler::tests::append_under_replaces_the_none_placeholder ... ok
+    test stream::tests::a_rate_limit_event_carries_the_named_windows_utilization ... ok
+    test metrics::tests::repeat_flags_are_per_worker_and_per_run ... ok
+    test measure::tests::the_fixture_transcript_matches_measure_py ... ok
+    test metrics::tests::the_recorded_stream_yields_one_row_per_tool_use_with_its_result_chars ... ok
+    test measure::tests::combine_adds_tokens_keeps_the_first_start_and_the_max_peak ... ok
+    test lanes::tests::load_without_a_file_is_the_bare_lane_and_setup_runs_with_the_env ... ok
+    test commit::tests::commit_stages_only_the_named_paths_and_drops_what_git_would_refuse ... ok
+    test gatecache::tests::tree_id_follows_the_code_and_ignores_docs_and_ignored_files ... ok
+    
+    test result: ok. 51 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+    
+         Running unittests src/main.rs (/mnt/devcache/emiliano/cargo-target/debug/deps/factory-9f23f91800725fcc)
+    
+    running 0 tests
+    
+    test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+    
+         Running tests/checkpoints.rs (/mnt/devcache/emiliano/cargo-target/debug/deps/checkpoints-fbf19684c098b2c7)
+    
+    running 6 tests
+    test the_driver_runs_the_gate_at_each_checkpoint_and_commits_the_cp_entries ... ok
+    test an_unchanged_code_tree_reuses_the_cached_gate_result ... ok
+    test red_red_green_runs_two_fix_workers_and_three_gates_before_the_cp ... ok
+    test a_run_killed_during_the_checkpoint_worker_resumes_at_the_checkpoint ... ok
+    test two_dead_checkpoint_workers_block_the_run_and_the_answer_spawns_a_third ... ok
+    test three_reds_block_the_run_and_the_answer_reruns_the_gate ... ok
+    
+    test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.56s
+    
+         Running tests/cli.rs (/mnt/devcache/emiliano/cargo-target/debug/deps/cli-55e949d857032146)
+    
+    running 3 tests
+    test help_lists_the_eight_subcommands ... ok
+    test answer_refuses_an_id_that_is_neither_block_nor_ask ... ok
+    test every_subcommand_says_not_built_yet_and_exits_2 ... ok
+    
+    test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+    
+         Running tests/closeout.rs (/mnt/devcache/emiliano/cargo-target/debug/deps/closeout-a47948cf312e67c6)
+    
+    running 9 tests
+    test the_driver_never_merges_or_readies_a_pr ... ok
+    test a_slice_not_done_at_ship_blocks_the_closeout_in_phase_polish ... ok
+    test a_finished_board_polishes_ships_pushes_and_opens_the_draft_pr ... ok
+    test a_flaky_check_is_rerun_once_then_green ... ok
+    test a_red_check_gets_one_fix_round_then_green ... ok
+    test a_red_check_at_a_foreign_head_blocks_without_a_fix_worker ... ok
+    test two_dead_polish_workers_block_and_the_answer_spawns_a_third ... ok
+    test a_flaky_check_red_after_its_rerun_blocks_and_the_answer_resumes_at_the_pr ... ok
+    test three_fix_rounds_on_a_red_check_block_the_closeout ... ok
+    
+    test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.75s
+    
+         Running tests/cockpit.rs (/mnt/devcache/emiliano/cargo-target/debug/deps/cockpit-198f430bb6bec9f1)
+    
+    running 4 tests
+    test the_cockpit_skill_is_under_sixty_lines_and_names_the_five_commands ... ok
+    test a_budget_park_is_relayed_and_is_not_a_dead_driver ... ok
+    test wait_relays_the_block_the_still_running_line_the_dead_driver_and_the_end ... ok
+    test stop_ends_the_run_after_the_worker_and_the_next_run_builds_the_rest ... ok
+    
+    test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.87s
+    
+         Running tests/commits.rs (/mnt/devcache/emiliano/cargo-target/debug/deps/commits-7db165c18b71cd07)
+    
+    running 3 tests
+    test each_done_slice_is_committed_by_pathspec_and_the_logs_merge_at_the_end ... ok
+    test a_refused_merge_blocks_in_agent_log_and_the_answer_retries_it ... ok
+    test two_lanes_commit_out_of_order_and_each_commit_takes_only_its_own_files ... ok
+    
+    test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.91s
+    
+         Running tests/docs.rs (/mnt/devcache/emiliano/cargo-target/debug/deps/docs-f9311d4759f4116d)
+    
+    running 2 tests
+    test errors_name_the_command_and_quote_stderr ... ok
+    test status_and_preflight_deserialize_from_the_fixture ... ok
+    
+    test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.51s
+    
+         Running tests/harness.rs (/mnt/devcache/emiliano/cargo-target/debug/deps/harness-70ea9b72303501e9)
+    
+    running 1 test
+    test fixture_is_a_runnable_board_with_stubs_on_path ... ok
+    
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.57s
+    
+         Running tests/lanes.rs (/mnt/devcache/emiliano/cargo-target/debug/deps/lanes-9e34a18ab71a7aaf)
+    
+    running 3 tests
+    test answering_every_ask_starts_the_parked_run ... ok
+    test a_blocked_slice_parks_its_lane_and_the_answer_respawns_it ... ok
+    test two_lanes_build_two_slices_at_once_and_the_third_waits_for_its_dependency ... ok
+    
+    test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.98s
+    
+         Running tests/loop.rs (/mnt/devcache/emiliano/cargo-target/debug/deps/loop-486ee23ee6c2826d)
+    
+    running 7 tests
+    test stream_recording_parses_into_the_workers_row_fields ... ok
+    test pack_is_the_slice_the_cited_sections_the_contract_and_the_inner_loop ... ok
+    test run_foreground_drives_the_same_loop_in_this_process ... ok
+    test two_dead_workers_block_the_slice_and_park_the_run ... ok
+    test run_drives_three_slices_through_the_detached_driver ... ok
+    test a_dead_worker_is_noted_and_respawned_once ... ok
+    test the_driver_killed_mid_slice_resumes_and_finishes ... ok
+    
+    test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.91s
+    
+         Running tests/metrics.rs (/mnt/devcache/emiliano/cargo-target/debug/deps/metrics-e9d360b3816c24a9)
+    
+    running 4 tests
+    test a_worker_inner_run_is_a_gates_row_with_source_worker ... ok
+    test every_tool_call_is_a_row_with_its_kind_and_repeat_flags ... ok
+    test report_prints_the_retro_keys_then_the_run_keys ... ok
+    test report_json_round_trips_and_cockpit_measures_the_transcript ... ok
+    
+    test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.48s
+    
+         Running tests/quota.rs (/mnt/devcache/emiliano/cargo-target/debug/deps/quota-fdbe76864b0f0390)
+    
+    running 5 tests
+    test a_spent_budget_parks_the_run_and_a_higher_budget_resumes_it ... ok
+    test a_limit_with_no_reset_retries_after_fifteen_minutes ... ok
+    test a_rate_limited_fix_worker_is_not_a_red ... ok
+    test two_pauses_on_one_slice_count_toward_no_cap ... ok
+    test a_rate_limited_worker_pauses_the_run_until_the_reset ... ok
+    
+    test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.10s
+    
+         Running tests/run.rs (/mnt/devcache/emiliano/cargo-target/debug/deps/run-326bf754d94c7764)
+    
+    running 11 tests
+    test config_defaults_file_and_unknown_keys ... ok
+    test opening_the_store_twice_applies_the_schema_once ... ok
+    test pass_path_creates_the_branch_and_starts_the_run ... ok
+    test find_live_sees_only_a_living_pid ... ok
+    test emit_writes_a_line_and_a_row_each_time ... ok
+    test run_refuses_a_dirty_tree_with_no_run_dir_and_no_spawn ... ok
+    test stop_finishes_a_dead_run_and_only_flags_a_live_one ... ok
+    test run_parks_on_an_ask_line_and_creates_no_branch ... ok
+    test run_on_the_clean_fixture_starts_notes_the_judge_lines_then_resumes ... ok
+    test budget_comes_from_the_flag_then_the_config_then_the_default ... ok
+    test stop_during_a_slice_lets_the_worker_finish_then_ends_the_run ... ok
+    
+    test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.39s
+    
+         Running tests/stubs.rs (/mnt/devcache/emiliano/cargo-target/debug/deps/stubs-4cd1030932964de8)
+    
+    running 4 tests
+    test stub_claude_refuses_an_outcome_a_later_slice_owns ... ok
+    test stub_claude_flips_the_slice_then_replays_a_result ... ok
+    test stub_gh_records_calls_and_answers_pr_create ... ok
+    test stub_claude_delay_leaves_the_slice_building_mid_spawn ... ok
+    
+    test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.26s
+    
+       Doc-tests factory
+    
+    running 0 tests
+    
+    test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+    
+    
+    real	0m34.945s
+    user	0m34.598s
+    sys	0m11.238s
