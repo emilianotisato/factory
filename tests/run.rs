@@ -1026,6 +1026,43 @@ fn a_detached_driver_whose_run_is_taken_over_stops_without_failing_it() {
     other.wait().unwrap();
 }
 
+#[test]
+fn a_detached_driver_started_from_a_subdirectory_finds_a_relative_data_dir() {
+    // `factory run` from `docs/` with data and config dirs relative to it:
+    // the daemon runs in the repo, so it is handed the absolute paths, or it
+    // looks for its run directory somewhere else and never takes it over.
+    let fx = Fixture::new("daemon-dirs");
+    fx.chain();
+    fx.write_plan(&[json!({"outcome": "done", "delay_ms": 3000})]);
+    let out = fx
+        .command(BIN)
+        .args(["run", "001"])
+        .current_dir(fx.path().join("docs"))
+        .env("FACTORY_DATA_DIR", "../../data")
+        .env("FACTORY_CONFIG_DIR", "../../config")
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}{}",
+        stdout(&out),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(stdout(&out).contains("driver pid "), "{}", stdout(&out));
+    let dir = run_dirs(&fx).remove(0);
+    let driver = state(&dir)["pid"].as_u64().unwrap() as u32;
+    wait_until("slice 01 to be building", 20, || {
+        fx.calls().len() == 1 && fx.slice_status(1) == "building"
+    });
+    let id = dir.file_name().unwrap().to_str().unwrap().to_string();
+    let out = factory(&fx, &["stop", &id]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    wait_until("the driver to stop", 30, || !pid_alive(driver));
+    assert!(committed(&dir, 1), "{:?}", kinds(&dir));
+    assert_eq!(state(&dir)["stopped"], true);
+}
+
 // ── finding L10: emitters in several processes share one sequence ───────────
 
 #[test]

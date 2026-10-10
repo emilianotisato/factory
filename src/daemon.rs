@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use crate::error::io;
 use crate::run::{self, Run};
-use crate::{Error, Result};
+use crate::{Error, Result, paths};
 
 pub const LOG: &str = "driver.log";
 
@@ -38,6 +38,10 @@ pub fn spawn(run: &Run) -> Result<u32> {
     cmd.arg("daemon")
         .arg(run.id().as_str())
         .current_dir(&run.state().repo)
+        // Absolute, so a relative `FACTORY_DATA_DIR` or `FACTORY_CONFIG_DIR`
+        // means the same directory from the repo the daemon runs in.
+        .env("FACTORY_DATA_DIR", paths::data_dir())
+        .env("FACTORY_CONFIG_DIR", paths::config_dir())
         .stdin(Stdio::null())
         .stdout(Stdio::from(out))
         .stderr(Stdio::from(err));
