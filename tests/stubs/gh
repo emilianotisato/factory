@@ -2,14 +2,27 @@
 'use strict'
 // Stub `gh` for the cargo test harness (PRD-001 FR-10). Records every call to
 // $FACTORY_STUB_DIR/gh.log, one argv line each, and answers the verbs the
-// driver reads. CI (slice 09) is scripted by `scenario/ci` in the cwd (the
-// driver runs gh in the repo root): one line per `pr checks` call —
-//   green                 every check passed, exit 0
-//   red:<check>[@<sha>]   <check> failed at <sha> (default: HEAD), exit 1
-//   flaky:<check>         as red, and `run list` also shows a green run at
-//                         that head, so the driver reruns once
-// A missing line is `green`. Whether `pr create` ran and the reds seen so
-// far live in $FACTORY_STUB_DIR/ci-state.json (`pr view`, `run list`).
+// driver reads, in the shapes the real `gh` prints.
+//
+// CI (slice 09) is scripted by `scenario/ci` in the cwd (the driver runs gh
+// in the repo root), one line per poll. A poll starts at
+// `pr view <pr> --json …headRefOid…` and `pr checks <pr> --json …` prints that
+// poll's rows; a `pr checks` with no poll before it is a poll of its own. A
+// line is space-separated rows `<kind>:<check>[/<workflow>][@<sha>]`:
+//   pass | red | flaky | pending | timed_out | startup_failure | cancelled
+// in workflow `CI` unless named, its run at <sha> (default: the PR head).
+// `flaky` is `red` plus a green run of the same workflow at the same head.
+// Whole-line words: `green` (= pass:test), `none` (no checks reported),
+// `unreadable` (a gh error), `lag` (the PR head is still the last poll's:
+// the push has not reached the PR), `stale` (the last poll's rows again).
+// A missing line is `green`. Rows are JSON with the fields asked for; a job
+// link is `<RUNS>/<run id>/job/<job id>`, the run id 1000 + poll + 100 × the
+// workflow's index. `pr checks` exits 1 on a failed row, 8 on a pending one.
+//
+// `scenario/gh-fail` holds argv prefixes (`pr create`, `run rerun`, …): the
+// first call that starts with one exits 1 with a scripted error, once each.
+// Whether `pr create` ran, the polls, the rows and the runs live in
+// $FACTORY_STUB_DIR/ci-state.json.
 const fs = require('node:fs')
 const path = require('node:path')
 const { execFileSync } = require('node:child_process')
@@ -30,65 +43,208 @@ const [a, b] = argv
 
 const statePath = stubDir ? path.join(stubDir, 'ci-state.json') : null
 const loadState = () => {
-  if (statePath && fs.existsSync(statePath)) return JSON.parse(fs.readFileSync(statePath, 'utf8'))
-  return { pr: false, checks: 0, reds: [] }
+  const fresh = { pr: false, branch: null, polls: 0, checked: 0, lastHead: null, rows: [], runs: [], workflows: [], failed: [] }
+  if (statePath && fs.existsSync(statePath)) return { ...fresh, ...JSON.parse(fs.readFileSync(statePath, 'utf8')) }
+  return fresh
 }
 const saveState = (s) => statePath && fs.writeFileSync(statePath, JSON.stringify(s, null, 2))
-const head = () => {
+const git = (args) => {
   try {
-    return execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+    return execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
   } catch {
-    return 'unknown'
+    return ''
+  }
+}
+const flag = (name) => {
+  const i = argv.indexOf(name)
+  return i >= 0 ? argv[i + 1] : undefined
+}
+const scenarioLines = (name) => {
+  const p = path.join(process.cwd(), 'scenario', name)
+  return fs.existsSync(p) ? fs.readFileSync(p, 'utf8').split('\n').map((l) => l.trim()).filter(Boolean) : []
+}
+// Only the fields `--json` asked for, as gh prints them.
+const pick = (obj, fields) => {
+  if (!fields) return obj
+  const out = {}
+  for (const f of fields.split(',')) out[f] = obj[f] ?? null
+  return out
+}
+
+const state = loadState()
+
+// A scripted failure: each `scenario/gh-fail` line fails one call.
+{
+  const call = argv.join(' ')
+  const i = scenarioLines('gh-fail').findIndex((l, k) => !state.failed.includes(k) && (call === l || call.startsWith(`${l} `)))
+  if (i >= 0) {
+    state.failed.push(i)
+    saveState(state)
+    console.error(`stub gh: scripted failure: ${scenarioLines('gh-fail')[i]}`)
+    process.exit(1)
   }
 }
 
+const prBranch = () => state.branch ?? 'feat/fixture'
+const remoteHead = () => git(['ls-remote', 'origin', `refs/heads/${prBranch()}`]).split(/\s+/)[0] || git(['rev-parse', 'HEAD'])
+const currentLine = () => scenarioLines('ci')[state.polls - 1] ?? 'green'
+
+const KINDS = {
+  pass: ['SUCCESS', 'pass', 'success'],
+  red: ['FAILURE', 'fail', 'failure'],
+  flaky: ['FAILURE', 'fail', 'failure'],
+  pending: ['IN_PROGRESS', 'pending', ''],
+  timed_out: ['TIMED_OUT', 'fail', 'timed_out'],
+  startup_failure: ['STARTUP_FAILURE', 'pending', 'startup_failure'],
+  cancelled: ['CANCELLED', 'cancel', 'cancelled'],
+}
+
+// The rows of one poll, and the runs behind them.
+const buildRows = (line, k) => {
+  const head = state.lastHead ?? remoteHead()
+  const rows = []
+  const runs = new Map()
+  const tokens = line === 'green' ? ['pass:test'] : line.split(/\s+/)
+  tokens.forEach((tok, j) => {
+    const m = tok.match(/^([a-z_]+):([^/@\s]+)(?:\/([^@\s]+))?(?:@(\S+))?$/)
+    if (!m || !KINDS[m[1]]) {
+      console.error(`stub gh: scenario/ci line ${k + 1} token "${tok}" is not <kind>:<check>[/<workflow>][@<sha>] (kinds: ${Object.keys(KINDS).join(', ')})`)
+      process.exit(65)
+    }
+    const [, kind, check, workflow = 'CI', sha] = m
+    if (!state.workflows.includes(workflow)) state.workflows.push(workflow)
+    const runId = 1000 + k + 100 * state.workflows.indexOf(workflow)
+    const [st, bucket, conclusion] = KINDS[kind]
+    rows.push({
+      name: check,
+      state: st,
+      bucket,
+      link: `${RUNS}/${runId}/job/${5000 + 10 * k + j}`,
+      workflow,
+      description: '',
+      event: 'pull_request',
+      startedAt: '2026-10-10T00:00:00Z',
+      completedAt: bucket === 'pending' ? '0001-01-01T00:00:00Z' : '2026-10-10T00:00:01Z',
+    })
+    const run = runs.get(runId) ?? {
+      databaseId: runId,
+      name: workflow,
+      displayTitle: 'PRD-001: Fixture',
+      workflowName: workflow,
+      headSha: sha ?? head,
+      headBranch: prBranch(),
+      status: 'completed',
+      conclusion: 'success',
+      attempt: 1,
+      failed: [],
+      flaky: false,
+    }
+    if (sha) run.headSha = sha
+    if (bucket === 'pending' && conclusion === '') {
+      run.status = 'in_progress'
+      run.conclusion = ''
+    } else if (conclusion !== 'success' && run.conclusion !== 'failure') {
+      run.conclusion = conclusion
+    }
+    if (bucket === 'fail' && conclusion === 'failure') run.failed.push(check)
+    if (kind === 'flaky') run.flaky = true
+    runs.set(runId, run)
+  })
+  for (const run of runs.values()) {
+    state.runs = state.runs.filter((r) => r.databaseId !== run.databaseId)
+    state.runs.push(run)
+    // The same workflow passed once at this head: an earlier run (a push
+    // event beside the PR's), which is what makes the red flaky.
+    if (run.flaky) {
+      state.runs.push({ ...run, databaseId: run.databaseId - 500, status: 'completed', conclusion: 'success', failed: [], flaky: false })
+    }
+  }
+  return rows
+}
+
+const RUN_FIELDS = ['attempt', 'conclusion', 'databaseId', 'displayTitle', 'headBranch', 'headSha', 'name', 'status', 'workflowName']
+const runJson = (r) => Object.fromEntries(RUN_FIELDS.map((f) => [f, r[f]]))
+
 if (a === 'pr' && b === 'create') {
-  const state = loadState()
   state.pr = true
+  state.branch = flag('--head') ?? (git(['symbolic-ref', '--quiet', '--short', 'HEAD']) || null)
   saveState(state)
   console.log(URL)
 } else if (a === 'pr' && b === 'view' && argv.includes('--json')) {
   // No PR until `pr create` ran (the driver asks before it creates one).
-  if (!loadState().pr) {
+  if (!state.pr) {
     console.error(`no pull requests found for branch "${argv[2]}"`)
     process.exit(1)
   }
-  console.log(JSON.stringify({ number: 1, url: URL, state: 'OPEN', isDraft: true, headRefName: 'feat/fixture' }))
-} else if (a === 'pr' && b === 'checks') {
-  const state = loadState()
-  const k = state.checks++
-  const scenario = path.join(process.cwd(), 'scenario', 'ci')
-  const lines = fs.existsSync(scenario) ? fs.readFileSync(scenario, 'utf8').split('\n').filter((l) => l.trim()) : []
-  const step = (lines[k] ?? 'green').trim()
-  const runId = 1000 + k
-  const m = step.match(/^(red|flaky):([^@\s]+)(?:@(\S+))?$/)
-  if (step === 'green') {
-    console.log(`test\tpass\t1s\t${RUNS}/${runId}`)
+  const fields = flag('--json')
+  const view = { number: 1, url: URL, state: 'OPEN', isDraft: true, headRefName: prBranch(), baseRefName: 'main' }
+  if (fields.split(',').includes('headRefOid')) {
+    state.polls++
+    if (currentLine() === 'lag' && state.lastHead) {
+      view.headRefOid = state.lastHead
+    } else {
+      view.headRefOid = remoteHead()
+      state.lastHead = view.headRefOid
+    }
     saveState(state)
-    process.exit(0)
   }
-  if (!m) {
-    console.error(`stub gh: scenario/ci line ${k + 1} "${step}" is not green, red:<check>[@<sha>] or flaky:<check>`)
-    process.exit(65)
+  console.log(JSON.stringify(pick(view, fields)))
+} else if (a === 'pr' && b === 'checks') {
+  if (state.checked === state.polls) state.polls++
+  state.checked = state.polls
+  const k = state.polls - 1
+  const line = currentLine()
+  if (line === 'none') {
+    saveState(state)
+    console.error(`no checks reported on the '${prBranch()}' branch`)
+    process.exit(1)
   }
-  const red = { runId, check: m[2], head: m[3] ?? head(), flaky: m[1] === 'flaky' }
-  state.reds.push(red)
+  if (line === 'unreadable') {
+    saveState(state)
+    console.error('HTTP 502: Bad Gateway (https://api.github.com/graphql)')
+    process.exit(1)
+  }
+  const rows = line === 'lag' || line === 'stale' ? state.rows : buildRows(line, k)
+  state.rows = rows
   saveState(state)
-  console.log(`${red.check}\tfail\t1s\t${RUNS}/${runId}`)
-  process.exit(1)
-} else if (a === 'run' && b === 'list') {
-  const rows = []
-  for (const r of [...loadState().reds].reverse()) {
-    rows.push({ databaseId: r.runId, name: r.check, workflowName: 'ci', conclusion: 'failure', headSha: r.head })
-    if (r.flaky) rows.push({ databaseId: r.runId - 500, name: r.check, workflowName: 'ci', conclusion: 'success', headSha: r.head })
-  }
-  console.log(JSON.stringify(rows))
-} else if (a === 'run' && b === 'view' && argv.includes('--log-failed')) {
+  const fields = flag('--json')
+  if (fields) console.log(JSON.stringify(rows.map((r) => pick(r, fields))))
+  else for (const r of rows) console.log(`${r.name}\t${r.bucket}\t1s\t${r.link}`)
+  process.exit(rows.some((r) => r.bucket === 'fail') ? 1 : rows.some((r) => r.bucket === 'pending') ? 8 : 0)
+} else if (a === 'run' && b === 'view') {
   const id = Number(argv[2])
-  const red = loadState().reds.find((r) => r.runId === id)
-  const check = red?.check ?? 'test'
-  console.log(`${check}\tRun gate\t2026-10-10T00:00:00Z FAIL ${check}: expected 2 got 3`)
-  console.log(`${check}\tRun gate\t2026-10-10T00:00:01Z ##[error]Process completed with exit code 1.`)
+  const run = state.runs.find((r) => r.databaseId === id)
+  if (!run) {
+    console.error(`could not find any workflow run with ID ${argv[2]}`)
+    process.exit(1)
+  }
+  if (argv.includes('--log-failed')) {
+    for (const check of run.failed) {
+      console.log(`${check}\tRun gate\t2026-10-10T00:00:00Z FAIL ${check}: expected 2 got 3`)
+      console.log(`${check}\tRun gate\t2026-10-10T00:00:01Z ##[error]Process completed with exit code 1.`)
+    }
+  } else {
+    console.log(JSON.stringify(pick(runJson(run), flag('--json'))))
+  }
+} else if (a === 'run' && b === 'list') {
+  const commit = flag('--commit')
+  const workflow = flag('--workflow')
+  const limit = Number(flag('--limit') ?? 20)
+  const rows = [...state.runs]
+    .filter((r) => (!commit || r.headSha === commit) && (!workflow || r.workflowName === workflow))
+    .sort((x, y) => y.databaseId - x.databaseId)
+    .slice(0, limit)
+    .map((r) => pick(runJson(r), flag('--json')))
+  console.log(JSON.stringify(rows))
+} else if (a === 'run' && b === 'rerun') {
+  // The rerun is queued: the run is in flight again until a later poll.
+  const run = state.runs.find((r) => r.databaseId === Number(argv[2]))
+  if (run) {
+    run.status = 'queued'
+    run.conclusion = ''
+    run.attempt += 1
+    saveState(state)
+  }
 }
-// `auth status`, `pr edit`, `run rerun` and everything else: exit 0, no output.
+// `auth status`, `pr edit` and everything else: exit 0, no output.
 process.exit(0)

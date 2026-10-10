@@ -1,14 +1,16 @@
-//! The CI leg of the closeout (PRD §8 FR-6): `gh pr checks --watch` on the
-//! draft PR, the failing check and its run from `gh run list`, the one flaky
-//! rerun and the log a fix worker reads. Every `gh` call runs in the repo
-//! root so the test harness's stub (`tests/stubs/gh`) answers; nothing here
-//! merges or marks a PR ready. The caps are today's prose: three fix rounds
+//! The CI leg of the closeout (PRD §8 FR-6): bounded polls of the draft PR's
+//! checks (`gh pr view --json headRefOid`, then `gh pr checks --json`), the
+//! run behind each failed check from its job link, the one flaky rerun and
+//! the log a fix worker reads. Every `gh` call runs in the repo root so the
+//! test harness's stub (`tests/stubs/gh`) answers; nothing here merges or
+//! marks a PR ready. The caps are today's prose: three fix rounds
 //! (`autonomy.md:77`), one rerun (`autonomy.md:78`), a red that is not this
-//! branch's blocks at once (`autonomy.md:79`).
+//! branch's, or an infrastructure fault, blocks at once (`autonomy.md:79`).
+use std::collections::{BTreeSet, HashSet};
 use std::path::Path;
 use std::process::Command;
 
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
 use crate::error::io;
 use crate::{Error, Result};
@@ -17,17 +19,37 @@ use crate::{Error, Result};
 pub const CI_FIX_ROUNDS: u32 = 3;
 /// Reruns of a flaky check at one head before the run blocks (`autonomy.md:78`).
 pub const CI_FLAKY_RERUNS: u32 = 1;
-/// Seconds between `gh pr checks --watch` polls; the env var lets a test
-/// shorten it without a config key.
+/// Seconds between two polls of the checks; the env var lets a test shorten
+/// it without a config key.
 pub const INTERVAL_ENV: &str = "FACTORY_CI_INTERVAL";
 pub const DEFAULT_INTERVAL: u64 = 60;
+/// Seconds the checks may stay pending after a push, a rerun or the watch's
+/// start before the run blocks.
+pub const TIMEOUT_ENV: &str = "FACTORY_CI_TIMEOUT";
+pub const DEFAULT_TIMEOUT: u64 = 6 * 60 * 60;
+/// Polls after a push, a rerun or the watch's start during which "no checks",
+/// a check missing from the last table or a PR head behind the push mean
+/// "not registered yet" rather than a verdict.
+pub const GRACE_POLLS: u64 = 5;
 
-pub fn interval() -> u64 {
-    std::env::var(INTERVAL_ENV)
+fn env_secs(name: &str, default: u64) -> u64 {
+    std::env::var(name)
         .ok()
         .and_then(|v| v.trim().parse().ok())
         .filter(|n| *n > 0)
-        .unwrap_or(DEFAULT_INTERVAL)
+        .unwrap_or(default)
+}
+
+pub fn interval() -> u64 {
+    env_secs(INTERVAL_ENV, DEFAULT_INTERVAL)
+}
+
+pub fn timeout() -> u64 {
+    env_secs(TIMEOUT_ENV, DEFAULT_TIMEOUT)
+}
+
+pub fn grace() -> u64 {
+    GRACE_POLLS * interval()
 }
 
 /// What a `gh` or `git` call printed and how it exited.
@@ -86,6 +108,34 @@ pub fn head(repo: &Path) -> Result<String> {
     Ok(out.stdout.trim().to_string())
 }
 
+/// The branch HEAD is on (`git symbolic-ref --quiet --short HEAD`); `None`
+/// when HEAD is detached.
+pub fn head_branch(repo: &Path) -> Result<Option<String>> {
+    let out = git(repo, &["symbolic-ref", "--quiet", "--short", "HEAD"])?;
+    let name = out.stdout.trim();
+    Ok((out.ok() && !name.is_empty()).then(|| name.to_string()))
+}
+
+/// Why the driver must not push or ship from here, or `None`: the run's
+/// branch is the default branch, there is no branch, or HEAD is not on it.
+pub fn branch_problem(branch: &str, default: &str, head: Option<&str>) -> Option<String> {
+    if branch.is_empty() || branch == "HEAD" {
+        return Some("the run names no feature branch".to_string());
+    }
+    if branch == default {
+        return Some(format!("the run's branch `{branch}` is the default branch"));
+    }
+    match head {
+        Some(h) if h == branch => None,
+        Some(h) => Some(format!(
+            "HEAD is on `{h}`, not the feature branch `{branch}`"
+        )),
+        None => Some(format!(
+            "HEAD is detached, not on the feature branch `{branch}`"
+        )),
+    }
+}
+
 /// `git push -u origin <branch>` — plain, never forced. `Err(text)` is the
 /// push refusing, for a block; the outer `Result` is git failing to start.
 pub fn push(repo: &Path, branch: &str) -> Result<std::result::Result<(), String>> {
@@ -93,97 +143,306 @@ pub fn push(repo: &Path, branch: &str) -> Result<std::result::Result<(), String>
     Ok(if out.ok() { Ok(()) } else { Err(out.text()) })
 }
 
-/// The verdict of one `gh pr checks <pr> --watch`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Checks {
-    /// Exit 0: every check passed.
-    Green,
-    /// A check failed; `check` is the first `fail` row's name.
-    Red { check: String, table: String },
-    /// `gh` said no checks are reported on the branch: nothing to watch.
-    None,
-    /// A non-zero exit with no `fail` row to name: `gh`'s own text.
-    Unreadable { text: String },
+/// A JSON string that may be `null`, read as empty.
+fn str_or_null<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<String, D::Error> {
+    Ok(Option::<String>::deserialize(d)?.unwrap_or_default())
 }
 
-/// `gh pr checks <pr> --watch --interval <s>`: blocks until the checks
-/// settle. The table is `name\tstatus\telapsed\turl`, one row a check.
-pub fn watch(repo: &Path, pr: &str) -> Result<Checks> {
-    let secs = interval().to_string();
-    let out = gh(repo, &["pr", "checks", pr, "--watch", "--interval", &secs])?;
-    if out.ok() {
-        return Ok(Checks::Green);
-    }
-    if let Some(check) = failing_check(&out.stdout) {
-        return Ok(Checks::Red {
-            check,
-            table: out.stdout.trim_end().to_string(),
+/// One row of `gh pr checks --json name,state,bucket,link,workflow`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct CheckRow {
+    #[serde(deserialize_with = "str_or_null")]
+    pub name: String,
+    #[serde(deserialize_with = "str_or_null")]
+    pub state: String,
+    #[serde(deserialize_with = "str_or_null")]
+    pub bucket: String,
+    #[serde(deserialize_with = "str_or_null")]
+    pub link: String,
+    #[serde(deserialize_with = "str_or_null")]
+    pub workflow: String,
+}
+
+pub const CHECK_FIELDS: &str = "name,state,bucket,link,workflow";
+
+/// What one `gh pr checks` printed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Checks {
+    Rows(Vec<CheckRow>),
+    /// `gh` said no checks are reported on the branch, or listed none.
+    None,
+    /// Neither rows nor "no checks": `gh`'s own text.
+    Unreadable {
+        text: String,
+    },
+}
+
+/// `gh pr checks <pr> --json …`, one poll. The JSON is read whatever the
+/// exit code: `gh` exits 1 on a failed check and 8 on a pending one.
+pub fn checks(repo: &Path, pr: &str) -> Result<Checks> {
+    let out = gh(repo, &["pr", "checks", pr, "--json", CHECK_FIELDS])?;
+    if let Ok(rows) = serde_json::from_str::<Vec<CheckRow>>(out.stdout.trim()) {
+        return Ok(if rows.is_empty() {
+            Checks::None
+        } else {
+            Checks::Rows(rows)
         });
     }
     let text = out.text();
-    if text.to_ascii_lowercase().contains("no checks") {
+    if text.to_ascii_lowercase().contains("no checks reported") {
         return Ok(Checks::None);
     }
     Ok(Checks::Unreadable { text })
 }
 
-/// The name on the first `fail` row of a `gh pr checks` table.
-pub fn failing_check(table: &str) -> Option<String> {
-    table.lines().find_map(|l| {
-        let mut cells = l.split('\t');
-        let name = cells.next()?.trim();
-        let status = cells.next()?.trim();
-        (status.eq_ignore_ascii_case("fail") && !name.is_empty()).then(|| name.to_string())
+/// `gh pr view <pr> --json headRefOid`: the commit the PR's checks run on.
+/// `Err(text)` is `gh` refusing or printing something else.
+pub fn pr_head(repo: &Path, pr: &str) -> Result<std::result::Result<String, String>> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct View {
+        #[serde(default, deserialize_with = "str_or_null")]
+        head_ref_oid: String,
+    }
+    let out = gh(repo, &["pr", "view", pr, "--json", "headRefOid"])?;
+    if !out.ok() {
+        return Ok(Err(out.text()));
+    }
+    Ok(match serde_json::from_str::<View>(out.stdout.trim()) {
+        Ok(v) if !v.head_ref_oid.is_empty() => Ok(v.head_ref_oid),
+        _ => Err(format!("no headRefOid in: {}", out.text())),
     })
 }
 
-/// One row of `gh run list --json`.
+/// How the watch reads one check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Class {
+    Pass,
+    Fail,
+    Pending,
+    /// The check never reached a verdict on the code: timed out, never
+    /// started, cancelled, waiting on an approval, gone stale.
+    Infra,
+}
+
+/// The check's class by its `state`, then by `gh`'s `bucket` for a state
+/// this list does not know. `STARTUP_FAILURE` is `pending` in `gh`'s buckets
+/// and would be waited on forever.
+pub fn class(row: &CheckRow) -> Class {
+    match row.state.to_ascii_uppercase().as_str() {
+        "SUCCESS" | "NEUTRAL" | "SKIPPED" => Class::Pass,
+        "FAILURE" | "ERROR" => Class::Fail,
+        "TIMED_OUT" | "STARTUP_FAILURE" | "CANCELLED" | "ACTION_REQUIRED" | "STALE" => Class::Infra,
+        "QUEUED" | "IN_PROGRESS" | "WAITING" | "PENDING" | "REQUESTED" | "EXPECTED" => {
+            Class::Pending
+        }
+        _ => match row.bucket.as_str() {
+            "pass" | "skipping" => Class::Pass,
+            "fail" => Class::Fail,
+            "cancel" => Class::Infra,
+            _ => Class::Pending,
+        },
+    }
+}
+
+/// The verdict of one poll.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Verdict {
+    /// Not settled; the reason, for the driver's log.
+    Pending(String),
+    Green,
+    /// The failed rows.
+    Red(Vec<CheckRow>),
+    /// The rows that never reached a verdict: blocks at once.
+    Infra(Vec<CheckRow>),
+    /// No check reported once the grace window is over: nothing to watch.
+    NoChecks,
+}
+
+/// One poll's rows judged. `stale` holds the job links the driver just
+/// reran (their rows are the old attempt's until the new one registers);
+/// `expected` the check names of the last settled table, which a fresh push
+/// registers one by one. Inside the grace window an empty table and a
+/// missing expected name are "not registered yet".
+pub fn judge(
+    rows: &[CheckRow],
+    stale: &HashSet<String>,
+    expected: &BTreeSet<String>,
+    in_grace: bool,
+) -> Verdict {
+    if rows.is_empty() {
+        return if in_grace {
+            Verdict::Pending("no checks reported yet".to_string())
+        } else {
+            Verdict::NoChecks
+        };
+    }
+    let is_stale = |r: &CheckRow| !r.link.is_empty() && stale.contains(&r.link);
+    let infra: Vec<CheckRow> = rows
+        .iter()
+        .filter(|r| !is_stale(r) && class(r) == Class::Infra)
+        .cloned()
+        .collect();
+    if !infra.is_empty() {
+        return Verdict::Infra(infra);
+    }
+    let rerun: Vec<&str> = rows
+        .iter()
+        .filter(|r| is_stale(r))
+        .map(|r| r.name.as_str())
+        .collect();
+    if !rerun.is_empty() {
+        return Verdict::Pending(format!("the rerun of {} has not registered", names(&rerun)));
+    }
+    let running: Vec<&str> = rows
+        .iter()
+        .filter(|r| class(r) == Class::Pending)
+        .map(|r| r.name.as_str())
+        .collect();
+    if !running.is_empty() {
+        return Verdict::Pending(format!("{} running", names(&running)));
+    }
+    if in_grace {
+        let seen: BTreeSet<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+        let missing: Vec<&str> = expected
+            .iter()
+            .map(String::as_str)
+            .filter(|n| !seen.contains(n))
+            .collect();
+        if !missing.is_empty() {
+            return Verdict::Pending(format!("{} not reported yet", names(&missing)));
+        }
+    }
+    let failed: Vec<CheckRow> = rows
+        .iter()
+        .filter(|r| class(r) == Class::Fail)
+        .cloned()
+        .collect();
+    if failed.is_empty() {
+        Verdict::Green
+    } else {
+        Verdict::Red(failed)
+    }
+}
+
+/// `a`, `a, b`: the distinct names in order, backticked.
+fn names(list: &[&str]) -> String {
+    let mut seen = HashSet::new();
+    list.iter()
+        .filter(|n| seen.insert(**n))
+        .map(|n| format!("`{n}`"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The distinct check names of `rows`, in order, joined by `, `: the name a
+/// red verdict goes by (event, pack, commit subject, block title).
+pub fn check_names(rows: &[CheckRow]) -> String {
+    let mut seen = HashSet::new();
+    rows.iter()
+        .filter(|r| seen.insert(r.name.as_str()))
+        .map(|r| r.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// `name  state  link`, one row a line: the table a block quotes.
+pub fn table(rows: &[CheckRow]) -> String {
+    rows.iter()
+        .map(|r| format!("{}\t{}\t{}\n", r.name, r.state, r.link))
+        .collect()
+}
+
+/// The Actions run id in a check's job link (`…/actions/runs/<id>/job/<j>`);
+/// `None` for a status from elsewhere.
+pub fn run_id(link: &str) -> Option<u64> {
+    let (_, rest) = link.split_once("/actions/runs/")?;
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
+}
+
+/// One workflow run as `gh run view` and `gh run list` print it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct CiRun {
     pub database_id: u64,
+    #[serde(deserialize_with = "str_or_null")]
     pub name: String,
+    #[serde(deserialize_with = "str_or_null")]
     pub workflow_name: String,
+    #[serde(deserialize_with = "str_or_null")]
     pub conclusion: String,
+    #[serde(deserialize_with = "str_or_null")]
     pub head_sha: String,
+    #[serde(deserialize_with = "str_or_null")]
+    pub status: String,
+    pub attempt: u64,
 }
 
-/// `gh run list --branch <branch> --limit 20 --json …`, newest first.
-pub fn runs(repo: &Path, branch: &str) -> Result<Vec<CiRun>> {
+impl CiRun {
+    /// Queued or running again (a rerun in flight): its failed checks are
+    /// the previous attempt's.
+    pub fn in_flight(&self) -> bool {
+        !self.status.is_empty() && !self.status.eq_ignore_ascii_case("completed")
+    }
+}
+
+pub const RUN_FIELDS: &str = "databaseId,name,workflowName,conclusion,headSha,status,attempt";
+
+/// `gh run view <id> --json …`: the run behind a failed check.
+pub fn run_view(repo: &Path, id: u64) -> Result<std::result::Result<CiRun, String>> {
+    let out = gh(
+        repo,
+        &["run", "view", &id.to_string(), "--json", RUN_FIELDS],
+    )?;
+    if !out.ok() {
+        return Ok(Err(out.text()));
+    }
+    Ok(serde_json::from_str(out.stdout.trim())
+        .map_err(|e| format!("not the expected JSON ({e}): {}", out.text())))
+}
+
+/// `gh run list --commit <sha> --workflow <w> --limit 100 --json …`: the
+/// runs of one workflow at one commit, newest first, whatever branch or
+/// event started them.
+pub fn runs_at(
+    repo: &Path,
+    sha: &str,
+    workflow: &str,
+) -> Result<std::result::Result<Vec<CiRun>, String>> {
     let out = gh(
         repo,
         &[
             "run",
             "list",
-            "--branch",
-            branch,
+            "--commit",
+            sha,
+            "--workflow",
+            workflow,
             "--limit",
-            "20",
+            "100",
             "--json",
-            "databaseId,name,workflowName,conclusion,headSha",
+            RUN_FIELDS,
         ],
     )?;
     if !out.ok() {
-        return Err(Error::Msg(format!("gh run list: {}", out.text())));
+        return Ok(Err(out.text()));
     }
-    serde_json::from_str(&out.stdout)
-        .map_err(|e| Error::Msg(format!("gh run list: not the expected JSON ({e})")))
+    Ok(serde_json::from_str(out.stdout.trim())
+        .map_err(|e| format!("not the expected JSON ({e}): {}", out.text())))
 }
 
-/// The failed run behind `check`: the newest failure whose name or workflow
-/// is the check, else the newest failure at all.
-pub fn failed_run<'a>(runs: &'a [CiRun], check: &str) -> Option<&'a CiRun> {
-    let failed = || runs.iter().filter(|r| r.conclusion == "failure");
-    failed()
-        .find(|r| r.name == check || r.workflow_name == check)
-        .or_else(|| failed().next())
-}
-
-/// A green run at `head` beside the red one: the same tree passed once, so
-/// the red is the check's, not the tree's (`autonomy.md:78`).
-pub fn green_at(runs: &[CiRun], head: &str) -> bool {
-    runs.iter()
-        .any(|r| r.head_sha == head && r.conclusion == "success")
+/// Another run of the failed run's workflow at the same commit passed: the
+/// same tree went green once, so the red is the check's, not the tree's
+/// (`autonomy.md:78`).
+pub fn passed_once(runs: &[CiRun], failed: &CiRun) -> bool {
+    runs.iter().any(|r| {
+        r.database_id != failed.database_id
+            && r.workflow_name == failed.workflow_name
+            && r.head_sha == failed.head_sha
+            && r.conclusion.eq_ignore_ascii_case("success")
+    })
 }
 
 /// `gh run view <id> --log-failed`: the failing steps' log, or `gh`'s text.
@@ -202,11 +461,12 @@ pub fn rerun(repo: &Path, id: u64) -> Result<std::result::Result<(), String>> {
     Ok(if out.ok() { Ok(()) } else { Err(out.text()) })
 }
 
-/// `gh pr create --draft --base <base> --title <title> --body-file <body>`;
-/// `Ok(url)` is the last non-empty stdout line.
+/// `gh pr create --draft --base <base> --title <title> --body-file <body>
+/// --head <branch>`; `Ok(url)` is the last non-empty stdout line.
 pub fn pr_create(
     repo: &Path,
     base: &str,
+    branch: &str,
     title: &str,
     body: &Path,
 ) -> Result<std::result::Result<String, String>> {
@@ -223,6 +483,8 @@ pub fn pr_create(
             title,
             "--body-file",
             &body,
+            "--head",
+            branch,
         ],
     )?;
     if !out.ok() {
@@ -282,43 +544,186 @@ pub fn pr_number(url: &str) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_first_fail_row_names_the_check() {
-        let table = "build\tpass\t1m2s\thttps://x/1\ntest\tfail\t3s\thttps://x/2\nlint\tfail\t1s\thttps://x/3\n";
-        assert_eq!(failing_check(table).as_deref(), Some("test"));
-        assert_eq!(failing_check("build\tpass\t1s\thttps://x/1\n"), None);
-        assert_eq!(failing_check("no checks reported\n"), None);
+    fn row(name: &str, state: &str, bucket: &str, link: &str) -> CheckRow {
+        CheckRow {
+            name: name.into(),
+            state: state.into(),
+            bucket: bucket.into(),
+            link: link.into(),
+            workflow: "CI".into(),
+        }
+    }
+
+    fn run(id: u64, workflow: &str, conclusion: &str, sha: &str) -> CiRun {
+        CiRun {
+            database_id: id,
+            name: workflow.into(),
+            workflow_name: workflow.into(),
+            conclusion: conclusion.into(),
+            head_sha: sha.into(),
+            status: "completed".into(),
+            attempt: 1,
+        }
+    }
+
+    fn none() -> (HashSet<String>, BTreeSet<String>) {
+        (HashSet::new(), BTreeSet::new())
     }
 
     #[test]
-    fn the_failed_run_prefers_the_named_check_then_the_newest_failure() {
-        let runs = vec![
-            CiRun {
-                database_id: 3,
-                name: "lint".into(),
-                workflow_name: "ci".into(),
-                conclusion: "failure".into(),
-                head_sha: "a".into(),
-            },
-            CiRun {
-                database_id: 2,
-                name: "test".into(),
-                workflow_name: "ci".into(),
-                conclusion: "failure".into(),
-                head_sha: "a".into(),
-            },
-            CiRun {
-                database_id: 1,
-                name: "test".into(),
-                workflow_name: "ci".into(),
-                conclusion: "success".into(),
-                head_sha: "a".into(),
-            },
+    fn the_verdict_waits_on_running_and_reports_every_failed_row() {
+        let (stale, expected) = none();
+        let rows = [
+            row("test", "FAILURE", "fail", "https://x/actions/runs/1/job/1"),
+            row(
+                "lint",
+                "IN_PROGRESS",
+                "pending",
+                "https://x/actions/runs/2/job/2",
+            ),
         ];
-        assert_eq!(failed_run(&runs, "test").map(|r| r.database_id), Some(2));
-        assert_eq!(failed_run(&runs, "other").map(|r| r.database_id), Some(3));
-        assert!(green_at(&runs, "a"));
-        assert!(!green_at(&runs, "b"));
+        assert_eq!(
+            judge(&rows, &stale, &expected, false),
+            Verdict::Pending("`lint` running".into())
+        );
+        let rows = [
+            row("test", "FAILURE", "fail", "https://x/actions/runs/1/job/1"),
+            row("build", "SUCCESS", "pass", "https://x/actions/runs/1/job/3"),
+            row("lint", "FAILURE", "fail", "https://x/actions/runs/2/job/2"),
+        ];
+        let Verdict::Red(failed) = judge(&rows, &stale, &expected, false) else {
+            panic!("not red")
+        };
+        assert_eq!(check_names(&failed), "test, lint");
+        let rows = [
+            row("test", "SUCCESS", "pass", "l1"),
+            row("docs", "SKIPPED", "skipping", "l2"),
+        ];
+        assert_eq!(judge(&rows, &stale, &expected, false), Verdict::Green);
+    }
+
+    #[test]
+    fn a_timeout_or_a_runner_that_never_started_blocks_even_beside_a_running_check() {
+        let (stale, expected) = none();
+        for (state, bucket) in [
+            ("TIMED_OUT", "fail"),
+            ("STARTUP_FAILURE", "pending"),
+            ("CANCELLED", "cancel"),
+            ("ACTION_REQUIRED", "fail"),
+        ] {
+            let rows = [
+                row("test", state, bucket, "l1"),
+                row("lint", "IN_PROGRESS", "pending", "l2"),
+            ];
+            assert_eq!(
+                judge(&rows, &stale, &expected, false),
+                Verdict::Infra(vec![row("test", state, bucket, "l1")]),
+                "{state}"
+            );
+        }
+        assert_eq!(class(&row("x", "", "cancel", "")), Class::Infra);
+        assert_eq!(class(&row("x", "NEW_STATE", "pending", "")), Class::Pending);
+    }
+
+    #[test]
+    fn a_rerun_row_and_a_check_not_yet_registered_wait_inside_the_grace() {
+        let stale: HashSet<String> = ["l1".to_string()].into();
+        let expected: BTreeSet<String> = ["lint".to_string(), "test".to_string()].into();
+        let red = [row("test", "FAILURE", "fail", "l1")];
+        assert_eq!(
+            judge(&red, &stale, &BTreeSet::new(), false),
+            Verdict::Pending("the rerun of `test` has not registered".into())
+        );
+        let green = [row("test", "SUCCESS", "pass", "l9")];
+        assert_eq!(
+            judge(&green, &HashSet::new(), &expected, true),
+            Verdict::Pending("`lint` not reported yet".into())
+        );
+        assert_eq!(
+            judge(&green, &HashSet::new(), &expected, false),
+            Verdict::Green
+        );
+        assert_eq!(
+            judge(&[], &HashSet::new(), &expected, true),
+            Verdict::Pending("no checks reported yet".into())
+        );
+        assert_eq!(
+            judge(&[], &HashSet::new(), &expected, false),
+            Verdict::NoChecks
+        );
+    }
+
+    #[test]
+    fn the_run_id_comes_from_the_job_link() {
+        assert_eq!(
+            run_id("https://github.com/o/r/actions/runs/123456/job/789"),
+            Some(123456)
+        );
+        assert_eq!(
+            run_id("https://example.invalid/actions/runs/1100/job/5001"),
+            Some(1100)
+        );
+        assert_eq!(run_id("https://ci.example.com/build/7"), None);
+        assert_eq!(run_id(""), None);
+    }
+
+    #[test]
+    fn flaky_needs_a_green_run_of_the_same_workflow_at_the_same_head() {
+        let failed = run(1000, "CI", "failure", "a");
+        // A green run of another workflow at the head is not this check's.
+        assert!(!passed_once(
+            &[failed.clone(), run(1100, "Lint", "success", "a")],
+            &failed
+        ));
+        // A green run of the workflow at another head is another tree.
+        assert!(!passed_once(
+            &[failed.clone(), run(990, "CI", "success", "b")],
+            &failed
+        ));
+        // The failed run itself never counts.
+        assert!(!passed_once(std::slice::from_ref(&failed), &failed));
+        assert!(passed_once(
+            &[failed.clone(), run(500, "CI", "success", "a")],
+            &failed
+        ));
+        let mut queued = failed.clone();
+        queued.status = "queued".into();
+        assert!(queued.in_flight());
+        assert!(!failed.in_flight());
+    }
+
+    #[test]
+    fn a_run_reads_null_strings_as_empty() {
+        let r: CiRun = serde_json::from_str(
+            r#"{"databaseId":7,"name":"CI","workflowName":"CI","conclusion":null,"headSha":"a","status":"in_progress","attempt":2}"#,
+        )
+        .unwrap();
+        assert_eq!(r.conclusion, "");
+        assert!(r.in_flight());
+        let rows: Vec<CheckRow> = serde_json::from_str(
+            r#"[{"name":"test","state":"FAILURE","bucket":"fail","link":null,"workflow":"CI"}]"#,
+        )
+        .unwrap();
+        assert_eq!(rows[0].link, "");
+    }
+
+    #[test]
+    fn the_driver_pushes_only_the_feature_branch_from_the_feature_branch() {
+        assert_eq!(branch_problem("feat/x", "main", Some("feat/x")), None);
+        assert_eq!(
+            branch_problem("main", "main", Some("main")).as_deref(),
+            Some("the run's branch `main` is the default branch")
+        );
+        assert_eq!(
+            branch_problem("feat/x", "main", Some("main")).as_deref(),
+            Some("HEAD is on `main`, not the feature branch `feat/x`")
+        );
+        assert_eq!(
+            branch_problem("feat/x", "main", None).as_deref(),
+            Some("HEAD is detached, not on the feature branch `feat/x`")
+        );
+        assert!(branch_problem("HEAD", "main", None).is_some());
+        assert!(branch_problem("", "main", Some("feat/x")).is_some());
     }
 
     #[test]
@@ -332,6 +737,9 @@ mod tests {
     fn the_interval_defaults_and_reads_the_env() {
         // Not set in the test environment; a bad value falls back too.
         assert_eq!(DEFAULT_INTERVAL, 60);
+        assert_eq!(DEFAULT_TIMEOUT, 21_600);
+        assert_eq!(GRACE_POLLS, 5);
+        assert_eq!(env_secs("FACTORY_CI_NO_SUCH_VAR", 7), 7);
         assert_eq!(CI_FIX_ROUNDS, 3);
         assert_eq!(CI_FLAKY_RERUNS, 1);
     }

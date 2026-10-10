@@ -23,6 +23,7 @@ const AGENT_LOG: &str = "docs/features/001-fixture/agent-log.md";
 const PRD: &str = "docs/features/001-fixture/prd.md";
 const RETRO: &str = "docs/features/001-fixture/retro.md";
 const PR_URL: &str = "https://example.invalid/pr/1";
+const RUN_FIELDS: &str = "databaseId,name,workflowName,conclusion,headSha,status,attempt";
 const CI_FIX: &str = "Fix the red CI check `test` on the PR of PRD-001 as the appended system prompt says. Return the STATUS block.";
 const RETRO_KEYS: [&str; 12] = [
     "gate_runs",
@@ -305,6 +306,57 @@ fn block_heading(fx: &Fixture, id: &str, phase: &str) -> String {
     line
 }
 
+/// Each line fails the first `gh` call whose argv starts with it, once.
+fn gh_fail(fx: &Fixture, prefixes: &[&str]) {
+    let dir = fx.path().join("scenario");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("gh-fail"), prefixes.join("\n") + "\n").unwrap();
+}
+
+/// One poll a second: a pending check costs a second, not a minute.
+const FAST: [(&str, &str); 1] = [("FACTORY_CI_INTERVAL", "1")];
+
+/// `factory run 001` with the driver's environment extended by `env`.
+fn start_with(fx: &Fixture, env: &[(&str, &str)]) -> PathBuf {
+    let out = fx
+        .command(BIN)
+        .args(["run", "001"])
+        .envs(env.iter().copied())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    only_run_dir(fx)
+}
+
+fn answer(fx: &Fixture, id: &str, text: &str) {
+    let out = factory(fx, &["answer", id, text]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+}
+
+/// The `closeout_blocked` event of `id`, once it is there.
+fn wait_block_id(fx: &Fixture, dir: &Path, id: &str, secs: u64) -> Value {
+    wait_until(fx, dir, id, secs, || {
+        of_kind(dir, "closeout_blocked")
+            .iter()
+            .any(|e| e["block_id"] == id)
+    });
+    of_kind(dir, "closeout_blocked")
+        .into_iter()
+        .find(|e| e["block_id"] == id)
+        .unwrap()
+}
+
+/// Parked: `n` `run_waiting` events so far.
+fn wait_parked(fx: &Fixture, dir: &Path, n: usize, secs: u64) {
+    wait_until(fx, dir, &format!("run_waiting #{n}"), secs, || {
+        of_kind(dir, "run_waiting").len() >= n
+    });
+}
+
+fn short(sha: &str) -> &str {
+    &sha[..7]
+}
+
 #[test]
 fn a_finished_board_polishes_ships_pushes_and_opens_the_draft_pr() {
     let fx = Fixture::new("closeout-green");
@@ -439,17 +491,20 @@ fn a_finished_board_polishes_ships_pushes_and_opens_the_draft_pr() {
     assert_eq!(
         gh_calls(&fx, "pr create"),
         [format!(
-            "pr create --draft --base main --title \"PRD-001: Fixture\" --body-file {}",
+            "pr create --draft --base main --title \"PRD-001: Fixture\" --body-file {} --head feat/fixture",
             dir.join("pr-body.md").display()
         )]
     );
     assert_eq!(
         gh_calls(&fx, "pr checks"),
-        ["pr checks 1 --watch --interval 60"]
+        ["pr checks 1 --json name,state,bucket,link,workflow"]
     );
     assert_eq!(
         gh_calls(&fx, "pr view"),
-        ["pr view feat/fixture --json url,state"]
+        [
+            "pr view feat/fixture --json url,state",
+            "pr view 1 --json headRefOid"
+        ]
     );
     assert!(gh_calls(&fx, "pr edit").is_empty());
     assert!(gh_calls(&fx, "run rerun").is_empty());
@@ -607,11 +662,18 @@ fn a_red_check_gets_one_fix_round_then_green() {
     assert_eq!(gh_calls(&fx, "pr create").len(), 1);
     assert_eq!(
         gh_calls(&fx, "run list"),
+        [format!(
+            "run list --commit {} --workflow CI --limit 100 --json {RUN_FIELDS}",
+            sha_of(&fx, "docs: ship PRD-001")
+        )]
+    );
+    assert_eq!(
+        gh_calls(&fx, "run view"),
         [
-            "run list --branch feat/fixture --limit 20 --json databaseId,name,workflowName,conclusion,headSha"
+            format!("run view 1000 --json {RUN_FIELDS}"),
+            "run view 1000 --log-failed".to_string()
         ]
     );
-    assert_eq!(gh_calls(&fx, "run view"), ["run view 1000 --log-failed"]);
     assert!(gh_calls(&fx, "run rerun").is_empty());
     assert!(gh_calls(&fx, "pr edit").is_empty());
 
@@ -797,9 +859,576 @@ fn a_red_check_at_a_foreign_head_blocks_without_a_fix_worker() {
     block_heading(&fx, "BLOCK-1", "ci");
     assert_eq!(prompts(&fx).len(), 6, "{:?}", prompts(&fx));
     assert!(gh_calls(&fx, "run rerun").is_empty());
-    assert!(gh_calls(&fx, "run view").is_empty());
+    assert_eq!(
+        gh_calls(&fx, "run view"),
+        [format!("run view 1000 --json {RUN_FIELDS}")]
+    );
     assert!(!subjects(&fx).iter().any(|s| s.starts_with("fix: CI")));
     stop(&fx, &dir);
+}
+
+#[test]
+fn a_red_check_beside_another_workflows_green_is_not_flaky() {
+    let fx = Fixture::new("closeout-ci-other-green");
+    fx.chain();
+    fx.script_ci(&["red:test pass:lint/Lint", "pass:test pass:lint/Lint"]);
+    fx.write_plan(&plan_with(&[step("polish"), step("fix")]));
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "finished", 120);
+
+    // `Lint` green at the head says nothing of `test`: only another run of
+    // `CI` passing there would make it flaky. A fix round, no rerun.
+    assert!(gh_calls(&fx, "run rerun").is_empty(), "{:?}", fx.gh_log());
+    assert_eq!(roles(&fx, &dir)[5..], ["polish", "fix"]);
+    assert_eq!(
+        gh_calls(&fx, "run list"),
+        [format!(
+            "run list --commit {} --workflow CI --limit 100 --json {RUN_FIELDS}",
+            sha_of(&fx, "docs: ship PRD-001")
+        )]
+    );
+    assert_eq!(
+        kinds_from(&dir, "pr_opened"),
+        [
+            "pr_opened",
+            "ci_red",
+            "ci_fix_spawned",
+            "ci_fix_committed",
+            "ci_green",
+            "run_finished"
+        ]
+    );
+}
+
+#[test]
+fn two_red_workflows_get_one_fix_round_with_both_runs_logs() {
+    let fx = Fixture::new("closeout-ci-two-red");
+    fx.chain();
+    fx.script_ci(&["red:test red:lint/Lint", "pass:test pass:lint/Lint"]);
+    fx.write_plan(&plan_with(&[step("polish"), step("fix")]));
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "finished", 120);
+
+    // Both checks in one round; each run comes from its check's job link —
+    // `CI`'s 1000 and `Lint`'s 1100 — and both logs reach the worker.
+    assert_eq!(roles(&fx, &dir)[5..], ["polish", "fix"]);
+    assert_eq!(of_kind(&dir, "ci_red")[0]["check"], "test, lint");
+    assert_eq!(
+        gh_calls(&fx, "run view"),
+        [
+            format!("run view 1000 --json {RUN_FIELDS}"),
+            format!("run view 1100 --json {RUN_FIELDS}"),
+            "run view 1000 --log-failed".to_string(),
+            "run view 1100 --log-failed".to_string(),
+        ]
+    );
+    let (name, pack) = pack_of(&fx.calls()[6]);
+    assert_eq!(name, "ci-fix-1-7.md");
+    for want in [
+        "Failing check: `test, lint`",
+        "--- run 1000 (`CI`), failed: test\n",
+        "FAIL test: expected 2 got 3",
+        "--- run 1100 (`Lint`), failed: lint\n",
+        "FAIL lint: expected 2 got 3",
+    ] {
+        assert!(pack.contains(want), "{want:?} missing from:\n{pack}");
+    }
+    assert!(
+        subjects(&fx).contains(&"fix: CI test, lint".to_string()),
+        "{:?}",
+        subjects(&fx)
+    );
+    assert!(gh_calls(&fx, "run rerun").is_empty());
+    assert_eq!(of_kind(&dir, "ci_green")[0]["head"], head(&fx));
+}
+
+#[test]
+fn a_timeout_or_a_runner_that_never_started_blocks_at_once_and_proceed_ends_the_watch() {
+    let fx = Fixture::new("closeout-ci-infra");
+    fx.chain();
+    // `lint` is still running: the block does not wait for it.
+    fx.script_ci(&["timed_out:test startup_failure:build/Build pending:lint/Lint"]);
+    fx.write_plan(&built());
+    let dir = start(&fx);
+    let blocked = wait_block(&fx, &dir, 90);
+    assert_eq!(blocked["phase"], "ci");
+    assert_eq!(
+        blocked["question"],
+        "CI did not run to a verdict: test, build"
+    );
+    block_heading(&fx, "BLOCK-1", "ci");
+    let log = fx.read(AGENT_LOG);
+    for want in [
+        "  test\tTIMED_OUT\thttps://example.invalid/actions/runs/1000/job/5000\n",
+        "  build\tSTARTUP_FAILURE\thttps://example.invalid/actions/runs/1100/job/5001\n",
+        "answer `proceed` to take the checks over",
+    ] {
+        assert!(log.contains(want), "{want:?} missing from\n{log}");
+    }
+    wait_parked(&fx, &dir, 1, 30);
+    assert_eq!(prompts(&fx).len(), 6, "no fix worker");
+    assert_eq!(gh_calls(&fx, "pr checks").len(), 1);
+    // Only to see whether a rerun is already running.
+    assert_eq!(
+        gh_calls(&fx, "run view"),
+        [
+            format!("run view 1000 --json {RUN_FIELDS}"),
+            format!("run view 1100 --json {RUN_FIELDS}")
+        ]
+    );
+    assert!(gh_calls(&fx, "run list").is_empty());
+    assert!(gh_calls(&fx, "run rerun").is_empty());
+    assert_eq!(
+        kinds_from(&dir, "pr_opened"),
+        ["pr_opened", "closeout_blocked", "run_waiting"]
+    );
+
+    answer(&fx, "BLOCK-1", "proceed");
+    wait_phase(&fx, &dir, "finished", 60);
+    assert_eq!(
+        gh_calls(&fx, "pr checks").len(),
+        1,
+        "no watch after proceed"
+    );
+    assert!(of_kind(&dir, "ci_green").is_empty());
+    assert_eq!(
+        kinds_from(&dir, "block_answered"),
+        ["block_answered", "run_finished"]
+    );
+    assert_eq!(events(&dir).pop().unwrap()["pr_url"], PR_URL);
+}
+
+#[test]
+fn a_refused_run_list_blocks_instead_of_a_blind_fix_round() {
+    let fx = Fixture::new("closeout-ci-run-list-refused");
+    fx.chain();
+    gh_fail(&fx, &["run list"]);
+    fx.script_ci(&["red:test"]);
+    fx.write_plan(&built());
+    let dir = start(&fx);
+    let blocked = wait_block(&fx, &dir, 90);
+    assert_eq!(blocked["phase"], "ci");
+    assert_eq!(
+        blocked["question"],
+        "gh run list refused: stub gh: scripted failure: run list"
+    );
+    block_heading(&fx, "BLOCK-1", "ci");
+    assert_eq!(prompts(&fx).len(), 6, "no fix worker: {:?}", prompts(&fx));
+    assert!(gh_calls(&fx, "run rerun").is_empty());
+    assert!(!subjects(&fx).iter().any(|s| s.starts_with("fix: CI")));
+    stop(&fx, &dir);
+}
+
+#[test]
+fn no_checks_right_after_the_push_are_waited_on_for_the_grace() {
+    let fx = Fixture::new("closeout-ci-none-then-green");
+    fx.chain();
+    fx.script_ci(&["none", "none", "green"]);
+    fx.write_plan(&built());
+    let dir = start_with(&fx, &FAST);
+    wait_phase(&fx, &dir, "finished", 90);
+    assert_eq!(gh_calls(&fx, "pr checks").len(), 3, "{:?}", fx.gh_log());
+    assert_eq!(of_kind(&dir, "ci_green").len(), 1);
+    assert_eq!(
+        driver_log(&dir)
+            .matches("ci: waiting — no checks reported yet")
+            .count(),
+        1,
+        "{}",
+        driver_log(&dir)
+    );
+}
+
+#[test]
+fn after_a_fix_push_the_watch_waits_for_the_pr_to_reach_the_pushed_head() {
+    let fx = Fixture::new("closeout-ci-lag");
+    fx.chain();
+    // Poll 2: the PR still shows the ship commit and its red.
+    fx.script_ci(&["red:test", "lag", "green"]);
+    fx.write_plan(&plan_with(&[step("polish"), step("fix")]));
+    let dir = start_with(&fx, &FAST);
+    wait_phase(&fx, &dir, "finished", 120);
+
+    // One fix round: the old red the PR still showed was not a second one.
+    assert_eq!(roles(&fx, &dir)[5..], ["polish", "fix"]);
+    assert_eq!(of_kind(&dir, "ci_red").len(), 1);
+    assert_eq!(
+        gh_calls(&fx, "pr view"),
+        [
+            "pr view feat/fixture --json url,state",
+            "pr view 1 --json headRefOid",
+            "pr view 1 --json headRefOid",
+            "pr view 1 --json headRefOid"
+        ]
+    );
+    assert_eq!(gh_calls(&fx, "pr checks").len(), 2, "{:?}", fx.gh_log());
+    assert_eq!(of_kind(&dir, "ci_green")[0]["head"], head(&fx));
+    let ship = sha_of(&fx, "docs: ship PRD-001");
+    let fix = head(&fx);
+    assert!(
+        driver_log(&dir).contains(&format!(
+            "ci: waiting — the PR is still at {}, the push of {} has not reached it",
+            short(&ship),
+            short(&fix)
+        )),
+        "{}",
+        driver_log(&dir)
+    );
+}
+
+#[test]
+fn after_a_rerun_the_stale_red_is_waited_on_not_judged() {
+    let fx = Fixture::new("closeout-ci-rerun-stale");
+    fx.chain();
+    // Poll 2: the rerun has not registered, the old red row is back.
+    fx.script_ci(&["flaky:test", "stale", "green"]);
+    fx.write_plan(&built());
+    let dir = start_with(&fx, &FAST);
+    wait_phase(&fx, &dir, "finished", 90);
+    assert_eq!(gh_calls(&fx, "run rerun"), ["run rerun 1000 --failed"]);
+    assert_eq!(gh_calls(&fx, "pr checks").len(), 3);
+    assert!(of_kind(&dir, "closeout_blocked").is_empty());
+    assert_eq!(
+        kinds_from(&dir, "pr_opened"),
+        [
+            "pr_opened",
+            "ci_red",
+            "ci_rerun",
+            "ci_green",
+            "run_finished"
+        ]
+    );
+    assert!(
+        driver_log(&dir).contains("ci: waiting — the rerun of `test` has not registered"),
+        "{}",
+        driver_log(&dir)
+    );
+}
+
+#[test]
+fn a_refused_rerun_blocks_instead_of_a_fix_round() {
+    let fx = Fixture::new("closeout-ci-rerun-refused");
+    fx.chain();
+    gh_fail(&fx, &["run rerun"]);
+    fx.script_ci(&["flaky:test"]);
+    fx.write_plan(&built());
+    let dir = start(&fx);
+    let blocked = wait_block(&fx, &dir, 90);
+    assert_eq!(blocked["phase"], "ci");
+    assert_eq!(
+        blocked["question"],
+        "gh run rerun 1000 refused: stub gh: scripted failure: run rerun"
+    );
+    block_heading(&fx, "BLOCK-1", "ci");
+    assert_eq!(gh_calls(&fx, "run rerun"), ["run rerun 1000 --failed"]);
+    assert!(of_kind(&dir, "ci_rerun").is_empty());
+    assert_eq!(prompts(&fx).len(), 6, "no fix worker: {:?}", prompts(&fx));
+    assert!(!subjects(&fx).iter().any(|s| s.starts_with("fix: CI")));
+    stop(&fx, &dir);
+}
+
+#[test]
+fn a_second_flaky_check_at_the_same_head_gets_its_own_rerun() {
+    let fx = Fixture::new("closeout-ci-two-flaky");
+    fx.chain();
+    fx.script_ci(&[
+        "flaky:test pass:lint",
+        "pass:test flaky:lint",
+        "pass:test pass:lint",
+    ]);
+    fx.write_plan(&built());
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "finished", 90);
+    assert_eq!(
+        gh_calls(&fx, "run rerun"),
+        ["run rerun 1000 --failed", "run rerun 1001 --failed"]
+    );
+    let reruns: Vec<Value> = of_kind(&dir, "ci_rerun")
+        .iter()
+        .map(|e| json!([e["check"], e["run_id"]]))
+        .collect();
+    assert_eq!(reruns, [json!(["test", 1000]), json!(["lint", 1001])]);
+    assert!(of_kind(&dir, "closeout_blocked").is_empty());
+    assert_eq!(prompts(&fx).len(), 6, "no fix worker");
+    assert_eq!(of_kind(&dir, "ci_green").len(), 1);
+}
+
+#[test]
+fn a_stop_during_a_pending_check_ends_the_watch_within_seconds() {
+    let fx = Fixture::new("closeout-ci-stop");
+    fx.chain();
+    // The default interval: the next poll is a minute away.
+    fx.script_ci(&["pending:test"]);
+    fx.write_plan(&built());
+    let dir = start(&fx);
+    wait_until(&fx, &dir, "the watch waiting", 90, || {
+        driver_log(&dir).contains("ci: waiting — `test` running")
+    });
+    let asked = Instant::now();
+    stop(&fx, &dir);
+    assert!(
+        asked.elapsed() < Duration::from_secs(20),
+        "the stop took {:?}",
+        asked.elapsed()
+    );
+    assert_eq!(of_kind(&dir, "run_stopped").len(), 1);
+    assert!(of_kind(&dir, "ci_green").is_empty());
+    assert_eq!(gh_calls(&fx, "pr checks").len(), 1);
+}
+
+#[test]
+fn a_check_pending_past_the_timeout_blocks_and_proceed_ends_the_watch() {
+    let fx = Fixture::new("closeout-ci-timeout");
+    fx.chain();
+    fx.script_ci(&["pending:test"; 60]);
+    fx.write_plan(&built());
+    let dir = start_with(
+        &fx,
+        &[("FACTORY_CI_INTERVAL", "1"), ("FACTORY_CI_TIMEOUT", "3")],
+    );
+    let blocked = wait_block(&fx, &dir, 90);
+    assert_eq!(blocked["phase"], "ci");
+    assert_eq!(blocked["question"], "CI still pending after 3s");
+    block_heading(&fx, "BLOCK-1", "ci");
+    let log = fx.read(AGENT_LOG);
+    assert!(log.contains(": `test` running. The last table:\n"), "{log}");
+    wait_parked(&fx, &dir, 1, 30);
+    let polls = gh_calls(&fx, "pr checks").len();
+    assert!((3..=6).contains(&polls), "{polls} polls in 3s");
+    assert!(of_kind(&dir, "ci_green").is_empty());
+
+    answer(&fx, "BLOCK-1", "`proceed`");
+    wait_phase(&fx, &dir, "finished", 60);
+    assert_eq!(
+        gh_calls(&fx, "pr checks").len(),
+        polls,
+        "no watch after proceed"
+    );
+    assert!(of_kind(&dir, "ci_green").is_empty());
+    assert_eq!(
+        kinds_from(&dir, "block_answered"),
+        ["block_answered", "run_finished"]
+    );
+}
+
+#[test]
+fn proceed_to_the_flaky_block_finishes_without_another_watch() {
+    let fx = Fixture::new("closeout-ci-flaky-proceed");
+    fx.chain();
+    fx.script_ci(&["flaky:test", "flaky:test"]);
+    fx.write_plan(&built());
+    let dir = start(&fx);
+    let blocked = wait_block(&fx, &dir, 90);
+    assert_eq!(
+        blocked["question"],
+        "flaky check test red again after its rerun"
+    );
+    wait_parked(&fx, &dir, 1, 30);
+    answer(&fx, "BLOCK-1", "2. proceed");
+    wait_phase(&fx, &dir, "finished", 60);
+    assert_eq!(gh_calls(&fx, "pr checks").len(), 2, "{:?}", fx.gh_log());
+    assert!(of_kind(&dir, "ci_green").is_empty());
+    assert_eq!(
+        kinds_from(&dir, "block_answered"),
+        ["block_answered", "run_finished"]
+    );
+    assert!(
+        driver_log(&dir).contains("ci: BLOCK-1 answered `proceed` — the checks are the owner's"),
+        "{}",
+        driver_log(&dir)
+    );
+    assert_eq!(events(&dir).pop().unwrap()["pr_url"], PR_URL);
+}
+
+#[test]
+fn proceed_to_a_refused_pr_create_finishes_with_the_owners_pr() {
+    let fx = Fixture::new("closeout-pr-create-proceed");
+    fx.chain();
+    gh_fail(&fx, &["pr create"]);
+    fx.write_plan(&built());
+    let dir = start(&fx);
+    let blocked = wait_block(&fx, &dir, 90);
+    assert_eq!(blocked["phase"], "pr");
+    assert_eq!(
+        blocked["question"],
+        "gh pr create refused: stub gh: scripted failure: pr create"
+    );
+    wait_parked(&fx, &dir, 1, 30);
+    answer(&fx, "BLOCK-1", "proceed");
+    wait_phase(&fx, &dir, "finished", 60);
+    assert_eq!(gh_calls(&fx, "pr create").len(), 1, "{:?}", fx.gh_log());
+    assert!(gh_calls(&fx, "pr checks").is_empty());
+    assert!(state(&dir)["pr_url"].is_null());
+    assert_eq!(
+        kinds_from(&dir, "block_answered"),
+        ["block_answered", "run_finished"]
+    );
+    assert!(events(&dir).pop().unwrap()["pr_url"].is_null());
+}
+
+#[test]
+fn an_answer_to_the_cap_block_gives_three_fresh_fix_rounds() {
+    let fx = Fixture::new("closeout-ci-cap-answered");
+    fx.chain();
+    fx.script_ci(&["red:test"; 5]);
+    fx.write_plan(&plan_with(&[
+        done(),
+        step("fix"),
+        step("fix"),
+        step("fix"),
+        step("fix"),
+    ]));
+    let dir = start(&fx);
+    let blocked = wait_block(&fx, &dir, 150);
+    assert_eq!(blocked["question"], "CI red after 3 fix rounds: test");
+    wait_parked(&fx, &dir, 1, 30);
+    answer(&fx, "BLOCK-1", "fixed the fixture by hand");
+    wait_phase(&fx, &dir, "finished", 120);
+
+    // The cap counts the rounds since the answer: a fourth round runs.
+    let rounds: Vec<u64> = of_kind(&dir, "ci_fix_spawned")
+        .iter()
+        .map(|e| e["round"].as_u64().unwrap())
+        .collect();
+    assert_eq!(rounds, [1, 2, 3, 4]);
+    let reds: Vec<u64> = of_kind(&dir, "ci_red")
+        .iter()
+        .map(|e| e["round"].as_u64().unwrap())
+        .collect();
+    assert_eq!(reds, [0, 1, 2, 3, 0]);
+    let names: Vec<String> = fx.calls()[6..].iter().map(|c| pack_of(c).0).collect();
+    assert_eq!(
+        names,
+        [
+            "ci-fix-1-7.md",
+            "ci-fix-2-8.md",
+            "ci-fix-3-9.md",
+            "ci-fix-4-10.md"
+        ]
+    );
+    assert_eq!(fm_value(&fx, RETRO, "ci_cycles"), "4");
+    assert_eq!(of_kind(&dir, "ci_green")[0]["head"], head(&fx));
+    assert_eq!(origin_head(&fx, "feat/fixture"), Some(head(&fx)));
+}
+
+#[test]
+fn the_push_refuses_a_head_off_the_feature_branch_and_the_pr_names_its_head() {
+    let fx = Fixture::new("closeout-push-off-branch");
+    fx.chain();
+    gh_fail(&fx, &["pr create"]);
+    fx.write_plan(&built());
+    let dir = start(&fx);
+    let first = wait_block_id(&fx, &dir, "BLOCK-1", 90);
+    assert_eq!(first["phase"], "pr");
+    wait_parked(&fx, &dir, 1, 30);
+
+    // HEAD moves off the feature branch while the run is parked.
+    fx.git(&["switch", "-c", "stray"]);
+    answer(&fx, "BLOCK-1", "gh is fixed");
+    let second = wait_block_id(&fx, &dir, "BLOCK-2", 60);
+    assert_eq!(second["phase"], "pr");
+    assert_eq!(
+        second["question"],
+        "push stopped: HEAD is on `stray`, not the feature branch `feat/fixture`"
+    );
+    block_heading(&fx, "BLOCK-2", "pr");
+    assert!(
+        fx.read(AGENT_LOG)
+            .contains("1. put HEAD back on the feature branch (`git switch feat/fixture`"),
+        "{}",
+        fx.read(AGENT_LOG)
+    );
+    assert_eq!(origin_head(&fx, "stray"), None, "nothing pushed from stray");
+    assert_eq!(gh_calls(&fx, "pr create").len(), 1);
+    wait_parked(&fx, &dir, 2, 30);
+
+    fx.git(&["switch", "feat/fixture"]);
+    answer(&fx, "BLOCK-2", "back on the branch");
+    wait_phase(&fx, &dir, "finished", 60);
+    let create = format!(
+        "pr create --draft --base main --title \"PRD-001: Fixture\" --body-file {} --head feat/fixture",
+        dir.join("pr-body.md").display()
+    );
+    assert_eq!(gh_calls(&fx, "pr create"), [create.clone(), create]);
+    assert_eq!(origin_head(&fx, "feat/fixture"), Some(head(&fx)));
+    assert_eq!(origin_head(&fx, "stray"), None);
+    assert_eq!(state(&dir)["pr_url"], PR_URL);
+}
+
+#[test]
+fn a_shipped_board_without_its_ship_commit_ships_again() {
+    let fx = Fixture::new("closeout-ship-uncommitted");
+    fx.chain();
+    fx.write_plan(&plan_with(&[step("dead"), step("dead")]));
+    let dir = start(&fx);
+    let blocked = wait_block(&fx, &dir, 90);
+    assert_eq!(blocked["question"], "Two polish workers died");
+    wait_parked(&fx, &dir, 1, 30);
+
+    // `docs ship` ran and its commit did not: what a driver killed between
+    // the two leaves behind.
+    fx.docs(&["ship", "001"]);
+    assert_eq!(fm_value(&fx, PRD, "status"), "shipped");
+    assert_ne!(
+        fx.git(&["status", "--porcelain"]).trim(),
+        "",
+        "the ship is staged, not committed"
+    );
+    answer(&fx, "BLOCK-1", "the board is shipped, go on");
+    wait_phase(&fx, &dir, "finished", 90);
+
+    assert_eq!(
+        roles(&fx, &dir)[5..],
+        ["polish", "polish"],
+        "no third polish"
+    );
+    assert_eq!(
+        fx.git(&["log", "-1", "--format=%s"]).trim(),
+        "docs: ship PRD-001"
+    );
+    let ship = sha_of(&fx, "docs: ship PRD-001");
+    assert!(files_of(&fx, &ship).contains(&PRD.to_string()));
+    assert!(
+        fx.git(&["show", &format!("HEAD:{PRD}")])
+            .contains("status: shipped"),
+        "HEAD holds the ship"
+    );
+    assert_eq!(fx.git(&["status", "--porcelain"]).trim(), "", "tree dirty");
+    assert_eq!(gh_calls(&fx, "pr create").len(), 1);
+    assert_eq!(origin_head(&fx, "feat/fixture"), Some(head(&fx)));
+    assert!(
+        driver_log(&dir).contains("closeout — PRD shipped but not committed, resumed at ship"),
+        "{}",
+        driver_log(&dir)
+    );
+}
+
+#[test]
+fn proceed_to_the_dead_polish_block_ships_without_a_third_worker() {
+    let fx = Fixture::new("closeout-polish-proceed");
+    fx.chain();
+    fx.write_plan(&plan_with(&[step("dead"), step("dead")]));
+    let dir = start(&fx);
+    let blocked = wait_block(&fx, &dir, 90);
+    assert_eq!(blocked["question"], "Two polish workers died");
+    assert!(
+        fx.read(AGENT_LOG)
+            .contains("commit, and answer this block with `proceed` — the driver ships from there"),
+        "{}",
+        fx.read(AGENT_LOG)
+    );
+    wait_parked(&fx, &dir, 1, 30);
+    answer(&fx, "BLOCK-1", "proceed");
+    wait_phase(&fx, &dir, "finished", 90);
+    assert_eq!(
+        roles(&fx, &dir)[5..],
+        ["polish", "polish"],
+        "no third polish"
+    );
+    assert_eq!(subjects(&fx)[7..], ["docs: ship PRD-001"]);
+    assert_eq!(fm_value(&fx, PRD, "status"), "shipped");
+    assert_eq!(gh_calls(&fx, "pr create").len(), 1);
+    assert_eq!(events(&dir).pop().unwrap()["kind"], "run_finished");
 }
 
 #[test]

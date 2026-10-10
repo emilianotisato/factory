@@ -6,23 +6,26 @@
 //! and the PR body in its last turn; the driver commits what it wrote as
 //! `polish: review fixes`. Ship is `docs ship NNN`, the twelve numeric retro
 //! keys from the store (`factory report`'s rows, FR-8), `render --write` and
-//! `docs: ship PRD-NNN`. The PR is `gh pr create --draft`; a resume after
-//! `pr_opened` edits it instead. CI is `gh pr checks --watch`, three fix
-//! rounds and one flaky rerun as `autonomy.md:77-79` prescribe. Nothing here
-//! merges or marks the PR ready — the owner does.
+//! `docs: ship PRD-NNN`. The PR is `gh pr create --draft --head <branch>`; a
+//! resume after `pr_opened` edits it instead. Ship and push happen only from
+//! the run's feature branch, never the default one. CI is bounded polls of
+//! the PR's checks at the pushed head, three fix rounds and one flaky rerun
+//! as `autonomy.md:77-79` prescribe. Nothing here merges or marks the PR
+//! ready — the owner does.
 //!
 //! Every step is idempotent on re-entry: the events say what landed
 //! (`polish_done`, `shipped`), `state.json` keeps the PR URL, and an open
 //! closeout block (`· polish ·`, `· pr ·`, `· ci ·`) keeps the park until the
 //! owner answers.
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use crate::answers;
 use crate::checkpoint::{Outcome, lowest_free_block};
-use crate::ci::{self, Checks};
+use crate::ci::{self, CheckRow, Checks, CiRun, Verdict};
 use crate::cli::report::{self, Report};
 use crate::cli::run::load_preflight;
 use crate::commit::{self, Pathspec};
@@ -61,6 +64,18 @@ pub const RETRO_KEYS: [&str; 12] = [
 /// The PR body the polish worker writes, in the run dir.
 pub const PR_BODY_FILE: &str = "pr-body.md";
 
+// The closeout blocks whose `proceed` answer the driver reads, by title.
+const POLISH_DIED: &str = "Two polish workers died";
+const PR_EDIT: &str = "gh pr edit refused";
+const PR_CREATE: &str = "gh pr create refused";
+const CHECKS_UNREADABLE: &str = "gh pr checks unreadable";
+const VIEW_UNREADABLE: &str = "gh pr view unreadable";
+const FLAKY: &str = "flaky check ";
+const INFRA: &str = "CI did not run to a verdict";
+const TIMEOUT: &str = "CI still pending after";
+/// A `proceed` to one of these ends the watch: the checks are the owner's.
+const ENDS_WATCH: [&str; 5] = [CHECKS_UNREADABLE, VIEW_UNREADABLE, FLAKY, INFRA, TIMEOUT];
+
 /// The closeout from wherever it stands. `Done` is CI green (or no CI): the
 /// scheduler finishes the run. `Parked` is a block for the owner.
 pub fn run(
@@ -88,18 +103,26 @@ pub fn run(
             .map_err(io(format!("write {}", agent_log.display())))?;
     }
 
-    // A PRD already `shipped` (a new run on a delivered feature: the preflight
-    // lets it through to resume at the PR) has had its polish and its ship.
-    let already_shipped = board.status.as_deref() == Some("shipped");
+    // A PRD `shipped` on the board has had its polish: `docs ship` runs only
+    // after it. Its ship is done only once HEAD holds it — a driver killed
+    // between `docs ship` and `docs: ship PRD-NNN` left it staged, and the
+    // ship runs again (`docs ship` on a shipped PRD is a no-op). A new run on
+    // a delivered feature finds both and resumes at the PR.
+    let board_shipped = board.status.as_deref() == Some("shipped");
+    let ship_committed = board_shipped && shipped_at_head(&repo, &board.dir)?;
     let events = run.events()?;
-    let polished = already_shipped
+    let polish_by_hand = answered(run, &feature_dir)?
+        .iter()
+        .any(|a| a.proceed && a.title == POLISH_DIED);
+    let polished = board_shipped
+        || polish_by_hand
         || events
             .iter()
             .any(|e| matches!(e.kind, EventKind::PolishDone { .. }));
-    let shipped = already_shipped
-        || events
-            .iter()
-            .any(|e| matches!(e.kind, EventKind::Shipped { .. }));
+    let ship_event = events
+        .iter()
+        .any(|e| matches!(e.kind, EventKind::Shipped { .. }));
+    let shipped = ship_committed || ship_event;
     if run.state().phase != Phase::Closeout {
         run.set_phase(Phase::Closeout)?;
     }
@@ -109,8 +132,12 @@ pub fn run(
             "closeout — {}",
             match (polished, shipped, run.state().pr_url.is_some()) {
                 (false, _, _) => "polish",
+                (true, false, _) if board_shipped => {
+                    "PRD shipped but not committed, resumed at ship"
+                }
+                (true, false, _) if polish_by_hand => "polish answered `proceed`, resumed at ship",
                 (true, false, _) => "resumed at ship",
-                (true, true, false) if already_shipped => "PRD already shipped, resumed at the PR",
+                (true, true, false) if !ship_event => "PRD already shipped, resumed at the PR",
                 (true, true, false) => "resumed at the PR",
                 (true, true, true) => "resumed at CI",
             }
@@ -180,7 +207,7 @@ fn polish(
                  Streams and stderr are under `{}/`.\n\
                  **Options:**\n\
                  1. read the last worker's `.stderr` and `.jsonl`, fix the environment (login, PATH, quota) and answer this block — a fresh polish worker runs\n\
-                 2. run `/polish` by hand, write `retro.md` and `runs/<id>/pr-body.md`, set `reviewed:` in `prd.md`, commit, and answer this block — the driver ships from there\n\
+                 2. run `/polish` by hand, write `retro.md` and `runs/<id>/pr-body.md`, set `reviewed:` in `prd.md`, commit, and answer this block with `proceed` — the driver ships from there, no polish worker\n\
                  **Recommended:** 1 — a worker that dies before its first tool call is the environment's fault, not the review's.\n",
                 dead.len(),
                 sessions.join(", "),
@@ -389,6 +416,9 @@ fn ship(
     let feature = run.state().feature.clone();
     let repo = run.state().repo.clone();
     let feature_dir = repo.join(&board.dir);
+    if let Some(o) = branch_guard(run, docs, &feature_dir, "polish", "ship", out)? {
+        return Ok(Some(o));
+    }
     let shipped = docs.ship(&feature)?;
     if shipped.code != 0 {
         let text = {
@@ -483,9 +513,11 @@ fn retro_values(r: &Report) -> Vec<(&'static str, String)> {
 
 // ── push and PR ─────────────────────────────────────────────────────────────
 
-/// `git push -u origin <branch>`, then `gh pr create --draft` — or, with a
-/// PR already in `state.json`, `gh pr edit` with the body. A refused push or
-/// `gh` blocks with phase `pr`. `None` when the PR stands.
+/// `git push -u origin <branch>`, then `gh pr create --draft --head <branch>`
+/// — or, with a PR already in `state.json`, `gh pr edit` with the body. A
+/// refused push or `gh` blocks with phase `pr`; a `proceed` to the create's
+/// block finishes the run with the owner's PR, to the edit's leaves the body.
+/// `None` when the PR stands.
 fn open_pr(
     run: &mut Run,
     docs: &Docs,
@@ -496,7 +528,22 @@ fn open_pr(
     let repo = run.state().repo.clone();
     let feature_dir = repo.join(&board.dir);
     let branch = feature_branch(run, &repo)?;
-    if let Some(o) = push(run, &feature_dir, &branch, out)? {
+    let done = answered(run, &feature_dir)?;
+    if run.state().pr_url.is_none()
+        && let Some(a) = done
+            .iter()
+            .find(|a| a.proceed && a.title.starts_with(PR_CREATE))
+    {
+        say(
+            out,
+            &format!(
+                "pr: {} answered `proceed` — the PR is the owner's; the run finishes without a CI watch",
+                a.id
+            ),
+        )?;
+        return Ok(Some(Outcome::Done));
+    }
+    if let Some(o) = push(run, docs, &feature_dir, &branch, out)? {
         return Ok(Some(o));
     }
     let body = run.dir().join(PR_BODY_FILE);
@@ -518,6 +565,16 @@ fn open_pr(
         }
     };
     if let Some(url) = known {
+        if let Some(a) = done
+            .iter()
+            .find(|a| a.proceed && a.title.starts_with(PR_EDIT))
+        {
+            say(
+                out,
+                &format!("pr: {url} body left as it is — {} answered `proceed`", a.id),
+            )?;
+            return Ok(None);
+        }
         let pr = ci::pr_number(&url);
         match ci::pr_edit(&repo, &pr, &body)? {
             Ok(()) => say(out, &format!("pr: {url} body refreshed (resume)"))?,
@@ -533,7 +590,7 @@ fn open_pr(
                     run,
                     &feature_dir,
                     "pr",
-                    &format!("gh pr edit refused: {}", first_line(&text)),
+                    &format!("{PR_EDIT}: {}", first_line(&text)),
                     &body,
                     out,
                 )?));
@@ -546,7 +603,7 @@ fn open_pr(
         "PRD-{feature}: {}",
         pr_title(&repo.join(&board.dir).join("prd.md"), &feature, &board.slug)
     );
-    match ci::pr_create(&repo, &base, &title, &body)? {
+    match ci::pr_create(&repo, &base, &branch, &title, &body)? {
         Ok(url) => {
             run.set_pr_url(url.clone())?;
             say(out, &format!("pr: draft opened against {base} — {url}"))?;
@@ -555,9 +612,9 @@ fn open_pr(
         }
         Err(text) => {
             let body = format!(
-                "**Happened:** the branch `{branch}` is pushed and `gh pr create --draft --base {base} --title \"{title}\" --body-file …` refused:\n  {text}\n\
+                "**Happened:** the branch `{branch}` is pushed and `gh pr create --draft --base {base} --title \"{title}\" --body-file … --head {branch}` refused:\n  {text}\n\
                  **Options:**\n\
-                 1. fix `gh` (login, the remote, an existing PR for this branch) and answer this block — the create runs again\n\
+                 1. fix `gh` (login, the remote, an existing PR for this branch) and answer this block — the push and the create run again\n\
                  2. open the PR by hand and answer this block with `proceed` — the driver then opens none and the run finishes without a CI watch\n\
                  **Recommended:** 1 — the body is written at `{}` either way.\n",
                 run.dir().join(PR_BODY_FILE).display()
@@ -566,7 +623,7 @@ fn open_pr(
                 run,
                 &feature_dir,
                 "pr",
-                &format!("gh pr create refused: {}", first_line(&text)),
+                &format!("{PR_CREATE}: {}", first_line(&text)),
                 &body,
                 out,
             )?))
@@ -574,13 +631,18 @@ fn open_pr(
     }
 }
 
-/// `git push -u origin <branch>`; a refusal blocks with phase `pr`.
+/// `git push -u origin <branch>` — from the feature branch only; a refusal
+/// blocks with phase `pr`.
 fn push(
     run: &mut Run,
+    docs: &Docs,
     feature_dir: &Path,
     branch: &str,
     out: &mut dyn Write,
 ) -> Result<Option<Outcome>> {
+    if let Some(o) = branch_guard(run, docs, feature_dir, "pr", "push", out)? {
+        return Ok(Some(o));
+    }
     let repo = run.state().repo.clone();
     match ci::push(&repo, branch)? {
         Ok(()) => {
@@ -607,6 +669,42 @@ fn push(
     }
 }
 
+/// Ship and push only from the run's feature branch: never from the default
+/// branch, a detached HEAD or another branch (`ci::branch_problem`). A
+/// problem blocks with `phase`; `None` when HEAD is where it should be.
+fn branch_guard(
+    run: &mut Run,
+    docs: &Docs,
+    feature_dir: &Path,
+    phase: &str,
+    what: &str,
+    out: &mut dyn Write,
+) -> Result<Option<Outcome>> {
+    let repo = run.state().repo.clone();
+    let branch = feature_branch(run, &repo)?;
+    let default = default_branch(run, docs);
+    let on = ci::head_branch(&repo)?;
+    let Some(problem) = ci::branch_problem(&branch, &default, on.as_deref()) else {
+        return Ok(None);
+    };
+    let body = format!(
+        "**Happened:** the driver was about to {what} and stopped: {problem}. \
+         It ships and pushes only from the run's feature branch, and never pushes `{default}`.\n\
+         **Options:**\n\
+         1. put HEAD back on the feature branch (`git switch {branch}`, carrying over any commit made elsewhere) and answer this block — the {what} runs again\n\
+         2. if the run's branch itself is wrong, `factory stop` the run and start it again from the right branch\n\
+         **Recommended:** 1 — the driver never pushes the default branch or a branch the run does not own.\n"
+    );
+    Ok(Some(block(
+        run,
+        feature_dir,
+        phase,
+        &format!("{what} stopped: {problem}"),
+        &body,
+        out,
+    )?))
+}
+
 /// The PRD's h1 without its `PRD-NNN — ` prefix; the slug when it has none.
 pub fn pr_title(prd: &Path, feature: &str, slug: &str) -> String {
     let text = fs::read_to_string(prd).unwrap_or_default();
@@ -627,9 +725,43 @@ pub fn pr_title(prd: &Path, feature: &str, slug: &str) -> String {
 
 // ── CI ──────────────────────────────────────────────────────────────────────
 
-/// `gh pr checks --watch` until green: a red is one flaky rerun when the same
-/// head passed once, else a fix round (three, then block), each fix pushed and
-/// watched again. `None` is green (or no checks to watch).
+/// What the watch does after one red poll.
+enum Next {
+    /// Not settled (a rerun in flight): wait one interval and poll again.
+    Wait(String),
+    /// A rerun is queued: poll again now, the grace starts over.
+    Again,
+    /// A fix round on these checks, with their failed logs.
+    Fix {
+        round: u32,
+        check: String,
+        log: String,
+    },
+    /// Leave the watch (a block).
+    Out(Outcome),
+}
+
+/// The watch's view of one PR: where it runs and what it has seen.
+struct Watch {
+    repo: PathBuf,
+    feature_dir: PathBuf,
+    /// The `closeout_blocked` seq of the last answered `ci` block: the caps
+    /// count the rounds and reruns after it.
+    window: u64,
+    /// The job links of the rows the driver just reran: until the new
+    /// attempt registers, they are the old attempt's.
+    stale: HashSet<String>,
+}
+
+/// Bounded polls of the PR's checks until green: each poll reads the PR's
+/// head (`gh pr view --json headRefOid`) and, when it is this branch's head,
+/// the checks (`gh pr checks --json`). Inside the grace window after the
+/// watch starts, a push or a rerun, an empty table, a missing check or an old
+/// PR head is "not registered yet". A red is one flaky rerun when another run
+/// of the workflow passed at the same head, else a fix round (three since the
+/// last answer, then block), each fix pushed and polled again. A timeout or a
+/// runner that never started blocks at once, and so does a pending table past
+/// the timeout. `None` is green, no checks to watch, or the owner's `proceed`.
 fn watch_ci(
     run: &mut Run,
     docs: &Docs,
@@ -644,184 +776,596 @@ fn watch_ci(
     };
     let pr = ci::pr_number(&url);
     let branch = feature_branch(run, &repo)?;
+    let done = answered(run, &feature_dir)?;
+    if let Some(a) = done
+        .iter()
+        .find(|a| a.proceed && a.phase == "ci" && ENDS_WATCH.iter().any(|p| a.title.starts_with(p)))
+    {
+        say(
+            out,
+            &format!(
+                "ci: {} answered `proceed` — the checks are the owner's; the run finishes without another watch",
+                a.id
+            ),
+        )?;
+        return Ok(None);
+    }
+    let mut w = Watch {
+        repo: repo.clone(),
+        feature_dir: feature_dir.clone(),
+        window: done
+            .iter()
+            .filter(|a| a.phase == "ci")
+            .map(|a| a.seq)
+            .max()
+            .unwrap_or(0),
+        stale: HashSet::new(),
+    };
+    let interval = ci::interval();
+    let grace = Duration::from_secs(ci::grace());
+    let timeout = Duration::from_secs(ci::timeout());
+    let mut since = Instant::now();
+    let mut expected: BTreeSet<String> = BTreeSet::new();
+    let mut waiting: Option<String> = None;
+    say(
+        out,
+        &format!("ci: watching the checks of {url} (a poll every {interval}s)"),
+    )?;
     loop {
         run.reload()?;
         if run.state().stop_requested {
             return Ok(Some(Outcome::Stopped));
         }
-        say(out, &format!("ci: watching the checks of {url}"))?;
-        let (check, table) = match ci::watch(&repo, &pr)? {
-            Checks::Green => {
-                let head = ci::head(&repo)?;
+        let head = ci::head(&repo)?;
+        let in_grace = since.elapsed() < grace;
+        let mut rows = Vec::new();
+        let verdict = match ci::pr_head(&repo, &pr)? {
+            Err(text) => {
+                return Ok(Some(unreadable(
+                    run,
+                    &feature_dir,
+                    &format!("gh pr view {pr} --json headRefOid"),
+                    VIEW_UNREADABLE,
+                    &text,
+                    out,
+                )?));
+            }
+            Ok(at) if at != head => {
+                if !in_grace {
+                    let body = format!(
+                        "**Happened:** the PR {url} is at `{}` while this branch's pushed head is `{}`, {} after the push: \
+                         its checks are not this branch's.\n\
+                         **Options:**\n\
+                         1. check what reached origin (`git ls-remote origin {branch}`) and which commit the PR shows, and answer this block — the watch runs again\n\
+                         2. push by hand (never forced) and answer this block\n\
+                         **Recommended:** 1 — a fix worker on a head the PR does not have changes the wrong tree.\n",
+                        short(&at),
+                        short(&head),
+                        span(since.elapsed().as_secs())
+                    );
+                    return Ok(Some(block(
+                        run,
+                        &feature_dir,
+                        "ci",
+                        &format!(
+                            "the PR's head {} is not this branch's head {}",
+                            short(&at),
+                            short(&head)
+                        ),
+                        &body,
+                        out,
+                    )?));
+                }
+                Verdict::Pending(format!(
+                    "the PR is still at {}, the push of {} has not reached it",
+                    short(&at),
+                    short(&head)
+                ))
+            }
+            Ok(_) => match ci::checks(&repo, &pr)? {
+                Checks::Unreadable { text } => {
+                    return Ok(Some(unreadable(
+                        run,
+                        &feature_dir,
+                        &format!("gh pr checks {pr} --json {}", ci::CHECK_FIELDS),
+                        CHECKS_UNREADABLE,
+                        &text,
+                        out,
+                    )?));
+                }
+                Checks::None => ci::judge(&[], &w.stale, &expected, in_grace),
+                Checks::Rows(r) => {
+                    rows = r;
+                    ci::judge(&rows, &w.stale, &expected, in_grace)
+                }
+            },
+        };
+        let why = match verdict {
+            Verdict::Pending(why) => why,
+            Verdict::Green => {
                 say(out, &format!("ci: green at {}", short(&head)))?;
                 run.emit(EventKind::CiGreen { head })?;
                 return Ok(None);
             }
-            Checks::None => {
+            Verdict::NoChecks => {
                 say(
                     out,
-                    "ci: no checks reported on the branch — nothing to watch",
+                    &format!(
+                        "ci: no checks reported on the PR {} after the push — nothing to watch",
+                        span(since.elapsed().as_secs())
+                    ),
                 )?;
                 return Ok(None);
             }
-            Checks::Unreadable { text } => {
-                let body = format!(
-                    "**Happened:** `gh pr checks {pr} --watch` exited non-zero with no failing check to name:\n  {text}\n\
-                     **Options:**\n\
-                     1. fix `gh` (login, network) and answer this block — the watch runs again\n\
-                     2. answer `proceed` once the checks are green on GitHub — the watch runs again and finishes\n\
-                     **Recommended:** 1.\n"
-                );
-                return Ok(Some(block(
-                    run,
-                    &feature_dir,
-                    "ci",
-                    &format!("gh pr checks unreadable: {}", first_line(&text)),
-                    &body,
-                    out,
-                )?));
-            }
-            Checks::Red { check, table } => (check, table),
-        };
-        let head = ci::head(&repo)?;
-        let events = run.events()?;
-        let rounds: HashSet<u32> = events
-            .iter()
-            .filter_map(|e| match &e.kind {
-                EventKind::CiFixSpawned { round, .. } => Some(*round),
-                _ => None,
-            })
-            .collect();
-        let rounds_done = rounds.len() as u32;
-        run.emit(EventKind::CiRed {
-            check: check.clone(),
-            round: rounds_done,
-            head: head.clone(),
-        })?;
-        say(
-            out,
-            &format!(
-                "ci: `{check}` red at {} ({rounds_done} fix round(s) so far)",
-                short(&head)
-            ),
-        )?;
-        let runs = ci::runs(&repo, &branch).unwrap_or_default();
-        let failed = ci::failed_run(&runs, &check);
-        // autonomy.md:79 — a red that is not this branch's head is the owner's.
-        if let Some(f) = failed
-            && !f.head_sha.is_empty()
-            && f.head_sha != head
-        {
-            let body = format!(
-                "**Happened:** `gh pr checks` reports `{check}` red, but the failed run ({}) is at `{}` while this branch's head is `{}`: \
-                 the failure is not this branch's to fix.\n\
-                 **Options:**\n\
-                 1. look at the run on GitHub; once the branch's own head is checked, answer this block — the watch runs again\n\
-                 2. rerun the check by hand and answer this block\n\
-                 **Recommended:** 1 — a fix worker on a head it does not have changes the wrong tree.\n",
-                f.database_id,
-                short(&f.head_sha),
-                short(&head)
-            );
-            return Ok(Some(block(
-                run,
-                &feature_dir,
-                "ci",
-                &format!("CI red at a head this branch does not have: {check}"),
-                &body,
-                out,
-            )?));
-        }
-        // autonomy.md:78 — flaky: the same head passed once; rerun once.
-        if let Some(f) = failed
-            && ci::green_at(&runs, &f.head_sha)
-        {
-            let reruns = events
-                .iter()
-                .filter(|e| matches!(&e.kind, EventKind::CiRerun { head: h, .. } if *h == head))
-                .count() as u32;
-            if reruns < ci::CI_FLAKY_RERUNS {
-                match ci::rerun(&repo, f.database_id)? {
-                    Ok(()) => {
-                        say(
-                            out,
-                            &format!(
-                                "ci: `{check}` passed once at this head — rerun {} of its failed jobs (flaky, autonomy.md:78)",
-                                f.database_id
-                            ),
-                        )?;
-                        run.emit(EventKind::CiRerun {
-                            check: check.clone(),
-                            run_id: f.database_id,
-                            head: head.clone(),
-                        })?;
+            Verdict::Infra(bad) => match rerunning(&repo, &bad)? {
+                Some(why) => why,
+                None => return Ok(Some(infra(run, &feature_dir, &head, &bad, out)?)),
+            },
+            Verdict::Red(failed) => {
+                expected = rows.iter().map(|r| r.name.clone()).collect();
+                match on_red(run, &mut w, &head, &rows, &failed, out)? {
+                    Next::Wait(why) => why,
+                    Next::Out(o) => return Ok(Some(o)),
+                    Next::Again => {
+                        since = Instant::now();
+                        waiting = None;
                         continue;
                     }
-                    Err(text) => say(
-                        out,
-                        &format!(
-                            "ci: `gh run rerun {}` refused ({text}) — treated as a fix round",
-                            f.database_id
-                        ),
-                    )?,
+                    Next::Fix { round, check, log } => {
+                        if let Some(o) = fix_round(run, docs, cfg, board, round, &check, &log, out)?
+                        {
+                            return Ok(Some(o));
+                        }
+                        run.reload()?;
+                        if run.state().stop_requested {
+                            return Ok(Some(Outcome::Stopped));
+                        }
+                        if let Some(o) = push(run, docs, &feature_dir, &branch, out)? {
+                            return Ok(Some(o));
+                        }
+                        since = Instant::now();
+                        w.stale.clear();
+                        waiting = None;
+                        continue;
+                    }
                 }
-            } else {
-                let body = format!(
-                    "**Happened:** `{check}` is red at `{}` after its one rerun ({}); the same head passed before, so this is flake the rerun did not clear, not a defect a fix worker can see.\n\
-                     **Options:**\n\
-                     1. rerun on GitHub until green and answer this block — the watch runs again\n\
-                     2. fix the flaky check on a separate branch and answer this block with `proceed`\n\
-                     **Recommended:** 1 — autonomy.md:78 gives the driver one rerun.\n",
-                    short(&head),
-                    f.database_id
-                );
-                return Ok(Some(block(
-                    run,
-                    &feature_dir,
-                    "ci",
-                    &format!("flaky check {check} red again after its rerun"),
-                    &body,
-                    out,
-                )?));
             }
-        }
-        // autonomy.md:77 — three fix rounds, then block.
-        if rounds_done >= ci::CI_FIX_ROUNDS {
+        };
+        if since.elapsed() >= timeout {
             let body = format!(
-                "**Happened:** `{check}` is still red at `{}` after {rounds_done} fix rounds; the driver's cap is {} (autonomy.md:77). \
-                 The fix commits are on the branch; the last check table:\n{}\
+                "**Happened:** the checks of {url} at `{}` are still not settled {} after the push or the rerun: {why}. The last table:\n{}\
                  **Options:**\n\
-                 1. fix it by hand, push, and answer this block — the watch runs again\n\
-                 2. revert the fix commits and answer this block once the cause is understood\n\
-                 **Recommended:** 1 — three workers saw the same red; the cause is outside what the log names.\n",
+                 1. look at the runners (a job queued with no runner, a check that never reports) and answer this block — the watch runs again with a fresh timeout\n\
+                 2. answer `proceed` to take the checks over — the run finishes without another watch\n\
+                 **Recommended:** 1 — the driver waits {} (`{}`) before it calls a check stuck.\n",
                 short(&head),
-                ci::CI_FIX_ROUNDS,
-                table
-                    .lines()
-                    .map(|l| format!("  {l}\n"))
-                    .collect::<String>()
+                span(since.elapsed().as_secs()),
+                indent(&ci::table(&rows)),
+                span(timeout.as_secs()),
+                ci::TIMEOUT_ENV
             );
             return Ok(Some(block(
                 run,
                 &feature_dir,
                 "ci",
-                &format!("CI red after {rounds_done} fix rounds: {check}"),
+                &format!("{TIMEOUT} {}", span(timeout.as_secs())),
                 &body,
                 out,
             )?));
         }
-        let round = rounds_done + 1;
-        let log = match failed {
-            Some(f) => ci::log_failed(&repo, f.database_id)?,
-            None => table.clone(),
-        };
-        if let Some(o) = fix_round(run, docs, cfg, board, round, &check, &log, out)? {
-            return Ok(Some(o));
+        if waiting.as_deref() != Some(why.as_str()) {
+            say(out, &format!("ci: waiting — {why}"))?;
+            waiting = Some(why);
         }
-        if let Some(o) = push(run, &feature_dir, &branch, out)? {
+        if let Some(o) = nap(run, interval)? {
             return Ok(Some(o));
         }
     }
+}
+
+/// A red poll: the run behind each failed check (from its job link), then a
+/// foreign head (block), a flaky red (one rerun, then block), the cap
+/// (block) or the next fix round with the failed logs.
+fn on_red(
+    run: &mut Run,
+    w: &mut Watch,
+    head: &str,
+    rows: &[CheckRow],
+    failed: &[CheckRow],
+    out: &mut dyn Write,
+) -> Result<Next> {
+    let mut runs: Vec<CiRun> = Vec::new();
+    for row in failed {
+        let Some(id) = ci::run_id(&row.link) else {
+            continue;
+        };
+        if runs.iter().any(|r| r.database_id == id) {
+            continue;
+        }
+        match ci::run_view(&w.repo, id)? {
+            Ok(mut r) => {
+                r.database_id = id;
+                runs.push(r);
+            }
+            Err(text) => {
+                return Ok(Next::Out(gh_refused(
+                    run,
+                    &w.feature_dir,
+                    &format!("gh run view {id} --json {}", ci::RUN_FIELDS),
+                    &format!("the run behind the red `{}`", row.name),
+                    &text,
+                    out,
+                )?));
+            }
+        }
+    }
+    // A rerun in flight (the owner's, or ours after a restart): its failed
+    // rows are the previous attempt's.
+    if let Some(r) = runs.iter().find(|r| r.in_flight()) {
+        return Ok(Next::Wait(format!(
+            "run {} of `{}` is {} (attempt {})",
+            r.database_id,
+            r.workflow_name,
+            r.status.to_ascii_lowercase(),
+            r.attempt
+        )));
+    }
+    let check = ci::check_names(failed);
+    let events = run.events()?;
+    let mut ever = BTreeSet::new();
+    let mut since_answer = BTreeSet::new();
+    for e in &events {
+        if let EventKind::CiFixSpawned { round, .. } = e.kind {
+            ever.insert(round);
+            if e.seq > w.window {
+                since_answer.insert(round);
+            }
+        }
+    }
+    let rounds_done = since_answer.len() as u32;
+    let round = ever.last().copied().unwrap_or(0) + 1;
+    run.emit(EventKind::CiRed {
+        check: check.clone(),
+        round: rounds_done,
+        head: head.to_string(),
+    })?;
+    say(
+        out,
+        &format!(
+            "ci: `{check}` red at {} ({rounds_done} fix round(s) since the last answer)",
+            short(head)
+        ),
+    )?;
+    // autonomy.md:79 — a red that is not this branch's head is the owner's.
+    if let Some(f) = runs
+        .iter()
+        .find(|r| !r.head_sha.is_empty() && r.head_sha != head)
+    {
+        let body = format!(
+            "**Happened:** `gh pr checks` reports `{check}` red, but the failed run ({}) is at `{}` while this branch's head is `{}`: \
+             the failure is not this branch's to fix.\n\
+             **Options:**\n\
+             1. look at the run on GitHub; once the branch's own head is checked, answer this block — the watch runs again\n\
+             2. rerun the check by hand and answer this block\n\
+             **Recommended:** 1 — a fix worker on a head it does not have changes the wrong tree.\n",
+            f.database_id,
+            short(&f.head_sha),
+            short(head)
+        );
+        return Ok(Next::Out(block(
+            run,
+            &w.feature_dir,
+            "ci",
+            &format!("CI red at a head this branch does not have: {check}"),
+            &body,
+            out,
+        )?));
+    }
+    // autonomy.md:78 — flaky: another run of the same workflow passed at
+    // this head; each failed run is rerun once.
+    let mut flaky = !runs.is_empty() && failed.iter().all(|r| ci::run_id(&r.link).is_some());
+    if flaky {
+        for r in &runs {
+            match ci::runs_at(&w.repo, &r.head_sha, &r.workflow_name)? {
+                Ok(list) if ci::passed_once(&list, r) => {}
+                Ok(_) => {
+                    flaky = false;
+                    break;
+                }
+                Err(text) => {
+                    return Ok(Next::Out(gh_refused(
+                        run,
+                        &w.feature_dir,
+                        &format!(
+                            "gh run list --commit {} --workflow {} …",
+                            short(&r.head_sha),
+                            r.workflow_name
+                        ),
+                        &format!("whether `{}` passed once at this head", r.workflow_name),
+                        &text,
+                        out,
+                    )?));
+                }
+            }
+        }
+    }
+    if flaky {
+        let rerun_before = |name: &str| {
+            events
+                .iter()
+                .filter(|e| {
+                    e.seq > w.window
+                        && matches!(&e.kind, EventKind::CiRerun { check: c, head: h, .. } if c == name && h == head)
+                })
+                .count() as u32
+        };
+        let again: Vec<&CheckRow> = failed
+            .iter()
+            .filter(|r| rerun_before(&r.name) >= ci::CI_FLAKY_RERUNS)
+            .collect();
+        if !again.is_empty() {
+            let ids: Vec<String> = runs.iter().map(|r| r.database_id.to_string()).collect();
+            let body = format!(
+                "**Happened:** `{check}` is red at `{}` after its one rerun (run {}); another run of the workflow passed at this head, so this is flake the rerun did not clear, not a defect a fix worker can see.\n\
+                 **Options:**\n\
+                 1. rerun on GitHub until green and answer this block — the watch runs again\n\
+                 2. fix the flaky check on a separate branch and answer this block with `proceed` — the run finishes without another watch\n\
+                 **Recommended:** 1 — autonomy.md:78 gives the driver one rerun.\n",
+                short(head),
+                ids.join(", ")
+            );
+            return Ok(Next::Out(block(
+                run,
+                &w.feature_dir,
+                "ci",
+                &format!("{FLAKY}{check} red again after its rerun"),
+                &body,
+                out,
+            )?));
+        }
+        for r in &runs {
+            let mine: Vec<&CheckRow> = failed
+                .iter()
+                .filter(|row| ci::run_id(&row.link) == Some(r.database_id))
+                .collect();
+            let names = ci::check_names(&mine.iter().map(|r| (*r).clone()).collect::<Vec<_>>());
+            match ci::rerun(&w.repo, r.database_id)? {
+                Ok(()) => {
+                    say(
+                        out,
+                        &format!(
+                            "ci: `{names}` passed once at this head in another run of `{}` — rerun {}'s failed jobs (flaky, autonomy.md:78)",
+                            r.workflow_name, r.database_id
+                        ),
+                    )?;
+                    let mut seen = HashSet::new();
+                    for row in &mine {
+                        w.stale.insert(row.link.clone());
+                        if seen.insert(row.name.clone()) {
+                            run.emit(EventKind::CiRerun {
+                                check: row.name.clone(),
+                                run_id: r.database_id,
+                                head: head.to_string(),
+                            })?;
+                        }
+                    }
+                }
+                Err(text) => {
+                    let body = format!(
+                        "**Happened:** `{names}` is red at `{}` and another run of `{}` passed at this head (flaky), but `gh run rerun {} --failed` refused:\n  {text}\n\
+                         **Options:**\n\
+                         1. fix `gh` (login, permissions) and answer this block — the watch runs again and so does the one rerun\n\
+                         2. rerun the failed jobs on GitHub and answer this block — the watch waits for them\n\
+                         **Recommended:** 1 — a refused rerun is not a defect a fix worker can see.\n",
+                        short(head),
+                        r.workflow_name,
+                        r.database_id
+                    );
+                    return Ok(Next::Out(block(
+                        run,
+                        &w.feature_dir,
+                        "ci",
+                        &format!(
+                            "gh run rerun {} refused: {}",
+                            r.database_id,
+                            first_line(&text)
+                        ),
+                        &body,
+                        out,
+                    )?));
+                }
+            }
+        }
+        return Ok(Next::Again);
+    }
+    // autonomy.md:77 — three fix rounds since the owner last answered, then block.
+    if rounds_done >= ci::CI_FIX_ROUNDS {
+        let body = format!(
+            "**Happened:** `{check}` is still red at `{}` after {rounds_done} fix rounds; the driver's cap is {} (autonomy.md:77). \
+             The fix commits are on the branch; the last check table:\n{}\
+             **Options:**\n\
+             1. fix it by hand, push, and answer this block — the watch runs again, with {} fresh fix rounds if it is still red\n\
+             2. revert the fix commits and answer this block once the cause is understood — the same\n\
+             **Recommended:** 1 — three workers saw the same red; the cause is outside what the log names.\n",
+            short(head),
+            ci::CI_FIX_ROUNDS,
+            indent(&ci::table(rows)),
+            ci::CI_FIX_ROUNDS
+        );
+        return Ok(Next::Out(block(
+            run,
+            &w.feature_dir,
+            "ci",
+            &format!("CI red after {rounds_done} fix rounds: {check}"),
+            &body,
+            out,
+        )?));
+    }
+    let mut log = String::new();
+    for r in &runs {
+        let mine: Vec<CheckRow> = failed
+            .iter()
+            .filter(|row| ci::run_id(&row.link) == Some(r.database_id))
+            .cloned()
+            .collect();
+        log.push_str(&format!(
+            "--- run {} (`{}`), failed: {}\n",
+            r.database_id,
+            r.workflow_name,
+            ci::check_names(&mine)
+        ));
+        let text = ci::log_failed(&w.repo, r.database_id)?;
+        log.push_str(&text);
+        if !text.ends_with('\n') {
+            log.push('\n');
+        }
+    }
+    let unlinked: Vec<CheckRow> = failed
+        .iter()
+        .filter(|r| ci::run_id(&r.link).is_none())
+        .cloned()
+        .collect();
+    if !unlinked.is_empty() {
+        log.push_str("--- checks with no Actions run, so no log to fetch:\n");
+        log.push_str(&ci::table(&unlinked));
+    }
+    Ok(Next::Fix { round, check, log })
+}
+
+/// The run behind an infrastructure row is queued or running again (a
+/// rerun the owner started): the reason to wait, else `None`. A run `gh`
+/// will not show is no reason to wait — the block names the rows.
+fn rerunning(repo: &Path, rows: &[CheckRow]) -> Result<Option<String>> {
+    let mut seen = HashSet::new();
+    for row in rows {
+        let Some(id) = ci::run_id(&row.link) else {
+            continue;
+        };
+        if !seen.insert(id) {
+            continue;
+        }
+        if let Ok(r) = ci::run_view(repo, id)?
+            && r.in_flight()
+        {
+            return Ok(Some(format!(
+                "run {id} of `{}` is {} (attempt {})",
+                r.workflow_name,
+                r.status.to_ascii_lowercase(),
+                r.attempt
+            )));
+        }
+    }
+    Ok(None)
+}
+
+/// autonomy.md:79 — a check that never reached a verdict (timed out, never
+/// started, cancelled) is infrastructure, not a defect: block at once.
+fn infra(
+    run: &mut Run,
+    feature_dir: &Path,
+    head: &str,
+    rows: &[CheckRow],
+    out: &mut dyn Write,
+) -> Result<Outcome> {
+    let names = ci::check_names(rows);
+    let body = format!(
+        "**Happened:** at `{}` these checks never reached a verdict on the code:\n{}\
+         A timeout, a runner that never started or a cancelled job is infrastructure (autonomy.md:79), not a defect a fix worker can see.\n\
+         **Options:**\n\
+         1. fix the runner, the secret or the workflow, rerun the job on GitHub and answer this block — the watch runs again and waits for the rerun\n\
+         2. answer `proceed` to take the checks over — the run finishes without another watch\n\
+         **Recommended:** 1.\n",
+        short(head),
+        indent(&ci::table(rows))
+    );
+    block(
+        run,
+        feature_dir,
+        "ci",
+        &format!("{INFRA}: {names}"),
+        &body,
+        out,
+    )
+}
+
+/// A `gh pr view`/`gh pr checks` the watch cannot read: block with `title`.
+fn unreadable(
+    run: &mut Run,
+    feature_dir: &Path,
+    command: &str,
+    title: &str,
+    text: &str,
+    out: &mut dyn Write,
+) -> Result<Outcome> {
+    let body = format!(
+        "**Happened:** `{command}` printed neither the PR nor its checks:\n  {text}\n\
+         **Options:**\n\
+         1. fix `gh` (login, network) and answer this block — the watch runs again\n\
+         2. answer `proceed` once the checks are green on GitHub — the run finishes without another watch\n\
+         **Recommended:** 1.\n"
+    );
+    block(
+        run,
+        feature_dir,
+        "ci",
+        &format!("{title}: {}", first_line(text)),
+        &body,
+        out,
+    )
+}
+
+/// A `gh run` lookup the red verdict needs, refused: block rather than guess
+/// (a swallowed failure is a wrong fix round or a missed rerun).
+fn gh_refused(
+    run: &mut Run,
+    feature_dir: &Path,
+    command: &str,
+    needed: &str,
+    text: &str,
+    out: &mut dyn Write,
+) -> Result<Outcome> {
+    let body = format!(
+        "**Happened:** the driver needs {needed} and `{command}` refused:\n  {text}\n\
+         **Options:**\n\
+         1. fix `gh` (login, permissions, network) and answer this block — the watch runs again\n\
+         2. fix the check by hand, push, and answer this block\n\
+         **Recommended:** 1 — without it a red is neither a rerun nor a fix round the driver can justify.\n"
+    );
+    let verb = command.split(" --").next().unwrap_or(command);
+    block(
+        run,
+        feature_dir,
+        "ci",
+        &format!("{verb} refused: {}", first_line(text)),
+        &body,
+        out,
+    )
+}
+
+/// One interval in one-second steps, `Stopped` as soon as a stop is asked.
+fn nap(run: &mut Run, secs: u64) -> Result<Option<Outcome>> {
+    for _ in 0..secs.max(1) {
+        std::thread::sleep(Duration::from_secs(1));
+        run.reload()?;
+        if run.state().stop_requested {
+            return Ok(Some(Outcome::Stopped));
+        }
+    }
+    Ok(None)
+}
+
+/// `45s`, `6 min`: a wait as a block says it.
+fn span(secs: u64) -> String {
+    if secs < 120 {
+        format!("{secs}s")
+    } else {
+        format!("{} min", secs / 60)
+    }
+}
+
+/// Each line indented two spaces, for a table quoted in a block.
+fn indent(text: &str) -> String {
+    text.lines().map(|l| format!("  {l}\n")).collect()
 }
 
 /// One CI fix round: a fix worker (once more after a death, then block),
@@ -1183,6 +1727,90 @@ fn park_line(id: &str, title: &str, phase: &str) -> String {
     )
 }
 
+/// A closeout block of this run the owner has answered: the seq of its
+/// `closeout_blocked` event and whether the answer is `proceed`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Answered {
+    seq: u64,
+    id: String,
+    phase: String,
+    title: String,
+    proceed: bool,
+}
+
+/// The run's closeout blocks (its `closeout_blocked` events, in order) whose
+/// entry is resolved, with the answer read from the entry's
+/// `**Resolution (…):**` line — written with the `resolved` heading in one
+/// write, so a resolved entry always has it.
+fn answered(run: &Run, feature_dir: &Path) -> Result<Vec<Answered>> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for e in run.events()? {
+        let EventKind::CloseoutBlocked {
+            phase,
+            block_id,
+            question,
+        } = e.kind
+        else {
+            continue;
+        };
+        if !seen.insert(block_id.clone()) {
+            continue;
+        }
+        let Some(entry) = answers::find(feature_dir, &block_id)? else {
+            continue;
+        };
+        if !entry.resolved {
+            continue;
+        }
+        let text = resolution(&answers::entry_text(&entry)?).unwrap_or_default();
+        out.push(Answered {
+            seq: e.seq,
+            id: block_id,
+            phase,
+            title: question,
+            proceed: is_proceed(&text),
+        });
+    }
+    Ok(out)
+}
+
+/// The text of the entry's last `**Resolution (date):** text` line.
+fn resolution(entry: &str) -> Option<String> {
+    entry.lines().rev().find_map(|l| {
+        let rest = l.trim().strip_prefix("**Resolution (")?;
+        let (_, text) = rest.split_once("):**")?;
+        Some(text.trim().to_string())
+    })
+}
+
+/// The answer takes a block's `proceed` option: its first word, after an
+/// option number (`2.`, `2)`) and any backticks or punctuation, is `proceed`.
+fn is_proceed(text: &str) -> bool {
+    let t = text
+        .trim()
+        .trim_start_matches(|c: char| c.is_ascii_digit())
+        .trim_start_matches(|c: char| !c.is_alphanumeric());
+    let word: String = t.chars().take_while(|c| c.is_alphanumeric()).collect();
+    word.eq_ignore_ascii_case("proceed")
+}
+
+/// HEAD's `prd.md` says `status: shipped`: the ship commit is in.
+fn shipped_at_head(repo: &Path, dir: &str) -> Result<bool> {
+    let out = ci::git(repo, &["show", &format!("HEAD:{dir}/prd.md")])?;
+    Ok(out.ok() && frontmatter_value(&out.stdout, "status").as_deref() == Some("shipped"))
+}
+
+/// `key:` of a markdown file's frontmatter, unquoted.
+fn frontmatter_value(text: &str, key: &str) -> Option<String> {
+    let body = text.strip_prefix("---\n")?;
+    let end = body.find("\n---")?;
+    body[..end].lines().find_map(|l| {
+        let (k, v) = l.split_once(':')?;
+        (k.trim() == key).then(|| v.trim().trim_matches(['"', '\'']).to_string())
+    })
+}
+
 /// `at` of the latest answer to a block naming no slice: a checkpoint's or
 /// the closeout's. Deaths before it do not count (the owner reset the cap).
 fn last_answer(run: &Run) -> Result<Option<String>> {
@@ -1373,6 +2001,49 @@ mod tests {
         let text = fs::read_to_string(&retro).unwrap();
         assert!(text.starts_with("---\nscore:\ngate_runs: 2\ngate_red: 1\ngate_minutes: 1.50\nci_cycles: 0\nslices: 3\ncheckpoints: 2\nbuild_minutes: 0.25\npolish_minutes: 0.00\nout_tokens: 7\ncache_read_tokens: 0\nstart_context: 0\npeak_context: 9\n---\n"), "{text}");
         assert!(text.ends_with("# Retro\n"));
+    }
+
+    #[test]
+    fn a_proceed_answer_is_its_first_word() {
+        for yes in [
+            "proceed",
+            "Proceed.",
+            "`proceed`",
+            "2. proceed",
+            "2) proceed — I opened the PR by hand",
+            "  PROCEED",
+        ] {
+            assert!(is_proceed(yes), "{yes}");
+        }
+        for no in [
+            "",
+            "2",
+            "rerun it once more",
+            "do not proceed",
+            "proceeding later",
+            "1. fixed gh, proceed",
+        ] {
+            assert!(!is_proceed(no), "{no}");
+        }
+    }
+
+    #[test]
+    fn the_answer_is_the_last_resolution_line_of_the_entry() {
+        let entry = "### BLOCK-2 — gh pr create refused: x · pr · resolved\n\n**Happened:** y\n**Recommended:** 1.\n**Resolution (2026-10-10):** proceed";
+        assert_eq!(resolution(entry).as_deref(), Some("proceed"));
+        assert_eq!(
+            resolution("### BLOCK-2 — t · pr · open\n\n**Happened:** y"),
+            None
+        );
+    }
+
+    #[test]
+    fn the_frontmatter_status_is_read_unquoted() {
+        let prd =
+            "---\nstatus: \"shipped\"\nreviewed: 2026-10-10\n---\n\n# PRD-001\n\nstatus: draft\n";
+        assert_eq!(frontmatter_value(prd, "status").as_deref(), Some("shipped"));
+        assert_eq!(frontmatter_value(prd, "score"), None);
+        assert_eq!(frontmatter_value("# no frontmatter\n", "status"), None);
     }
 
     #[test]
