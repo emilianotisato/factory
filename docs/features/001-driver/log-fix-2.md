@@ -23,3 +23,11 @@
 **Because:** an answer to a refused merge says the fragments are fixed. It says nothing about why the checkpoint workers died, so the once-only respawn should not come back with it.
 **Undo:** treat `merge_refused` block ids as the checkpoint's own in `checkpoint::since_answer`.
 **Review:** no
+
+### AD-20004 — What does a sanitized BLOCK title look like? · polish · 2026-10-10
+
+**Chose:** `answers::block_title`. Whitespace runs, newlines included, collapse to one space, every `·` becomes `-`, and the title is cut at 160 chars ending in `…`. The checkpoint's three-reds and refused-merge titles go through it.
+**Over:** escaping the separator, or dropping the gate line from the title.
+**Because:** `entries` and `resolve` split the heading on ` · `. A `·` in a gate's last line shifted the phase and `open` fields, so the block no longer parsed as open. A 2000-char compiler line in a heading also helps nobody. The full output stays in the body and the transcript.
+**Undo:** use the raw `format!` titles in `checkpoint::run` and `block_on_refusal`.
+**Review:** no

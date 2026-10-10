@@ -152,7 +152,8 @@ pub fn run(
                 .unwrap_or("no output")
                 .to_string();
             let id = format!("BLOCK-{}", lowest_free_block(&feature_dir)?);
-            let title = format!("gate red three times at checkpoint {n}: {line}");
+            let title =
+                answers::block_title(&format!("gate red three times at checkpoint {n}: {line}"));
             let quoted: String = crate::pack::tail(&tail, 40)
                 .lines()
                 .map(|l| format!("  {l}\n"))
@@ -731,7 +732,7 @@ fn block_on_refusal(
         clashes.join("; ")
     };
     let quoted: String = detail.lines().map(|l| format!("  {l}\n")).collect();
-    let title = format!("{MERGE_REFUSED}: {question}");
+    let title = answers::block_title(&format!("{MERGE_REFUSED}: {question}"));
     let entry = format!(
         "### {id} — {title} · checkpoint · open\n\n\
          **Happened:** the gate is green and the lanes are drained; \

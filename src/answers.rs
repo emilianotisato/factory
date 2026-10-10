@@ -119,6 +119,29 @@ pub struct BlockEntry {
     pub end: usize,
 }
 
+/// The longest title [`block_title`] keeps, in chars.
+pub const TITLE_MAX: usize = 160;
+
+/// `raw` as a BLOCK heading can carry it: one line, no `·` (the heading's
+/// field separator, which [`entries`] and [`resolve`] split on), at most
+/// [`TITLE_MAX`] chars. Every title the driver builds from tool output — a
+/// red gate's last line, a refused merge — goes through here, or a `·` in
+/// that output would move the `slice-NN`/phase and `open` fields.
+pub fn block_title(raw: &str) -> String {
+    let one = raw
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace('·', "-");
+    if one.chars().count() <= TITLE_MAX {
+        return one;
+    }
+    let mut cut: String = one.chars().take(TITLE_MAX - 1).collect();
+    cut.truncate(cut.trim_end().len());
+    cut.push('…');
+    cut
+}
+
 /// `### BLOCK-n — rest` → `(n, rest)`; the same shape `parseAgentLog` reads.
 fn block_heading(line: &str) -> Option<(u32, &str)> {
     let rest = line.strip_prefix("###")?;
@@ -301,6 +324,33 @@ mod tests {
     use super::*;
 
     const FRAG: &str = "## Blockers\n\n### BLOCK-101 — Which option? · slice-01 · open\n\n**Happened:** x\n**Options:**\n1. a\n2. b\n**Recommended:** 1, because\n\n## Decisions\n\n### AD-101 — q · slice-01 · 2026-10-10\n\n**Chose:** y\n";
+
+    #[test]
+    fn a_title_from_tool_output_keeps_the_heading_parseable() {
+        let raw = "error[E0425]: cannot find value · in scope\n  --> src/a.rs:3 · resolved";
+        let title = block_title(raw);
+        assert_eq!(
+            title,
+            "error[E0425]: cannot find value - in scope --> src/a.rs:3 - resolved"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("agent-log.md");
+        fs::write(
+            &log,
+            format!("## Blockers\n\n### BLOCK-1 — gate red: {title} · checkpoint · open\n\n**Happened:** x\n"),
+        )
+        .unwrap();
+        let e = &entries(&log).unwrap()[0];
+        assert_eq!(e.title, format!("gate red: {title}"));
+        assert_eq!(e.phase.as_deref(), Some("checkpoint"));
+        assert!(!e.resolved);
+        resolve(e, "fixed", "2026-10-10").unwrap();
+        assert!(entries(&log).unwrap()[0].resolved);
+
+        let long = block_title(&"x".repeat(500));
+        assert_eq!(long.chars().count(), TITLE_MAX);
+        assert!(long.ends_with('…'));
+    }
 
     #[test]
     fn entries_find_and_resolve_a_block() {
