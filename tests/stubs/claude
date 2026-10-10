@@ -35,6 +35,8 @@
 // `Bash factory ctx …` calls with canned answers (not run) — a `refs` naming
 // src/lib.txt followed by a Read of it, and an `outline` naming
 // src/other.rs that nothing reads — so `followup_reads` is 1 of 2.
+// Polish fix 1 records `env_keys` (every variable's name, never a value) and
+// `gh_config_dir`, so a test can see what the driver scrubs from a worker.
 const fs = require('node:fs')
 const path = require('node:path')
 const crypto = require('node:crypto')
@@ -83,6 +85,8 @@ fs.writeSync(fd, JSON.stringify({
   argv,
   cwd,
   env: factoryEnv,
+  env_keys: Object.keys(process.env).sort(),
+  gh_config_dir: process.env.GH_CONFIG_DIR ?? null,
   prompt: flags['-p'] ?? null,
   pack,
   pack_source: packSource,

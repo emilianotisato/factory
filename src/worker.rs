@@ -1,59 +1,100 @@
 //! One worker: `claude -p` with a context pack (PRD §4 FR-2) — a build
-//! worker per slice, a fix or checkpoint worker per checkpoint (FR-4). The stream is
-//! tee'd line by line into `runs/<id>/workers/<session>.jsonl` and into the
-//! parser, stderr goes to `<session>.stderr`, the pid lands in `state.json`
-//! and a `workers` row is opened at spawn and closed at exit.
+//! worker per slice, a fix or checkpoint worker per checkpoint (FR-4). The
+//! worker's stdout is the record file `runs/<id>/workers/<session>.jsonl`
+//! itself, so the stream outlives the driver; the driver parses the file
+//! when the worker exits. Stderr goes to `<session>.stderr`, the pid lands
+//! in `state.json` and a `workers` row is opened at spawn and closed at exit.
 //!
 //! A worker inherits the driver's session and process group (the daemon's
 //! `setsid`), so one group signal reaches the driver and its worker together.
-//! It does not inherit `CLAUDECODE` or any `CLAUDE_*` variable: a driver
-//! started from inside a Claude Code session would otherwise hand its workers
-//! the nested-session guard. It does get its lane (FR-3): `FACTORY_LANE=N`
-//! and whatever `env` the lane file declares.
+//! It does not inherit `CLAUDECODE` or the session's `CLAUDE_*` variables: a
+//! driver started from inside a Claude Code session would otherwise hand its
+//! workers the nested-session guard. The variables that pick the account,
+//! the config dir and the provider ([`KEEP_CLAUDE_VARS`]) pass through. It
+//! does get its lane (FR-3): `FACTORY_LANE=N` and whatever `env` the lane
+//! file declares.
 //!
-//! Every worker also gets `--settings <file>` (slice 13, §4 FR-2 as
-//! corrected 2026-10-09): the two permission deny rules and the PreToolUse
-//! hook `<this binary> hook`, written per worker to
-//! `runs/<id>/workers/<session>.settings.json` — a file the driver owns, so
-//! nothing is installed under the owner's `~/.claude/` or the project's
-//! `.claude/`. `FACTORY_PACK=<pack>` tells the hook which files the pack holds.
+//! A worker never pushes and never talks to GitHub; the driver does both.
+//! So no GitHub token reaches it ([`GH_TOKEN_VARS`]), `GH_CONFIG_DIR` points
+//! at an empty directory under the run, and its `--settings <file>` (slice
+//! 13, §4 FR-2 as corrected 2026-10-09) carries [`DENY_RULES`] and the
+//! PreToolUse hook `<this binary> hook`, which refuses any `gh` and any
+//! `git push` wherever it sits in a command line. The file is written per
+//! worker to `runs/<id>/workers/<session>.settings.json` — a file the driver
+//! owns, so nothing is installed under the owner's `~/.claude/` or the
+//! project's `.claude/`. `FACTORY_PACK=<pack>` tells the hook which files
+//! the pack holds and `FACTORY_REPO=<repo>` what they are relative to.
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::thread::JoinHandle;
 
 use crate::config;
 use crate::error::io;
 use crate::events::EventKind;
 use crate::pack::Pack;
+use crate::paths;
 use crate::run::{Run, WorkerRef};
-use crate::stream::{Collector, Summary};
+use crate::stream::Summary;
 use crate::{Error, Result};
 
 pub const DIR: &str = "workers";
 
-/// The permission deny rules every worker carries (§4 FR-2): no merge, no
-/// force push, whatever the project's own settings say.
-pub const DENY_RULES: [&str; 3] = [
-    "Bash(gh pr merge*)",
-    "Bash(git push --force*)",
-    "Bash(git push -f*)",
+/// The permission deny rules every worker carries (§4 FR-2): no `gh` at
+/// all and no `git push` of any kind, whatever the project's own settings
+/// say. A prefix rule cannot see `true && gh …` or `git -c k=v push`; the
+/// hook (`cli::hook::guard`) catches those.
+pub const DENY_RULES: [&str; 3] = ["Bash(gh)", "Bash(gh *)", "Bash(git push*)"];
+
+/// The GitHub tokens scrubbed from every worker's environment.
+pub const GH_TOKEN_VARS: [&str; 4] = [
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_ENTERPRISE_TOKEN",
+    "GITHUB_ENTERPRISE_TOKEN",
 ];
+
+/// The `CLAUDE_*` variables a worker keeps: the account, the config dir,
+/// the provider and its client certificate. Every other `CLAUDE_*` belongs
+/// to the session the driver may have been started from.
+pub const KEEP_CLAUDE_VARS: [&str; 9] = [
+    "CLAUDE_CONFIG_DIR",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CODE_API_KEY_HELPER_TTL_MS",
+    "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
+    "CLAUDE_CODE_SKIP_VERTEX_AUTH",
+    "CLAUDE_CODE_SKIP_FOUNDRY_AUTH",
+    "CLAUDE_CODE_CLIENT_CERT",
+    "CLAUDE_CODE_CLIENT_KEY",
+    "CLAUDE_CODE_CLIENT_KEY_PASSPHRASE",
+];
+
+/// Does a worker lose `name`? `CLAUDECODE` and the session's `CLAUDE_*`,
+/// but not [`KEEP_CLAUDE_VARS`] nor `CLAUDE_CODE_USE_*` (Bedrock, Vertex,
+/// Foundry).
+pub fn scrubbed(name: &str) -> bool {
+    if name == "CLAUDECODE" {
+        return true;
+    }
+    name.starts_with("CLAUDE_")
+        && !KEEP_CLAUDE_VARS.contains(&name)
+        && !name.starts_with("CLAUDE_CODE_USE_")
+}
+
+/// The worker env var naming the repo the pack's paths are relative to.
+pub const REPO_ENV: &str = "FACTORY_REPO";
+
+/// The empty `GH_CONFIG_DIR` of a run's workers: `runs/<id>/gh-config`.
+pub fn gh_config_dir(run_dir: &Path) -> PathBuf {
+    run_dir.join("gh-config")
+}
 
 /// The hook's command line: `exe` (shell-quoted only when it must be) and
 /// `hook`, so it ends in `factory hook` for an installed binary.
 pub fn hook_command(exe: &Path) -> String {
-    let s = exe.to_string_lossy();
-    let plain = s
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || "/._-+:@%,".contains(c));
-    if plain && !s.is_empty() {
-        format!("{s} hook")
-    } else {
-        format!("'{}' hook", s.replace('\'', "'\\''"))
-    }
+    format!("{} hook", paths::shell_word(&exe.to_string_lossy()))
 }
 
 /// The `--settings` document: [`DENY_RULES`] and the PreToolUse hook on
@@ -141,7 +182,6 @@ pub struct Worker {
     pub stream_path: PathBuf,
     pub stderr_path: PathBuf,
     child: Child,
-    tee: Option<JoinHandle<Summary>>,
 }
 
 /// How a worker ended: the process exit and what its stream amounted to.
@@ -164,7 +204,9 @@ pub fn stream_path(run_dir: &Path, session_id: &str) -> PathBuf {
 
 impl Worker {
     /// Spawn `claude -p` for `job` with FR-2's flags and `env` on top of the
-    /// driver's environment, record it in the run.
+    /// driver's environment, record it in the run. Every path on its command
+    /// line is absolute, so a relative data dir resolves against the
+    /// driver's cwd and not the repo the worker runs in.
     pub fn spawn(
         run: &mut Run,
         job: Job,
@@ -175,20 +217,24 @@ impl Worker {
         let role = job.role();
         let slice = job.slice();
         let session_id = uuid_v4()?;
-        let wdir = dir(run.dir());
-        fs::create_dir_all(&wdir).map_err(io(format!("mkdir {}", wdir.display())))?;
-        let stream_path = stream_path(run.dir(), &session_id);
+        let run_dir = std::path::absolute(run.dir())
+            .map_err(io(format!("resolve {}", run.dir().display())))?;
+        let wdir = dir(&run_dir);
+        paths::private_dir_all(&wdir).map_err(io(format!("mkdir {}", wdir.display())))?;
+        let gh_config = gh_config_dir(&run_dir);
+        paths::private_dir_all(&gh_config).map_err(io(format!("mkdir {}", gh_config.display())))?;
+        let stream_path = stream_path(&run_dir, &session_id);
         let stderr_path = wdir.join(format!("{session_id}.stderr"));
-        let stream_file =
-            File::create(&stream_path).map_err(io(format!("create {}", stream_path.display())))?;
-        let stderr_file =
-            File::create(&stderr_path).map_err(io(format!("create {}", stderr_path.display())))?;
-        let exe = std::env::current_exe().map_err(io("locate the factory binary"))?;
-        let settings_file = settings_path(run.dir(), &session_id);
-        fs::write(&settings_file, format!("{:#}\n", settings(&exe)))
+        let stream_file = private_file(&stream_path)?;
+        let stderr_file = private_file(&stderr_path)?;
+        let exe = paths::self_exe().map_err(io("locate the factory binary"))?;
+        let settings_file = settings_path(&run_dir, &session_id);
+        private_file(&settings_file)?
+            .write_all(format!("{:#}\n", settings(&exe)).as_bytes())
             .map_err(io(format!("write {}", settings_file.display())))?;
         let pack_path = std::path::absolute(&pack.path)
             .map_err(io(format!("resolve {}", pack.path.display())))?;
+        let repo = run.state().repo.clone();
 
         let mut cmd = Command::new("claude");
         cmd.arg("-p")
@@ -196,92 +242,39 @@ impl Worker {
             .args(["--output-format", "stream-json", "--verbose"])
             .args(["--permission-mode", "bypassPermissions"])
             .arg("--append-system-prompt-file")
-            .arg(&pack.path)
+            .arg(&pack_path)
             .args(["--session-id", &session_id])
             .args(["--model", &cfg.model])
             .args(["--effort", &cfg.effort])
             .arg("--settings")
             .arg(&settings_file)
-            .current_dir(&run.state().repo)
+            .current_dir(&repo)
             .stdin(Stdio::null())
-            .stdout(Stdio::piped())
+            .stdout(Stdio::from(stream_file))
             .stderr(Stdio::from(stderr_file));
         for (k, _) in std::env::vars_os() {
             let k = k.to_string_lossy();
-            if k == "CLAUDECODE" || k.starts_with("CLAUDE_") {
+            if scrubbed(&k) {
                 cmd.env_remove(&*k);
             }
         }
         for (k, v) in env {
             cmd.env(k, v);
         }
+        // After the lane's env: no lane hands a worker a GitHub token.
+        for k in GH_TOKEN_VARS {
+            cmd.env_remove(k);
+        }
+        cmd.env("GH_CONFIG_DIR", &gh_config);
         cmd.env(crate::cli::hook::PACK_ENV, &pack_path);
+        cmd.env(REPO_ENV, &repo);
         let mut child = cmd.spawn().map_err(|e| Error::Tool {
             cmd: format!("claude -p … --session-id {session_id}"),
             detail: format!("could not start claude: {e}"),
         })?;
         let pid = child.id();
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| Error::Msg("worker stdout was not piped".into()))?;
-        let tee = std::thread::spawn(move || tee(stdout, stream_file));
-
-        let started_at = crate::clock::now_rfc3339();
-        let row_id = run.db().insert_worker(
-            run.id().as_str(),
-            role,
-            slice,
-            job.checkpoint(),
-            &session_id,
-            &cfg.model,
-            &cfg.effort,
-            &started_at,
-        )?;
-        run.db().set_worker_pack_files(row_id, &pack.files)?;
-        run.add_worker(WorkerRef {
-            slice,
-            checkpoint: job.checkpoint(),
-            role: role.to_string(),
-            session_id: session_id.clone(),
-            pid,
-            row_id,
-            spawned_at: started_at,
-            outcome: None,
-        })?;
-        run.emit(match job {
-            Job::Build { slice } => EventKind::SliceSpawned {
-                slice,
-                session_id: session_id.clone(),
-                pid,
-            },
-            Job::Fix {
-                checkpoint,
-                attempt,
-            } => EventKind::FixSpawned {
-                n: checkpoint,
-                attempt,
-                session_id: session_id.clone(),
-                pid,
-            },
-            Job::Checkpoint { n, attempt } => EventKind::CheckpointSpawned {
-                n,
-                attempt,
-                session_id: session_id.clone(),
-                pid,
-            },
-            Job::Polish { attempt } => EventKind::PolishSpawned {
-                attempt,
-                session_id: session_id.clone(),
-                pid,
-            },
-            Job::CiFix { round, attempt } => EventKind::CiFixSpawned {
-                round,
-                attempt,
-                session_id: session_id.clone(),
-                pid,
-            },
-        })?;
+        let recorded = record(run, job, pack, cfg, &session_id, pid);
+        let row_id = reaped_on_err(&mut child, recorded)?;
         Ok(Worker {
             job,
             slice,
@@ -292,11 +285,10 @@ impl Worker {
             stream_path,
             stderr_path,
             child,
-            tee: Some(tee),
         })
     }
 
-    /// Block until the process exits and the stream is drained.
+    /// Block until the process exits, then read its stream.
     pub fn wait(mut self) -> Result<Exit> {
         let status = self
             .child
@@ -305,7 +297,7 @@ impl Worker {
         Ok(self.exit(status))
     }
 
-    /// Has the process exited? `Some` drains the stream and settles the
+    /// Has the process exited? `Some` reads the stream and settles the
     /// worker; `None` leaves it running. The scheduler polls its table with
     /// this between board reads.
     pub fn try_wait(&mut self) -> Result<Option<Exit>> {
@@ -319,37 +311,121 @@ impl Worker {
         }
     }
 
+    /// The process is gone: its code and the stream file it wrote. A
+    /// process it left behind holding the file open does not stall this.
     fn exit(&mut self, status: std::process::ExitStatus) -> Exit {
         let code = status.code().or_else(|| status.signal().map(|s| 128 + s));
-        let summary = match self.tee.take() {
-            Some(t) => t.join().unwrap_or_else(|_| Summary::dead()),
-            None => Summary::dead(),
-        };
-        Exit { code, summary }
+        Exit {
+            code,
+            summary: summary_at(&self.stream_path),
+        }
     }
 }
 
-/// Copy every stdout line into the record file and the collector.
-fn tee(stdout: std::process::ChildStdout, mut file: File) -> Summary {
-    let mut collector = Collector::new();
-    let reader = BufReader::new(stdout);
-    for line in reader.split(b'\n') {
-        let Ok(mut bytes) = line else { break };
-        bytes.push(b'\n');
-        let _ = file.write_all(&bytes);
-        collector.push_line(&String::from_utf8_lossy(&bytes));
+/// Open the worker's row, its pack files, its `state.json` entry and its
+/// spawn event; the row id.
+fn record(
+    run: &mut Run,
+    job: Job,
+    pack: &Pack,
+    cfg: &config::Worker,
+    session_id: &str,
+    pid: u32,
+) -> Result<i64> {
+    let role = job.role();
+    let slice = job.slice();
+    let started_at = crate::clock::now_rfc3339();
+    let row_id = run.db().insert_worker(
+        run.id().as_str(),
+        role,
+        slice,
+        job.checkpoint(),
+        session_id,
+        &cfg.model,
+        &cfg.effort,
+        &started_at,
+    )?;
+    run.db().set_worker_pack_files(row_id, &pack.files)?;
+    run.add_worker(WorkerRef {
+        slice,
+        checkpoint: job.checkpoint(),
+        role: role.to_string(),
+        session_id: session_id.to_string(),
+        pid,
+        row_id,
+        spawned_at: started_at,
+        outcome: None,
+    })?;
+    let session_id = session_id.to_string();
+    run.emit(match job {
+        Job::Build { slice } => EventKind::SliceSpawned {
+            slice,
+            session_id,
+            pid,
+        },
+        Job::Fix {
+            checkpoint,
+            attempt,
+        } => EventKind::FixSpawned {
+            n: checkpoint,
+            attempt,
+            session_id,
+            pid,
+        },
+        Job::Checkpoint { n, attempt } => EventKind::CheckpointSpawned {
+            n,
+            attempt,
+            session_id,
+            pid,
+        },
+        Job::Polish { attempt } => EventKind::PolishSpawned {
+            attempt,
+            session_id,
+            pid,
+        },
+        Job::CiFix { round, attempt } => EventKind::CiFixSpawned {
+            round,
+            attempt,
+            session_id,
+            pid,
+        },
+    })?;
+    Ok(row_id)
+}
+
+/// `recorded` as is, but when it is an error the child is killed and
+/// reaped first: no worker may run that the run has no record of.
+fn reaped_on_err<T>(child: &mut Child, recorded: Result<T>) -> Result<T> {
+    if recorded.is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
     }
-    let _ = file.flush();
-    collector.finish()
+    recorded
+}
+
+/// Create (or truncate) `path` readable by the owner only.
+fn private_file(path: &Path) -> Result<File> {
+    OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(io(format!("create {}", path.display())))
+}
+
+/// The summary of the stream at `path`. No file → dead.
+fn summary_at(path: &Path) -> Summary {
+    match fs::read_to_string(path) {
+        Ok(text) => crate::stream::parse(&text).1,
+        Err(_) => Summary::dead(),
+    }
 }
 
 /// The stream a worker left on disk, for a worker this process did not wait
 /// on (a resume after the driver died). No file → dead.
 pub fn summary_from_disk(run_dir: &Path, session_id: &str) -> Summary {
-    match fs::read_to_string(stream_path(run_dir, session_id)) {
-        Ok(text) => crate::stream::parse(&text).1,
-        Err(_) => Summary::dead(),
-    }
+    summary_at(&stream_path(run_dir, session_id))
 }
 
 /// A random v4 UUID from `/dev/urandom` (Linux is the target, §19).
@@ -420,5 +496,43 @@ mod tests {
         assert_ne!(a, b);
         assert!(!is_uuid_v4("03e5f0d5-2e60-18d6-9f03-cfbc491cab0a"));
         assert!(!is_uuid_v4("not-a-uuid"));
+    }
+
+    #[test]
+    fn a_spawn_that_cannot_be_recorded_leaves_no_process() {
+        let mut child = Command::new("sleep").arg("30").spawn().unwrap();
+        let failed: Result<i64> = Err(Error::Msg("database is locked".into()));
+        assert!(reaped_on_err(&mut child, failed).is_err());
+        let status = child.try_wait().unwrap().expect("killed and reaped");
+        assert_eq!(status.signal(), Some(libc::SIGKILL));
+
+        let mut child = Command::new("sleep").arg("30").spawn().unwrap();
+        assert_eq!(reaped_on_err(&mut child, Ok(7)).unwrap(), 7);
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "a recorded worker runs on"
+        );
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+
+    #[test]
+    fn the_session_loses_its_claude_vars_but_not_the_account() {
+        for gone in [
+            "CLAUDECODE",
+            "CLAUDE_CODE_ENTRYPOINT",
+            "CLAUDE_CODE_SSE_PORT",
+            "CLAUDE_PROJECT_DIR",
+        ] {
+            assert!(scrubbed(gone), "{gone}");
+        }
+        for kept in KEEP_CLAUDE_VARS.iter().copied().chain([
+            "CLAUDE_CODE_USE_BEDROCK",
+            "CLAUDE_CODE_USE_VERTEX",
+            "PATH",
+            "SSH_AUTH_SOCK",
+        ]) {
+            assert!(!scrubbed(kept), "{kept}");
+        }
     }
 }

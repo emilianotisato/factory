@@ -118,8 +118,9 @@ fn wait_until(what: &str, secs: u64, mut ok: impl FnMut() -> bool) {
 }
 
 /// The session id of the call, after checking FR-2's argv bullet by bullet.
-/// A worker's `--settings` file: JSON with the two deny rules and one
-/// `PreToolUse` hook on `Bash|Read` whose command ends in `factory hook`.
+/// A worker's `--settings` file: JSON with the deny rules for any `gh` and
+/// any `git push` (S1), and one `PreToolUse` hook on `Bash|Read` whose
+/// command is this binary's absolute path and `hook` (K1).
 fn check_settings(path: &Path) {
     let v: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
     let deny: Vec<&str> = v["permissions"]["deny"]
@@ -128,15 +129,14 @@ fn check_settings(path: &Path) {
         .iter()
         .map(|d| d.as_str().unwrap())
         .collect();
-    assert!(deny.contains(&"Bash(gh pr merge*)"), "{deny:?}");
-    assert!(deny.contains(&"Bash(git push --force*)"), "{deny:?}");
+    assert_eq!(deny, ["Bash(gh)", "Bash(gh *)", "Bash(git push*)"]);
     let pre = &v["hooks"]["PreToolUse"];
     assert_eq!(pre.as_array().map(Vec::len), Some(1), "{v}");
     assert_eq!(pre[0]["matcher"], "Bash|Read");
     let hook = &pre[0]["hooks"][0];
     assert_eq!(hook["type"], "command");
     let cmd = hook["command"].as_str().unwrap();
-    assert!(cmd.ends_with("factory hook"), "{cmd}");
+    assert_eq!(cmd, format!("{} hook", factory::paths::shell_word(BIN)));
     assert_eq!(hook["timeout"], 5);
 }
 
@@ -164,6 +164,18 @@ fn check_worker_argv(fx: &Fixture, call: &Value, slice: u32, run_dir: &Path) -> 
     assert!(pack.starts_with(run_dir.join("packs")), "{pack:?}");
     let name = pack.file_name().unwrap().to_str().unwrap();
     assert!(name.starts_with(&format!("slice-{slice:02}-")), "{name}");
+    // K1: the driver's pack spells the lookup verbs with its own absolute
+    // path, so a worker runs the build that wrote the pack.
+    let text = fs::read_to_string(&pack).unwrap();
+    let lookup = &text[text.find("\n# Lookup\n").unwrap()..text.find("\n# Contract\n").unwrap()];
+    let exe = factory::paths::shell_word(BIN);
+    for verb in ["def <symbol>", "refs <word>", "outline <path>"] {
+        assert!(
+            lookup.contains(&format!("`{exe} ctx {verb}`")),
+            "{verb}: {lookup}"
+        );
+    }
+    assert!(!lookup.contains("`factory ctx "), "{lookup}");
     let sid = flag("--session-id");
     assert!(is_uuid_v4(sid), "{sid}");
     assert_eq!(flag("--model"), "opus");
@@ -179,6 +191,7 @@ fn check_worker_argv(fx: &Fixture, call: &Value, slice: u32, run_dir: &Path) -> 
     );
     check_settings(&settings);
     assert_eq!(call["env"]["FACTORY_PACK"], pack.to_str().unwrap());
+    assert_eq!(call["env"]["FACTORY_REPO"], fx.path().to_str().unwrap());
     assert_eq!(argv.len(), 17, "{argv:?}");
     assert_eq!(call["cwd"], fx.path().to_str().unwrap());
     assert_eq!(call["pack_source"], "file");

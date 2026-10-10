@@ -31,6 +31,16 @@ pub const AUTONOMY: &str = include_str!("../assets/autonomy.md");
 /// The `# Lookup` section: the three `ctx` verbs, an example each, the rule.
 pub const LOOKUP: &str = include_str!("../assets/lookup.md");
 
+/// [`LOOKUP`] with each `factory ctx` command spelled the way a worker's
+/// shell can run it: the running binary's absolute path, so the verbs work
+/// from a build that is not installed (`paths::factory_command`).
+pub fn lookup() -> String {
+    LOOKUP.trim_end().replace(
+        "`factory ctx ",
+        &format!("`{} ctx ", crate::paths::factory_command()),
+    )
+}
+
 /// The most characters of outlines `# Outline` carries (§14 decision 3).
 pub const OUTLINE_CAP: usize = 8000;
 /// The most characters of `def` answers `# Outline` carries.
@@ -158,7 +168,7 @@ impl Pack {
         text.push_str("\n\n# Outline\n\n");
         text.push_str(recon.text.trim_end());
         text.push_str("\n\n# Lookup\n\n");
-        text.push_str(LOOKUP.trim_end());
+        text.push_str(&lookup());
         text.push_str("\n\n# Contract\n\n");
         text.push_str(contract.trim_end());
         text.push_str("\n\n# Autonomy\n\n");
