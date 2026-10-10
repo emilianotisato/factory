@@ -1,0 +1,64 @@
+---
+slice: 10
+status: pending
+depends_on: [9]
+---
+
+# Slice 10 — Cockpit: wait, replay, status, skill file (FR-7)
+
+**Source**: [`prd.md`](prd.md) → §9 FR-7 (all five decisions); §3 FR-1 bullet 4 (`factory stop` ends a run cleanly). **Depends on**: 09 (`wait` must see every event kind, including `run_finished` and the closeout blocks; the skill's review interview needs a finished run).
+**Created**: 2026-10-09 · **Status**: pending
+
+**Progress**: _(written as it lands)_
+
+**Slice**: After this slice the owner can drive a run from one thin Claude Code session, on a laptop or a phone, without that session reading the board or the log. `factory wait` blocks until the next event the owner must see, or prints `still running` at a timeout; a new session replays what it missed. `factory status` prints the board in ten lines; `factory stop` is honoured between spawns. The cockpit skill, under 60 lines, lives in this repo and is installed by the owner. This closes the spine: FR-1 to FR-10 are built. FR-7's proof is a human row and lands in `qa-guide.md`.
+
+## Current code / environment
+
+- **The event kinds `wait` returns on** (§9): block (`slice_blocked`, `checkpoint_blocked`, `merge_refused`, and the closeout blocks from slice 09, all carrying a `BLOCK-n` id), ask (`ask_opened`, preflight `ask[]` and `judge[]` alike), quota pause (`run_paused`), cap reached (`run_parked`, any reason), `run_finished`, `run_failed`. Everything else (`slice_spawned`, `slice_done`, `gate_run`, …) is progress and only shows in `factory status`. All of them already exist as `events.jsonl` lines with `seq`; `wait` is a tail with a filter.
+- **The cursor**: §9 "A dead cockpit reattaches. A new session calls `factory wait <run>` and continues; events it missed are replayed from `events.jsonl`." A cursor file `runs/<id>/cockpit.cursor` holding the last `seq` the cockpit was shown; `wait` with no cursor file replays every cockpit-relevant event from `seq` 1 (one per line, then continues). The cursor is advanced when `wait` prints an event, not when the owner answers, so an unanswered block is printed again on the next `wait` only if `--replay` is passed; otherwise `wait` says `BLOCK-n still open` in its status line.
+- **Can a background Bash sleep for hours?** §9: "whether a background Bash can sleep for hours and wake the session is tested at slice entry, with a 25-minute poll as the fallback." Test at entry in a Claude Code session: `factory wait <run> --timeout 7200` in a background Bash on an idle fixture run. Record the answer in this slice's Progress and in `prd.md` §20; the skill text picks the long wait or the 25-minute poll accordingly.
+- **The review interview** stays in the cockpit skill: `deliver/SKILL.md:212-238` §8 Owner review (decide/fyi/no lines from `autonomy.md:27`, four `AskUserQuestion` per round, overturned ADs recorded). The skill reads `agent-log.md` for that step only, after `run_finished`; §9 "It never reads the board or the log to decide anything" is about the run, not the review.
+- **`factory stop`** was a request flag in slice 02; slices 03 to 09 check it in `can_spawn()`. This slice makes `stop` print what happens next (`N workers in flight; the run finishes when they exit`) and emits `run_stopped` when the loop exits on it.
+- **The skill file**: `skills/factory-deliver/SKILL.md` in this repo, installed by the owner into `~/.claude/skills/` (a symlink or copy; §19 nothing owner-specific inside it). `AskUserQuestion` and `PushNotification` are Claude Code tools named in the skill text; the skill cannot be tested under `cargo test`, which is why FR-7 is a human row.
+- **Deliberate non-changes**: *(prd §9 "Rejected: putting the review interview inside `factory`."; the binary never reads `agent-log.md` for judgment.)* *(prd §19 "Not handled: the review interview as a driver phase".)* *(prd §19 "Not handled: a dashboard"; ten lines.)*
+
+## Tasks
+
+### 1. `factory wait <run> [--timeout S]` with replay — high — blocked by: —
+**Source**: §9 FR-7: "`factory wait <run> [--timeout S]` blocks until the next cockpit-relevant event (block; ask …; quota pause; cap reached; finished; failed) or prints `still running` with a one-line status at the timeout." "A dead cockpit reattaches … events it missed are replayed from `events.jsonl`."
+
+`src/cli/wait.rs`: read `cockpit.cursor` (absent → 0); print every cockpit-relevant event with `seq > cursor` as one line each (`BLOCK-101 slice 01: <question first line> (answer: factory answer BLOCK-101 "...")`, `ASK-1: …`, `paused until <time>`, `parked: budget 31.2M/30M`, `finished: <pr url>`, `failed: <reason>`), advance the cursor, exit 0 after the first batch; none pending → tail the file (inotify via `notify` crate or a 2 s poll) until one arrives or `--timeout` elapses → print `still running: <status line>` and exit 3. A dead driver (pid gone, phase not finished) → print `driver dead; run: factory run NNN` and exit 4. `--replay` ignores the cursor.
+
+**Acceptance:** on a run parked with `BLOCK-101`, `wait` prints the block line and exits 0, a second `wait --timeout 1` prints `still running: waiting-owner, BLOCK-101 open` and exits 3; after `factory answer`, `wait` returns on `run_finished`; deleting the cursor and calling `wait` replays both lines; with the driver killed, `wait` exits 4.
+
+### 2. `factory status <run>` in ten lines — medium — blocked by: —
+**Source**: §9 FR-7: "`factory status <run>` prints the board in ten lines."
+
+`src/cli/status.rs`: line 1 run id, phase, elapsed; line 2 slices done/building/blocked/pending with numbers; line 3 lanes and who holds them; line 4 checkpoints done and the last gate result; line 5 open blocks and asks by id; line 6 quota (paused until, utilisation from the last `rate_limit_event`) and budget used/total; line 7 PR URL or `no PR yet`; line 8 the last three events; lines 9 to 10 reserved for `stop_requested` and the dead-driver warning. Never more than ten lines; a missing run id → exit 1 with `factory status` listing the live runs.
+
+**Acceptance:** on the slice 04 parked fixture, `status` prints at most 10 lines containing `blocked: 01`, `lanes: 2 (1 parked)`, `BLOCK-101`; on a finished run it contains the PR URL.
+
+### 3. `factory stop` honoured and reported — medium — blocked by: —
+**Source**: §9 FR-7: "`factory stop <run>` ends it cleanly after the in-flight workers exit." §3 FR-1: "a runaway run needs `factory stop <id>`, which must exist from the first slice."
+
+Make the slice 02 flag visible: `stop` prints the in-flight count; the scheduler exits the loop after the last running worker is reaped, commits that worker's slice if `done` (slice 05), emits `run_stopped`, sets phase `finished` with `stopped: true` in `state.json`; `factory run NNN` afterwards resumes from the board. A second `stop` while workers still run prints the remaining count; there is no kill mode (a kill is `kill` on the process group, and the resume path handles it).
+
+**Acceptance:** plan `done{delay_ms:2000}, done, done`: `stop` 300 ms after start → the first worker finishes, slice 01 `done` and committed, slices 02 and 03 `pending`, `run_stopped` is the last event, phase `finished`; `factory run 001` builds the other two.
+
+### 4. The cockpit skill — high — blocked by: 1, 2, 3
+**Source**: §9 FR-7: "The cockpit skill lives in this repo (`skills/factory-deliver/SKILL.md`), installed into Claude Code by the owner. It is under 60 lines: start, loop on `wait`, relay as `AskUserQuestion`, `PushNotification` on every event the owner must see, then the review interview exactly as `/deliver` §8 does it." "whether a background Bash can sleep for hours … is tested at slice entry, with a 25-minute poll as the fallback."
+
+`skills/factory-deliver/SKILL.md`, under 60 lines: (1) `factory run NNN` and show the run id; (2) loop: `factory wait <run> --timeout <N>` in a background Bash (N from the slice-entry answer: hours, or 1500 s with a poll loop); on a block or ask, relay the question through `AskUserQuestion` with the Recommended option first and call `factory answer <id> "<choice>"`; `PushNotification` (under 200 chars) on every event `wait` prints; on `paused`/`parked` relay as information and keep waiting; (3) on `finished`, the review interview from `deliver/SKILL.md:212-238` verbatim in shape (decide lines first, four questions a round, record overturned ADs in `agent-log.md`, then tell the owner the PR URL and that merging is theirs); (4) a dead cockpit: "start here with the run id; `factory wait` replays". `skills/README.md` with the install line. A test asserts the file is under 60 lines and names the five commands.
+
+**Acceptance:** `wc -l` under 60; the file contains `factory run`, `factory wait`, `factory answer`, `factory status`, `AskUserQuestion`, `PushNotification`, and the deliver §8 round shape; the slice-entry answer about background Bash is recorded in Progress and in `prd.md` §20.
+
+### 5. Verify — medium — blocked by: 1–4
+`cargo test`. The full gate runs at this slice's checkpoint.
+
+**Acceptance:** inner loop green, one commit.
+
+### 6. Prove — at the checkpoint — blocked by: 5
+Rows from [`prd.md`](prd.md) § QA plan: **FR-7** is a Human row ("start a real run on the laptop, lock it, answer a block from the phone, finish the review interview on the phone", evidence: screenshots) and lives in [`qa-guide.md`](qa-guide.md); it is driven by the owner on the first dogfood run, not at this checkpoint. At the checkpoint: the `wait`, `status` and `stop` transcripts from the task 1 and task 3 fixture runs go into this slice's **Progress** as the machine half of the evidence.
+
+**Acceptance:** the three transcripts are attached and the qa-guide row is referenced.
