@@ -1,8 +1,16 @@
 //! A run's state on disk (PRD §3 FR-1): `<data_dir>/runs/<id>/state.json`
 //! beside its `events.jsonl`, mirrored into the `runs` table. The board stays
 //! the source of truth for what is built; this is only where the run is.
+//!
+//! Three processes write `state.json`: the driver, `factory stop` and the
+//! `factory run` that hands the run to a daemon. Every write is a
+//! read-modify-write of the file under `state.lock` (`flock`), so a writer
+//! changes only the fields it means to and never puts back a stale copy, and
+//! each writer renames its own temp file. The driver that took the run
+//! (`create`, `adopt`) owns it: once `state.json` names another pid, its
+//! writes fail and its loop stops, leaving the run to the new owner.
 use std::fmt;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -13,6 +21,8 @@ use crate::events::{self, Event, EventKind};
 use crate::{Error, Result, clock};
 
 pub const STATE_FILE: &str = "state.json";
+/// The `flock` every writer of `state.json` holds for its read-modify-write.
+pub const LOCK_FILE: &str = "state.lock";
 
 /// `<NNN>-<yyyymmdd>-<4 hex>`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -207,6 +217,9 @@ pub struct Run {
     /// driver process (FR-8: a worker's `Bash` call containing one is an
     /// inner-loop run). Not persisted: `None` until the scheduler sets it.
     gate_cmds: Option<GateCmds>,
+    /// This process created or adopted the run: its writes require
+    /// `state.json` to still name its pid.
+    owner: bool,
 }
 
 /// The feature's `gate` and `inner` command strings, as `docs gate` prints them.
@@ -272,6 +285,7 @@ impl Run {
             state,
             db,
             gate_cmds: None,
+            owner: true,
         })
     }
 
@@ -291,6 +305,7 @@ impl Run {
             state,
             db,
             gate_cmds: None,
+            owner: false,
         })
     }
 
@@ -353,66 +368,73 @@ impl Run {
     }
 
     pub fn set_phase(&mut self, phase: Phase) -> Result<()> {
-        self.state.phase = phase;
-        self.save()
+        self.update(|s| s.phase = phase)
     }
 
     pub fn set_branch(&mut self, branch: String) -> Result<()> {
-        self.state.branch = Some(branch);
-        self.save()
+        self.update(|s| s.branch = Some(branch))
     }
 
     pub fn set_pr_url(&mut self, url: String) -> Result<()> {
-        self.state.pr_url = Some(url);
-        self.save()
+        self.update(|s| s.pr_url = Some(url))
     }
 
     pub fn set_budget(&mut self, budget_weighted_tokens: u64) -> Result<()> {
-        self.state.budget_weighted_tokens = budget_weighted_tokens;
-        self.save()
+        self.update(|s| s.budget_weighted_tokens = budget_weighted_tokens)
     }
 
     pub fn request_stop(&mut self) -> Result<()> {
-        self.state.stop_requested = true;
-        self.save()
+        self.update(|s| s.stop_requested = true)
     }
 
     /// FR-7: the stop honoured — `finished` with `stopped: true`, one save.
     pub fn set_stopped(&mut self) -> Result<()> {
-        self.state.stopped = true;
-        self.state.phase = Phase::Finished;
-        self.save()
+        self.update(|s| {
+            s.stopped = true;
+            s.phase = Phase::Finished;
+        })
     }
 
     /// FR-9: set or clear the pause.
     pub fn set_paused_until(&mut self, until: Option<u64>) -> Result<()> {
-        self.state.paused_until = until;
-        self.save()
+        self.update(|s| s.paused_until = until)
     }
 
     pub fn add_worker(&mut self, w: WorkerRef) -> Result<()> {
-        self.state.workers.push(w);
-        self.save()
+        self.update(|s| s.workers.push(w))
     }
 
     /// Settle a worker: `done`, `blocked`, `dead` or `failed`.
     pub fn set_worker_outcome(&mut self, session_id: &str, outcome: &str) -> Result<()> {
-        if let Some(w) = self
-            .state
-            .workers
-            .iter_mut()
-            .rev()
-            .find(|w| w.session_id == session_id)
-        {
-            w.outcome = Some(outcome.to_string());
-        }
-        self.save()
+        self.update(|s| {
+            if let Some(w) = s
+                .workers
+                .iter_mut()
+                .rev()
+                .find(|w| w.session_id == session_id)
+            {
+                w.outcome = Some(outcome.to_string());
+            }
+        })
     }
 
-    /// This process takes the run over (a resume): `pid` becomes ours.
+    /// This process takes the run over (a resume): `pid` becomes ours. A
+    /// live driver keeps its run — unless it is this process's parent, the
+    /// `factory run` that hands the run to its daemon.
     pub fn adopt(&mut self) -> Result<()> {
-        self.state.pid = std::process::id();
-        self.save()
+        let me = std::process::id();
+        let parent = std::os::unix::process::parent_id();
+        let _lock = lock_state(&self.dir)?;
+        let mut disk = load_state(&self.dir)?;
+        if disk.pid != me && disk.pid != parent && pid_alive(disk.pid) {
+            return Err(Error::Msg(format!(
+                "run {} is driven by pid {} — not taken over",
+                disk.id, disk.pid
+            )));
+        }
+        disk.pid = me;
+        self.owner = true;
+        self.write(disk)
     }
 
     /// Reload `state.json` after another process (`factory stop`) wrote it.
@@ -421,16 +443,62 @@ impl Run {
         Ok(())
     }
 
-    fn save(&mut self) -> Result<()> {
-        // `factory stop` writes `stop_requested` from another process while
-        // the loop runs; a save from the loop's stale copy must not undo it.
-        if let Ok(disk) = load_state(&self.dir) {
-            self.state.stop_requested |= disk.stop_requested;
+    /// The pid that took this process's run over, from the last read of
+    /// `state.json`; `None` while this process owns it or never did.
+    pub fn taken_over(&self) -> Option<u32> {
+        (self.owner && self.state.pid != std::process::id()).then_some(self.state.pid)
+    }
+
+    /// [`taken_over`](Self::taken_over), read from disk now.
+    pub fn lost_to(&self) -> Option<u32> {
+        if !self.owner {
+            return None;
         }
-        self.state.updated_at = clock::now_rfc3339();
-        write_state(&self.dir, &self.state)?;
+        load_state(&self.dir)
+            .ok()
+            .map(|s| s.pid)
+            .filter(|pid| *pid != std::process::id())
+    }
+
+    /// Change `state.json` under the lock: `f` runs on what is on disk now,
+    /// not on this process's copy. An owner that lost the run writes nothing.
+    fn update(&mut self, f: impl FnOnce(&mut RunState)) -> Result<()> {
+        let _lock = lock_state(&self.dir)?;
+        let mut disk = load_state(&self.dir)?;
+        let me = std::process::id();
+        if self.owner && disk.pid != me {
+            self.state = disk;
+            return Err(Error::Msg(format!(
+                "run {} was taken over by pid {} — this driver (pid {me}) writes nothing more",
+                self.state.id, self.state.pid
+            )));
+        }
+        f(&mut disk);
+        self.write(disk)
+    }
+
+    /// Write `state` (the lock held) and make it this process's copy.
+    fn write(&mut self, mut state: RunState) -> Result<()> {
+        state.updated_at = clock::now_rfc3339();
+        write_state(&self.dir, &state)?;
+        self.state = state;
         self.db.update_run(&self.state)
     }
+}
+
+/// Take `runs/<id>/state.lock`, blocking until no other writer holds it;
+/// released when the file is dropped.
+fn lock_state(run_dir: &Path) -> Result<File> {
+    let path = run_dir.join(LOCK_FILE);
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(io(format!("open {}", path.display())))?;
+    file.lock()
+        .map_err(io(format!("lock {}", path.display())))?;
+    Ok(file)
 }
 
 /// `<run_dir>/state.json`, parsed.
@@ -441,9 +509,10 @@ pub fn load_state(run_dir: &Path) -> Result<RunState> {
 }
 
 /// Write `state.json` whole, through a rename so a reader never sees half.
+/// The temp file is this process's own, so two writers never share one.
 pub fn write_state(run_dir: &Path, state: &RunState) -> Result<()> {
     let path = run_dir.join(STATE_FILE);
-    let tmp = run_dir.join(format!("{STATE_FILE}.tmp"));
+    let tmp = run_dir.join(format!("{STATE_FILE}.{}.tmp", std::process::id()));
     let text = serde_json::to_string_pretty(state).map_err(json("serialize state"))?;
     fs::write(&tmp, text + "\n").map_err(io(format!("write {}", tmp.display())))?;
     fs::rename(&tmp, &path).map_err(io(format!("rename {}", path.display())))

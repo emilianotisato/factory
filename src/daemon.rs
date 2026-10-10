@@ -76,10 +76,14 @@ pub fn spawn(run: &Run) -> Result<u32> {
             });
         }
         if Instant::now() > deadline {
+            // A driver this command gave up on must not go on driving the
+            // run behind the error it prints.
+            let _ = child.kill();
+            let _ = child.wait();
             return Err(Error::Tool {
                 cmd: format!("factory daemon {}", run.id()),
                 detail: format!(
-                    "the driver (pid {pid}) did not take the run over within 5 s — see {}",
+                    "the driver (pid {pid}) did not take the run over within 5 s and was killed — see {}",
                     log.display()
                 ),
             });

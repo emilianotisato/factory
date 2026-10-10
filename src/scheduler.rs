@@ -99,6 +99,15 @@ pub fn drive(run: &mut Run, docs: &Docs, cfg: &Config, out: &mut dyn Write) -> R
     match drive_inner(run, docs, cfg, out) {
         Ok(phase) => Ok(phase),
         Err(e) => {
+            // Another process adopted the run: it is theirs, failed or not.
+            if let Some(pid) = run.lost_to() {
+                let _ = writeln!(
+                    out,
+                    "run {} was taken over by pid {pid} — this driver stops and leaves it to them",
+                    run.id()
+                );
+                return Err(e);
+            }
             let _ = run.set_phase(Phase::Failed);
             let _ = run.emit(EventKind::RunFailed {
                 error: e.to_string(),
@@ -136,6 +145,12 @@ fn drive_inner(run: &mut Run, docs: &Docs, cfg: &Config, out: &mut dyn Write) ->
     }
     loop {
         run.reload()?;
+        if let Some(pid) = run.taken_over() {
+            return Err(crate::Error::Msg(format!(
+                "run {} was taken over by pid {pid}",
+                run.id()
+            )));
+        }
         // HEAD off the run's branch: nothing is reaped (a reap commits),
         // nothing spawns; the run parks until the owner switches back.
         if let Some(b) = run.state().branch.clone() {

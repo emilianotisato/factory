@@ -12,7 +12,7 @@ use factory::config;
 use factory::db::Db;
 use factory::docs::{Branch, Docs};
 use factory::events::EventKind;
-use factory::run::{Phase, Run, pid_alive};
+use factory::run::{Phase, Run, WorkerRef, load_state, pid_alive};
 use harness::Fixture;
 use serde_json::{Value, json};
 
@@ -891,4 +891,122 @@ fn a_branch_switch_mid_run_parks_and_nothing_commits_off_the_branch() {
     wait_until("the run to finish", 40, || {
         state(&dir)["phase"] == "finished"
     });
+}
+
+// ── finding L11: one writer at a time, and only the owner drives ────────────
+
+fn worker_ref(session: &str) -> WorkerRef {
+    WorkerRef {
+        slice: Some(1),
+        checkpoint: None,
+        role: "build".into(),
+        session_id: session.into(),
+        pid: dead_pid(),
+        row_id: 1,
+        spawned_at: "2026-10-10T00:00:00Z".into(),
+        outcome: None,
+    }
+}
+
+#[test]
+fn a_stale_writer_changes_only_its_own_field_of_state_json() {
+    let fx = Fixture::new("state-merge");
+    let data = data_dir(&fx);
+    let mut driver = Run::create(&data, fx.path(), "001", None, 1).unwrap();
+    let dir = driver.dir().to_path_buf();
+    // `factory stop`'s copy, read before the driver wrote anything.
+    let mut stop = Run::open(&data, driver.id().as_str()).unwrap();
+    driver.add_worker(worker_ref("s1")).unwrap();
+    driver.set_phase(Phase::Building).unwrap();
+
+    stop.request_stop().unwrap();
+    let s = load_state(&dir).unwrap();
+    assert!(s.stop_requested);
+    assert_eq!(
+        s.phase,
+        Phase::Building,
+        "the stop put back its stale phase"
+    );
+    assert_eq!(s.workers.len(), 1, "the stop put back its stale workers");
+    assert_eq!(stop.state().workers.len(), 1);
+
+    // The driver's stale copy does not undo the stop either.
+    driver.set_worker_outcome("s1", "done").unwrap();
+    let s = load_state(&dir).unwrap();
+    assert!(s.stop_requested);
+    assert_eq!(s.workers[0].outcome.as_deref(), Some("done"));
+    // Each writer renames its own temp file, and none is left behind.
+    let leftovers: Vec<String> = fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.ends_with(".tmp"))
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+}
+
+#[test]
+fn a_driver_whose_run_was_taken_over_writes_nothing_and_a_live_one_is_not_adopted() {
+    let fx = Fixture::new("state-owner");
+    let data = data_dir(&fx);
+    let mut driver = Run::create(&data, fx.path(), "001", None, 1).unwrap();
+    let dir = driver.dir().to_path_buf();
+    let id = driver.id().as_str().to_string();
+    let mut other = Command::new("sleep").arg("30").spawn().unwrap();
+    let pid = other.id();
+
+    // Another process took the run: the old owner's writes fail, untouched.
+    set_pid(&dir, pid);
+    assert_eq!(driver.lost_to(), Some(pid));
+    let err = driver.set_phase(Phase::Building).unwrap_err().to_string();
+    assert!(err.contains(&format!("taken over by pid {pid}")), "{err}");
+    assert_eq!(driver.taken_over(), Some(pid));
+    let s = load_state(&dir).unwrap();
+    assert_eq!((s.pid, s.phase), (pid, Phase::Starting));
+
+    // A live driver keeps its run.
+    let mut resume = Run::open(&data, &id).unwrap();
+    let err = resume.adopt().unwrap_err().to_string();
+    assert!(err.contains(&format!("driven by pid {pid}")), "{err}");
+    assert_eq!(load_state(&dir).unwrap().pid, pid);
+
+    // Gone, it is adopted.
+    other.kill().unwrap();
+    other.wait().unwrap();
+    resume.adopt().unwrap();
+    assert_eq!(load_state(&dir).unwrap().pid, std::process::id());
+    resume.set_phase(Phase::Building).unwrap();
+}
+
+#[test]
+fn a_detached_driver_whose_run_is_taken_over_stops_without_failing_it() {
+    let fx = Fixture::new("driver-lost");
+    fx.chain();
+    fx.write_plan(&[json!({"outcome": "done", "delay_ms": 3000})]);
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let dir = run_dirs(&fx).remove(0);
+    let driver = state(&dir)["pid"].as_u64().unwrap() as u32;
+    wait_until("slice 01 to be building", 20, || {
+        fx.calls().len() == 1 && fx.slice_status(1) == "building"
+    });
+
+    let mut other = Command::new("sleep").arg("30").spawn().unwrap();
+    let pid = other.id();
+    wait_until("the driver to stop", 20, || {
+        if state(&dir)["pid"] != pid {
+            set_pid(&dir, pid);
+        }
+        !pid_alive(driver)
+    });
+    let s = state(&dir);
+    assert_eq!(s["pid"], pid);
+    assert_ne!(s["phase"], "failed");
+    assert!(!kinds(&dir).iter().any(|k| k == "run_failed"));
+    let log = fs::read_to_string(dir.join("driver.log")).unwrap();
+    assert!(
+        log.contains(&format!("was taken over by pid {pid}")),
+        "{log}"
+    );
+    other.kill().unwrap();
+    other.wait().unwrap();
 }
