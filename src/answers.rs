@@ -36,20 +36,24 @@ pub fn path(run_dir: &Path, id: &str) -> PathBuf {
     dir(run_dir).join(format!("{id}.json"))
 }
 
+/// Through a temporary file and a rename: the driver's slow tick reads this
+/// directory while `factory answer` writes it, and must never see half a file.
 pub fn write(run_dir: &Path, answer: &Answer) -> Result<()> {
     let d = dir(run_dir);
     fs::create_dir_all(&d).map_err(io(format!("mkdir {}", d.display())))?;
     let p = path(run_dir, &answer.id);
+    let tmp = d.join(format!(".{}.json.tmp", answer.id));
     let text = serde_json::to_string_pretty(answer).map_err(json("serialize answer"))?;
-    fs::write(&p, text + "\n").map_err(io(format!("write {}", p.display())))
+    fs::write(&tmp, text + "\n").map_err(io(format!("write {}", tmp.display())))?;
+    fs::rename(&tmp, &p).map_err(io(format!("rename {} to {}", tmp.display(), p.display())))
 }
 
+/// The answer to `id`. A file that does not parse is no answer: an ask stays
+/// open, and `factory answer ASK-n` writes it again.
 pub fn read(run_dir: &Path, id: &str) -> Result<Option<Answer>> {
     let p = path(run_dir, id);
     match fs::read_to_string(&p) {
-        Ok(text) => Ok(Some(
-            serde_json::from_str(&text).map_err(json(format!("parse {}", p.display())))?,
-        )),
+        Ok(text) => Ok(serde_json::from_str(&text).ok()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(io(format!("read {}", p.display()))(e)),
     }
@@ -57,22 +61,41 @@ pub fn read(run_dir: &Path, id: &str) -> Result<Option<Answer>> {
 
 /// Every answer on disk, by id.
 pub fn all(run_dir: &Path) -> Result<Vec<Answer>> {
+    Ok(scan(run_dir)?.0)
+}
+
+/// An answer file that does not parse: `(file name, error)`.
+pub type Unreadable = (String, String);
+
+/// Every answer on disk, by id, and each `.json` file that does not parse:
+/// skipped, for the driver to say so, never a reason to fail the run.
+pub fn scan(run_dir: &Path) -> Result<(Vec<Answer>, Vec<Unreadable>)> {
     let d = dir(run_dir);
     let entries = match fs::read_dir(&d) {
         Ok(rd) => rd,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((Vec::new(), Vec::new())),
         Err(e) => return Err(io(format!("read {}", d.display()))(e)),
     };
     let mut out: Vec<Answer> = Vec::new();
+    let mut bad: Vec<Unreadable> = Vec::new();
     for entry in entries {
         let p = entry.map_err(io(format!("read {}", d.display())))?.path();
         if p.extension().is_some_and(|e| e == "json") {
             let text = fs::read_to_string(&p).map_err(io(format!("read {}", p.display())))?;
-            out.push(serde_json::from_str(&text).map_err(json(format!("parse {}", p.display())))?);
+            match serde_json::from_str(&text) {
+                Ok(a) => out.push(a),
+                Err(e) => bad.push((
+                    p.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                    e.to_string(),
+                )),
+            }
         }
     }
     out.sort_by(|a, b| a.id.cmp(&b.id));
-    Ok(out)
+    bad.sort();
+    Ok((out, bad))
 }
 
 /// The latest block answer naming `slice`, if any: what tells the driver a
@@ -443,5 +466,36 @@ mod tests {
         assert_eq!(all(dir.path()).unwrap().len(), 2);
         assert_eq!(block_answer_for_slice(dir.path(), 1).unwrap(), Some(a));
         assert!(block_answer_for_slice(dir.path(), 2).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_torn_answer_file_is_skipped_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = Answer {
+            id: "BLOCK-101".into(),
+            slice: Some(1),
+            text: "Pick 1".into(),
+            at: "2026-10-10T00:00:00Z".into(),
+        };
+        write(dir.path(), &a).unwrap();
+        // What a reader saw mid-write before writes were atomic: a
+        // truncated file, and an empty one.
+        fs::write(path(dir.path(), "ASK-1"), "{\"id\": \"ASK-1\", \"te").unwrap();
+        fs::write(path(dir.path(), "BLOCK-102"), "").unwrap();
+        let (good, bad) = scan(dir.path()).unwrap();
+        assert_eq!(good, vec![a.clone()]);
+        assert_eq!(
+            bad.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+            ["ASK-1.json", "BLOCK-102.json"]
+        );
+        assert_eq!(all(dir.path()).unwrap(), vec![a.clone()]);
+        assert_eq!(block_answer_for_slice(dir.path(), 1).unwrap(), Some(a));
+        assert_eq!(read(dir.path(), "ASK-1").unwrap(), None);
+        // `write` leaves no temporary file behind.
+        let names: Vec<String> = fs::read_dir(super::dir(dir.path()))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(!names.iter().any(|n| n.ends_with(".tmp")), "{names:?}");
     }
 }

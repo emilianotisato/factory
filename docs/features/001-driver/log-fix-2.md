@@ -87,3 +87,11 @@
 **Because:** the budget is read from the `workers` rows each time, so the hold check already tells the two parks apart. A new phase would touch the cockpit, `status`, the `runs` table and every match on `Phase`, and those files belong to other fixers.
 **Undo:** drop the `Hold::Budget` arm in `cli/answer.rs::wake`.
 **Review:** no
+
+### AD-20012 — What does the driver do with an answer file that does not parse? · polish · 2026-10-10
+
+**Chose:** skip it, and say so in the driver log once per file. An `ASK-n` with a torn file counts as unanswered, so the park line lists it and `factory answer ASK-n` writes it again. `answers::write` now writes a temporary file and renames it, so `factory answer` cannot leave a torn file.
+**Over:** failing the run (what it did); deleting the file.
+**Because:** one bad file in `answers/` stopped every slice of the run, though the other answers were fine. Deleting it would lose what the owner can still read by hand.
+**Undo:** make `answers::scan` return the parse error again.
+**Review:** no

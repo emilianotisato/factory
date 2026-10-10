@@ -536,6 +536,50 @@ fn a_blocked_slice_parks_its_lane_and_the_answer_respawns_it() {
     );
 }
 
+#[test]
+fn a_torn_answer_file_is_said_and_skipped_and_the_run_goes_on() {
+    let fx = Fixture::with_index("lanes-torn-answer", &[("checkpoint_every", "10")]);
+    fx.write_plan(&[
+        json!({"outcome": "blocked", "question": QUESTION}),
+        done(),
+        done(),
+        done(),
+        checkpoint(),
+    ]);
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let dir = only_run_dir(&fx);
+    wait_until(&fx, &dir, "the run to park", 60, || {
+        state(&dir)["phase"] == "waiting-owner"
+    });
+    // A file no `factory answer` finished writing.
+    fs::create_dir_all(dir.join("answers")).unwrap();
+    fs::write(dir.join("answers/ASK-7.json"), "{\"id\": \"ASK-7\", \"te").unwrap();
+
+    let out = factory(&fx, &["answer", "BLOCK-101", ANSWER]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    wait_until(&fx, &dir, "the run to end", 60, || {
+        state(&dir)["phase"] == "finished" || state(&dir)["phase"] == "failed"
+    });
+    assert_eq!(state(&dir)["phase"], "finished", "{}", driver_log(&dir));
+    assert_eq!(
+        call_slice(&fx.calls()[3]),
+        1,
+        "the answered slice respawned"
+    );
+    let log = driver_log(&dir);
+    assert_eq!(
+        log.matches("answers/ASK-7.json is not an answer (").count(),
+        1,
+        "said once: {log}"
+    );
+    assert!(
+        log.contains("is not an answer (") && log.contains(") — skipped"),
+        "{log}"
+    );
+    assert!(!dir.join("answers/.BLOCK-101.json.tmp").exists());
+}
+
 // ── task 4: `factory answer ASK-n` ───────────────────────────────────────────
 
 #[test]

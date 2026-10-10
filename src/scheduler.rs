@@ -188,6 +188,8 @@ fn drive_inner(
     let mut off_branch = false;
     // Earlier drivers' live workers this one said it waits on.
     let mut waiting: HashSet<String> = HashSet::new();
+    // Answer files that do not parse, said once each.
+    let mut unreadable: HashSet<String> = HashSet::new();
     if !parked && run.state().branch.is_some() && run.state().paused_until.is_none() {
         run.set_phase(Phase::Building)?;
     }
@@ -318,6 +320,14 @@ fn drive_inner(
             }
         }
 
+        for (name, err) in answers::scan(run.dir())?.1 {
+            if unreadable.insert(name.clone()) {
+                say(
+                    out,
+                    &format!("{}/{name} is not an answer ({err}) — skipped", answers::DIR),
+                )?;
+            }
+        }
         let mut free = free_lanes(&board, table);
         // A `building` slice with nothing alive on it is either answered
         // (an `answers/BLOCK-n.json` names it) or a worker that died below
