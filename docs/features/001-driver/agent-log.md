@@ -55,6 +55,14 @@ What this repo does that cost a builder a run and will cost the next one too: a 
 
 - 2026-10-10, run 1: `tests/closeout.rs::the_driver_never_merges_or_readies_a_pr` scans `src/` for `pr merge`, and the injected deny rule `"Bash(gh pr merge*)"` in `src/worker.rs` tripped it. The scan now strips that one literal before it looks.
 
+- `gh pr checks --json …` exits 1 when a row failed and 8 when one is pending, and prints the JSON on stdout either way. Parse stdout before reading the exit as an error. "no checks reported" comes on stderr with exit 1.
+- `gh` puts `STARTUP_FAILURE` in its `pending` bucket. Classifying by `bucket` waits on a runner that never started, forever. `ci::class` reads `state` first.
+- A `gh run rerun <id> --failed` keeps the run id and gives the jobs new ids. A check's job link (`…/runs/<run>/job/<job>`) tells the old attempt's row from the new one; the run id does not.
+- `tests/closeout.rs::the_driver_never_merges_or_readies_a_pr` greps `src/` for the two `gh pr` subcommands the driver must never run. Do not write them in a comment or a message, even to say they are not used.
+- The stub `gh` used to answer `pr checks` with one row and `run list` with every run on the branch. The wrong-run, wrong-workflow and `--limit` bugs passed every test until it printed real JSON, real job links and a run per workflow. Its header now documents `scenario/ci` (`<kind>:<check>[/<workflow>][@<sha>]`, `lag`, `stale`, `none`, `unreadable`) and `scenario/gh-fail`.
+
+- 2026-10-10, polish fixer 4: tagging every file that names the symbol, so `def` would match `outline` by construction, took `def handle` on a 12,877-file Laravel checkout from 0.10 s to 0.59 s and `def id` to 0.77 s, near FR-12's 1 s. The regex prefilter stays and is widened instead (AD-40001); the same queries then answer in 0.08–0.10 s, as before.
+
 ## Blockers
 
 ### BLOCK-201 — FR-1's "`judge[]` parks the run" rule parks every run, including the fixture's · slice-02 · resolved
@@ -66,6 +74,10 @@ What this repo does that cost a builder a run and will cost the next one too: a 
 3. Make `docs.mjs` emit judge lines only when there is something to judge (a harness that disagrees with the QA plan, a rubric the PRD asked for) — outside this repo (feature-docs skill), a PRD-002 of its own; this slice would wait on it.
 **Recommended:** 1, because `judge` is already defined by `/deliver` as "the orchestrator decides, the owner is not asked", and the driver is the orchestrator; it keeps slices 03–10 testable on the fixture and the run unattended, and nothing of what was built here changes shape — only the routing of one list.
 **Resolution (2026-10-09):** owner: "Deliver should be unattended" → option 1. Only `ask[]` parks; `judge[]` lines are logged as one `judge_noted` event each, shown by the cockpit, never waited on. FR-1 and FR-7's `wait` line corrected inline in `prd.md`; slice 02 task 3, slice 04 and slice 10 updated to match.
+
+_(none)_
+
+_(none)_
 
 _(none)_
 
@@ -913,6 +925,452 @@ In all three cases, refusing would point the worker at text it does not have.
 **Over:** one head size for all calls.
 **Because:** a `refs` answer can run to several thousand chars and the detector needs its paths.
 **Undo:** `CTX_RESULT_HEAD` in `src/stream.rs`.
+**Review:** no
+
+### AD-10001 — How are workers kept off `gh` and `git push`? · polish · 2026-10-10
+
+**Chose:** three layers, each enough for the review's cases on its own where it can see them:
+- **Deny rules** `Bash(gh)`, `Bash(gh *)`, `Bash(git push*)` in every worker's `--settings` (`worker::DENY_RULES`): any `gh` and any `git push`, not just `gh pr merge*` and `git push --force*`.
+- **The hook's guard** (`cli::hook::guard`, on `shell::script`) reads every simple command in the line at any depth: lists, pipes, groups, `if`/`for`/`case` bodies, `$(…)`, backticks, `<(…)`, heredoc bodies fed to a shell, `sh -c`/`bash -c` strings, `eval`, `env -S`, and wrappers (`env`, `command`, `exec`, `nohup`, `time`, `timeout`, `nice`, `stdbuf`, `sudo`, `xargs`, `find -exec`, `watch` and the rest of its table). It denies any `gh`, and any `git push` (also `send-pack`, `subtree push`, `lfs push`, an inline `-c alias.x=push`) after git's global options (`-c`, `-C`, `--git-dir`, `--no-pager` …). Where the reading is unsure — an unbalanced quote, an interpreter handed inline code or stdin, a shell reading a pipe, a program word that is an expansion — it denies when `gh` or `push` appears as a whole word anywhere in the line; hook input that does not parse is denied on the same test. One reason for every deny: `workers never run gh or git push: the driver pushes the branch and talks to GitHub; …`.
+- **No credential:** `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN` and `GITHUB_ENTERPRISE_TOKEN` are removed from the worker's env after the lane's env is applied, and `GH_CONFIG_DIR` is an empty 0700 `runs/<id>/gh-config`, so a `gh` that gets past both finds no login. `SSH_AUTH_SOCK` is kept.
+
+**Over:**
+- Wider prefix rules alone: a rule cannot see `true && gh …` or `git -c k=v push`, which the review proved.
+- Taking `gh` off the worker's `PATH`: `/usr/bin/gh` by absolute path walks round it, and the worker's `PATH` is the owner's.
+- Scrubbing `SSH_AUTH_SOCK`: it breaks SSH commit signing and SSH dependency fetches. An HTTPS push with a credential helper would not need it anyway.
+
+**Because:** the never-list is held against an agent under pressure, not a malicious one (the brief's threat model). Three layers mean an accidental `gh` or push fails even when one layer misses it. What still gets through: a script file the worker writes and then runs, a git alias from config, a `make` or `npm` target, a wrapper not in the table, and a `git push` through SSH or a credential helper, since only the GitHub tokens and `gh`'s config are withheld. The real Claude Code check refused all three probes (`evidence/polish-f1-deny-real.txt`).
+**Undo:** `DENY_RULES`, `GH_TOKEN_VARS` and `gh_config_dir` in `src/worker.rs`; `guard` and its helpers in `src/cli/hook.rs`; `shell::script` in `src/shell.rs`.
+**Review:** decide — the worker env and deny rules are the PRD's §4 FR-2 interface, widened; `SSH_AUTH_SOCK` stays.
+
+### AD-10002 — How do the pack and the hook name the `factory` binary? · polish · 2026-10-10
+
+**Chose:** `paths::factory_command()`: the running binary's absolute path (`current_exe`, with Linux's ` (deleted)` suffix stripped after a rebuild, single-quoted when it holds a shell character), when its file name is `factory`. Otherwise it is the bare `factory`: a test binary that builds a pack in-process is not the CLI. The `# Lookup` verbs (`pack::lookup`), the grep hint and the settings' hook command all use it.
+**Over:** the bare name, with `qa-guide.md` requiring an installed `factory`. CP-7's real worker followed the hint and got exit 127.
+**Because:** the worker should run the same build that wrote its pack.
+**Undo:** `factory_command`/`self_exe` in `src/paths.rs`, `pack::lookup`, `hook::grep_hint`.
+**Review:** no
+
+### AD-10003 — What is "the repo" a held file is relative to? · polish · 2026-10-10
+
+**Chose:** `FACTORY_REPO`, which the driver sets to the run's repo for every worker. Without it (the hook run by hand), it is the call's `cwd`. `Held::section` matches `<repo>/<held path>` exactly. Recursive greps are judged against the same root.
+**Over:** `CLAUDE_PROJECT_DIR`, which belongs to whatever session started the driver and is scrubbed from workers (AD-10007).
+**Because:** a worker that runs `cd src` is still in the repo, and another checkout with the same relative path is not the pack's file (C3).
+**Undo:** `REPO_ENV` in `src/worker.rs`, `hook()`/`hook_with` in `src/cli/hook.rs`.
+**Review:** no
+
+### AD-10004 — How does `autonomy.md` square "read whole" with AD-1304? · polish · 2026-10-10
+
+**Chose:** in `assets/autonomy.md`, line 67 now reads "whole when it fits … unless your pack already holds it: then read only the range you need, because a whole read of a file in your pack is refused". In the same pass, three lines now say what the hook enforces:
+- line 58, in the Never list: a worker runs no `git push` and no `gh` at all;
+- line 78: the driver does the flaky rerun;
+- line 85: the driver commits and pushes a block, and a worker stops after step 2.
+
+`assets/contract-ci-fix.md` lines 5 and 13 say the driver fetched the failed log and that a worker never runs `gh`. Every change is made in place, so the file keeps 100 lines and the `autonomy.md:NN` citations in `src/ci.rs`, `src/scheduler.rs` and the PRD still point at the same lines.
+**Over:** loosening AD-1304 to allow whole reads, or adding lines.
+**Because:** without this, the pack tells a worker to do what its own hook refuses (Cn2), and to run `gh run rerun` and `git push`.
+**Undo:** the asset lines.
+**Review:** fyi — `assets/autonomy.md` is no longer byte-identical to `~/.claude/skills/feature-docs/autonomy.md`. It is this repo's own copy (slice-03), and line 67 may be worth taking upstream.
+
+### AD-10005 — When is a grep's operand a directory, and where is it resolved? · polish · 2026-10-10
+
+**Chose:**
+- **Cn4:** an operand is a directory when `Path::is_dir` says so and it is under the repo, or when it is a glob whose last part is `*` or `**`. A path that does not exist is not a directory. This replaces AD-1305's lexical rule, where a trailing `/` or a last segment with no extension meant a directory.
+- **Cn3:** each leading `cd X &&` moves the directory later operands resolve against. A target the hook cannot follow (`cd`, `cd -`, `cd ~`, `cd "$D"`) means no decision.
+
+**Over:** the lexical rule, which denied `grep -rn x Makefile` and passed `grep -rn x src.d`.
+**Because:** one `stat` per operand costs microseconds against AD-1305's 20 ms budget, and the deny is a hint, so a missed one costs only tokens.
+**Undo:** `repo_dir` and `bash` in `src/cli/hook.rs`, `shell::first_command_in`.
+**Review:** no
+
+### AD-10006 — How does a worker's stream reach its file? · polish · 2026-10-10
+
+**Chose:** the worker's stdout is `runs/<id>/workers/<session>.jsonl` itself (`Stdio::from(File)`), with no tee thread. The driver parses the file when the process exits (`summary_at`).
+**Over:** keeping the tee and ignoring `EPIPE`.
+**Because:** the stream must outlive a driver that dies: a tee leaves the worker writing into a pipe nobody reads (L9). Also, a grandchild holding the pipe could stall the reader's join. `tests/worker.rs::the_stream_outlives_the_driver` kills only the driver and finds the worker's `result` line on disk.
+**Undo:** `Worker::spawn`/`exit` in `src/worker.rs`.
+**Review:** no
+
+### AD-10007 — Which `CLAUDE_*` variables does a worker keep? · polish · 2026-10-10
+
+**Chose:**
+- **Kept:** `worker::KEEP_CLAUDE_VARS` and every `CLAUDE_CODE_USE_*` (Bedrock, Vertex, Foundry). The kept list is `CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_API_KEY_HELPER_TTL_MS`, `CLAUDE_CODE_SKIP_{BEDROCK,VERTEX,FOUNDRY}_AUTH` and `CLAUDE_CODE_CLIENT_{CERT,KEY,KEY_PASSPHRASE}`.
+- **Scrubbed:** `CLAUDECODE` and every other `CLAUDE_*`.
+- **Untouched:** `ANTHROPIC_*`, as before.
+
+**Over:** scrubbing only a named list of session variables, which would leak any session variable a later Claude Code adds.
+**Because:** the account, config dir and provider must reach the worker, or it logs in as someone else or not at all (L17). The session's variables must not reach it.
+**Undo:** `KEEP_CLAUDE_VARS`/`scrubbed` in `src/worker.rs`.
+**Review:** fyi — a provider or auth variable outside the list is dropped; add it there.
+
+### AD-10008 — Which files and directories are private? · polish · 2026-10-10
+
+**Chose:**
+- The data dir is created 0700 only when it is missing. An existing one keeps its mode, since `FACTORY_DATA_DIR` may name a directory the owner shares on purpose.
+- `workers/` and `gh-config/` are 0700.
+- A worker's stream, stderr and settings files are 0600.
+
+**Over:** a `chmod` of existing directories.
+**Because:** streams hold the worker's whole transcript (S-n2).
+**Undo:** `private_dir_all` in `src/paths.rs`, `private_file` in `src/worker.rs`.
+**Review:** no — `runs/` and `runs/<id>/` are created by `src/run.rs`, outside this fix's files, and keep the umask's mode.
+
+### AD-10009 — Where do paths become absolute? · polish · 2026-10-10
+
+**Chose:** `paths::data_dir()` and `config_dir()` resolve against the driver's cwd. `Worker::spawn` makes the run dir and the pack path absolute once more before they go on the command line or into `FACTORY_PACK`.
+**Over:** absolutizing only the worker's flags, which Ln6 named. A relative `FACTORY_DATA_DIR` also broke the checkpoint's `git read-tree` into `runs/<id>/gate-index`, run in the repo. `tests/worker.rs` caught this from a subdirectory.
+**Because:** every consumer of the data dir runs somewhere else: the worker, `git`, the gate.
+**Undo:** `dir` in `src/paths.rs`.
+**Review:** no — the detached driver (`src/daemon.rs`) still inherits a relative `FACTORY_DATA_DIR` and runs in the repo; it should be handed the absolute one.
+
+### AD-10010 — What does the no-merge source scan look for? · polish · 2026-10-10
+
+**Chose:** `tests/closeout.rs::merges_or_readies` reads each `src/**/*.rs` file in two ways. With whitespace runs collapsed, it looks for `pr merge`, `pr ready` and `/merge` (the REST endpoint). With whitespace removed, so that rustfmt's one-argument-per-line arrays read as one, it looks for `"pr","merge"`, `"pr","ready"`, the GraphQL `mergePullRequest`, `markPullRequestReadyForReview` and `enablePullRequestAutoMerge`, and a `"pr","create"` array without `"--draft"`. The scan has no exemption: the deny rules name no merge, so the stale strip of `"Bash(gh pr merge*)"` is gone. The test also checks the scan itself against each form and against `ci::pr_create`'s shape (K3).
+**Over:** keeping the substring scan, which missed the args-array form the driver actually uses for `gh`.
+**Because:** this keeps the test's intent, that no code path in the driver merges a PR or marks one ready, and makes it see how the driver really calls `gh`.
+**Undo:** the test.
+**Review:** no
+
+### AD-20001 — Which number does the driver's death block on a slice take? · polish · 2026-10-10
+
+**Chose:** an open block already titled "Two workers died on slice NN" if a kill left one written. Otherwise the lowest `BLOCK-NNkk` with `kk` from 02 that no log file of the feature uses (`scheduler::dead_block_id`).
+**Over:** the lowest free number below 100, as the checkpoint's blocks take (AD-501); or `kk` from 01.
+**Because:** the slice's range keeps the block attributable to the slice when the merge folds it. Starting at 02 keeps the id the driver has always written whenever nothing clashes, and skipping used numbers ends the clash with a builder's own `BLOCK-NN02`.
+**Undo:** in `dead_block_id`, start the range at 1, or call `checkpoint::lowest_free_block`.
+**Review:** no
+
+### AD-20002 — What orders "since the last answer" for the death cap? · polish · 2026-10-10
+
+**Chose:** `events.jsonl` order. A slice worker counts toward the cap unless its `slice_spawned` comes before the latest `block_answered` naming the slice. A checkpoint's workers are spent by the latest `block_answered` for one of that checkpoint's own `checkpoint_blocked` ids. A worker with no spawn event counts.
+**Over:** comparing `spawned_at` with the answer file's `at`, which the checkpoint used. Both are whole seconds, so a respawn in the answer's second compares wrongly.
+**Because:** `seq` is a total order (the emit is serialised under a lock, AD-20006), and `factory answer` now logs `block_answered` before the slice flips, so the answer always precedes the respawn it causes.
+**Undo:** filter on `spawned_at > answer.at` in `scheduler::deaths_since_answer` and `checkpoint::spawned_before_answer`.
+**Review:** no
+
+### AD-20003 — Which answers reset a checkpoint's death cap? · polish · 2026-10-10
+
+**Chose:** only the answers to that checkpoint's own blocks: the three-reds block, the two-deaths block, or the worker's own block, all emitted as `checkpoint_blocked {n}`.
+**Over:** any answer naming no slice. That covers a refused merge, a closeout block or another checkpoint's block.
+**Because:** an answer to a refused merge says the fragments are fixed. It says nothing about why the checkpoint workers died, so the once-only respawn should not come back with it.
+**Undo:** treat `merge_refused` block ids as the checkpoint's own in `checkpoint::since_answer`.
+**Review:** no
+
+### AD-20004 — What does a sanitized BLOCK title look like? · polish · 2026-10-10
+
+**Chose:** `answers::block_title`. Whitespace runs, newlines included, collapse to one space, every `·` becomes `-`, and the title is cut at 160 chars ending in `…`. The checkpoint's three-reds and refused-merge titles go through it.
+**Over:** escaping the separator, or dropping the gate line from the title.
+**Because:** `entries` and `resolve` split the heading on ` · `. A `·` in a gate's last line shifted the phase and `open` fields, so the block no longer parsed as open. A 2000-char compiler line in a heading also helps nobody. The full output stays in the body and the transcript.
+**Undo:** use the raw `format!` titles in `checkpoint::run` and `block_on_refusal`.
+**Review:** no
+
+### AD-20005 — What does the driver do when HEAD leaves the run's branch? · polish · 2026-10-10
+
+**Chose:** two guards. Each tick, before the reap, the driver checks HEAD against the run's branch. Off the branch, it parks in `waiting-owner` with a line naming `git switch <branch>`. In-flight workers finish but are not routed, nothing spawns, and the run goes on by itself once HEAD is back. Every `commit::commit` in the driver process is also held to the run's branch (`commit::hold_branch`, a process-wide table keyed by repo), so a switch between the check and a commit errors instead of landing a commit. That error fails the run. `factory run NNN` refuses a resume off the branch before it adopts anything. A run whose branch is the preflight's default branch refuses at creation, at resume and at every commit.
+**Over:** a BLOCK-n the owner answers after switching back; failing the run on the first tick off the branch; or checking only in the four driver commit sites of my files.
+**Because:** switching back is the whole fix, so a block and an answer would add a step without adding information. A park that clears itself keeps the run. The process-wide hold also covers the polish, ship and CI-fix commits in `closeout.rs`, which this fixer may not edit.
+**Undo:** drop the `branch_refusal` block at the top of the `drive_inner` loop, and the `held` check in `commit::commit`.
+**Review:** fyi
+
+### AD-20006 — How are emitters in several processes serialised? · polish · 2026-10-10
+
+**Chose:** `flock` on `events.jsonl` itself, through std `File::lock`. It is taken before the last `seq` is read and held until the `events` row is inserted. The line and its newline go out in one `write_all`.
+**Over:** a separate lock file; an in-process mutex, which `factory stop` and `factory answer` never see; or the `fs2`/`fd-lock` crates, a new runtime dependency.
+**Because:** the file is the thing being appended, so locking it needs no second path to create or clean up. Holding the lock through the insert keeps the table's rows in `seq` order with the file. AD-20002's "since the last answer" depends on that order being total. rustc 1.98 has `File::lock` in std.
+**Undo:** drop the `f.lock()` call in `events::emit`.
+**Review:** no
+
+### AD-20007 — Whose are the tracked files a worker changed without naming them? · polish · 2026-10-10
+
+**Chose:** the worker's, when nothing else ran beside it. A file changed since the worker's spawn baseline that no tool call named goes in the worker's commit if it is tracked, not protected, and no other worker was live. That applies to a slice worker with no sibling, and to every fix and checkpoint worker, since the lanes drain before a checkpoint. With a sibling live, the file is listed (an `untracked_leftovers` event and the fragment's list for a slice, `checkpoint_leftovers` at a checkpoint) and left in the tree. A new, untracked file that no tool call named is always listed, never committed, as before. A file once listed is never swept later. Each checkpoint worker's baseline is saved under `runs/<id>/untracked-before/checkpoint-n-<role>.json`, as a slice's is, so a resumed driver judges an orphan the same way.
+**Over:** listing every tracked change as well (it would leave a `sed -i` or a formatter's edit uncommitted for good); or sweeping with siblings live (whose change it is cannot be told).
+**Because:** with one worker running, a tracked file that changed under it is its work. The commit message already names the worker, so the sweep loses nothing, and `git diff` of the commit shows it. An untracked file can be a scratch file, a build output that `.gitignore` misses, or a secret, so it stays a human call. The cost is that an owner editing a tracked file by hand during a lone worker's run sees the edit in that worker's commit.
+**Undo:** pass `alone: false` to `scheduler::unnamed` everywhere, so every unnamed change is listed.
+**Review:** fyi
+
+### AD-20008 — Does a slice whose worker died wait for a due checkpoint? · polish · 2026-10-10
+
+**Chose:** yes, on resume and in an unbroken run alike. With `checkpointDue` set, a `building` slice with no live worker (a death below the cap, or an answered block) is not respawned. Workers in flight finish, the checkpoint runs, and the respawn follows it. A death-cap block still happens at once, since it spawns nothing.
+**Over:** respawning first and counting the respawn as part of draining the lanes.
+**Because:** PRD §5 FR-4 says to drain the lanes on `checkpointDue`, and the board reports `spawnable: 0`. A respawn is a spawn. Respawning first also lets a checkpoint cover more than `checkpoint_every` slices. The cost is that the gate runs over the dead worker's half-written changes. The checkpoint commit leaves them out, because they are in its spawn baseline, so the respawned worker still owns them.
+**Undo:** drop the `board.checkpoint_due` skip in the building-respawn loop of `drive_inner`.
+**Review:** fyi
+
+### AD-20009 — When `factory answer BLOCK-n` fails partway, how does a retry finish it? · polish · 2026-10-10
+
+**Chose:** two changes. First, everything that can refuse runs before anything is written; a block naming a slice with no file is refused and nothing is written. Second, the steps run in this order: answer file, `block_answered`, then the heading and its `**Resolution**`, then the slice flip, then the wake. A retry that finds every `BLOCK-n` resolved finishes the answer when the feature's resumable run has it on file and is still stuck: either the slice is `blocked`, or the run is `waiting-owner` with no driver and is not parked on its budget. Otherwise it is refused as "already resolved", as before.
+**Over:** writing the heading last, after the flip.
+**Because:** a respawned worker's pack quotes the entry as the log holds it (`block_section`). If the flip happens before the heading, a live driver can respawn the slice in between, and the worker gets the open block without its resolution.
+**Undo:** in `cli/answer.rs`, call `answers::resolve` first again and drop `answer_resolved`.
+**Review:** no
+
+### AD-20010 — Two open runs wait on the same `ASK-n`: which does `factory answer` take? · polish · 2026-10-10
+
+**Chose:** neither. It refuses and names each run, with its feature and the ask's text. A new `--run <id>` option on `factory answer` picks one.
+**Over:** the newest run (what it did, silently); refusing with no way to answer; or matching on the feature number.
+**Because:** ask numbers start at 1 in every run, so two features parked at preflight in one repo both have an ASK-1. A refusal with no option would leave both runs unanswerable. The run id is what the refusal prints, so it is what the owner copies.
+**Undo:** remove `AnswerArgs::run`, and take the first run that waits.
+**Review:** fyi
+
+### AD-20011 — Does a run parked on its budget get its own phase? · polish · 2026-10-10
+
+**Chose:** no. It stays `waiting-owner`. `factory answer` does not start a driver for a run that `quota::hold` says is over budget. It prints the weighted tokens, the budget, and `factory run NNN --budget <higher>`.
+**Over:** a `parked-budget` phase.
+**Because:** the budget is read from the `workers` rows each time, so the hold check already tells the two parks apart. A new phase would touch the cockpit, `status`, the `runs` table and every match on `Phase`, and those files belong to other fixers.
+**Undo:** drop the `Hold::Budget` arm in `cli/answer.rs::wake`.
+**Review:** no
+
+### AD-20012 — What does the driver do with an answer file that does not parse? · polish · 2026-10-10
+
+**Chose:** skip it, and say so in the driver log once per file. An `ASK-n` with a torn file counts as unanswered, so the park line lists it and `factory answer ASK-n` writes it again. `answers::write` now writes a temporary file and renames it, so `factory answer` cannot leave a torn file.
+**Over:** failing the run (what it did); deleting the file.
+**Because:** one bad file in `answers/` stopped every slice of the run, though the other answers were fine. Deleting it would lose what the owner can still read by hand.
+**Undo:** make `answers::scan` return the parse error again.
+**Review:** no
+
+### AD-20013 — Where does an unclosed fence in a log file end? · polish · 2026-10-10
+
+**Chose:** fences pair from the top. With an odd count, the driver does not treat the last fence line as a fence, so the entries after it are still found. `answers::resolve` repairs the file: it adds the missing closing fence before the next heading after the opener, then writes the resolution.
+**Over:** reading it as docs.mjs `parseAgentLog` does, where the fence runs to the end of the file; or closing the fence at the next heading even when the count is even.
+**Because:** the old behaviour hid a worker's later `BLOCK-n` from `slice_blocked` and `factory answer`, and wrote the resolution as code. After the repair, the driver and docs.mjs read the same entries. Closing at a heading when the count is even would break the template's fenced examples, which hold BLOCK headings.
+**Undo:** in `answers.rs`, make `dangling_fence` return `None`.
+**Review:** fyi
+
+### AD-20014 — Does a run that reaches its budget exactly park? · polish · 2026-10-10
+
+**Chose:** no. `quota::hold` parks when the unrounded weighted sum is above the budget (`>`). The hold reports the rounded sum, as `status`, `report` and the `run_parked` event already do.
+**Over:** `>=`; or comparing the rounded sum (what it did, which let 1.4 pass a budget of 1).
+**Because:** PRD §11 FR-9 says "Past the budget the run … parks", and a budget is what the run may spend. Rounding first moved the line by up to half a token.
+**Undo:** compare `weighted(..)` with the budget again in `quota::hold`.
+**Review:** no
+
+### AD-30001 — How long does "not registered yet" last after a push, a rerun or the watch's start? · polish · 2026-10-10
+
+**Chose:** a grace window of `ci::GRACE_POLLS = 5` polls (`5 × FACTORY_CI_INTERVAL`, 5 min by default), counted from the watch's start, each fix push and each rerun. Inside it, each of these is a pending poll:
+- a PR whose `headRefOid` is not the pushed head;
+- an empty check table;
+- a stale rerun row;
+- a check name from the last red table that is missing from this one.
+
+Past it:
+- a PR head that is still behind blocks (`the PR's head X is not this branch's head Y · ci`);
+- an empty table ends the watch as AD-907 says (`ci: no checks reported … nothing to watch`).
+
+**Over:**
+- judging the first poll after a push, which sees the previous head's suite or none at all;
+- an unbounded wait for checks that never come.
+
+**Because:** GitHub registers a pushed head's check suite seconds to minutes after the push. Five polls covers that without turning a repo with no workflow into a 6 h wait. The expected-names rule stops a red table that is still partly registered from reading as a smaller red.
+**Undo:** set `GRACE_POLLS` to 0 in `src/ci.rs`; `judge` then decides on the first poll.
+**Review:** fyi
+
+### AD-30002 — When does a check that stays pending become a block? · polish · 2026-10-10
+
+**Chose:**
+- After `FACTORY_CI_TIMEOUT` seconds (default 6 h, the GitHub Actions job limit) since the watch's start, the last push or the last rerun, the watch blocks with `CI still pending after {span} · ci`. The block quotes the last table.
+- Each poll is a single `gh pr checks --json`. Between polls the driver sleeps in one-second steps and checks `stop_requested` at each step and before each fix round's push. `factory stop` therefore ends a watch within about a second instead of at the next `--watch` exit.
+
+**Over:** `gh pr checks --watch`, which never returns on a stuck check and cannot see a stop; a config key.
+**Because:** a queued job with no runner and a check app that never reports are both real. Six hours is the longest a GitHub-hosted job can legitimately run, and the env var follows AD-908's knob.
+**Undo:** raise `DEFAULT_TIMEOUT` in `src/ci.rs`.
+**Review:** fyi
+
+### AD-30003 — What do the CI caps count once the owner has answered a CI block? · polish · 2026-10-10
+
+**Chose:** both caps count only events with a `seq` above the last answered `· ci ·` block's `closeout_blocked` event:
+- fix rounds: distinct `ci_fix_spawned.round`;
+- reruns: `ci_rerun` for the same check name at the same head.
+
+An answer to the cap block therefore buys three fresh rounds, and the block text says so.
+
+Round numbers keep counting from the run's highest round. The fourth round's pack is `ci-fix-4-*.md`, its log is `log-ci-4.md` and its AD seed is `8401`, so they never collide with round 1's. `ci_red.round` is the number of rounds since the answer.
+
+**Over:** counting every round the run ever made. Under that rule, an answered cap block re-blocks on the next red and the owner's "fixed it by hand" buys nothing.
+**Because:** `autonomy.md:77` caps the driver's own attempts between owner decisions. Once the owner has looked and answered, the driver gets another bounded try, never an unbounded one.
+**Undo:** set `window` to 0 in `closeout::watch_ci`.
+**Review:** fyi
+
+### AD-30004 — What does each closeout block's `proceed` answer do? · polish · 2026-10-10
+
+**Chose:** an answer is `proceed` when its first word is `proceed`, ignoring an option number (`2.`, `2)`), backticks and case. The driver reads it from the block entry's last `**Resolution (…):**` line. Each block that offers `proceed` gives it one effect:
+
+| Block | Effect of `proceed` |
+|---|---|
+| `Two polish workers died · polish` | The driver ships what is committed, with no third polish worker. |
+| `gh pr create refused · pr` | The PR is the owner's. The run finishes with no create and no CI watch. |
+| `gh pr edit refused · pr` | The body is left as it is and CI is watched. |
+| `gh pr checks unreadable`, `gh pr view unreadable`, `flaky check … red again after its rerun`, `CI did not run to a verdict`, `CI still pending after` (all `· ci ·`) | The checks are the owner's. The run finishes with no further watch and no `ci_green`. |
+
+Any other answer, and any answer to a block with no `proceed` option, re-runs the step that blocked. For the CI cap block that means three fresh fix rounds (AD-30003).
+
+**Over:**
+- free-text intent parsing;
+- keeping the texts' `proceed` option while no code read it, which is what the review found: every answer re-ran the step.
+
+**Because:** each block now promises an effect the code delivers, and `tests/closeout.rs` answers four of them and checks what follows. A first-word rule is something the owner can type without guessing.
+**Undo:** drop the `is_proceed` checks in `closeout::run`, `open_pr` and `watch_ci`, and the `proceed` options from the block texts.
+**Review:** decide
+
+### AD-30005 — What makes a red check flaky, and how often is it rerun? · polish · 2026-10-10
+
+**Chose:**
+- Each failed row's run is the run id in its job link, read with `gh run view <id> --json`.
+- The red is flaky when every failed row has a run and, for each of those runs, `gh run list --commit <headSha> --workflow <workflowName> --limit 100` holds another run that concluded `success`: the same workflow passed at the same head.
+- Each such run is rerun once with `--failed`, and a `ci_rerun` is emitted per check name.
+- A check name red again at the same head after its rerun blocks (`flaky check … red again after its rerun`). A different check that turns flaky at that head still gets its own rerun.
+- Several red workflows in one poll make one fix round. The check is the joined names (`test, lint`), and the log is one `--- run <id> (`<workflow>`), failed: …` section per run.
+
+**Over:** AD-902's rule, which is any `success` in `gh run list --branch <b> --limit 20` at the red's head. It counted another workflow's green as this check passing and lost runs past 20. It also took the first `failure` in the list as the run to rerun or log, even when that run belonged to the other red workflow.
+**Because:** "flaky" means the same check passed on the same tree. Only the same workflow at the same sha says that, and only the check's own link names its run.
+**Undo:** `ci::passed_once` and `ci::runs_at` in `src/ci.rs`.
+**Review:** fyi
+
+### AD-30006 — What happens when `gh` refuses a call the red verdict needs? · polish · 2026-10-10
+
+**Chose:** a refused `gh run rerun` blocks (`gh run rerun <id> refused: … · ci`), and so does a refused `gh run view` or `gh run list` (`gh run list refused: …`). None of them falls into a fix round, and no failure is swallowed as an empty list.
+**Over:** AD-902's "a refused rerun is treated as a fix round", and the old `runs().unwrap_or_default()`.
+**Because:** a fix worker given a flaky check, or a check whose run it cannot name, changes code that is not broken. A `gh` that refuses is a login or permission problem for the owner, as the other `gh` refusals already are.
+**Undo:** map the `Err` arms in `closeout::on_red` back to `Next::Fix`.
+**Review:** fyi
+
+### AD-30007 — Which check states are infrastructure, and do they wait for the rest of the table? · polish · 2026-10-10
+
+**Chose:**
+- `TIMED_OUT`, `STARTUP_FAILURE`, `CANCELLED`, `ACTION_REQUIRED` and `STALE` (or the `cancel` bucket) are infrastructure. Any one of them blocks at once with `CI did not run to a verdict: <checks> · ci`, even while other checks are still running, and spawns no fix worker.
+- The one exception is a run that is queued or in progress again (the owner reran it). The watch then waits for it.
+
+**Over:**
+- skipping these rows, as `failed_run` did by matching only `failure`;
+- waiting for the whole table to settle first.
+
+**Because:** `autonomy.md:79` says infrastructure blocks at once. A timeout or a runner that never started is not something a fix worker can see in a diff.
+**Undo:** move the states to `Class::Fail` in `ci::class`.
+**Review:** fyi
+
+### AD-30008 — How does the watch tell a rerun's old rows from its new ones? · polish · 2026-10-10
+
+**Chose:** the job links the driver just reran are kept in memory (`Watch::stale`). A row with one of those links reads as "the rerun of `x` has not registered". After a driver restart that memory is gone, and the run's own `status` (`queued` or `in_progress`, read with `gh run view`) makes the watch wait instead.
+**Over:** a `links` field on `ci_rerun`, which would make the set survive a restart. `src/events.rs` is outside this fix's files, so that field is listed for the orchestrator.
+**Because:** the in-flight status covers the restart case for everything except a rerun that has not yet left `completed`, a window of seconds.
+**Undo:** drop `Watch::stale`; `ci::judge` then reads the old attempt's rows as a fresh red, and the rerun counter blocks.
+**Review:** no
+
+### AD-30009 — Where do ship and push check the branch? · polish · 2026-10-10
+
+**Chose:** `closeout::branch_guard` runs before `docs ship` (phase `polish`) and before every `git push` (phase `pr`), including each fix round's push. It blocks with `{ship|push} stopped: {problem}` when any of these holds:
+- the run names no feature branch;
+- the run's branch is the default branch;
+- HEAD is detached;
+- HEAD is on another branch.
+
+`gh pr create` gains `--head <branch>`. HEAD is read with `git symbolic-ref --quiet --short HEAD`.
+
+**Over:** checking once at the start of the closeout, which misses a HEAD that moves while the run is parked on a block (the regression test does exactly that).
+**Because:** the driver must never push the default branch or one the run does not own. A guard at each push is the only place the check cannot go stale.
+**Undo:** remove the two `branch_guard` calls.
+**Review:** fyi
+
+### AD-30010 — When is the ship done on a re-entry? · polish · 2026-10-10
+
+**Chose:** the ship is done when HEAD's `prd.md` says `status: shipped` (`git show HEAD:<dir>/prd.md`) or a `shipped` event exists. A board that says `shipped` while HEAD does not is a ship killed before its commit. The ship runs again: `docs ship` is a no-op on a shipped PRD, and the retro, render and `docs: ship PRD-NNN` commit follow.
+**Over:** the board's `status` alone (`already_shipped`), which skipped the ship commit and left `prd.md` staged.
+**Because:** the commit is the half that can be lost, so HEAD is the source of truth for it.
+**Undo:** set `ship_committed` back to `board_shipped` in `closeout::run`.
+**Review:** no
+
+### AD-40001 — How does `def` find the definition shapes its regexes skipped? · polish · 2026-10-10
+
+**Chose:** keep the regex prefilter PRD §14 names and widen each table (`src/ctx/def.rs` `Table::patterns`): PHP takes `abstract`, `final`, `readonly` and the visibility keywords in any order; TypeScript takes `export`, `default`, `declare` and `async` before `function`, `get`/`set`/`override`/`abstract` and a generic `<T>` before a member, and a member whose parameters run onto the next line (`NAME(` with no `)` on the line); Rust takes `const`, `async`, `unsafe`, `default` and `extern "C"` before the keyword, plus `union` and `static mut`; Go adds a third regex, a name then a type at the line start, for a type inside a `type ( … )` group. The tree still decides: a struct field that matches the Go regex is counted as "no definition node", and an `impl` block never confirms a hit. Each shape the finding lists is pinned in `tests/ctx.rs` `def_finds_every_shape_outline_lists`, which also checks `outline` lists it at the same line.
+**Over:** tagging every file that names the symbol and taking each definition tag of that name, which agrees with `outline` by construction but costs 5–8× on a large checkout (Traps); and widening only the shapes listed, which leaves `final public` and `public final` to differ.
+**Because:** the prefilter is the engine PRD §14 describes and it keeps `def` at the measured 0.1 s; a missed shape is a missing alternative in one regex, cheap to add when found.
+**Undo:** `Table::patterns` and the Go default kind in `Table::keywords` (`type`, for the group line, was `func`).
+**Review:** no
+
+### AD-40002 — Which `<script>` blocks of a Vue file are read? · polish · 2026-10-10
+
+**Chose:** every complete `<script` block, in file order (`vue::script_blocks`). `Unit::all` returns one unit per block, `lang::definitions` merges their tags in source order, and `lang::Parsed` checks a byte against the block that holds it, so `outline`, `def` and the `refs` comment check read a component with both `<script>` and `<script setup>` at its real line numbers. A block that never closes ends the list. This supersedes AD-1208's clause "the Vue block is the first `<script` followed by whitespace or `>`"; the rest of AD-1208 (the quoted `>` rule, no `lang`, template hits kept) stands.
+**Over:** the first block only (AD-1208), which hid the `<script setup>` half of a component that also has a plain `<script>`.
+**Because:** Vue allows both blocks in one file and puts the composition code in the second.
+**Undo:** `src/ctx/vue.rs`, `Unit::all`, `lang::definitions` and `lang::Parsed`.
+**Review:** no
+
+### AD-40003 — What is a test path, segment by segment? · polish · 2026-10-10
+
+**Chose:** refining AD-1106 (still the path relative to the search root): a directory segment equal to `test`, `tests`, `spec`, `specs` or `__tests__`, or a file name ending `_test.go` or holding `.test.` or `.spec.` (`refs::is_test`). `app/Services/Inspector.php`, `src/respect.rs`, `docs/specification/…`, `latest/…` and `contest/…` are no longer test files.
+**Over:** AD-1106's plain substring checks, which matched `spec` and `test/` inside other words.
+**Because:** the slice's pattern names directories and file-name shapes; a substring inside a word is not one.
+**Undo:** one function in `src/ctx/refs.rs`.
+**Review:** no
+
+### AD-40004 — Are `build/`, `dist/` and `storage/` skipped at any depth? · polish · 2026-10-10
+
+**Chose:** only directly under the search root (`walk::ROOT_DIRS`); `vendor/`, `node_modules/` and `target/` stay skipped at any depth (`walk::VENDOR_DIRS`). `--vendor` lifts both. The walk test now plants `build/`, `storage/` and a nested `php/vendor/` and `php/node_modules/` as skipped, and `php/build/`, `app/storage/` and `web/dist/` as walked.
+**Over:** slice 11's list at any depth, whose test planted `php/build/` as skipped.
+**Because:** a nested `build/` or `storage/` is as often source as output (`src/build/`, `app/storage/`), and a `.gitignore` already hides the real output trees; a dependency tree is never source.
+**Undo:** fold `ROOT_DIRS` back into `VENDOR_DIRS` and restore the planted `php/build/Gen.php`.
+**Review:** decide — deviates from slice 11's walk test, which planted `php/build/` as skipped
+
+### AD-40005 — What does `wait` do with a question a dead cockpit was shown but never relayed? · polish · 2026-10-10
+
+**Chose:** print it again. Every `wait` call first prints the event that opened each `BLOCK-n`/`ASK-n` still open and the `run_parked` the run still waits on (`cockpit::owed`), cursor or not, in `seq` order: before the fresh events when there are some, or alone and at once, exit 0, cursor untouched, when there are none. A dead driver still exits 4 first, and a run that is over owes nothing. The skill's BLOCK/ASK and `parked:` bullets end the session when the owner will not answer now, instead of waiting again into a loop, and §4 says `wait` repeats what is still open.
+**Over:** the cursor alone (slice 10 task 1, and its acceptance "a second `wait --timeout 1` prints `still running: … BLOCK-101 open` and exits 3"), under which a cockpit that died between `wait` printing a block and the owner seeing it reattaches to `still running` forever; also over a cursor that advances only on `factory answer`, which leaves a park, never answered, unshown, and a separate `--open` flag the skill must remember.
+**Because:** PRD §9 says a dead cockpit reattaches by calling `wait`; the cursor only knows what was printed, not what reached the owner, and an open question is still owed whoever saw it.
+**Undo:** drop `cockpit::owed` from `src/cli/wait.rs` and restore the exit-3 step in `tests/cockpit.rs` and the skill's "Wait again either way."
+**Review:** decide — deviates from slice 10's acceptance (second `wait` exits 3 on an open block) and amends AD-1004's "relays the park once"
+
+### AD-40006 — Which shell reading picks the `grep`/`sed`/`cat` kinds? · polish · 2026-10-10
+
+**Chose:** `metrics::first_word` is now `shell::first_command`'s first word with its directory dropped, the reading `ctx_kind` and the hook already use: quotes, glued operators (`cd /r&&sed …`) and quoted prefixes (`FOO="a b" grep …`) read as a shell would.
+**Over:** AD-1309's "the other kinds keep slice 08's whitespace reading", which made `FOO="a b" grep x .` a `run` and kept two readings of one command line.
+**Because:** one command line should get one first word; the research's counts compare on the commands both readings agree on, which are nearly all of them.
+**Undo:** restore the whitespace loop and `is_assignment` in `src/metrics.rs`.
+**Review:** fyi — supersedes AD-1309's whitespace clause; `src/shell.rs`'s module doc still describes the old split and is not in this fixer's files
+
+### AD-40007 — What does a threshold line say with nothing to compare? · polish · 2026-10-10
+
+**Chose:** `n/a`, in the text and as the JSON string `"n/a"`: the follow-up line when the run made no ctx call, the `ctx_share` and `repeat_rate` lines when it made no lookup. A run with lookups and no ctx call still reads `ctx_share … under`: that is a measurement.
+**Over:** JSON `null` for the absent value, which would change the field's type for readers that switch on the three words.
+**Because:** `ok` on a 0-of-0 share read as a pass for the reversal rule; the string keeps every reader's field a string.
+**Undo:** `Thresholds::of` in `src/cli/report.rs` back to plain `f64`s.
+**Review:** no
+
+### AD-40008 — Does `/factory-deliver NNN` authorize its one push as `/deliver NNN` does? · polish · 2026-10-10
+
+**Chose:** no change: the skill's §3 "Push once." stays, on the reading that the owner typing `/factory-deliver NNN` is the same authorization as `/deliver NNN` — the same feature, the same `feat/*` branch, the same review interview it copies — and the global `pre-push` guard still refuses a force-push or a push to the default branch.
+**Over:** "ask before pushing" in §3, which would stop an unattended review at its last step; and naming `/factory-deliver` in the owner's global instructions, which this run cannot edit.
+**Because:** the global rule names `/deliver NNN` only, so whether a push from this skill is asked for is the owner's call, not the skill's; leaving the text as it is keeps the behaviour the slice wrote until he says.
+**Undo:** replace "Push once." with "Ask the owner, then push once." in `skills/factory-deliver/SKILL.md`.
+**Review:** decide — the owner's push exception names `/deliver NNN`; extend it to `/factory-deliver NNN`, or make the skill ask?
+
+### AD-50001 — Who handles a HEAD off the run's branch once the closeout is due? · polish · 2026-10-10
+
+**Chose:** the closeout. The tick's branch check (AD-20005) parks the run as before while slices are left, a worker is in flight, or the board is not all done and checked. Once the closeout owns the run (`scheduler::closeout_owns`), the tick skips that check and the closeout's `branch_guard` runs at its entry, before polish, ship, push and the CI watch, and again before each CI fix round. Off the branch, it writes a `BLOCK-n` in the closeout's phase. Option 1 is "put HEAD back on the feature branch and answer this block". Both holds stay: `commit::hold_branch` keeps every commit on the branch, and `ci::branch_problem` keeps every push there.
+**Over:** the tick's silent `waiting-owner` park for every phase. Under that park, `the_push_refuses_a_head_off_the_feature_branch_and_the_pr_names_its_head` waited for a BLOCK-2 that never came. The other options were dropping the closeout's guard, or making the tick write the block.
+**Because:** in the closeout, the owner is already answering blocks, and a park with no block and no ask says nothing in `factory status` about what to do. Before the closeout, the self-clearing park keeps lanes of slices moving without an answer step. Each phase has one owner and one outcome. The cost: if HEAD moves while a polish or CI fix worker is running, `hold_branch` still makes that worker's commit error, and the run fails (AD-20005's cost, unchanged).
+**Undo:** drop the `closeout_owns` condition on the tick's `branch_refusal` check in `scheduler::drive_inner`, and the entry `branch_guard` call in `closeout::run`.
+**Review:** fyi
+
+### AD-50002 — Whose are the files a closeout worker changed without naming them? · polish · 2026-10-10
+
+**Chose:** the same rule as AD-20007, with `alone: true`, since a polish or CI fix worker always runs alone. Each worker's spawn baseline is saved under `runs/<id>/untracked-before/closeout-polish.json` or `closeout-ci-fix-<round>.json`. A tracked, unprotected file it changed unnamed goes in its commit. A new untracked file is listed in a new `closeout_leftovers {role, files}` event and in the driver log, and stays in the tree. A resumed driver settling an orphan loads the saved baseline. A file listed once is never swept later.
+**Over:** leaving closeout commits to the named paths only, which strands a formatter's or a `sed -i` edit outside every commit; or reusing `untracked_leftovers`, whose `slice` field a closeout worker has no value for.
+**Because:** the slice and checkpoint workers already work this way (a354d0d). The polish and CI fix workers were the two left out. Both run alone, so a tracked change under them is their work.
+**Undo:** pass `alone: false` to `scheduler::unnamed` in `commit_polish` and `commit_ci_fix`, or drop the `unnamed` calls and `EventKind::CloseoutLeftovers`.
+**Review:** fyi
+
+### AD-50003 — How does the CI fix contract name the round? · polish · 2026-10-10
+
+**Chose:** "fix round {round}", with no cap in the sentence. The asset's first line is edited in place, so it is still 22 lines. `a_red_check_gets_one_fix_round_then_green` now asserts "fix round 1, unattended".
+**Over:** "fix round {round} of three".
+**Because:** the cap is three rounds since the owner last answered (autonomy.md:77), so after an answer the round number passes three and the old line read "fix round 4 of three". The cap is the driver's to enforce, not the worker's to know.
+**Undo:** restore the "of three" wording on line 1 of `assets/contract-ci-fix.md` and in the test.
+**Review:** no
+
+### AD-50004 — How does `factory status` round the budget use? · polish · 2026-10-10
+
+**Chose:** up: `ceil` of the unrounded weighted sum (`quota::weighted_sum`, now `pub`).
+**Over:** the rounded `quota::weighted`, which shows 1.4 against a budget of 1 as "1/1"; or a fractional formatter.
+**Because:** the budget parks a run when the sum is greater than the budget. For a whole-number budget, `ceil(sum) > budget` holds exactly when that is true, so the line shows "over" exactly when the run is over. Above 1k, the change is invisible. `run_parked.weighted` and `report` keep the rounded value, and `STUB_WEIGHTED` in tests/quota.rs holds.
+**Undo:** use `quota::weighted` again in `cli::status::board`.
 **Review:** no
 
 ## Checkpoints
