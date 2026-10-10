@@ -9,6 +9,7 @@
 //! each writer renames its own temp file. The driver that took the run
 //! (`create`, `adopt`) owns it: once `state.json` names another pid, its
 //! writes fail and its loop stops, leaving the run to the new owner.
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
@@ -136,6 +137,27 @@ pub struct RunState {
     /// does not run it again.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub lanes_set_up: Vec<u32>,
+    /// The driver's start time ([`start_time`]), so a reused `pid` is not
+    /// taken for the driver. `None` from a `state.json` that predates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid_start: Option<u64>,
+    /// Each worker's start time by session id, read when it was added: a
+    /// resume tells a dead worker whose pid was reused from a live one.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub worker_starts: BTreeMap<String, u64>,
+}
+
+impl RunState {
+    /// The driver named by `pid` is running: the pid is alive and, when its
+    /// start time is known, is still the same process.
+    pub fn driver_alive(&self) -> bool {
+        alive(self.pid, self.pid_start)
+    }
+
+    /// The same for one of the run's workers.
+    pub fn worker_alive(&self, w: &WorkerRef) -> bool {
+        alive(w.pid, self.worker_starts.get(&w.session_id).copied())
+    }
 }
 
 /// One spawned worker as `state.json` remembers it. A build worker has a
@@ -270,6 +292,8 @@ impl Run {
             branch,
             phase: Phase::Starting,
             pid: std::process::id(),
+            pid_start: start_time(std::process::id()),
+            worker_starts: BTreeMap::new(),
             started_at: now.clone(),
             updated_at: now,
             budget_weighted_tokens,
@@ -319,7 +343,7 @@ impl Run {
         let repo = canonical(repo)?;
         let found = list(data_dir, &repo, feature)?
             .into_iter()
-            .find(|s| pid_alive(s.pid));
+            .find(|s| s.driver_alive());
         found
             .map(|s| Self::open(data_dir, s.id.as_str()))
             .transpose()
@@ -406,7 +430,13 @@ impl Run {
     }
 
     pub fn add_worker(&mut self, w: WorkerRef) -> Result<()> {
-        self.update(|s| s.workers.push(w))
+        let start = start_time(w.pid);
+        self.update(|s| {
+            if let Some(start) = start {
+                s.worker_starts.insert(w.session_id.clone(), start);
+            }
+            s.workers.push(w)
+        })
     }
 
     /// FR-3: lane `n`'s setup ran for this run.
@@ -440,13 +470,14 @@ impl Run {
         let parent = std::os::unix::process::parent_id();
         let _lock = lock_state(&self.dir)?;
         let mut disk = load_state(&self.dir)?;
-        if disk.pid != me && disk.pid != parent && pid_alive(disk.pid) {
+        if disk.pid != me && disk.pid != parent && disk.driver_alive() {
             return Err(Error::Msg(format!(
                 "run {} is driven by pid {} — not taken over",
                 disk.id, disk.pid
             )));
         }
         disk.pid = me;
+        disk.pid_start = start_time(me);
         self.owner = true;
         self.write(disk)
     }
@@ -587,6 +618,24 @@ pub fn list_runs(data_dir: &Path) -> Result<Vec<RunState>> {
 fn canonical(repo: &Path) -> Result<PathBuf> {
     repo.canonicalize()
         .map_err(io(format!("canonicalize {}", repo.display())))
+}
+
+/// `pid` is running and, when `start` is known, started then: a pid the
+/// kernel handed to another process since does not count.
+pub fn alive(pid: u32, start: Option<u64>) -> bool {
+    pid_alive(pid) && start.is_none_or(|s| start_time(pid) == Some(s))
+}
+
+/// When `pid` started, in clock ticks since boot: `/proc/<pid>/stat` field
+/// 22. Together with the pid it names one process; `None` when it is gone.
+pub fn start_time(pid: u32) -> Option<u64> {
+    if pid == 0 {
+        return None;
+    }
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // After `pid (comm)` the fields run from 3 (state); 22 is the 20th.
+    let (_, rest) = stat.rsplit_once(')')?;
+    rest.split_whitespace().nth(19)?.parse().ok()
 }
 
 /// Is a process with this pid running? `kill -0` semantics read from

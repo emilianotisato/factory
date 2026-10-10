@@ -57,7 +57,7 @@ use crate::error::{io, json};
 use crate::events::EventKind;
 use crate::pack::{BlockSection, Pack};
 use crate::quota::{self, Hold, Limit};
-use crate::run::{GateCmds, Phase, Run, WorkerOutcome, WorkerRef, pid_alive};
+use crate::run::{GateCmds, Phase, Run, WorkerOutcome, WorkerRef};
 use crate::stream::Summary;
 use crate::worker::{self, Exit, Job, Worker};
 use crate::{Result, clock, lanes, metrics};
@@ -186,6 +186,8 @@ fn drive_inner(
         commit::hold_branch(&repo, &b, default.as_deref());
     }
     let mut off_branch = false;
+    // Earlier drivers' live workers this one said it waits on.
+    let mut waiting: HashSet<String> = HashSet::new();
     if !parked && run.state().branch.is_some() && run.state().paused_until.is_none() {
         run.set_phase(Phase::Building)?;
     }
@@ -286,10 +288,16 @@ fn drive_inner(
             .values()
             .map(|r| r.worker.session_id.clone())
             .collect();
-        match settle_orphans(run, docs, &board, &live, out)? {
+        match settle_orphans(run, docs, &board, &live, &mut waiting, out)? {
             Orphans::None => {}
             Orphans::Live => {
-                std::thread::sleep(Duration::from_millis(200));
+                // The dead ones are settled; the live ones get a tick, as
+                // this driver's own workers do.
+                if table.is_empty() {
+                    std::thread::sleep(TICK);
+                } else {
+                    poll(table, TICK)?;
+                }
                 continue;
             }
             Orphans::Settled => board = docs.status(&feature)?,
@@ -1057,6 +1065,7 @@ fn settle_orphans(
     docs: &Docs,
     board: &Status,
     live: &HashSet<String>,
+    waiting: &mut HashSet<String>,
     out: &mut dyn Write,
 ) -> Result<Orphans> {
     let unsettled: Vec<WorkerRef> = run
@@ -1069,19 +1078,30 @@ fn settle_orphans(
     if unsettled.is_empty() {
         return Ok(Orphans::None);
     }
-    for w in unsettled {
-        if pid_alive(w.pid) {
+    // Every dead one is settled now, whatever runs beside it; a live one is
+    // waited on, said once.
+    let (running, dead): (Vec<WorkerRef>, Vec<WorkerRef>) = unsettled
+        .into_iter()
+        .partition(|w| run.state().worker_alive(w));
+    for w in &running {
+        if waiting.insert(w.session_id.clone()) {
             say(
                 out,
                 &format!(
                     "{}: worker {} (pid {}) of an earlier driver is still running — waiting",
-                    label(&w),
+                    label(w),
                     w.session_id,
                     w.pid
                 ),
             )?;
-            return Ok(Orphans::Live);
         }
+    }
+    let outcome = if running.is_empty() {
+        Orphans::Settled
+    } else {
+        Orphans::Live
+    };
+    for w in dead {
         let summary = worker::summary_from_disk(run.dir(), &w.session_id);
         let Some(slice) = w.slice else {
             if w.role == "polish" || (w.role == "fix" && w.checkpoint.is_none()) {
@@ -1138,7 +1158,7 @@ fn settle_orphans(
             },
         }
     }
-    Ok(Orphans::Settled)
+    Ok(outcome)
 }
 
 /// `slice NN` or `checkpoint n (role)`, for a line about a worker.

@@ -12,7 +12,7 @@ use factory::config;
 use factory::db::Db;
 use factory::docs::{Branch, Docs};
 use factory::events::EventKind;
-use factory::run::{Phase, Run, WorkerRef, load_state, pid_alive};
+use factory::run::{Phase, Run, WorkerRef, alive, load_state, pid_alive, start_time};
 use harness::Fixture;
 use serde_json::{Value, json};
 
@@ -74,9 +74,11 @@ fn kinds(dir: &Path) -> Vec<String> {
         .collect()
 }
 
+/// `pid` becomes the run's driver, its start time with it.
 fn set_pid(dir: &Path, pid: u32) {
     let mut s = state(dir);
     s["pid"] = Value::from(pid);
+    s["pid_start"] = json!(start_time(pid));
     fs::write(dir.join("state.json"), s.to_string()).unwrap();
 }
 
@@ -1047,4 +1049,146 @@ fn concurrent_emitters_never_share_a_seq_or_tear_a_line() {
     assert_eq!(seqs, (1..=160).collect::<Vec<u64>>());
     let db = Db::open(&data.join("factory.db")).unwrap();
     assert_eq!(db.events(&id).unwrap().len(), 160);
+}
+
+// ── finding Xc6: a pid is a process only with its start time ─────────────────
+
+fn committed(dir: &Path, slice: u64) -> bool {
+    events(dir)
+        .iter()
+        .any(|e| e["kind"] == "slice_committed" && e["slice"] == slice)
+}
+
+#[test]
+fn a_pid_reused_by_another_process_is_not_the_runs_driver() {
+    let me = std::process::id();
+    let start = start_time(me).unwrap();
+    assert!(alive(me, Some(start)));
+    assert!(alive(me, None));
+    assert!(!alive(me, Some(start + 1)));
+    assert_eq!(start_time(dead_pid()), None);
+
+    let fx = Fixture::with_index("pid-reused", &[("lanes", "1")]);
+    let data = data_dir(&fx);
+    let run = Run::create(&data, fx.path(), "001", None, 1).unwrap();
+    let dir = run.dir().to_path_buf();
+    let id = run.id().as_str().to_string();
+    assert_eq!(run.state().pid_start, Some(start));
+    drop(run);
+
+    // The driver's pid now names a process that started after it.
+    let mut other = Command::new("sleep").arg("30").spawn().unwrap();
+    let reuse = |pid: u32| {
+        let mut s = state(&dir);
+        s["pid"] = Value::from(pid);
+        fs::write(dir.join("state.json"), s.to_string()).unwrap();
+    };
+    reuse(other.id());
+    assert!(pid_alive(other.id()));
+    assert!(!load_state(&dir).unwrap().driver_alive());
+    assert!(Run::find_live(&data, fx.path(), "001").unwrap().is_none());
+    let mut resume = Run::open(&data, &id).unwrap();
+    resume.adopt().unwrap();
+    assert_eq!(load_state(&dir).unwrap().pid, me);
+    drop(resume);
+
+    // `factory stop` does not take it for a live driver either.
+    let mut s = state(&dir);
+    s["pid_start"] = json!(start);
+    fs::write(dir.join("state.json"), s.to_string()).unwrap();
+    reuse(other.id());
+    let out = factory(&fx, &["stop", &id]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    assert!(stdout(&out).contains("no live process"), "{}", stdout(&out));
+    other.kill().unwrap();
+    other.wait().unwrap();
+}
+
+#[test]
+fn a_resumed_driver_settles_an_orphan_whose_pid_was_reused() {
+    let fx = Fixture::with_index("orphan-reused", &[("checkpoint_every", "10")]);
+    fx.chain();
+    fx.write_plan(&[json!({"outcome": "done", "delay_ms": 2000})]);
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let dir = run_dirs(&fx).remove(0);
+    let driver = state(&dir)["pid"].as_u64().unwrap() as u32;
+    wait_until("slice 01's worker", 20, || {
+        state(&dir)["workers"]
+            .as_array()
+            .is_some_and(|w| w.len() == 1)
+    });
+    let s = state(&dir);
+    let session = s["workers"][0]["session_id"].as_str().unwrap().to_string();
+    let worker = s["workers"][0]["pid"].as_u64().unwrap() as u32;
+    assert_eq!(
+        s["worker_starts"][&session].as_u64(),
+        start_time(worker),
+        "{s}"
+    );
+    assert_eq!(unsafe { libc::kill(driver as i32, libc::SIGKILL) }, 0);
+    wait_until("the orphan to finish slice 01", 20, || {
+        fx.slice_status(1) == "done" && !pid_alive(worker)
+    });
+
+    // The worker's pid now names another process.
+    let mut other = Command::new("sleep").arg("30").spawn().unwrap();
+    let mut s = state(&dir);
+    s["workers"][0]["pid"] = Value::from(other.id());
+    fs::write(dir.join("state.json"), s.to_string()).unwrap();
+
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    wait_until("slice 01 to be committed", 15, || committed(&dir, 1));
+    assert_eq!(state(&dir)["workers"][0]["outcome"], "done");
+    assert!(pid_alive(other.id()));
+    other.kill().unwrap();
+    other.wait().unwrap();
+    let out = factory(&fx, &["stop", dir.file_name().unwrap().to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    wait_until("the run to stop", 30, || state(&dir)["phase"] == "finished");
+}
+
+#[test]
+fn a_resumed_driver_settles_a_dead_orphan_beside_a_live_one() {
+    let fx = Fixture::with_index("orphans-mixed", &[("checkpoint_every", "10")]);
+    // 01 and 02 are independent: both build at once, 01 for 8 s.
+    fx.write_plan(&[
+        json!({"outcome": "done", "delay_ms": 8000}),
+        json!({"outcome": "done", "delay_ms": 1000}),
+    ]);
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let dir = run_dirs(&fx).remove(0);
+    let driver = state(&dir)["pid"].as_u64().unwrap() as u32;
+    wait_until("two workers", 20, || {
+        state(&dir)["workers"]
+            .as_array()
+            .is_some_and(|w| w.len() == 2)
+    });
+    assert_eq!(unsafe { libc::kill(driver as i32, libc::SIGKILL) }, 0);
+    let s = state(&dir);
+    assert_eq!(s["workers"][0]["slice"], 1);
+    let first = s["workers"][0]["pid"].as_u64().unwrap() as u32;
+    wait_until("the orphan to finish slice 02", 20, || {
+        fx.slice_status(2) == "done"
+    });
+
+    // Slice 02's orphan is settled and committed while 01's still runs.
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    wait_until("slice 02 to be committed", 20, || committed(&dir, 2));
+    assert!(pid_alive(first), "slice 01's worker outlived the commit");
+    assert_eq!(state(&dir)["workers"][1]["outcome"], "done");
+
+    wait_until("slice 01 to be committed", 20, || committed(&dir, 1));
+    let log = fs::read_to_string(dir.join("driver.log")).unwrap();
+    let waits = log
+        .lines()
+        .filter(|l| l.contains("of an earlier driver is still running"))
+        .count();
+    assert_eq!(waits, 1, "{log}");
+    let out = factory(&fx, &["stop", dir.file_name().unwrap().to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    wait_until("the run to stop", 30, || state(&dir)["phase"] == "finished");
 }

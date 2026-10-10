@@ -12,7 +12,7 @@ use clap::Args;
 
 use crate::error::io;
 use crate::events::EventKind;
-use crate::run::{Run, pid_alive};
+use crate::run::Run;
 use crate::{Result, cockpit, paths, scheduler};
 
 #[derive(Args, Debug, Clone)]
@@ -31,7 +31,7 @@ pub fn stop(args: &StopArgs, out: &mut dyn Write) -> Result<i32> {
     run.request_stop()?;
     run.emit(EventKind::StopRequested)?;
     let pid = run.state().pid;
-    if pid_alive(pid) {
+    if run.state().driver_alive() {
         writeln!(
             out,
             "stop {}requested for run {} (pid {pid}): {}",

@@ -20,7 +20,7 @@ use clap::Args;
 use crate::answers::{self, Answer};
 use crate::error::io;
 use crate::events::EventKind;
-use crate::run::{self, Phase, Run, pid_alive};
+use crate::run::{self, Phase, Run};
 use crate::{Error, Result, clock, daemon, paths, scheduler};
 
 #[derive(Args, Debug, Clone)]
@@ -233,7 +233,7 @@ fn answer_ask(
 /// driver gets one; anything else is `factory run`'s to resume.
 fn wake(run: &Run, out: &mut dyn Write) -> Result<()> {
     let pid = run.state().pid;
-    if pid_alive(pid) {
+    if run.state().driver_alive() {
         writeln!(
             out,
             "run {}: the driver (pid {pid}) picks it up within {} s",
