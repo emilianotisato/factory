@@ -1,0 +1,88 @@
+---
+slice: 03
+status: pending
+depends_on: [2]
+---
+
+# Slice 03 — One worker end to end (FR-1, FR-2)
+
+**Source**: [`prd.md`](prd.md) → §4 FR-2 bullets 1, 5 and 6 (the `claude -p` command and pack, the stream is the record, slash commands verified at entry); §3 FR-1 bullets 1, 3 and 4 (detached process, resume is the default start, session death is not run death) and its acceptance. **Depends on**: 02 (the wrapper, the run dir, the events and the `workers` table are the things this slice fills).
+**Created**: 2026-10-09 · **Status**: pending
+
+**Progress**: _(written as it lands)_
+
+**Slice**: After this slice `factory run NNN` on the fixture builds every slice, one at a time, through the stub: it writes a pack, spawns `claude -p` with FR-2's flags, parses the stream into a `workers` row, re-reads the board, commits nothing yet (slice 05), and continues until no slice is ready. The driver detaches from the terminal, survives the death of whoever started it, and a second `factory run NNN` continues from the board after a kill. Lanes stay at one, blocks end the run, and checkpoints are skipped by setting `checkpoint_every` high in the test; slices 04 and 06 bring those.
+
+**This is the highest-risk slice of the feature.** Three things §20 marks "verify at slice entry" meet here: the file form of the system-prompt flag, whether `/polish`-style slash commands resolve under `-p`, and the exact stream shape. Do task 1's entry checks before writing code, and write the results into this slice's Progress and into `prd.md` §20 as dated corrections if any differ.
+
+## Current code / environment
+
+- **The command** (§4): `claude -p <prompt> --output-format stream-json --verbose --permission-mode bypassPermissions --append-system-prompt-file <pack> --session-id <uuid> --model <m> --effort <e>`. `claude --help` 2.1.280 lists `--append-system-prompt <prompt>` (help line 25) and mentions `--append-system-prompt[-file]` only inside the `--bare` description (line 55). If the `-file` form is rejected, pass the pack inline through `--append-system-prompt` (§20). `--settings <file-or-json>` exists (line 224) and is slice 13's.
+- **What the pack holds** (§4): "the slice file, the PRD sections the slice cites, the slice contract, the autonomy rules (decide/log/block, Never list), the gate inner command, the AD numbering seed `{NN}01`. Nothing else." The Outline and Lookup sections are slice 13's.
+- **The contract to port**: `deliver/SKILL.md:100-135` is today's slice contract; `:127` "Return exactly: STATUS / COMMIT / LANE / INNER / PROVE / DECISIONS / BLOCK". Three lines change in the port: the worker no longer commits (§7 FR-5: "The driver commits, one commit per slice"), so the `git commit -- <your files>` line and `COMMIT:` go; the worker no longer sets `lane:` (the driver knows the free lane, slice 04); the worker still sets `status: building` then `done` and still writes its `log-slice-NN.md` fragment, because the board is the truth (§4). `autonomy.md` (100 lines): decide/log/block `:15-27`, "What an unattended run may write" `:41`, Never `:49-60`, Tokens `:62-70`, Caps `:71-79`, Blocker protocol `:81-88`, Resuming `:93-100`. The pack carries this repo's own copy under `assets/` (`include_str!`), with nothing owner-specific in it (§19 sharing).
+- **The stream**: `recordings/claude-p-oneshot-2.1.280.jsonl`. Event `type` values: `system` (subtypes `hook_started`, `hook_response`, `init`; `init` carries `model`, `permissionMode`, `cwd`, `tools`, `slash_commands`, `skills`), `assistant` (`message.content[]` of `text`, `thinking`, `tool_use{id,name,input}`), `user` (`tool_result{tool_use_id,content}`), `rate_limit_event`, `result` (`usage{input_tokens,cache_creation_input_tokens,cache_read_input_tokens,output_tokens,output_tokens_details.thinking_tokens}`, `modelUsage`, `num_turns`, `duration_ms`, `terminal_reason`, `is_error`, `stop_reason`, `api_error_status`, `permission_denials`, `total_cost_usd`, `session_id`, `result`). `init.slash_commands` answers the slash-command question for free: the polish worker's `/polish` must appear there or the pack carries the skill body (§4).
+- **peak_context today**: `measure.py:56-57` `ctx(u) = input + cache_creation + cache_read` per assistant message, `:67` peak = max over messages. Port that definition so slice 08's numbers compare with the 42 retros.
+- **Resume facts**: §3 "done slices skip, an unverified checkpoint runs first, open blocks wait. A dead worker (process gone, no DONE/BLOCKED line) is treated as today: fresh worker, note in the log." Today's hand-back cap is once (`autonomy.md:76`); a second death on the same slice blocks it. `status --json` sets `spawnable` to 0 while `checkpointDue` is true (`docs.mjs:1414`), so with the default `checkpoint_every` 2 the fixture stalls after two done slices until slice 06 exists: this slice's loop test sets `checkpoint_every: 10` through `Fixture::with_index`.
+- **Workers are children of a detached driver.** If the driver dies and the worker lives on, the board flips `done` without a driver to see it; a resume then finds a `done` slice and skips it, which is correct. If both die (`kill` of the process group), the slice is stuck at `building` with no live worker: the resume treats it as a dead worker. The driver therefore spawns workers in its own process group (`setsid`) so `factory stop` and the kill test can address the group.
+- **Deliberate non-changes**: *(prd §19 "Not handled: `--resume` of a dead worker's session". A dead worker gets a fresh session id; never pass `--resume`.)* *(prd §4 "Rejected: Codex workers". One spawner, one stream shape.)* *(prd §3 "Rejected: reimplementing preflight in Rust." The resume path reads `status --json`, nothing else.)*
+
+## Tasks
+
+### 1. Slice-entry checks, recorded — high — blocked by: —
+**Source**: §4 FR-2: "the file form of the prompt flag is confirmed at slice entry, §20"; "Slash commands inside `-p` are verified at slice entry, not assumed."; §20 "Unverified, to check at slice entry: deny rules under `bypassPermissions`; slash commands inside `-p`".
+
+Run, on this machine, a one-turn `claude -p "say ok" --output-format stream-json --verbose --append-system-prompt-file <tmp>` and the same with `--settings '{"permissions":{"deny":["Bash(git push --force*)"]}}' --permission-mode bypassPermissions -p "run: git push --force --dry-run"`; read `init.slash_commands` from the first. Record the three answers (file flag accepted or not; `/polish` listed or not; deny held under bypass or not) in this slice's Progress and as dated lines in `prd.md` §20. Keep the two streams under `recordings/` with owner paths stripped. Cost: two Haiku-sized calls (§20: ≈24k cached tokens each).
+
+**Acceptance:** Progress holds the three answers with the date; the code in tasks 2 and 3 matches them (file flag or inline, `/polish` or skill body).
+
+### 2. `pack.rs`: the context pack — high — blocked by: 1
+**Source**: §4 FR-2: "The pack holds: the slice file, the PRD sections the slice cites, the slice contract, the autonomy rules (decide/log/block, Never list), the gate inner command, the AD numbering seed `{NN}01`. Nothing else." Acceptance: "the stub agent receives a pack containing exactly the slice, its cited PRD sections and the contract".
+
+`src/pack.rs`, `assets/contract-slice.md`, `assets/autonomy.md`. `Pack::for_slice(board, slice, docs) -> Pack` writes `runs/<id>/packs/slice-NN-<spawn>.md` with a one-line machine header (`<!-- factory-pack files: docs/features/…/slice-NN-x.md,… -->`, the list slice 13's hook reads), then sections in this order: `# Slice` (the slice file verbatim), `# PRD sections` (every `§n` the slice's `**Source**` line names, cut from `prd.md` between its `## n.` heading and the next `## `), `# Contract` (the ported contract with `{NNN}`, `{NN}`, `{inner}`, `{seed}` filled; `{seed}` = `NN01`), `# Autonomy` (the asset), `# Inner loop` (`docs gate --inner` output). The prompt passed to `-p` is one line: `Build slice NN of PRD-NNN as the appended system prompt says. Return the STATUS block.` Anything not in that list does not go in; a section the slice cites but the PRD lacks is a warning event, not a crash.
+
+**Acceptance:** snapshot test on the fixture: the pack for slice 01 contains the slice file byte-for-byte, the `## 1.` section of the fixture PRD and no `## 2.`, the contract heading, the autonomy heading, the line `./gate.sh --inner`, and `AD-101` as the seed; a second `Pack::for_slice` with a different `inner` changes exactly one line.
+
+### 3. `worker.rs`: spawn and capture — high — blocked by: 2
+**Source**: §4 FR-2: "A worker is `claude -p` with a context pack. Flags: `--output-format stream-json --verbose --permission-mode bypassPermissions --append-system-prompt-file <pack> --session-id <uuid> --model <m> --effort <e>`." "`factory` captures stream-json to the run directory".
+
+`src/worker.rs`: `Worker::spawn(role, slice, pack, cfg) -> Child` with cwd the repo root, `claude` resolved on PATH, stdout piped and tee'd line by line into `runs/<id>/workers/<session-uuid>.jsonl` and into the parser (task 4), stderr to `<uuid>.stderr`, `setsid` for the group, pid recorded in `state.json` under `workers[]`. Model and effort from `config.workers.<role>`. A `workers` row is inserted at spawn (`outcome = running`) and completed at exit. Event `slice_spawned {slice, session_id, pid}`.
+
+**Acceptance:** the stub's `calls/1.json` argv holds every flag with the expected value, `--session-id` is a v4 UUID matching the `.jsonl` file name, and the pack path exists and is the task 2 file.
+
+### 4. `stream.rs`: parse the record into a worker row — high — blocked by: —
+**Source**: §4 FR-2: "The stream is the record. `factory` captures stream-json to the run directory, parses the final `result` event for `usage`, `modelUsage`, `num_turns`, `duration_ms`, `permission_denials`, `terminal_reason`, and writes a worker row (FR-8). The DONE/BLOCKED/FAILED line at the end of `result` is a hint; the slice frontmatter after `docs status --json` is the truth." §4 acceptance: "one worker row with all usage fields non-null."
+
+`src/stream.rs`: a serde enum over `type` with `#[serde(other)]` for unknown kinds and `serde_json::Value` for the fields the driver does not use, so a Claude Code upgrade never panics the parser. `Summary { usage, model_usage, num_turns, duration_ms, terminal_reason, is_error, api_error_status, permission_denials, cost_usd, session_id, status_hint: Option<Done|Blocked|Failed>, peak_context, tool_uses: Vec<ToolUse{name, input, result_chars}> }`, `peak_context` by the `measure.py:56-67` definition. No `result` line → `Summary::dead()`. `tool_uses` is what slices 05 (pathspec) and 08 (`tool_calls`) consume; collect it here once.
+
+**Acceptance:** parsing `recordings/claude-p-oneshot-2.1.280.jsonl` yields 18 events, one `result`, five non-null usage fields, `num_turns` and `duration_ms` set, `peak_context` equal to the hand-computed maximum; the same file truncated before `result` yields `dead`; a line `{"type":"something_new"}` is kept as unknown, not an error.
+
+### 5. The serial loop, detached — high — blocked by: 3, 4
+**Source**: §3 FR-1: "`factory run NNN` is a detached process. It owns the loop until the PR is open or the run parks." "Session death is not run death. The driver is detached from the cockpit". §4: "the slice frontmatter after `docs status --json` is the truth."
+
+`src/scheduler.rs` v1, `src/daemon.rs`. `factory run` forks a daemon (double fork, `setsid`, stdio to `runs/<id>/driver.log`), prints `run <id> started` and returns; `--foreground` keeps it attached for tests and debugging. Loop: read `status --json`; `stop_requested` → finish; `ready` empty and nothing `building` → phase `finished`, event `run_finished`, exit; else spawn one worker for `ready[0]` (lanes = 1 here), wait for exit, complete the `workers` row, re-read the board: the slice `done` → `slice_done`; `blocked` → `slice_blocked` and, this slice only, phase `waiting-owner` and exit (slice 04 parks the lane instead); still `pending` or `building` with the worker gone → dead worker (task 6).
+
+**Acceptance:** fixture with `checkpoint_every: 10`: `factory run 001` returns in under 1 s; within 20 s the board has three `done` slices in the order 01, 02, 03 (the stub plan is three `done` steps), `events.jsonl` has three `slice_spawned` and three `slice_done`, the `workers` table has three rows with non-null usage, and `state.json` says `finished`. `--foreground` gives the same result in the same process.
+
+### 6. Dead worker: fresh worker once, then block — high — blocked by: 5
+**Source**: §3 FR-1: "A dead worker (process gone, no DONE/BLOCKED line) is treated as today: fresh worker, note in the log." `autonomy.md:76`: hand-back once, then blocked.
+
+In the loop: worker exited with no `result` and the slice not `done` → `worker_dead` event, append `- **Dead worker ({date})**: session <uuid> exited <code> with no result; respawned.` under `## Traps` in that slice's `log-slice-NN.md` (create the fragment if the worker never did), `workers.outcome = dead`, respawn once with a new session id; a second death on the same slice → set the slice `status: blocked` through the frontmatter and write a `BLOCK-NN02` entry in the fragment (shape `templates/agent-log.md`, phase line naming the slice), `slice_blocked`. Stub scenario `dead` (added to `tests/stubs/claude` here): emit `init`, apply `status: building`, exit 137 with no `result`.
+
+**Acceptance:** plan `dead, done, done, done` → four stub calls, slice 01 built once to `done`, the fragment holds the dead-worker line, `workers` has one `dead` and three `done` rows; plan `dead, dead` → slice 01 `blocked` with `BLOCK-102`, two calls, phase `waiting-owner`.
+
+### 7. Resume after a kill — high — blocked by: 5, 6
+**Source**: §3 FR-1: "Resume is the default start. `factory run NNN` on a feature with an existing run id continues from the board: done slices skip, an unverified checkpoint runs first, open blocks wait." Acceptance: "kill the driver mid-slice; `factory run NNN` continues from the board and no slice is built twice."
+
+Resume path in `factory run`: run dir exists → skip preflight (slice 02), read the board; `building` slices whose recorded worker pid is gone are dead workers (task 6 path, counted against the same once-cap); then the loop. `unverified` non-empty is slice 06's branch; here it is a `checkpoint_due` event and nothing else. The test: plan `done{delay_ms: 3000}, done, done`; start `--foreground` in a child, wait until slice 01 reads `building`, `kill -9` the driver's process group; assert slice 01 is `building` and no worker is alive; `factory run 001` again; assert all three `done`, `slice_done` appears once per slice, and the stub call log has four entries (slice 01 twice, once killed).
+
+**Acceptance:** the test above passes; `events.jsonl` holds `run_resumed` once and `worker_dead` once.
+
+### 8. Verify — medium — blocked by: 1–7
+`cargo test`. The full gate runs at this slice's checkpoint.
+
+**Acceptance:** inner loop green, one commit.
+
+### 9. Prove — at the checkpoint — blocked by: 8
+Rows from [`prd.md`](prd.md) § QA plan: **FR-1** (kill mid-slice, resume, no slice built twice; the refuse half was proven in slice 02), **FR-2** (the stub receives a pack holding exactly the slice, its cited sections and the contract; one worker row with all usage fields). Driven at the checkpoint on the fixture: the FR-1 transcript and, for FR-2, the pack file from `runs/<id>/packs/` and a `SELECT` over `workers` pasted into this slice's **Progress**.
+
+**Acceptance:** both rows have their artifact attached: the resume transcript, the pack snapshot and the worker row.

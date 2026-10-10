@@ -9,7 +9,7 @@ retired_fr: []
 # PRD-001 — Driver: the unattended deliver loop
 
 **Type**: Feature — a new Rust binary, `factory`, that replaces the `/deliver` orchestration session. New repo, no migrations. It consumes the existing `docs.mjs` JSON contract and the existing feature-docs v2 files; it changes neither.
-**Status**: **DRAFT** — interview 2026-10-09, four rounds. Adversarial pass 2026-10-09: Cursor (`grok-4.7-high`) timed out at 15 minutes with no result; a fresh Claude reviewer with no interview context found 19 items, 13 confirmed against the sources, every one corrected inline or pinned for slice entry (marked *Corrected 2026-10-09*). OPEN-16 closed 2026-10-09 by a research workflow over 55 of the owner's sessions and four surveys (memo: [`ctx-research.md`](ctx-research.md)); a thin `factory ctx` enters as FR-12. Cut 2026-10-09: the closeout worker folded into polish, the gate cache made path-aware; the other extras kept with their evidence (§15).
+**Status**: **DRAFT** — interview 2026-10-09, four rounds. Adversarial pass 2026-10-09: Cursor (`grok-4.7-high`) timed out at 15 minutes with no result; a fresh Claude reviewer with no interview context found 19 items, 13 confirmed against the sources, every one corrected inline or pinned for slice entry (marked *Corrected 2026-10-09*). OPEN-16 closed 2026-10-09 by a research workflow over 55 of the owner's sessions and four surveys (memo: [`ctx-research.md`](ctx-research.md)); a thin `factory ctx` enters as FR-12. Cut 2026-10-09: the closeout worker folded into polish, the gate cache made path-aware; the other extras kept with their evidence (§15). Sliced 2026-10-09 into 13 slices (§17); one fact corrected at slicing (§4, permissions).
 **Created**: 2026-10-09
 **Author**: Emiliano (with Claude)
 
@@ -57,7 +57,7 @@ Today every slice is an `Agent` call from the orchestrator session with a ~70-li
 
 - **A worker is `claude -p` with a context pack.** Flags: `--output-format stream-json --verbose --permission-mode bypassPermissions --append-system-prompt-file <pack> --session-id <uuid> --model <m> --effort <e>` (the file form of the prompt flag is confirmed at slice entry, §20). The pack holds: the slice file, the PRD sections the slice cites, the slice contract, the autonomy rules (decide/log/block, Never list), the gate inner command, the AD numbering seed `{NN}01`. Nothing else. *(Accepted cost: a worker that needs more context greps for it, as today. The pack is tuned from the metrics store, not guessed in this PRD.)*
 - **A pack doc is not read twice.** The guard hook (the one that gives the lookup hint, §14) answers a whole-file Read or `cat` of a file the pack carries in full (the slice file, the plan) with a one-line hint naming the pack section; partial reads and reads of `prd.md` go through. FR-8 counts every read of a pack-held file as `pack_doc_read_chars`. Evidence (owner transcripts, 2026-10-09): 631 such reads, 10.6M chars, 40.3% of whole-file read bytes ([`ctx-jev-research.md`](ctx-jev-research.md) §3). Built in FR-12 slice 3 with the lookup hint. *(Accepted cost: a worker that wants a PRD section the pack cut reads `prd.md` as today; the figure says whether the pack's excerpt is too thin.)*
-- **Permissions as today: bypass plus deny rules plus the guard hook.** `bypassPermissions` is the only mode that runs unattended; the project's `permissions.deny` and the global hooks keep push, merge and force off limits. Re-verify at slice entry that deny rules hold under bypass (§20).
+- **Permissions as today: bypass plus deny rules plus the guard hook.** `bypassPermissions` is the only mode that runs unattended; the project's `permissions.deny` and the global hooks keep push, merge and force off limits. Re-verify at slice entry that deny rules hold under bypass (§20). *(Corrected 2026-10-09 at slicing: an earlier draft said "plus the guard hook, as today". No Claude Code hook exists today: neither dogfood project has a `.claude/settings.json`, the deny rules (`gh pr merge`, `git push --force*`) live in the owner's user settings, and the "global hooks" are the git `pre-push` and `commit-msg` hooks under `~/.config/git/hooks/`. The hints of this section and §14 are therefore a new PreToolUse hook, `factory hook`, that the driver injects per worker through `--settings <json>` (in the 2.1.280 `--help`); the same settings carry the two deny rules, so a worker is guarded on any project. Built in slice 13.)*
 - **Claude builds, Cursor reviews.** Workers are Claude Code; the adversarial review in polish stays on `cursor-agent` as the `second opinion` role in `models.md`. *(Rejected: Codex workers. Different flags, different stream, no evidence they are cheaper for this work. Left as an idea.)*
 - **The stream is the record.** `factory` captures stream-json to the run directory, parses the final `result` event for `usage`, `modelUsage`, `num_turns`, `duration_ms`, `permission_denials`, `terminal_reason`, and writes a worker row (FR-8). The DONE/BLOCKED/FAILED line at the end of `result` is a hint; the slice frontmatter after `docs status --json` is the truth.
 - **Slash commands inside `-p` are verified at slice entry, not assumed.** The polish worker needs `/polish`; if slash commands do not resolve in headless mode, the pack carries the skill body instead.
@@ -214,7 +214,7 @@ Today every worker lookup is Bash `grep`, `sed -n`, `cat`, `ls` or Read: 30,267 
 - ~~**OPEN-10** — how many A/B runs, in what order?~~ **Decided 2026-10-09: two, icg-cloud then arca-api, sequential, baseline first.** §13
 - ~~**OPEN-11** — quota?~~ **Decided 2026-10-09: pause on rate limit plus a per-run budget.** §11
 - ~~**OPEN-12** — where do config and metrics live?~~ **Decided 2026-10-09: `~/.config/factory/`, `~/.local/share/factory/`.** §10, §11
-- ~~**OPEN-13** — worker permissions?~~ **Decided 2026-10-09: bypass plus deny rules plus guard hook, as today.** §4
+- ~~**OPEN-13** — worker permissions?~~ **Decided 2026-10-09: bypass plus deny rules plus guard hook, as today.** §4 *(Corrected 2026-10-09 at slicing: the hook is new, not "as today"; see §4.)*
 - ~~**OPEN-14** — where does the cockpit skill live?~~ **Decided 2026-10-09: in this repo.** §9
 - ~~**OPEN-15** — retire `measure.py`?~~ **Decided 2026-10-09: after FR-11 shows the numbers match.** §10
 - ~~**OPEN-16** — `factory ctx`, a worker-side lookup command (`def`, `refs`, `outline`): leave out, ripgrep-based, tree-sitter tags, LSP proxy, or hybrid?~~ **Decided 2026-10-09: thin hybrid, the ripgrep crates plus tree-sitter tags, as FR-12; no language server in this PRD.** A research workflow over 55 owner sessions and four fact-checked surveys closed it ([`ctx-research.md`](ctx-research.md)). The "evidence against" held for docs reads (29% of read bytes, pack material) and not for code reads. *(Corrected 2026-10-09: an earlier draft said lookups were 44% of worker tool calls, method unrecorded; the transcripts give 56% strict and 74% literal. FR-11 baselines on the strict figure.)* §14
@@ -244,9 +244,34 @@ Today every worker lookup is Bash `grep`, `sed -n`, `cat`, `ls` or Read: 30,267 
 
 ## 17. Slices
 
-Not sliced yet. Ordering argument for the slicer: FR-10 first (harness), then FR-1/FR-2 (one worker, one slice, end to end on the fixture), then FR-5 and FR-4, then FR-3, FR-9, FR-6, FR-8, FR-7 last among the code slices because it needs everything else to have something to relay. FR-12 slices 1 and 2 (search, tags) touch no driver code and fit a second lane beside FR-1/FR-2; FR-12 slice 3 follows FR-8. FR-11 is the final slice and is run by the owner with the cockpit, not by a worker.
+Sliced 2026-10-09 into 13 slices; the table below is generated by `docs slice` and `docs render`, the prose here is the argument. **The harness is FR-10 itself**, not a `/verify-app` skill: slice 01 builds the crate, the fixture repo and the stubs, and every later slice adds the stub scenario it consumes, so `cargo test` grows with the loop and no slice waits on a harness it does not need. Slices are named by what they make true; the FR each one builds is in its header.
+
+**Spine.** 01 → 02 → … → 10 is one serial chain: every driver slice edits the same scheduler loop, so each depends on the one before it. **Branch.** 11 → 12 (`factory ctx` search, then tags) touch no driver code and hang off 01 alone, so a second lane builds them beside the spine. 13 joins both at the end. Checkpoints fall every two done slices (`checkpoint_every` 2): after 02, 04, 06, 08, 10 and 12, and once more at 13. The schema, the pack and the scheduler land right before a checkpoint on purpose.
+
+**Where the order differs from the note the slicer was given, and why.** (1) FR-3 lanes (04) land before FR-5 commits (05): FR-5's acceptance is "two lanes edit disjoint files", unprovable until lanes exist. (2) FR-11 has no slice. The A/B needs the polished binary and the owner, and a slice no worker may build would park every `/deliver` run on it. It is the post-ship owner measurement: `docs ship` at closeout, the two runs, results into `retro.md`, `docs archive` when it passes; the procedure is in [`qa-guide.md`](qa-guide.md) next to FR-7's phone run. (3) FR-12's `tool_calls` table is created in 08 with the rest of FR-8, where `repeat_rate` and `lookup_chars` already need it; 13 adds the `ctx-*` kinds, the two follow-up labels and the report keys that depend on them. (4) FR-10's scenarios are spread: 01 ships the mechanism and `done`; `dead` comes with 03, `blocked` with 04, `red, red, green` with 06, `rate limit` with 07, `red CI then green` with 09.
+
+**The highest-risk slice is 03**, one worker end to end: the `claude -p` flags, the stream shape, the detach model and resume all meet there, and three of them are marked "verify at slice entry" in §20. Its slice file says so at the top.
+
+**Workflow.** One branch (`feat/driver`), one PR, one commit per slice by pathspec, a checkpoint commit after every second slice with the full gate and the Prove rows, `/polish` then `docs ship` in the last commit. No row of §16 is Human except FR-7 and FR-11, so `qa-guide.md` holds exactly those two.
+
+**A fact corrected at slicing (2026-10-09).** FR-2 said "bypass plus deny rules plus the guard hook, as today". No Claude Code hook exists today; the correction is inline in §4 and OPEN-13, and the hook is slice 13's work.
 
 <!-- docs:slices -->
+| Slice | Status | Depends on |
+|---|---|---|
+| [01 — Harness: crate, fixture repo, stub claude and gh (FR-10)](slice-01-harness.md) | pending | — |
+| [02 — Contract and state: docs.mjs wrapper, run dir, config, schema (FR-1, FR-8)](slice-02-contract-and-state.md) | pending | 01 |
+| [03 — One worker end to end (FR-1, FR-2)](slice-03-one-worker.md) | pending | 02 |
+| [04 — Lanes and parking (FR-3)](slice-04-lanes-and-parking.md) | pending | 03 |
+| [05 — Commits by pathspec and log merge (FR-5)](slice-05-commits-and-log.md) | pending | 04 |
+| [06 — Checkpoints: driver-run gate, cache, fix workers (FR-4)](slice-06-checkpoints.md) | pending | 05 |
+| [07 — Quota: rate-limit pause and weighted budget (FR-9)](slice-07-quota.md) | pending | 06 |
+| [08 — Metrics: tool_calls, report, cockpit tokens (FR-8)](slice-08-metrics.md) | pending | 07 |
+| [09 — Closeout: polish worker, ship, retro keys, PR, CI (FR-6)](slice-09-closeout.md) | pending | 08 |
+| [10 — Cockpit: wait, replay, status, skill file (FR-7)](slice-10-cockpit.md) | pending | 09 |
+| [11 — ctx search: grep crates, definition regexes, printer (FR-12 slice 1)](slice-11-ctx-search.md) | pending | 01 |
+| [12 — ctx tags: tree-sitter, outline, kind filter, Vue shim (FR-12 slice 2)](slice-12-ctx-tags.md) | pending | 11 |
+| [13 — ctx in the loop: pack sections, hook hints, follow-up labels (FR-12 slice 3, FR-2 pack-doc hint, FR-8 tail)](slice-13-ctx-in-the-loop.md) | pending | 10, 12 |
 <!-- /docs:slices -->
 
 ## 18. Sequencing risk

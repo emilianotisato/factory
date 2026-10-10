@@ -1,0 +1,75 @@
+---
+slice: 11
+status: pending
+depends_on: [1]
+---
+
+# Slice 11 — ctx search: grep crates, definition regexes, printer (FR-12 slice 1)
+
+**Source**: [`prd.md`](prd.md) → §14 FR-12 decision 1 (three verbs, plain text, exit 0 on empty, caps and context lines), decision 2 (the engine: ripgrep crates; the tree-sitter half is slice 12), decision 5 ("Three slices … (1) grep-crate walker, per-language definition regexes, compact capped printer"), and its acceptance. **Depends on**: 01 only (the crate). Independent of 02 to 10: §14 "Slices 1 and 2 touch no driver code and can run beside FR-1/FR-2."
+**Created**: 2026-10-09 · **Status**: pending
+
+**Progress**: _(written as it lands)_
+
+**Slice**: After this slice `factory ctx def`, `refs` and `outline` exist with the textual engine: an `ignore`-based walker that skips vendor and gitignored paths, a per-language definition regex for PHP, TypeScript, Go and Rust run through the grep crates, a word-boundary reference search collapsed per file with caps and a trailer, and the compact printer with its two context lines. `def` prints the regex match with context; the exact body and the comment/string filtering arrive with tree-sitter in slice 12, so `--no-body` exists but the body printed here is the context window. `outline` is a stub that says so and exits 0. Fixture files per stack pin the output.
+
+## Current code / environment
+
+- **The numbers behind the shape** (§14, `ctx-research.md` §2): 86.9% of definition greps asked for the body, median 25 lines; 10 was the commonest cap on caller lists; bare locations tripled follow-up reads (15.2 vs 3.2 per task); capped, summarised search beat iterative search by 6 points. So: `def` with body by default, `refs --max 10 --per-file 3`, two context lines, a trailer.
+- **Crates** (cargo search 2026-10-09): `grep-searcher` 0.1.17, `grep-regex` 0.1.14, `ignore` 0.4.33 (the ripgrep crates, MIT/Unlicense). `ignore::WalkBuilder` honours `.gitignore` and hidden-file rules; add overrides for `vendor/`, `node_modules/`, `target/`, `dist/`, `build/`, `storage/` (Laravel) unless `--vendor`. Multi-threaded walk via `build_parallel()`; the printer collects then sorts by path and line so output is deterministic.
+- **Definition regexes** (one per language, anchored at line start after whitespace and modifiers):
+  PHP `(abstract\s+|final\s+)?(class|interface|trait|enum)\s+NAME\b` and `(public|protected|private|static|\s)*function\s+&?NAME\s*\(`;
+  TypeScript/JavaScript `(export\s+)?(default\s+)?(abstract\s+)?(class|interface|type|enum)\s+NAME\b`, `(export\s+)?(async\s+)?function\s*\*?\s*NAME\s*[(<]`, `(export\s+)?(const|let|var)\s+NAME\s*(:[^=]+)?=\s*(async\s*)?(\(|[A-Za-z_$][\w$]*\s*=>)`, and class members `(public|private|protected|static|readonly|async|\s)*NAME\s*\([^)]*\)\s*(:[^{]+)?\{`;
+  Go `func\s+(\([^)]*\)\s*)?NAME\s*[(\[]` and `type\s+NAME\b`;
+  Rust `(pub(\([^)]*\))?\s+)?(async\s+)?(unsafe\s+)?(fn|struct|enum|trait|type|mod|const|static)\s+NAME\b` and `macro_rules!\s+NAME`.
+  Language by extension: `.php`, `.ts .tsx .js .jsx .mjs .vue`, `.go`, `.rs`. The kind printed here is the keyword matched (`class`, `fn`, `function`, `type`, …); slice 12 maps it to the `--kind` vocabulary `class|fn|method|type`.
+- **Fixtures** (`tests/fixture/ctx/`): `php/` a class with a docblock that mentions another class's name (the "docblock mention" the acceptance drops: in this slice it is still printed, in slice 12 it goes; the test pins both states by marking the slice 12 assertion `#[ignore]` until then), a trait, an interface, a method; `vue/` a single-file component with `<script setup lang="ts">` defining a function and a `const` arrow function; `go/` a struct, a method with a receiver, a function; `rs/` a struct, an impl with two methods, a trait, a macro-made function (the accepted textual miss, §14); `refs/` a file with a symbol that has 300 planted hits across 40 files plus one hit inside a comment and one inside a string. The acceptance in §14 names "300 planted hits".
+- **Timing targets**: §14 acceptance "each verb answers in under 1 s warm" on the icg-cloud and arca-api checkouts (paths in the owner's `~/Projects`; the test cannot assume them, so the timing is a Prove step run by the owner's checkpoint, written as a table in Progress). Measured elsewhere: 7 to 44 ms for rg-style search on 59k to 3.45M lines.
+- **Deliberate non-changes**: *(prd §14 "Rejected: an LSP proxy."; no language server, no daemon, no index on disk.)* *(prd §14 "Rejected: in-process ast-grep as the search engine".)* *(prd §14 "Accepted cost: callers through Laravel facades, Eloquent magic, scopes and route strings stay textual"; do not add facade or route resolution.)* *(prd §19 "Not handled: a tags cache"; every call re-reads the tree.)* *(prd §19 "Not handled: a sha256 seen-before stub"; cut 2026-10-09.)*
+
+## Tasks
+
+### 1. Walker and language table — high — blocked by: —
+**Source**: §14 FR-12: "Vendor and gitignored paths are skipped unless `--vendor`." "Grammars: PHP, TypeScript, Go, Rust … Vue".
+
+`src/ctx/walk.rs`: `walk(root, opts) -> impl Iterator<Item = (PathBuf, Lang)>` over `ignore::WalkBuilder` with the vendor overrides and `--in <dir>` as the root; `Lang::from_path`. Binary and files over 2 MB skipped with a count in the trailer. `src/ctx/mod.rs` wires `factory ctx def|refs|outline` into clap with the flags from §14 (`def --kind --no-body`, `refs --in --max --per-file --tests`, `outline --depth`); `--kind` is accepted and ignored until slice 12 (a note in `--help`).
+
+**Acceptance:** on the fixture, `walk` yields every source file under `php/ vue/ go/ rs/ refs/` and nothing under a planted `vendor/` and `node_modules/`; with `--vendor` the planted files appear; a `.gitignore`d file is skipped.
+
+### 2. `def`: definition regexes through the grep crates — high — blocked by: 1
+**Source**: §14 FR-12: "`def` runs a per-language definition regex through `grep-searcher`, `grep-regex` and `ignore`"; "`def` prints the body by default".
+
+`src/ctx/def.rs`: for each language build the regexes above with `NAME` escaped, run `grep_searcher::Searcher` with `grep_regex::RegexMatcher` over the walker's files of that language; collect `Hit{path, line, kind, signature(line text trimmed)}`. Body in this slice = the match line plus the following lines up to the first line whose indentation returns to the match's or 25 lines, whichever first (the median body from the research; slice 12 replaces it with the node range). `--no-body` prints the location and signature only. No hit → exit 0 with `no definition of NAME found (searched N files)`.
+
+**Acceptance:** `def UserService` on the PHP fixture prints `php/UserService.php:LINE class UserService` and the body; `def handle` prints the method with kind `function`; `def NewClient` on Go prints the func with its receiver-less signature; `def Config` on Rust prints the struct; `def made_by_macro` prints nothing and exits 0 with the trailer; `def useThing` finds the Vue `const` arrow function.
+
+### 3. `refs`: word-boundary search, per-file collapse, caps — high — blocked by: 1
+**Source**: §14 FR-12: "`refs` is a word-boundary search with comments and strings dropped, collapsed per file." "`refs` stops at 10". Flags `--in <dir> --max 10 --per-file 3 --tests`. Acceptance: "`refs` on a symbol with 300 planted hits prints at most `--max` lines plus a trailer".
+
+`src/ctx/refs.rs`: `\bNAME\b` over the walker; group by file, keep the first `--per-file` lines per file, then the first `--max` lines overall, sorted by path then line; `--tests` includes paths matching `tests?/|spec|_test\.go|\.test\.|\.spec\.` which are otherwise excluded (test files are the noisiest callers in the transcripts); the trailer says `N more hits in M files (--max, --per-file to widen)`. Comment and string dropping is slice 12's (tree-sitter); here a comment hit is still printed and the test pins that with an `#[ignore]`d assertion for slice 12 to un-ignore.
+
+**Acceptance:** `refs planted` on `refs/` prints exactly 10 hit lines and a trailer naming `290 more hits`; `--max 20 --per-file 1` prints 20 lines from 20 files; `--in refs/sub` restricts to that dir; a hit inside a test file appears only with `--tests`.
+
+### 4. Printer with context lines and trailer — high — blocked by: 2, 3
+**Source**: §14 FR-12: "Output is path:line, kind, signature, one or two context lines, then a trailer saying what was cut." "Why context lines: bare locations tripled follow-up reads".
+
+`src/ctx/print.rs`: `path:line  kind  signature` then two context lines (the line after the hit for `refs`; the body for `def`) indented by four spaces, hits separated by a blank line; relative paths from the search root; the trailer on the last line; no colour, no box drawing; output width uncapped (the model reads it, not a terminal). Exit 0 always on a search that ran; exit 2 on a bad flag or an unreadable root.
+
+**Acceptance:** snapshot tests (`insta` crate or a plain string compare) pin the full output of the task 2 and task 3 commands; output is byte-identical across two runs (the parallel walker's order is sorted).
+
+### 5. `outline` stub — low — blocked by: 1
+**Source**: §14 FR-12: "`factory ctx outline <path>... [--depth 1]`"; slice 12 implements it.
+
+`factory ctx outline <path>` prints `outline needs tree-sitter (slice 12)` to stderr and exits 2 so no caller mistakes silence for an empty outline.
+
+**Acceptance:** `outline php/UserService.php` exits 2 with that line.
+
+### 6. Verify — medium — blocked by: 1–5
+`cargo test`. The full gate runs at this slice's checkpoint.
+
+**Acceptance:** inner loop green, one commit.
+
+### 7. Prove — at the checkpoint — blocked by: 6
+Rows from [`prd.md`](prd.md) § QA plan: the first part of **FR-12** ("fixture files per stack → each verb's output pinned; `def`, `refs`, `outline` under 1 s warm on icg-cloud and arca-api", evidence: test + timing table in slice Progress). At the checkpoint: the snapshot tests, and a timing table (`time factory ctx def <symbol>`, `time factory ctx refs <symbol>` on `~/Projects/icg-cloud` and `~/Projects/arca-api`, warm, three runs each) pasted into this slice's **Progress**. `outline` timing waits for slice 12. The `ctx_share`/`repeat_rate` part of the row is slice 13's.
+
+**Acceptance:** the timing table shows every `def` and `refs` run under 1 s warm on both checkouts.

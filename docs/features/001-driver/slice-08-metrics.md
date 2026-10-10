@@ -1,0 +1,65 @@
+---
+slice: 08
+status: pending
+depends_on: [7]
+---
+
+# Slice 08 — Metrics: tool_calls, report, cockpit tokens (FR-8)
+
+**Source**: [`prd.md`](prd.md) → §10 FR-8 bullets 2 to 5 and acceptance (the `tool_calls` table, worker gate rows, `factory report`, the cockpit measure); §13 FR-11 bullet 3 (the report keys the A/B compares). **Depends on**: 07 (every worker kind exists and every row is complete; the report must count pauses and budget parks correctly).
+**Created**: 2026-10-09 · **Status**: pending
+
+**Progress**: _(written as it lands)_
+
+**Slice**: After this slice a run is measurable without reading a transcript. The driver records every tool call of every worker with its kind, result size, target and whether it repeated, counts the worker's own inner-loop gate runs as `gates` rows, and `factory report <run>` prints the twelve retro keys the old framework's `retro.md` expects plus the eight run keys FR-11 compares. The cockpit's own cost comes from the cockpit session's transcript the same way `measure.py` computed it. The schema was created in slice 02; this slice adds the `tool_calls` table and fills it. Slice 13 adds the `ctx` kinds and the follow-up labels to the same table.
+
+## Current code / environment
+
+- **The retro keys**: `templates/retro.md:2-14` in the old skills repo: `score, gate_runs, gate_red, gate_minutes, ci_cycles, slices, checkpoints, build_minutes, polish_minutes, out_tokens, cache_read_tokens, start_context, peak_context`. `measure.py` (`~/.claude/skills/feature-docs/bin/measure.py`): `ctx(u)` `:56-57` = input + cache_creation + cache_read; `totals()` `:60-67` sums per message and tracks the peak; `measure(path)` `:87`; `:144-158` combine several sessions; `--retro` `:167-168` prints the key lines. `score` is the owner's, never computed (§13: answered before the numbers).
+- **The run keys**: §10: "`factory report <run>` prints the retro keys (`gate_runs, gate_red, gate_minutes, ci_cycles, slices, checkpoints, build_minutes, polish_minutes, out_tokens, cache_read_tokens, start_context, peak_context`) plus `input_tokens, cache_write_tokens, weighted_tokens, cockpit_tokens, workers, lookup_chars, ctx_share, repeat_rate`." Slice 13 appends `followup_reads` and `pack_doc_read_chars`.
+- **What a tool call looks like in the stream**: `assistant.message.content[].tool_use {id, name, input}` and the matching `user.message.content[].tool_result {tool_use_id, content}` (string or a list of `{type: text, text}` blocks). `result_chars` is the length of the text. Slice 03's `Summary.tool_uses` already pairs them; extend it with `result_chars` and `tool_use_id` if slice 03 left them out.
+- **Kinds** (§10): "kind: read, edit, run, bash-grep, bash-sed, bash-cat by first command". `Read` → `read`; `Edit|Write|NotebookEdit` → `edit`; `Grep|Glob` → `grep`; `Bash` by the first word of `input.command` after stripping `cd … &&` and env assignments: `grep|rg` → `bash-grep`, `sed` → `bash-sed`, `cat|head|tail` → `bash-cat`, anything containing the gate or inner command string → `run-gate`, else `run`. `target_hash` = sha256 of the normalised target (the `file_path`, the grep pattern plus path, or the command with whitespace collapsed); `repeat_in_worker` = the same `target_hash` seen earlier in this worker; `repeat_in_run` = seen earlier in this run (§10 "repeat_in_worker, repeat_in_run"). The 26.7% figure in `ctx-research.md` is an in-worker literal re-hit rate; `repeat_rate` reproduces that definition.
+- **Worker gate rows**: §10 "the worker's own inner-loop runs (a `Bash` call whose command contains the gate or inner command) are `gates` rows with source worker." Red is `tool_result` content matching the gate's failure (the fixture's `FAIL ` line; for real gates, a non-zero exit shows as `Exit code` in the tool result text), `minutes` from the gap to the next event timestamp when the stream has timestamps, else null.
+- **Crates**: sha2 0.11.0 for `target_hash`; rusqlite already in.
+- **The cockpit session** (§10 "cockpit_tokens from the cockpit session's transcript, the same way `measure.py` does"): a Claude Code transcript at `~/.claude/projects/<slug>/<session>.jsonl` with `message.usage` on assistant lines; `factory report <run> --cockpit <path>` ports `measure.py:42-67,87-150` (per-message `ctx()`, out tokens, cache reads, start and peak context). Fixtures: a 20-line transcript cut from a real session with paths stripped, under `tests/fixture/cockpit-session.jsonl`.
+- **Deliberate non-changes**: *(prd §10 "Written as events happen, not reconstructed"; the report is a `SELECT`, never a transcript re-parse of the workers.)* *(prd §19 "Not handled: a dashboard"; `key: value` lines only.)* *(prd §13: `score` stays the owner's; the report prints `score: ` empty.)*
+
+## Tasks
+
+### 1. `tool_calls` table, filled from the stream — high — blocked by: —
+**Source**: §10 FR-8: "`tool_calls` (worker, seq, tool, kind: read, edit, run, bash-grep, bash-sed, bash-cat by first command, result_chars, target_hash, repeat_in_worker, repeat_in_run)." Acceptance: "every tool call has a `tool_calls` row with its kind".
+
+`db.rs` migration: `tool_calls(id PK, run_id, worker_id, seq, tool, kind, result_chars, target_hash, repeat_in_worker, repeat_in_run, ts, label_followup NULL, label_expanded NULL)` (the two label columns are slice 13's, created now so its migration is a no-op). `src/metrics.rs`: `classify(tool_use) -> Kind`, `target_hash`, and the repeat flags with two `HashSet<hash>` (per worker, per run). Inserted when the worker's stream is parsed on exit (slice 03's `stream.rs` already holds the pairs); one `INSERT` per call inside one transaction.
+
+**Acceptance:** the recorded stream yields one row per `tool_use` with `result_chars` equal to the tool_result text length; a synthetic stream with `Bash cd x && grep -rn foo .` → `bash-grep`, `Bash sed -n 1,40p f` → `bash-sed`, `Read f` twice → second row `repeat_in_worker = 1`; two workers reading the same file → second worker's row `repeat_in_run = 1`, `repeat_in_worker = 0`.
+
+### 2. Worker inner-loop runs as `gates` rows — medium — blocked by: 1
+**Source**: §10 FR-8: "`gates` (source: driver or worker, checkpoint or slice, cmd, red, minutes) … the worker's own inner-loop runs … are `gates` rows with source worker."
+
+In `metrics.rs`: a `Bash` call whose command contains the inner or gate command string → `gates` row `source = worker`, `kind = slice`, `red` from the tool_result (non-zero exit marker or the gate's failure text), `minutes` from consecutive event timestamps when present, `worker_id` set.
+
+**Acceptance:** the stub's `done` stream (extended here with one `Bash ./gate.sh --inner` call and its result) produces one `gates` row per worker with `source='worker'`; a result containing `FAIL` → `red=1`.
+
+### 3. `factory report <run>` — high — blocked by: 1, 2
+**Source**: §10 FR-8: "`factory report <run>` prints the retro keys … plus `input_tokens, cache_write_tokens, weighted_tokens, cockpit_tokens, workers, lookup_chars, ctx_share, repeat_rate`." §13: the A/B compares `weighted_tokens` and `cockpit_tokens`.
+
+`src/cli/report.rs`: one `key: value` line per key, in the `retro.md:2-14` order first, then the run keys. Definitions: `gate_runs`/`gate_red`/`gate_minutes` over `gates` where `source='driver'` (worker runs are reported separately as `worker_gate_runs`); `ci_cycles` from slice 09's events (0 until then); `slices` = `slice_done` count; `checkpoints` = `checkpoint_done` count; `build_minutes` = sum of build and fix worker `duration_ms`; `polish_minutes` = polish worker duration (0 until slice 09); `out_tokens`, `cache_read_tokens`, `input_tokens`, `cache_write_tokens` summed over `workers`; `start_context` = the smallest first-message context across workers, `peak_context` = max `workers.peak_context`; `weighted_tokens` = slice 07's formula; `workers` = row count by role (`workers: 5 (build 3, fix 1, checkpoint 1)`); `lookup_chars` = sum of `result_chars` where `kind ∈ {read, grep, bash-grep, bash-sed, bash-cat}`; `ctx_share` = that sum over all `result_chars`; `repeat_rate` = rows with `repeat_in_worker = 1` over rows with a lookup kind; `cockpit_tokens` = `0 (no --cockpit)` without task 4; `score:` printed empty. `--json` prints the same as one object.
+
+**Acceptance:** on a fixture run `factory report <id>` prints exactly the 12 + 8 keys in that order, `slices: 3`, `workers:` matching the table, `weighted_tokens` equal to the slice 07 event's value, `ctx_share` between 0 and 1; `--json` round-trips through `serde_json`.
+
+### 4. `--cockpit <session.jsonl>`: port of the measure — medium — blocked by: 3
+**Source**: §10 FR-8: "cockpit_tokens from the cockpit session's transcript, the same way `measure.py` does". §13 FR-11: "cockpit tokens ≤ 5% of the run's weighted tokens".
+
+`src/measure.rs`: a port of `measure.py:42-67` (per assistant message: `ctx = input + cache_creation + cache_read`, `out`, `cache_read`, start = first `ctx`, peak = max) and `:87-150` (several files combined). `factory report <run> --cockpit <path>...` sets `cockpit_tokens` (weighted with slice 07's weights so it compares with `weighted_tokens`) and `cockpit_peak_context`. The `measure.py` 2% comparison in §16 is run by the owner on a real session after the first dogfood run (qa-guide.md); here the fixture transcript's numbers are asserted against values computed once by `measure.py` and pinned in the test.
+
+**Acceptance:** `tests/fixture/cockpit-session.jsonl` → `out_tokens`, `cache_read_tokens`, `start_context`, `peak_context` equal to the pinned `measure.py --retro` output for the same file (pinned values in the test with the command that produced them).
+
+### 5. Verify — medium — blocked by: 1–4
+`cargo test`. The full gate runs at this slice's checkpoint.
+
+**Acceptance:** inner loop green, one commit.
+
+### 6. Prove — at the checkpoint — blocked by: 5
+Rows from [`prd.md`](prd.md) § QA plan: **FR-8** ("after a fixture run, every worker has a row with non-null usage, every gate run a `gates` row, every tool call a `tool_calls` row with its kind; `factory report` prints the keys and `measure.py` on the cockpit transcript agrees within 2%", evidence: `factory report` transcript). At the checkpoint: `factory report` on the fixture run plus three `SELECT count(*)` lines, pasted into this slice's **Progress**. The 2% comparison against a real cockpit transcript is the owner's row in `qa-guide.md` after the first dogfood run.
+
+**Acceptance:** the report transcript and the counts are attached; the qa-guide row for the 2% check is referenced.
