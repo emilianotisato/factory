@@ -160,14 +160,15 @@ fn wait_relays_the_block_the_still_running_line_the_dead_driver_and_the_end() {
     assert_eq!(stdout(&out), format!("{BLOCK_LINE}\n"));
     assert_eq!(cursor(&dir), Some(seq_first(&dir, "slice_blocked")));
 
-    // Nothing new: `still running` with the status line, exit 3, at the timeout.
+    // Nothing new, but the block is still open: a cockpit that died after
+    // the first `wait` never relayed it, so the next `wait` prints it again
+    // at once, exit 0, and leaves the cursor where it was (AD-40005). The
+    // `still running` line is pinned in the stop test below.
     let t = Instant::now();
-    let out = factory(&fx, &["wait", &id, "--timeout", "1"]);
-    assert_eq!(out.status.code(), Some(3), "{}", stdout(&out));
-    assert_eq!(
-        stdout(&out),
-        "still running: waiting-owner, BLOCK-101 open\n"
-    );
+    let out = factory(&fx, &["wait", &id, "--timeout", "10"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    assert_eq!(stdout(&out), format!("{BLOCK_LINE}\n"));
+    assert_eq!(cursor(&dir), Some(seq_first(&dir, "slice_blocked")));
     assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
 
     // The board in ten lines.
@@ -270,8 +271,8 @@ fn wait_relays_the_block_the_still_running_line_the_dead_driver_and_the_end() {
 #[test]
 fn a_budget_park_is_relayed_and_is_not_a_dead_driver() {
     // FR-9's budget park exits the driver by design (AD-703): `wait` relays
-    // the park once, then waits with the cap in its status line instead of
-    // telling the cockpit to restart a driver that would park again.
+    // the park, and again on every call while it stands (AD-40005), instead
+    // of telling the cockpit to restart a driver that would park again.
     let fx = Fixture::with_index("cockpit-budget", &[("checkpoint_every", "10")]);
     fx.chain();
     let out = factory(&fx, &["run", "001", "--budget", "1"]);
@@ -290,14 +291,13 @@ fn a_budget_park_is_relayed_and_is_not_a_dead_driver() {
         text.starts_with("parked: budget ") && text.ends_with("/1\n") && text.lines().count() == 1,
         "{text}"
     );
-    let out = factory(&fx, &["wait", &id, "--timeout", "1"]);
-    assert_eq!(out.status.code(), Some(3), "{}", stdout(&out));
-    let text = stdout(&out);
-    assert!(
-        text.starts_with("still running: waiting-owner, parked: budget ")
-            && text.ends_with("/1, no open question\n"),
-        "{text}"
-    );
+    let cursor_at = cursor(&dir);
+    let t = Instant::now();
+    let again = factory(&fx, &["wait", &id, "--timeout", "10"]);
+    assert_eq!(again.status.code(), Some(0), "{}", stdout(&again));
+    assert_eq!(stdout(&again), text);
+    assert_eq!(cursor(&dir), cursor_at);
+    assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
     let out = factory(&fx, &["status", &id]);
     let text = stdout(&out);
     assert!(text.contains("/1 (parked)"), "{text}");
@@ -329,6 +329,17 @@ fn stop_ends_the_run_after_the_worker_and_the_next_run_builds_the_rest() {
                 .as_array()
                 .is_some_and(|w| w.len() == 1)
     });
+    // Nothing for the owner yet: `still running` with the status line, exit
+    // 3, at the timeout, and no cursor written.
+    let out = factory(&fx, &["wait", &id, "--timeout", "0"]);
+    assert_eq!(out.status.code(), Some(3), "{}", stdout(&out));
+    let text = stdout(&out);
+    assert!(
+        text.starts_with("still running: ") && text.ends_with(", no open question\n"),
+        "{text}"
+    );
+    assert_eq!(text.lines().count(), 1, "{text}");
+    assert_eq!(cursor(&dir), None);
     let out = factory(&fx, &["stop", &id]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     assert_eq!(
@@ -442,6 +453,8 @@ fn the_cockpit_skill_is_under_sixty_lines_and_names_the_five_commands() {
         "--timeout 1500",
         // A dead cockpit reattaches.
         "replays every event",
+        "repeats every question and park still open",
+        "prints a question again on every call until it is answered",
     ] {
         assert!(text.contains(needle), "{needle:?} missing in:\n{text}");
     }

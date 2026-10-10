@@ -19,9 +19,9 @@ Run `factory wait <id> --timeout 1500` in a background Bash and do nothing else 
 - exit 3 (`still running: …`): wait again. Say nothing unless the owner asks.
 - exit 4 (`driver dead; run: factory run NNN`): run `factory run NNN` (if it says the run is live, a driver already took it), then wait again.
 - exit 0: one line per event, in order. For each line, `PushNotification` the line (under 200 characters), then:
-  - `BLOCK-n …` or `ASK-n …`: the owner decides. Run `factory status <id>` once for context, then `AskUserQuestion` with the question's text, the Recommended option first, the alternatives after it, and `Other` for a free answer. Then `factory answer BLOCK-n "<the choice>"` (or `ASK-n`) and wait again.
+  - `BLOCK-n …` or `ASK-n …`: the owner decides. Run `factory status <id>` once for context, then `AskUserQuestion` with the question's text, the Recommended option first, the alternatives after it, and `Other` for a free answer. Then `factory answer BLOCK-n "<the choice>"` (or `ASK-n`) and wait again. `wait` prints a question again on every call until it is answered, so if the owner will not answer now, say that `factory wait <id>` brings it back, and end.
   - `paused until …`: information; the run resumes by itself. Wait again.
-  - `parked: …`: a cap was reached and the driver has exited. Ask the owner for a new budget; on an answer run `factory run NNN --budget <n>`. Wait again either way.
+  - `parked: …`: a cap was reached and the driver has exited. Ask the owner for a new budget; on an answer run `factory run NNN --budget <n>` and wait again. With none, report that `factory run NNN --budget <n>` resumes it, and end: `wait` prints the park again on every call while it stands.
   - `stopped: …`: the owner stopped it. Report; `factory run NNN` resumes it later. End.
   - `failed: …`: report the reason with `factory status <id>`. End.
   - `finished: <pr url>`: go to §3.
@@ -39,4 +39,4 @@ Read `docs/features/NNN-*/agent-log.md` now, the only time this skill reads it. 
 
 ## 4. A dead cockpit
 
-Start here with the run id: `factory wait <id>` replays every event the old session missed (`--replay` repeats them all), then continue at §2.
+Start here with the run id: `factory wait <id>` replays every event the old session missed and repeats every question and park still open, shown or not (`--replay` repeats them all), then continue at §2.

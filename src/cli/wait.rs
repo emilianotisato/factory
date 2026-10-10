@@ -3,7 +3,10 @@
 //! the timeout print `still running: <status line>` and exit 3; a dead
 //! driver exits 4 with the command that resumes it. A new cockpit reattaches
 //! by calling this: everything after `runs/<id>/cockpit.cursor` is replayed,
-//! and `--replay` ignores the cursor. The tail is a 2-second poll of
+//! and `--replay` ignores the cursor. A question still open or a park still
+//! standing is printed again on every call, before anything new, even when
+//! the cursor is past it: the cockpit that was shown it may have died before
+//! the owner saw it (AD-40005). The tail is a 2-second poll of
 //! `events.jsonl` (AD-1001): no watcher crate for a file the driver appends
 //! to a few times an hour.
 use std::io::Write;
@@ -58,16 +61,13 @@ pub fn wait(args: &WaitArgs, out: &mut dyn Write) -> Result<i32> {
     loop {
         let state = run::load_state(&dir)?;
         let events = events::read_all(&dir)?;
-        let pending: Vec<&Event> = events
+        let owed = cockpit::owed(&state, &events, cursor);
+        let fresh: Vec<&Event> = events
             .iter()
             .filter(|e| e.seq > cursor && cockpit::is_cockpit(&e.kind))
             .collect();
-        if let Some(last) = pending.last() {
-            for e in &pending {
-                if let Some(l) = cockpit::line(e, &feature) {
-                    writeln!(out, "{l}").map_err(io("stdout"))?;
-                }
-            }
+        if let Some(last) = fresh.last() {
+            print(out, owed.iter().chain(&fresh), &feature)?;
             cockpit::write_cursor(&dir, last.seq)?;
             return Ok(0);
         }
@@ -96,6 +96,10 @@ pub fn wait(args: &WaitArgs, out: &mut dyn Write) -> Result<i32> {
             return Ok(4);
         }
         rereads = 0;
+        if !owed.is_empty() {
+            print(out, owed.iter(), &feature)?;
+            return Ok(0);
+        }
         let now = Instant::now();
         if let Some(d) = deadline
             && now >= d
@@ -111,4 +115,18 @@ pub fn wait(args: &WaitArgs, out: &mut dyn Write) -> Result<i32> {
         let nap = deadline.map_or(POLL, |d| POLL.min(d.saturating_duration_since(now)));
         std::thread::sleep(nap);
     }
+}
+
+/// One line per cockpit event, in the order given.
+fn print<'a>(
+    out: &mut dyn Write,
+    events: impl Iterator<Item = &'a &'a Event>,
+    feature: &str,
+) -> Result<()> {
+    for e in events {
+        if let Some(l) = cockpit::line(e, feature) {
+            writeln!(out, "{l}").map_err(io("stdout"))?;
+        }
+    }
+    Ok(())
 }

@@ -118,25 +118,63 @@ pub fn tokens(n: u64) -> String {
 pub fn open_questions(events: &[Event]) -> Vec<String> {
     let mut open: Vec<String> = Vec::new();
     for e in events {
-        match &e.kind {
-            EventKind::SliceBlocked {
-                block_id: Some(id), ..
+        if let Some(id) = opens(&e.kind) {
+            if !open.iter().any(|o| o == id) {
+                open.push(id.to_string());
             }
-            | EventKind::CheckpointBlocked { block_id: id, .. }
-            | EventKind::MergeRefused { block_id: id, .. }
-            | EventKind::CloseoutBlocked { block_id: id, .. }
-            | EventKind::AskOpened { id, .. } => {
-                if !open.contains(id) {
-                    open.push(id.clone());
-                }
-            }
-            EventKind::BlockAnswered { id, .. } | EventKind::AskAnswered { id, .. } => {
-                open.retain(|o| o != id);
-            }
-            _ => {}
+        } else if let EventKind::BlockAnswered { id, .. } | EventKind::AskAnswered { id, .. } =
+            &e.kind
+        {
+            open.retain(|o| o != id);
         }
     }
     open
+}
+
+/// The `BLOCK-n` or `ASK-n` an event opens.
+fn opens(kind: &EventKind) -> Option<&str> {
+    match kind {
+        EventKind::SliceBlocked {
+            block_id: Some(id), ..
+        }
+        | EventKind::CheckpointBlocked { block_id: id, .. }
+        | EventKind::MergeRefused { block_id: id, .. }
+        | EventKind::CloseoutBlocked { block_id: id, .. }
+        | EventKind::AskOpened { id, .. } => Some(id),
+        _ => None,
+    }
+}
+
+/// What a cockpit was shown and the owner still owes (AD-40005): the event
+/// that opened each question still open and the park the run still waits
+/// on, at or before `cursor`, in `seq` order. A cockpit that died after
+/// `wait` printed them never relayed them, so `wait` prints them again
+/// until they close. None once the run is over.
+pub fn owed<'a>(state: &RunState, events: &'a [Event], cursor: u64) -> Vec<&'a Event> {
+    if state.phase.is_over() {
+        return Vec::new();
+    }
+    owed_from(events, cursor, parked_on(state, events).is_some())
+}
+
+fn owed_from(events: &[Event], cursor: u64, parked: bool) -> Vec<&Event> {
+    let open = open_questions(events);
+    let mut owed: Vec<&Event> = open
+        .iter()
+        .filter_map(|id| events.iter().rev().find(|e| opens(&e.kind) == Some(id)))
+        .collect();
+    if parked {
+        owed.extend(
+            events
+                .iter()
+                .rev()
+                .find(|e| matches!(e.kind, EventKind::RunParked { .. })),
+        );
+    }
+    owed.retain(|e| e.seq <= cursor);
+    owed.sort_by_key(|e| e.seq);
+    owed.dedup_by_key(|e| e.seq);
+    owed
 }
 
 /// `waiting-owner, BLOCK-101 open` · `paused until …, no open question` ·
@@ -442,6 +480,76 @@ mod tests {
             },
         ));
         assert_eq!(open_questions(&more), ["BLOCK-1"]);
+    }
+
+    #[test]
+    fn what_is_owed_is_open_and_already_shown() {
+        let blocked = |seq, id: &str| {
+            ev(
+                seq,
+                EventKind::SliceBlocked {
+                    slice: 1,
+                    block_id: Some(id.into()),
+                    question: None,
+                },
+            )
+        };
+        let events = vec![
+            ev(
+                1,
+                EventKind::AskOpened {
+                    id: "ASK-1".into(),
+                    text: "x".into(),
+                },
+            ),
+            blocked(2, "BLOCK-101"),
+            ev(
+                3,
+                EventKind::AskAnswered {
+                    id: "ASK-1".into(),
+                    text: "y".into(),
+                },
+            ),
+            blocked(4, "BLOCK-102"),
+            ev(
+                5,
+                EventKind::BlockAnswered {
+                    id: "BLOCK-102".into(),
+                    slice: Some(1),
+                    text: "a".into(),
+                },
+            ),
+            blocked(6, "BLOCK-102"),
+            blocked(7, "BLOCK-103"),
+        ];
+        let seqs = |cursor, parked| {
+            owed_from(&events, cursor, parked)
+                .iter()
+                .map(|e| e.seq)
+                .collect::<Vec<_>>()
+        };
+        // The answered ASK-1 is not owed; BLOCK-102 by its re-opening; what
+        // the cursor has not reached is fresh, not owed.
+        assert_eq!(seqs(7, false), [2, 6, 7]);
+        assert_eq!(seqs(6, false), [2, 6]);
+        assert_eq!(seqs(0, false), Vec::<u64>::new());
+        let mut parked = events.clone();
+        parked.push(ev(
+            8,
+            EventKind::RunParked {
+                reason: "budget".into(),
+                weighted: 31_200_000,
+                budget: 30_000_000,
+            },
+        ));
+        assert_eq!(
+            owed_from(&parked, 8, true)
+                .iter()
+                .map(|e| e.seq)
+                .collect::<Vec<_>>(),
+            [2, 6, 7, 8]
+        );
+        assert_eq!(owed_from(&parked, 8, false).len(), 3);
     }
 
     #[test]

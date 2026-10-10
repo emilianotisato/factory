@@ -39,3 +39,11 @@ _(none)_
 **Because:** a nested `build/` or `storage/` is as often source as output (`src/build/`, `app/storage/`), and a `.gitignore` already hides the real output trees; a dependency tree is never source.
 **Undo:** fold `ROOT_DIRS` back into `VENDOR_DIRS` and restore the planted `php/build/Gen.php`.
 **Review:** decide — deviates from slice 11's walk test, which planted `php/build/` as skipped
+
+### AD-40005 — What does `wait` do with a question a dead cockpit was shown but never relayed? · polish · 2026-10-10
+
+**Chose:** print it again. Every `wait` call first prints the event that opened each `BLOCK-n`/`ASK-n` still open and the `run_parked` the run still waits on (`cockpit::owed`), cursor or not, in `seq` order: before the fresh events when there are some, or alone and at once, exit 0, cursor untouched, when there are none. A dead driver still exits 4 first, and a run that is over owes nothing. The skill's BLOCK/ASK and `parked:` bullets end the session when the owner will not answer now, instead of waiting again into a loop, and §4 says `wait` repeats what is still open.
+**Over:** the cursor alone (slice 10 task 1, and its acceptance "a second `wait --timeout 1` prints `still running: … BLOCK-101 open` and exits 3"), under which a cockpit that died between `wait` printing a block and the owner seeing it reattaches to `still running` forever; also over a cursor that advances only on `factory answer`, which leaves a park, never answered, unshown, and a separate `--open` flag the skill must remember.
+**Because:** PRD §9 says a dead cockpit reattaches by calling `wait`; the cursor only knows what was printed, not what reached the owner, and an open question is still owed whoever saw it.
+**Undo:** drop `cockpit::owed` from `src/cli/wait.rs` and restore the exit-3 step in `tests/cockpit.rs` and the skill's "Wait again either way."
+**Review:** decide — deviates from slice 10's acceptance (second `wait` exits 3 on an open block) and amends AD-1004's "relays the park once"
