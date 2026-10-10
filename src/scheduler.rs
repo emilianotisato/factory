@@ -1052,7 +1052,8 @@ pub fn unnamed(
     let mut listed_before: HashSet<String> = HashSet::new();
     for e in run.events()? {
         if let EventKind::UntrackedLeftovers { files, .. }
-        | EventKind::CheckpointLeftovers { files, .. } = e.kind
+        | EventKind::CheckpointLeftovers { files, .. }
+        | EventKind::CloseoutLeftovers { files, .. } = e.kind
         {
             listed_before.extend(files);
         }

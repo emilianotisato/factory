@@ -250,6 +250,7 @@ fn polish(
             .into_iter()
             .map(|b| b.id)
             .collect();
+        let before = scheduler::snapshot(run, POLISH_KEY)?;
         let w = Worker::spawn(
             run,
             Job::Polish { attempt },
@@ -323,7 +324,7 @@ fn polish(
             continue;
         }
         settle(run, row_id, &session_id, &exit.summary, WorkerOutcome::Done)?;
-        let committed = commit_polish(run, board, row_id, &exit.summary, &template, out)?;
+        let committed = commit_polish(run, board, row_id, &exit.summary, &template, &before, out)?;
         run.emit(EventKind::PolishDone {
             sha: committed.as_ref().map(|c| c.sha.clone()),
             files: committed.map(|c| c.files).unwrap_or_default(),
@@ -337,12 +338,14 @@ fn polish(
 /// to write those two; `docs/index.md` stays the ship's. A missing `retro.md`
 /// is created from the template first, a missing PR body from a fallback, so
 /// the ship and the PR never wait on a worker that skipped its last turn.
+/// What it changed unnamed since `before` is swept or listed (AD-50002).
 fn commit_polish(
     run: &mut Run,
     board: &Status,
     row_id: i64,
     summary: &Summary,
     template: &str,
+    before: &HashSet<String>,
     out: &mut dyn Write,
 ) -> Result<Option<commit::Committed>> {
     let repo = run.state().repo.clone();
@@ -381,6 +384,10 @@ fn commit_polish(
             paths.push(p);
         }
     }
+    let skip: HashSet<String> = paths.iter().chain(&spec.protected).cloned().collect();
+    let found = scheduler::unnamed(run, board, before, &skip, true)?;
+    note_leftovers(run, "polish", "polish: worker", &found, out)?;
+    paths.extend(found.sweep);
     let committed = commit::commit(&repo, &paths, "polish: review fixes")?;
     match &committed {
         Some(c) => {
@@ -1452,6 +1459,7 @@ fn fix_round(
             .into_iter()
             .map(|b| b.id)
             .collect();
+        let before = scheduler::snapshot(run, &ci_fix_key(round))?;
         let w = Worker::spawn(
             run,
             Job::CiFix { round, attempt },
@@ -1523,13 +1531,24 @@ fn fix_round(
             }));
         }
         settle(run, row_id, &session_id, &exit.summary, WorkerOutcome::Done)?;
-        commit_ci_fix(run, board, round, check, row_id, &exit.summary, out)?;
+        commit_ci_fix(
+            run,
+            board,
+            round,
+            check,
+            row_id,
+            &exit.summary,
+            &before,
+            out,
+        )?;
         return Ok(None);
     }
 }
 
 /// `fix: CI <check>`: the stream's paths plus `retro.md` with `ci_cycles`
-/// bumped to the rounds committed, this one included (`retro.md:11`).
+/// bumped to the rounds committed, this one included (`retro.md:11`). What
+/// the worker changed unnamed since `before` is swept or listed (AD-50002).
+#[allow(clippy::too_many_arguments)]
 fn commit_ci_fix(
     run: &mut Run,
     board: &Status,
@@ -1537,6 +1556,7 @@ fn commit_ci_fix(
     check: &str,
     row_id: i64,
     summary: &Summary,
+    before: &HashSet<String>,
     out: &mut dyn Write,
 ) -> Result<()> {
     let repo = run.state().repo.clone();
@@ -1561,6 +1581,10 @@ fn commit_ci_fix(
             paths.push(retro_rel);
         }
     }
+    let skip: HashSet<String> = paths.iter().chain(&spec.protected).cloned().collect();
+    let found = scheduler::unnamed(run, board, before, &skip, true)?;
+    note_leftovers(run, "ci-fix", "ci: fix worker", &found, out)?;
+    paths.extend(found.sweep);
     match commit::commit(&repo, &paths, &format!("fix: CI {check}"))? {
         Some(c) => {
             run.db().set_worker_commit(row_id, &c.sha)?;
@@ -1651,7 +1675,8 @@ pub fn settle_orphan(
     if w.role == "polish" {
         let docs = Docs::locate(&run.state().repo)?;
         let template = retro_template(&docs, board);
-        let committed = commit_polish(run, board, w.row_id, &summary, &template, out)?;
+        let before = scheduler::load_baseline(run.dir(), POLISH_KEY)?;
+        let committed = commit_polish(run, board, w.row_id, &summary, &template, &before, out)?;
         run.emit(EventKind::PolishDone {
             sha: committed.as_ref().map(|c| c.sha.clone()),
             files: committed.map(|c| c.files).unwrap_or_default(),
@@ -1676,7 +1701,53 @@ pub fn settle_orphan(
             _ => None,
         })
         .unwrap_or_else(|| "ci".to_string());
-    commit_ci_fix(run, board, round, &check, w.row_id, &summary, out)
+    let before = scheduler::load_baseline(run.dir(), &ci_fix_key(round))?;
+    commit_ci_fix(run, board, round, &check, w.row_id, &summary, &before, out)
+}
+
+/// The spawn baseline key of the polish worker: one runs at a time, and a
+/// respawn waits for the last one to be settled.
+const POLISH_KEY: &str = "closeout-polish";
+
+/// The spawn baseline key of a CI fix round's worker.
+fn ci_fix_key(round: u32) -> String {
+    format!("closeout-ci-fix-{round}")
+}
+
+/// A closeout worker's unnamed changes, said and logged: the swept ones go
+/// in its commit, the listed ones stay in the tree (`closeout_leftovers`).
+fn note_leftovers(
+    run: &mut Run,
+    role: &str,
+    who: &str,
+    found: &scheduler::Unnamed,
+    out: &mut dyn Write,
+) -> Result<()> {
+    if !found.sweep.is_empty() {
+        say(
+            out,
+            &format!(
+                "{who} changed {} tracked file(s) no tool call named — in its commit: {}",
+                found.sweep.len(),
+                found.sweep.join(", ")
+            ),
+        )?;
+    }
+    if !found.listed.is_empty() {
+        run.emit(EventKind::CloseoutLeftovers {
+            role: role.to_string(),
+            files: found.listed.clone(),
+        })?;
+        say(
+            out,
+            &format!(
+                "{who} left {} file(s) no tool call named — not committed: {}",
+                found.listed.len(),
+                found.listed.join(", ")
+            ),
+        )?;
+    }
+    Ok(())
 }
 
 // ── shared ──────────────────────────────────────────────────────────────────

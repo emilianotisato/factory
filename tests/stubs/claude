@@ -194,6 +194,7 @@ if (role === 'fix') {
     fs.mkdirSync(path.dirname(f), { recursive: true })
     fs.appendFileSync(f, `fixed by spawn ${n}\n`)
   }
+  writeStray(step)
   const rel = touched.map((f) => path.relative(cwd, f)).join(', ')
   emit(init)
   for (const f of touched) tool('Write', { file_path: f, content: `fixed by spawn ${n}\n` })
@@ -308,6 +309,7 @@ if (role === 'polish') {
     fs.mkdirSync(path.dirname(f), { recursive: true })
     fs.appendFileSync(f, `polished by spawn ${n}\n`)
   }
+  writeStray(step)
   const rel = touched.map((f) => path.relative(cwd, f)).join(', ')
   // The template's frontmatter as the pack carries it; the driver fills the keys.
   const tplM = pack.match(/^# Retro\n[\s\S]*?\n````markdown\n([\s\S]*?)\n````/m)
@@ -404,9 +406,14 @@ for (const f of touched) {
   fs.mkdirSync(path.dirname(f), { recursive: true })
   fs.appendFileSync(f, `touched by spawn ${n}\n`)
 }
-for (const f of (step.stray ?? []).map((f) => path.resolve(cwd, f))) {
-  fs.mkdirSync(path.dirname(f), { recursive: true })
-  fs.appendFileSync(f, `stray from spawn ${n}\n`)
+writeStray(step)
+// `step.stray`: files written with no tool call naming them. The polish and
+// fix workers take it too (AD-50002).
+function writeStray(step) {
+  for (const f of (step.stray ?? []).map((f) => path.resolve(cwd, f))) {
+    fs.mkdirSync(path.dirname(f), { recursive: true })
+    fs.appendFileSync(f, `stray from spawn ${n}\n`)
+  }
 }
 const touchedRel = touched.map((f) => path.relative(cwd, f)).join(', ')
 const fragment = path.join(featureDir, `log-slice-${nn}.md`)

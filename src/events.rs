@@ -126,6 +126,12 @@ pub enum EventKind {
         role: String,
         files: Vec<String>,
     },
+    /// The same for a closeout worker (`polish` or `ci-fix`): what it
+    /// changed unnamed and its commit does not take (AD-50002).
+    CloseoutLeftovers {
+        role: String,
+        files: Vec<String>,
+    },
     /// The stream names one of the three files no worker may write
     /// (`prd.md`, `agent-log.md`, `docs/index.md`); left out of the commit.
     WorkerWroteProtectedFile {

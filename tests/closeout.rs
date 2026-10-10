@@ -1397,6 +1397,48 @@ fn a_head_off_the_feature_branch_blocks_the_polish_before_a_worker_runs() {
     assert_eq!(origin_head(&fx, "stray"), None);
 }
 
+/// A tracked `src/extra.txt` a closeout worker can change without naming it.
+fn track_extra(fx: &Fixture) {
+    fs::write(fx.path().join("src/extra.txt"), "extra\n").unwrap();
+    fx.git(&["add", "src/extra.txt"]);
+    fx.git(&["commit", "-q", "-m", "chore: track extra"]);
+}
+
+#[test]
+fn closeout_workers_commit_their_unnamed_tracked_changes_and_list_the_rest() {
+    let fx = Fixture::new("closeout-unnamed");
+    fx.chain();
+    track_extra(&fx);
+    fx.script_ci(&["red:test", "green"]);
+    // A formatter's edit to a tracked file, and a scratch file: the polish
+    // worker leaves both, then the CI fix worker the same again (AD-50002).
+    let stray = json!(["src/extra.txt", "scratch.txt"]);
+    fx.write_plan(&plan_with(&[
+        json!({"outcome": "polish", "stray": stray}),
+        json!({"outcome": "fix", "stray": stray}),
+    ]));
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "finished", 120);
+
+    let polish = files_of(&fx, &sha_of(&fx, "polish: review fixes"));
+    assert!(polish.contains(&"src/extra.txt".to_string()), "{polish:?}");
+    assert!(!polish.contains(&"scratch.txt".to_string()), "{polish:?}");
+    let fix = files_of(&fx, &sha_of(&fx, "fix: CI test"));
+    assert!(fix.contains(&"src/extra.txt".to_string()), "{fix:?}");
+    assert!(!fix.contains(&"scratch.txt".to_string()), "{fix:?}");
+    // Listed once, by the worker that left it; never committed.
+    let left = of_kind(&dir, "closeout_leftovers");
+    assert_eq!(left.len(), 1, "{left:?}");
+    assert_eq!(left[0]["role"], "polish");
+    assert_eq!(left[0]["files"], json!(["scratch.txt"]));
+    assert_eq!(fx.git(&["status", "--porcelain"]).trim(), "?? scratch.txt");
+    assert!(
+        driver_log(&dir).contains("polish: worker changed 1 tracked file(s) no tool call named"),
+        "{}",
+        driver_log(&dir)
+    );
+}
+
 #[test]
 fn a_shipped_board_without_its_ship_commit_ships_again() {
     let fx = Fixture::new("closeout-ship-uncommitted");
