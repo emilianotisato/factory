@@ -499,3 +499,59 @@ fn a_refused_merge_blocks_in_agent_log_and_the_answer_retries_it() {
     assert_eq!(count(&k, "merge_refused"), 1);
     assert_eq!(k.last().map(String::as_str), Some("run_finished"));
 }
+
+// ── polish: the commit lands before the worker's outcome is saved ───────────
+
+#[test]
+fn a_driver_killed_at_the_slice_commit_leaves_the_worker_for_the_resume() {
+    let fx = Fixture::with_index("commit-kill", &[("checkpoint_every", "10")]);
+    fx.chain();
+    fx.write_plan(&[
+        json!({"outcome": "done"}),
+        json!({"outcome": "done", "delay_ms": 3000}),
+    ]);
+    // The first `git commit` kills the driver (the hook's grandparent) and
+    // fails; every later one passes.
+    let hook = fx.path().join(".git/hooks/pre-commit");
+    fs::write(
+        &hook,
+        "#!/bin/sh\n\
+         marker=\"$(git rev-parse --git-dir)/killed-once\"\n\
+         [ -e \"$marker\" ] && exit 0\n\
+         touch \"$marker\"\n\
+         kill -9 \"$(ps -o ppid= -p \"$PPID\" | tr -d ' ')\"\n\
+         exit 1\n",
+    )
+    .unwrap();
+    fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+
+    let dir = start(&fx);
+    let driver = state(&dir)["pid"].as_u64().unwrap() as u32;
+    wait_until(&fx, &dir, "the driver to die at the commit", 20, || {
+        !pid_alive(driver)
+    });
+    // Slice 01 is done and uncommitted, and its worker is not settled.
+    assert_eq!(fx.slice_status(1), "done");
+    assert!(!subjects(&fx).iter().any(|s| s == "feat: A"));
+    assert_eq!(state(&dir)["workers"][0]["outcome"], Value::Null);
+    assert_eq!(count(&kinds(&dir), "slice_done"), 1);
+
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    wait_until(&fx, &dir, "slice 01 to be committed", 20, || {
+        count(&kinds(&dir), "slice_committed") == 1
+    });
+    let sha = sha_of(&fx, "feat: A");
+    assert!(files_of(&fx, &sha).contains(&slice_rel(&fx, 1)));
+    assert_eq!(state(&dir)["workers"][0]["outcome"], "done");
+    // The resume did not log the slice done a second time.
+    let done_01 = events(&dir)
+        .iter()
+        .filter(|e| e["kind"] == "slice_done" && e["slice"] == 1)
+        .count();
+    assert_eq!(done_01, 1);
+
+    let out = factory(&fx, &["stop", &run_id(&dir)]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    wait_phase(&fx, &dir, "finished", 30);
+}

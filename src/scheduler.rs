@@ -27,7 +27,9 @@
 //! FR-5: a worker whose slice reads `done` has its slice committed by
 //! pathspec before the next board read — the paths its stream named, the
 //! slice file and its fragment, nothing with `-A` since another lane may be
-//! mid-write. Every commit lands on the run's branch: HEAD anywhere else
+//! mid-write. The worker's outcome is saved after the commit, so a driver
+//! killed in between leaves it unsettled and the resume commits. Every
+//! commit lands on the run's branch: HEAD anywhere else
 //! parks the run until the owner switches back, with nothing reaped or
 //! spawned meanwhile (AD-20005).
 //!
@@ -664,8 +666,11 @@ fn route_exit(
     let row_id = r.worker.row_id;
     match slice_status(board, slice) {
         "done" => {
-            settle(run, row_id, &session_id, &exit.summary, WorkerOutcome::Done)?;
-            run.emit(EventKind::SliceDone { slice })?;
+            // The commit before the outcome: a driver killed in between
+            // leaves the worker unsettled, and the resume commits the slice.
+            if !done_logged(run, slice, &session_id)? {
+                run.emit(EventKind::SliceDone { slice })?;
+            }
             say(
                 out,
                 &format!(
@@ -688,6 +693,7 @@ fn route_exit(
                 live,
                 out,
             )?;
+            settle(run, row_id, &session_id, &exit.summary, WorkerOutcome::Done)?;
         }
         "blocked" => {
             settle(
@@ -722,6 +728,22 @@ fn route_exit(
         }
     }
     Ok(())
+}
+
+/// Whether `slice_done` is already logged for this worker of `slice`: a
+/// driver killed between the event and the commit left it, and the resume
+/// that commits must not log it twice.
+fn done_logged(run: &Run, slice: u32, session_id: &str) -> Result<bool> {
+    let events = run.events()?;
+    let Some(spawned) = events.iter().rposition(|e| {
+        matches!(&e.kind, EventKind::SliceSpawned { slice: s, session_id: sid, .. }
+            if *s == slice && sid == session_id)
+    }) else {
+        return Ok(false);
+    };
+    Ok(events[spawned + 1..]
+        .iter()
+        .any(|e| matches!(e.kind, EventKind::SliceDone { slice: s } if s == slice)))
 }
 
 /// `(BLOCK-n, question)` of the slice's open block, from its fragment.
@@ -901,8 +923,9 @@ fn settle_orphans(
         };
         match slice_status(board, slice) {
             "done" => {
-                settle(run, w.row_id, &w.session_id, &summary, WorkerOutcome::Done)?;
-                run.emit(EventKind::SliceDone { slice })?;
+                if !done_logged(run, slice, &w.session_id)? {
+                    run.emit(EventKind::SliceDone { slice })?;
+                }
                 say(
                     out,
                     &format!(
@@ -921,6 +944,7 @@ fn settle_orphans(
                     live,
                     out,
                 )?;
+                settle(run, w.row_id, &w.session_id, &summary, WorkerOutcome::Done)?;
             }
             "blocked" => {
                 settle(
