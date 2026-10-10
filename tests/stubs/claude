@@ -13,7 +13,10 @@
 // spawn, read by spawn number (call n takes line n); past the end every spawn
 // is `{"outcome":"done"}`. Slice 01 supports `outcome: "done"`, `touch: [...]`
 // and `delay_ms`; slice 03 adds `outcome: "dead"` (init, `building`, exit 137,
-// no result); later slices add the outcomes they consume (PRD §17).
+// no result); slice 04 adds `outcome: "blocked"` (a BLOCK entry in the slice's
+// fragment, `status: blocked`, exit 0 — and a follow-up spawn whose pack
+// carries a `# Block and answer` section builds to `done`); later slices add the
+// outcomes they consume (PRD §17).
 const fs = require('node:fs')
 const path = require('node:path')
 const crypto = require('node:crypto')
@@ -38,8 +41,13 @@ if (flags['--append-system-prompt-file'] !== undefined) {
 }
 const callsDir = path.join(stubDir, 'calls')
 fs.mkdirSync(callsDir, { recursive: true })
-// The first free number, claimed atomically: two lanes may spawn at once.
-let n = 1
+// The call number is the driver's spawn number when the pack name carries it
+// (`slice-NN-<spawn>.md`): two lanes spawn at once, and the plan line a call
+// takes must follow the driver's order, not the race to start. Otherwise the
+// first free number. Either way the file is claimed atomically.
+const packName = path.basename(String(flags['--append-system-prompt-file'] ?? ''))
+const spawnNo = packName.match(/^slice-\d{2}-(\d+)\.md$/)
+let n = spawnNo ? Number(spawnNo[1]) : 1
 let fd
 for (;;) {
   try {
@@ -74,7 +82,7 @@ if (fs.existsSync(planPath)) {
   const lines = fs.readFileSync(planPath, 'utf8').split('\n').filter((l) => l.trim())
   if (lines[n - 1]) step = JSON.parse(lines[n - 1])
 }
-if (!['done', 'dead'].includes(step.outcome)) fail(65, `outcome "${step.outcome}" is not built yet — a later slice adds it (PRD-001 §17)`)
+if (!['done', 'dead', 'blocked'].includes(step.outcome)) fail(65, `outcome "${step.outcome}" is not built yet — a later slice adds it (PRD-001 §17)`)
 
 // ── 3. find the slice ────────────────────────────────────────────────────────
 if (pack === null) fail(65, 'no pack: pass --append-system-prompt-file <path> or --append-system-prompt <text>')
@@ -98,6 +106,11 @@ const tpl = JSON.parse(fs.readFileSync(path.join(__dirname, 'stream.json'), 'utf
 let seq = 0
 const init = { ...tpl.init, cwd, session_id: sessionId, uuid: crypto.randomUUID() }
 if (flags['--model']) init.model = flags['--model']
+const tool = (name, input) => {
+  const id = `toolu_stub_${n}_${++seq}`
+  emit(assistant([{ type: 'tool_use', id, name, input }]))
+  emit(user(id, name === 'Edit' ? `The file ${input.file_path} has been updated.` : `File written: ${input.file_path}`))
+}
 setStatus(slicePath, 'building')
 if (step.delay_ms) sleep(Number(step.delay_ms))
 if (step.outcome === 'dead') {
@@ -105,6 +118,35 @@ if (step.outcome === 'dead') {
   // `building`, then the process vanished with no `result` line.
   emit(init)
   process.exit(137)
+}
+// The driver's `# Block and answer` section is the mark of an answered
+// respawn — not `**Resolution (`, which the agent-log template quotes.
+const answered = /^# Block and answer$/m.test(pack)
+if (step.outcome === 'blocked' && !answered) {
+  // FR-3's blocked worker (slice 04): the slice hit a question only the
+  // owner can answer — a BLOCK entry in its fragment, `status: blocked`, a
+  // clean exit with a result that names the block. A later spawn whose pack
+  // carries the resolution falls through to `done` below.
+  const frag = path.join(featureDir, `log-slice-${nn}.md`)
+  const block = `BLOCK-${Number(`${nn}01`)}`
+  const question = step.question ?? 'Which option does the owner want?'
+  writeBlock(frag, nn, block, question)
+  setStatus(slicePath, 'blocked')
+  emit(init)
+  tool('Write', { file_path: frag, content: fs.readFileSync(frag, 'utf8') })
+  tool('Edit', { file_path: slicePath, old_string: 'status: building', new_string: 'status: blocked' })
+  emit(assistant([{ type: 'text', text: `STATUS: blocked\nBLOCK: ${block}` }]))
+  const text = [
+    'STATUS: blocked',
+    'COMMIT: none',
+    `LANE: ${process.env.FACTORY_LANE ?? 1}`,
+    'INNER: 0 runs, 0 red, 0 min — caught: nothing',
+    'PROVE: none: stub worker',
+    'DECISIONS: none',
+    `BLOCK: ${block} — ${question}`,
+  ].join('\n')
+  emit({ ...tpl.result, session_id: sessionId, uuid: crypto.randomUUID(), result: text })
+  process.exit(0)
 }
 const touched = (step.touch ?? ['src/lib.txt']).map((f) => path.resolve(cwd, f))
 for (const f of touched) {
@@ -119,11 +161,6 @@ setStatus(slicePath, 'done')
 
 // ── 5. the stream ────────────────────────────────────────────────────────────
 emit(init)
-const tool = (name, input) => {
-  const id = `toolu_stub_${n}_${++seq}`
-  emit(assistant([{ type: 'tool_use', id, name, input }]))
-  emit(user(id, name === 'Edit' ? `The file ${input.file_path} has been updated.` : `File written: ${input.file_path}`))
-}
 for (const f of touched) tool('Write', { file_path: f, content: `touched by spawn ${n}\n` })
 tool('Write', { file_path: fragment, content: fs.readFileSync(fragment, 'utf8') })
 tool('Edit', { file_path: slicePath, old_string: 'status: building', new_string: 'status: done' })
@@ -131,7 +168,7 @@ emit(assistant([{ type: 'text', text: 'STATUS: done' }]))
 const resultText = [
   'STATUS: done',
   'COMMIT: none',
-  'LANE: 1',
+  `LANE: ${process.env.FACTORY_LANE ?? 1}`,
   'INNER: 0 runs, 0 red, 0 min — caught: nothing',
   'PROVE: none: stub worker',
   `DECISIONS: AD-${ad}`,
@@ -181,6 +218,20 @@ function writeFragment(file, nn, spawn, rel) {
   const head = existing.includes('## Decisions') ? '' : '## Decisions\n\n'
   fs.writeFileSync(file, existing ? `${existing.trimEnd()}\n\n${head}${entry}` : `${head}${entry}`)
   return ad
+}
+
+function writeBlock(file, nn, block, question) {
+  const existing = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : ''
+  const entry = [
+    `### ${block} — ${question} · slice-${nn} · open`,
+    '',
+    `**Happened:** the stub worker on slice ${nn} reached a fork the slice does not settle.`,
+    '**Options:** 1. the Recommended option; 2. the other one.',
+    '**Recommended:** 1 — it is the one the fixture expects.',
+    '',
+  ].join('\n')
+  const head = existing.includes('## Blockers') ? '' : '## Blockers\n\n'
+  fs.writeFileSync(file, existing ? `${existing.trimEnd()}\n\n${head}${entry}` : `${head}${entry}`)
 }
 
 function progress(file, spawn, rel, ad, nn) {

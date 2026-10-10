@@ -43,9 +43,34 @@ pub enum EventKind {
         slice: u32,
     },
     /// The board read `blocked` after the worker exited, or the driver blocked
-    /// the slice itself after a second dead worker (FR-1).
+    /// the slice itself after a second dead worker (FR-1). `block_id` and
+    /// `question` come from the open `BLOCK-n` entry in the slice's fragment
+    /// (FR-3); absent when the fragment has none.
     SliceBlocked {
         slice: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        block_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        question: Option<String>,
+    },
+    /// Nothing is spawnable, nothing is running and the owner has a question:
+    /// the run parks in `waiting-owner` and keeps watching for an answer (FR-3).
+    RunWaiting {
+        blocked: Vec<u32>,
+        asks: Vec<String>,
+    },
+    /// `factory answer BLOCK-n`: the resolution is in the log, the slice is
+    /// `building` again, the next worker on it gets both in its pack.
+    BlockAnswered {
+        id: String,
+        slice: Option<u32>,
+        text: String,
+    },
+    /// `factory answer ASK-n`: a preflight ask cleared; the run starts when
+    /// the last one is.
+    AskAnswered {
+        id: String,
+        text: String,
     },
     /// Process gone with no `result` line, or with one and the slice neither
     /// `done` nor `blocked` (FR-1: "a dead worker is treated as today").

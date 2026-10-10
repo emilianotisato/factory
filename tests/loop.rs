@@ -308,6 +308,7 @@ fn stream_recording_parses_into_the_workers_row_fields() {
 #[test]
 fn run_drives_three_slices_through_the_detached_driver() {
     let fx = Fixture::with_index("loop", &[("checkpoint_every", "10")]);
+    fx.chain();
     fx.write_plan(&[done(), done(), done()]);
     let t0 = Instant::now();
     let out = factory(&fx, &["run", "001"]);
@@ -434,6 +435,7 @@ fn run_foreground_drives_the_same_loop_in_this_process() {
 #[test]
 fn a_dead_worker_is_noted_and_respawned_once() {
     let fx = Fixture::with_index("dead-once", &[("checkpoint_every", "10")]);
+    fx.chain();
     fx.write_plan(&[dead(), done(), done(), done()]);
     let out = factory(&fx, &["run", "001", "--foreground"]);
     let text = stdout(&out);
@@ -508,16 +510,22 @@ fn a_dead_worker_is_noted_and_respawned_once() {
 #[test]
 fn two_dead_workers_block_the_slice_and_park_the_run() {
     let fx = Fixture::with_index("dead-twice", &[("checkpoint_every", "10")]);
+    fx.chain();
     fx.write_plan(&[dead(), dead()]);
-    let out = factory(&fx, &["run", "001", "--foreground"]);
+    let out = factory(&fx, &["run", "001"]);
     let text = stdout(&out);
     assert_eq!(out.status.code(), Some(0), "{text}");
-    assert!(text.contains("respawning once"), "{text}");
-    assert!(text.contains("second death, slice blocked (BLOCK-102)"), "{text}");
-    assert!(text.contains("parked (waiting-owner)"), "{text}");
     let dir = only_run_dir(&fx);
     let id = run_id(&dir);
-    assert_eq!(state(&dir)["phase"], "waiting-owner");
+    let driver = state(&dir)["pid"].as_u64().unwrap() as u32;
+    wait_until("the run to park", 40, || state(&dir)["phase"] == "waiting-owner");
+    // The driver stays alive on a slow tick, watching for the owner (FR-3).
+    assert!(pid_alive(driver));
+    let log = fs::read_to_string(dir.join("driver.log")).unwrap();
+    assert!(log.contains("respawning once"), "{log}");
+    assert!(log.contains("second death, slice blocked (BLOCK-102)"), "{log}");
+    assert!(log.contains("parked (waiting-owner)"), "{log}");
+    assert!(log.contains("slice 01 blocked — open blocks wait for the owner"), "{log}");
     assert_eq!(fx.slice_status(1), "blocked");
     assert_eq!(fx.slice_status(2), "pending");
     assert_eq!(fx.calls().len(), 2);
@@ -529,9 +537,17 @@ fn two_dead_workers_block_the_slice_and_park_the_run() {
             "worker_dead",
             "slice_spawned",
             "worker_dead",
-            "slice_blocked"
+            "slice_blocked",
+            "run_waiting"
         ]
     );
+    let blocked_ev = events(&dir).into_iter().find(|e| e["kind"] == "slice_blocked").unwrap();
+    assert_eq!(blocked_ev["slice"], 1);
+    assert_eq!(blocked_ev["block_id"], "BLOCK-102");
+    assert_eq!(blocked_ev["question"], "Two workers died on slice 01");
+    let waiting = events(&dir).into_iter().find(|e| e["kind"] == "run_waiting").unwrap();
+    assert_eq!(waiting["blocked"], json!([1]));
+    assert_eq!(waiting["asks"], json!([]));
     let board = fx.docs_json("status");
     assert_eq!(board["blocked"], json!([1]));
     assert_eq!(board["building"], json!([]));
@@ -550,21 +566,46 @@ fn two_dead_workers_block_the_slice_and_park_the_run() {
     assert!(rows.iter().all(|r| r.outcome.as_deref() == Some("dead")), "{rows:?}");
     assert_eq!(db(&fx).run_row(&id).unwrap().unwrap().phase, "waiting-owner");
 
-    // Resuming a parked run parks it again: the open block waits for the owner.
-    let out = factory(&fx, &["run", "001", "--foreground"]);
+    // The driver gone (a reboot, say): resuming the parked run parks it again
+    // with no second `run_waiting` — the open block still waits for the owner.
+    // SAFETY: a plain kill(2) on the test's own detached driver.
+    let rc = unsafe { libc::kill(driver as i32, libc::SIGKILL) };
+    assert_eq!(rc, 0);
+    wait_until("the driver to die", 5, || !pid_alive(driver));
+    let out = factory(&fx, &["run", "001"]);
     let text = stdout(&out);
     assert_eq!(out.status.code(), Some(0), "{text}");
     assert!(text.contains(&format!("run {id} resumed (waiting-owner)")), "{text}");
-    assert!(text.contains("slice 01 blocked — open blocks wait for the owner"), "{text}");
+    assert_eq!(run_dirs(&fx).len(), 1);
+    let driver2 = state(&dir)["pid"].as_u64().unwrap() as u32;
+    assert_ne!(driver2, driver);
+    wait_until("the resumed driver to park", 20, || {
+        pid_alive(driver2)
+            && fs::read_to_string(dir.join("driver.log"))
+                .unwrap()
+                .matches("parked (waiting-owner)")
+                .count()
+                >= 2
+    });
     assert_eq!(fx.calls().len(), 2);
     assert_eq!(state(&dir)["phase"], "waiting-owner");
     assert_eq!(kinds(&dir).last().map(String::as_str), Some("run_resumed"));
-    assert_eq!(run_dirs(&fx).len(), 1);
+    assert_eq!(count(&kinds(&dir), "run_waiting"), 1);
+
+    // `factory stop` reaches a parked driver on its slow tick.
+    let out = factory(&fx, &["stop", &id]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    wait_until("the parked run to finish", 15, || state(&dir)["phase"] == "finished");
+    wait_until("the driver to exit", 5, || !pid_alive(driver2));
+    let k = kinds(&dir);
+    assert_eq!(&k[k.len() - 3..], ["run_resumed", "stop_requested", "run_finished"], "{k:?}");
+    assert_eq!(fx.slice_status(1), "blocked");
 }
 
 #[test]
 fn the_driver_killed_mid_slice_resumes_and_finishes() {
     let fx = Fixture::with_index("resume", &[("checkpoint_every", "10")]);
+    fx.chain();
     fx.write_plan(&[json!({"outcome": "done", "delay_ms": 4000}), done(), done()]);
     let out_path = fx.path().join("scenario/driver.out");
     let err_path = fx.path().join("scenario/driver.err");

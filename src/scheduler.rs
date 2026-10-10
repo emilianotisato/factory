@@ -1,41 +1,61 @@
-//! The serial loop (PRD §3 FR-1, §4 FR-2), lanes = 1: read the board, spawn
-//! one worker for `ready[0]`, wait, close its `workers` row, re-read the board
-//! and route on the slice's frontmatter — `done`, `blocked`, or neither, which
-//! is a dead worker. The board is the truth; the worker's `STATUS:` line is a
-//! hint the row keeps.
+//! The loop (PRD §3 FR-1, §4 FR-2, §5 FR-3). Each tick: reap the workers that
+//! exited (close their rows, re-read the board, route on the slice's
+//! frontmatter — `done`, `blocked`, or neither, which is a dead worker), then
+//! read `status --json` and spawn as many workers as the board allows, one
+//! lane each, writing `lane: N` and `status: building` into the slice before
+//! the spawn so the next board read sees the lane held. The board is the
+//! truth; the worker's `STATUS:` line is a hint the row keeps.
+//!
+//! A `blocked` slice parks its lane: the lane stays on the slice and the
+//! driver keeps it out of the free set even though the tool frees it (AD-401),
+//! while independent slices keep building. When nothing runs and nothing is
+//! spawnable with a block or a preflight ask open, the run parks in
+//! `waiting-owner` and the driver stays alive at a slow tick watching
+//! `runs/<id>/answers/` (`factory answer`). An answered slice is `building`
+//! with nothing alive on it and an `answers/BLOCK-n.json` naming it: it gets a
+//! fresh worker whose pack carries the block and the answer. The last `ASK-n`
+//! answered sends the run through branch and board as the `pass` path does.
 //!
 //! Dead workers (FR-1, autonomy.md:76): the first death on a slice is a note
 //! in that slice's `log-slice-NN.md` and a fresh worker with a new session;
 //! the second blocks the slice with `BLOCK-NN02`. The count lives in
 //! `state.json` `workers[]`, so a resume after a kill counts the killed worker.
 //!
-//! Slice 04 parks a lane on a block instead of the run; slice 06 runs the
-//! checkpoint where this loop stops at `checkpoint_due`.
+//! Slice 06 runs the checkpoint where this loop stops at `checkpoint_due`.
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime};
 
+use crate::answers::{self, Answer};
 use crate::config::Config;
 use crate::docs::{Docs, Status};
 use crate::error::io;
 use crate::events::EventKind;
-use crate::pack::Pack;
+use crate::pack::{BlockSection, Pack};
 use crate::run::{Phase, Run, WorkerRef, pid_alive};
 use crate::stream::Summary;
-use crate::worker::{self, Worker};
-use crate::{Result, clock};
+use crate::worker::{self, Exit, Worker};
+use crate::{Result, clock, lanes};
 
 /// Deaths on one slice before it is blocked: respawn once, then block.
 pub const DEATH_CAP: usize = 2;
 
-/// How one build attempt ended for the loop's purposes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Outcome {
-    Done,
-    Respawn,
-    Blocked,
+/// The longest a tick waits on its children before reading the board again.
+pub const TICK: Duration = Duration::from_secs(1);
+/// The board cadence of a parked run; the answers dir is watched faster.
+pub const SLOW_TICK: Duration = Duration::from_secs(5);
+
+/// A worker this driver spawned and has not reaped.
+struct Running {
+    worker: Worker,
+    lane: u32,
+    /// Set by `poll` when the process exited; routed on the next reap.
+    exit: Option<Exit>,
 }
+
+type Table = HashMap<u32, Running>;
 
 /// What settling the unsettled workers of a resumed run found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,11 +64,11 @@ enum Orphans {
     /// A worker of a dead driver is still running: wait, then read again.
     Live,
     Settled,
-    Blocked,
 }
 
-/// Drive `run` until it finishes, parks or stops. On an error the run is
-/// marked `failed` with a `run_failed` event before the error returns.
+/// Drive `run` until it finishes, stops or reaches a checkpoint. A parked run
+/// does not return: the driver waits for the owner's answer. On an error the
+/// run is marked `failed` with a `run_failed` event before the error returns.
 pub fn drive(run: &mut Run, docs: &Docs, cfg: &Config, out: &mut dyn Write) -> Result<Phase> {
     match drive_inner(run, docs, cfg, out) {
         Ok(phase) => Ok(phase),
@@ -70,52 +90,140 @@ fn drive_inner(
     out: &mut dyn Write,
 ) -> Result<Phase> {
     let feature = run.state().feature.clone();
-    run.set_phase(Phase::Building)?;
+    let mut table: Table = HashMap::new();
+    let mut set_up: HashSet<u32> = HashSet::new();
+    // A resumed parked run stays parked without a second `run_waiting`.
+    let mut parked = run.state().phase == Phase::WaitingOwner;
+    let mut announced = false;
+    if !parked && run.state().branch.is_some() {
+        run.set_phase(Phase::Building)?;
+    }
     loop {
         run.reload()?;
-        if run.state().stop_requested {
-            return finish(run, out, "stop requested");
+        reap(run, docs, &feature, &mut table, out)?;
+
+        // A run parked on preflight asks has no branch yet (FR-1): it starts
+        // when the last one is answered, and not before.
+        if run.state().branch.is_none() {
+            let pending = answers::asks_pending(run)?;
+            if !pending.is_empty() {
+                if run.state().stop_requested {
+                    return finish(run, out, "stop requested");
+                }
+                let ids: Vec<String> = pending.iter().map(|(id, _)| id.clone()).collect();
+                enter_park(run, &mut parked, &mut announced, &[], &ids, out)?;
+                slow_tick(run)?;
+                continue;
+            }
+            start_after_asks(run, docs, out)?;
+            parked = false;
+            announced = false;
+            run.set_phase(Phase::Building)?;
         }
+
+        if run.state().stop_requested {
+            if table.is_empty() {
+                return finish(run, out, "stop requested");
+            }
+            poll(&mut table, TICK)?;
+            continue;
+        }
+
         let mut board = docs.status(&feature)?;
-        match settle_orphans(run, &board, out)? {
+        let live: HashSet<String> = table
+            .values()
+            .map(|r| r.worker.session_id.clone())
+            .collect();
+        match settle_orphans(run, &board, &live, out)? {
             Orphans::None => {}
             Orphans::Live => {
                 std::thread::sleep(Duration::from_millis(200));
                 continue;
             }
             Orphans::Settled => board = docs.status(&feature)?,
-            Orphans::Blocked => return park(run, out, Phase::WaitingOwner),
         }
-        if !board.blocked.is_empty() {
-            say(
+
+        let mut free = free_lanes(&board, &table);
+        // A `building` slice with nothing alive on it is either answered
+        // (an `answers/BLOCK-n.json` names it) or a worker that died below
+        // the cap: either way it gets a fresh worker, on the lane it holds.
+        for b in board.building.clone() {
+            if table.contains_key(&b.number) || has_unsettled(run, b.number) {
+                continue;
+            }
+            let lane = match b.lane {
+                Some(l) => l,
+                None => {
+                    if free.is_empty() {
+                        continue;
+                    }
+                    let l = free.remove(0);
+                    set_frontmatter(
+                        &slice_file(run, &board, b.number)?,
+                        &[("lane", &l.to_string())],
+                    )?;
+                    l
+                }
+            };
+            let answer = answers::block_answer_for_slice(run.dir(), b.number)?;
+            spawn_on(
+                run,
+                docs,
+                cfg,
+                &board,
+                b.number,
+                lane,
+                answer.as_ref(),
+                &mut table,
+                &mut set_up,
                 out,
-                &format!(
-                    "slice {} blocked — open blocks wait for the owner",
-                    board
-                        .blocked
-                        .iter()
-                        .map(|n| format!("{n:02}"))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
             )?;
-            return park(run, out, Phase::WaitingOwner);
         }
-        // A `building` slice with every recorded worker settled is one whose
-        // worker died below the cap: it gets its fresh worker here.
-        let target = if let Some(b) = board.building.first() {
-            b.number
-        } else if board.checkpoint_due {
+        // Then the ready slices, first `spawnable` of them (FR-3). A due
+        // checkpoint drains first: the tool says `spawnable: 0` and so do we.
+        if !board.checkpoint_due {
+            for r in board.ready.clone() {
+                if free.is_empty() {
+                    break;
+                }
+                if table.contains_key(&r.number) {
+                    continue;
+                }
+                let lane = free.remove(0);
+                set_frontmatter(
+                    &slice_file(run, &board, r.number)?,
+                    &[("status", "building"), ("lane", &lane.to_string())],
+                )?;
+                spawn_on(
+                    run,
+                    docs,
+                    cfg,
+                    &board,
+                    r.number,
+                    lane,
+                    None,
+                    &mut table,
+                    &mut set_up,
+                    out,
+                )?;
+            }
+        }
+
+        if !table.is_empty() {
+            if parked || run.state().phase != Phase::Building {
+                run.set_phase(Phase::Building)?;
+            }
+            parked = false;
+            announced = false;
+            poll(&mut table, TICK)?;
+            continue;
+        }
+        if board.checkpoint_due {
             say(
                 out,
                 &format!(
                     "checkpoint due (unverified: {}) — slice 06 runs it; stopping here",
-                    board
-                        .unverified
-                        .iter()
-                        .map(|n| format!("{n:02}"))
-                        .collect::<Vec<_>>()
-                        .join(", ")
+                    pad_list(&board.unverified)
                 ),
             )?;
             run.emit(EventKind::CheckpointDue {
@@ -123,29 +231,196 @@ fn drive_inner(
             })?;
             run.set_phase(Phase::Checkpoint)?;
             return Ok(Phase::Checkpoint);
-        } else if let Some(r) = board.ready.first() {
-            r.number
-        } else {
-            return finish(run, out, "nothing ready");
-        };
-        match build_once(run, docs, cfg, &board, target, out)? {
-            Outcome::Done | Outcome::Respawn => {}
-            Outcome::Blocked => return park(run, out, Phase::WaitingOwner),
         }
+        if !board.blocked.is_empty() {
+            enter_park(run, &mut parked, &mut announced, &board.blocked, &[], out)?;
+            slow_tick(run)?;
+            continue;
+        }
+        return finish(run, out, "nothing ready");
     }
 }
 
-/// Pack, spawn, wait, route.
-fn build_once(
+/// Route every worker in the table that has exited.
+fn reap(
+    run: &mut Run,
+    docs: &Docs,
+    feature: &str,
+    table: &mut Table,
+    out: &mut dyn Write,
+) -> Result<()> {
+    let mut slices: Vec<u32> = table.keys().copied().collect();
+    slices.sort_unstable();
+    for slice in slices {
+        let r = table.get_mut(&slice).expect("key from the table");
+        let exit = match r.exit.take() {
+            Some(e) => Some(e),
+            None => r.worker.try_wait()?,
+        };
+        let Some(exit) = exit else { continue };
+        let r = table.remove(&slice).expect("key from the table");
+        let board = docs.status(feature)?;
+        route_exit(run, &board, &r, exit, out)?;
+    }
+    Ok(())
+}
+
+/// Wait on the children: back as soon as one exits, or after `cap`.
+fn poll(table: &mut Table, cap: Duration) -> Result<()> {
+    let deadline = Instant::now() + cap;
+    loop {
+        for r in table.values_mut() {
+            if r.exit.is_none()
+                && let Some(exit) = r.worker.try_wait()?
+            {
+                r.exit = Some(exit);
+                return Ok(());
+            }
+        }
+        if Instant::now() >= deadline {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// A parked run's tick: the board every `SLOW_TICK`, the answers dir and
+/// `stop_requested` every 250 ms so an answer is seen within the second.
+fn slow_tick(run: &mut Run) -> Result<()> {
+    let dir = answers::dir(run.dir());
+    let before = dir_stamp(&dir);
+    let deadline = Instant::now() + SLOW_TICK;
+    while Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(250));
+        run.reload()?;
+        if run.state().stop_requested || dir_stamp(&dir) != before {
+            return Ok(());
+        }
+    }
+    Ok(())
+}
+
+fn dir_stamp(dir: &Path) -> Option<(SystemTime, usize)> {
+    let meta = fs::metadata(dir).ok()?;
+    let count = fs::read_dir(dir).map(|rd| rd.count()).unwrap_or(0);
+    Some((meta.modified().ok()?, count))
+}
+
+/// Park: once per entry, `run_waiting`, phase `waiting-owner`, a line.
+fn enter_park(
+    run: &mut Run,
+    parked: &mut bool,
+    announced: &mut bool,
+    blocked: &[u32],
+    asks: &[String],
+    out: &mut dyn Write,
+) -> Result<()> {
+    if !*parked {
+        run.emit(EventKind::RunWaiting {
+            blocked: blocked.to_vec(),
+            asks: asks.to_vec(),
+        })?;
+        run.set_phase(Phase::WaitingOwner)?;
+        *parked = true;
+    }
+    if !*announced {
+        let what = if asks.is_empty() {
+            format!(
+                "slice {} blocked — open blocks wait for the owner: `factory answer BLOCK-n \"<text>\"`",
+                pad_list(blocked)
+            )
+        } else {
+            format!(
+                "{} waiting — the run starts when every ask is answered: `factory answer ASK-n \"<text>\"`",
+                asks.join(", ")
+            )
+        };
+        say(out, &format!("run {} parked (waiting-owner): {what}", run.id()))?;
+        *announced = true;
+    }
+    Ok(())
+}
+
+/// Every `ASK-n` answered: the `pass` path of `factory run` — the branch from
+/// the preflight saved at ask time, `judge_noted` per line, `run_started` and
+/// the board.
+fn start_after_asks(run: &mut Run, docs: &Docs, out: &mut dyn Write) -> Result<()> {
+    let feature = run.state().feature.clone();
+    let repo = run.state().repo.clone();
+    let pf = match crate::cli::run::load_preflight(run.dir())? {
+        Some(pf) => pf,
+        None => docs.preflight(&feature)?.0,
+    };
+    say(out, "every ask answered — the run proceeds")?;
+    let branch = crate::cli::run::ensure_branch(&repo, &pf.branch)?;
+    run.set_branch(branch)?;
+    for text in &pf.judge {
+        run.emit(EventKind::JudgeNoted { text: text.clone() })?;
+    }
+    crate::cli::run::begin(run, docs, out)?;
+    Ok(())
+}
+
+/// The lanes this driver may spawn on now: the board's free lanes minus
+/// those a `blocked` slice parks (AD-401) and those this table holds.
+fn free_lanes(board: &Status, table: &Table) -> Vec<u32> {
+    let parked: HashSet<u32> = board
+        .slices
+        .iter()
+        .filter(|s| s.status.as_deref() == Some("blocked"))
+        .filter_map(|s| s.lane)
+        .collect();
+    let held: HashSet<u32> = table.values().map(|r| r.lane).collect();
+    board
+        .free_lanes
+        .iter()
+        .copied()
+        .filter(|l| !parked.contains(l) && !held.contains(l))
+        .collect()
+}
+
+fn has_unsettled(run: &Run, slice: u32) -> bool {
+    run.state()
+        .workers
+        .iter()
+        .any(|w| w.slice == slice && w.outcome.is_none())
+}
+
+/// Pack and spawn `slice` on `lane`; the lane's setup runs once per run.
+#[allow(clippy::too_many_arguments)]
+fn spawn_on(
     run: &mut Run,
     docs: &Docs,
     cfg: &Config,
     board: &Status,
     slice: u32,
+    lane: u32,
+    answer: Option<&Answer>,
+    table: &mut Table,
+    set_up: &mut HashSet<u32>,
     out: &mut dyn Write,
-) -> Result<Outcome> {
+) -> Result<()> {
+    let repo = run.state().repo.clone();
+    let lane_def = lanes::load(&repo, lane)?;
+    if set_up.insert(lane)
+        && let Some(cmd) = &lane_def.setup
+    {
+        lane_def.setup(&repo)?;
+        say(out, &format!("lane {lane} setup ran: {cmd}"))?;
+    }
+    let block = match answer {
+        Some(a) => Some(block_section(&repo, board, a)?),
+        None => None,
+    };
     let spawn_n = run.state().workers.len() as u32 + 1;
-    let pack = Pack::for_slice(docs, board, slice, &run.dir().join("packs"), spawn_n)?;
+    let pack = Pack::for_slice_with(
+        docs,
+        board,
+        slice,
+        &packs_dir(run.dir()),
+        spawn_n,
+        block.as_ref(),
+    )?;
     for section in &pack.missing_sections {
         run.emit(EventKind::PackSectionMissing {
             slice,
@@ -156,66 +431,142 @@ fn build_once(
             &format!("slice {slice:02} cites §{section}, which prd.md does not have"),
         )?;
     }
-    let w = Worker::spawn(run, "build", slice, &pack, &cfg.workers.build)?;
-    let (session_id, row_id) = (w.session_id.clone(), w.row_id);
+    let w = Worker::spawn(run, "build", slice, &pack, &cfg.workers.build, &lane_def.env())?;
     say(
         out,
         &format!(
-            "slice {slice:02} → worker {session_id} (pid {}), pack {}",
+            "slice {slice:02} → worker {} (pid {}), lane {lane}{}, pack {}",
+            w.session_id,
             w.pid,
+            if block.is_some() { ", answered" } else { "" },
             pack.path.display()
         ),
     )?;
-    let exit = w.wait()?;
-    let after = docs.status(&run.state().feature)?;
-    match slice_status(&after, slice) {
+    table.insert(
+        slice,
+        Running {
+            worker: w,
+            lane,
+            exit: None,
+        },
+    );
+    Ok(())
+}
+
+/// The `# Block and answer` section for an answered slice: the entry with its
+/// resolution as the log holds it, or the answer alone when the entry is gone.
+fn block_section(repo: &Path, board: &Status, answer: &Answer) -> Result<BlockSection> {
+    let feature_dir = repo.join(&board.dir);
+    if let Some(entry) = answers::find(&feature_dir, &answer.id)? {
+        let source = entry
+            .path
+            .strip_prefix(repo)
+            .unwrap_or(&entry.path)
+            .to_string_lossy()
+            .into_owned();
+        return Ok(BlockSection {
+            id: answer.id.clone(),
+            source,
+            text: answers::entry_text(&entry)?,
+        });
+    }
+    Ok(BlockSection {
+        id: answer.id.clone(),
+        source: format!("{}/{}.json", answers::DIR, answer.id),
+        text: format!(
+            "### {} · resolved\n\n**Resolution ({}):** {}",
+            answer.id,
+            &answer.at[..10.min(answer.at.len())],
+            answer.text
+        ),
+    })
+}
+
+/// A reaped worker: route on the board.
+fn route_exit(
+    run: &mut Run,
+    board: &Status,
+    r: &Running,
+    exit: Exit,
+    out: &mut dyn Write,
+) -> Result<()> {
+    let slice = r.worker.slice;
+    let session_id = r.worker.session_id.clone();
+    let row_id = r.worker.row_id;
+    match slice_status(board, slice) {
         "done" => {
             settle(run, row_id, &session_id, &exit.summary, "done")?;
             run.emit(EventKind::SliceDone { slice })?;
             say(
                 out,
                 &format!(
-                    "slice {slice:02} done (worker {session_id}, {} turns, hint {})",
+                    "slice {slice:02} done (worker {session_id}, {} turns, hint {}, lane {} free)",
                     exit.summary.num_turns.unwrap_or(0),
                     exit.summary
                         .status_hint
                         .map(|h| h.as_str())
-                        .unwrap_or("none")
+                        .unwrap_or("none"),
+                    r.lane
                 ),
             )?;
-            Ok(Outcome::Done)
         }
         "blocked" => {
             settle(run, row_id, &session_id, &exit.summary, "blocked")?;
-            run.emit(EventKind::SliceBlocked { slice })?;
-            say(out, &format!("slice {slice:02} blocked by its worker"))?;
-            Ok(Outcome::Blocked)
+            let block = open_block(run, board, slice)?;
+            emit_blocked(run, slice, block.as_ref())?;
+            say(
+                out,
+                &format!(
+                    "slice {slice:02} blocked by its worker ({}) — lane {} parked",
+                    block
+                        .as_ref()
+                        .map(|(id, q)| format!("{id}: {q}"))
+                        .unwrap_or_else(|| "no BLOCK entry in its fragment".into()),
+                    r.lane
+                ),
+            )?;
         }
         _ => {
             let w = find_ref(run, &session_id);
-            if settle_dead(run, &after, &w, exit.code, exit.summary, out)? {
-                Ok(Outcome::Blocked)
-            } else {
-                Ok(Outcome::Respawn)
-            }
+            settle_dead(run, board, &w, exit.code, exit.summary, out)?;
         }
     }
+    Ok(())
 }
 
-/// Workers `state.json` says are unsettled, for a run this process did not
-/// start: a dead driver's workers (FR-1 resume).
-fn settle_orphans(run: &mut Run, board: &Status, out: &mut dyn Write) -> Result<Orphans> {
+/// `(BLOCK-n, question)` of the slice's open block, from its fragment.
+fn open_block(run: &Run, board: &Status, slice: u32) -> Result<Option<(String, String)>> {
+    let feature_dir = run.state().repo.join(&board.dir);
+    Ok(answers::open_block_of_slice(&feature_dir, slice)?.map(|e| (e.id, e.title)))
+}
+
+fn emit_blocked(run: &mut Run, slice: u32, block: Option<&(String, String)>) -> Result<()> {
+    run.emit(EventKind::SliceBlocked {
+        slice,
+        block_id: block.map(|(id, _)| id.clone()),
+        question: block.map(|(_, q)| q.clone()),
+    })?;
+    Ok(())
+}
+
+/// Workers `state.json` says are unsettled and this driver did not spawn: a
+/// dead driver's workers (FR-1 resume).
+fn settle_orphans(
+    run: &mut Run,
+    board: &Status,
+    live: &HashSet<String>,
+    out: &mut dyn Write,
+) -> Result<Orphans> {
     let unsettled: Vec<WorkerRef> = run
         .state()
         .workers
         .iter()
-        .filter(|w| w.outcome.is_none())
+        .filter(|w| w.outcome.is_none() && !live.contains(&w.session_id))
         .cloned()
         .collect();
     if unsettled.is_empty() {
         return Ok(Orphans::None);
     }
-    let mut result = Orphans::Settled;
     for w in unsettled {
         if pid_alive(w.pid) {
             say(
@@ -242,17 +593,15 @@ fn settle_orphans(run: &mut Run, board: &Status, out: &mut dyn Write) -> Result<
             }
             "blocked" => {
                 settle(run, w.row_id, &w.session_id, &summary, "blocked")?;
-                run.emit(EventKind::SliceBlocked { slice: w.slice })?;
-                result = Orphans::Blocked;
+                let block = open_block(run, board, w.slice)?;
+                emit_blocked(run, w.slice, block.as_ref())?;
             }
             _ => {
-                if settle_dead(run, board, &w, None, summary, out)? {
-                    result = Orphans::Blocked;
-                }
+                settle_dead(run, board, &w, None, summary, out)?;
             }
         }
     }
-    Ok(result)
+    Ok(Orphans::Settled)
 }
 
 /// Close the row and the state entry.
@@ -304,12 +653,13 @@ fn settle_dead(
     let date = clock::now_rfc3339()[..10].to_string();
     if deaths >= DEATH_CAP {
         let block = format!("BLOCK-{}02", w.slice);
+        let title = format!("Two workers died on slice {:02}", w.slice);
         append_under(
             &fragment,
             "## Traps",
             &format!(
-                "- **Dead worker ({date})**: session {} {code} {what}; second death on this slice, blocked ({block})."
-                , w.session_id
+                "- **Dead worker ({date})**: session {} {code} {what}; second death on this slice, blocked ({block}).",
+                w.session_id
             ),
         )?;
         let sessions: Vec<String> = run
@@ -320,7 +670,7 @@ fn settle_dead(
             .map(|x| format!("`{}` ({})", x.session_id, x.outcome.as_deref().unwrap_or("?")))
             .collect();
         let entry = format!(
-            "### {block} — Two workers died on slice {nn} · slice-{nn} · open\n\n\
+            "### {block} — {title} · slice-{nn} · open\n\n\
              **Happened:** {n} workers on slice {nn} exited without leaving it `done` or `blocked`: {sessions}. \
              The last one {code} {what}. The slice sits at `building` on the board with nothing alive on it; \
              the driver's once-only respawn (autonomy.md § Caps, hand-back once) is spent. \
@@ -335,14 +685,8 @@ fn settle_dead(
             dir = worker::dir(run.dir()).display(),
         );
         append_under(&fragment, "## Blockers", &entry)?;
-        let slice_file = board
-            .slices
-            .iter()
-            .find(|s| s.number == w.slice)
-            .map(|s| repo.join("docs/features").join(&s.file))
-            .ok_or_else(|| crate::Error::Msg(format!("slice {:02} is not on the board", w.slice)))?;
-        set_slice_status(&slice_file, "blocked")?;
-        run.emit(EventKind::SliceBlocked { slice: w.slice })?;
+        set_slice_status(&slice_file(run, board, w.slice)?, "blocked")?;
+        emit_blocked(run, w.slice, Some(&(block.clone(), title)))?;
         say(
             out,
             &format!(
@@ -381,6 +725,16 @@ fn find_ref(run: &Run, session_id: &str) -> WorkerRef {
         .expect("a spawned worker is in state.workers")
 }
 
+/// The slice's file in the repo, from the board.
+fn slice_file(run: &Run, board: &Status, slice: u32) -> Result<PathBuf> {
+    board
+        .slices
+        .iter()
+        .find(|s| s.number == slice)
+        .map(|s| run.state().repo.join("docs/features").join(&s.file))
+        .ok_or_else(|| crate::Error::Msg(format!("slice {slice:02} is not on the board")))
+}
+
 fn finish(run: &mut Run, out: &mut dyn Write, why: &str) -> Result<Phase> {
     run.set_phase(Phase::Finished)?;
     run.emit(EventKind::RunFinished)?;
@@ -388,14 +742,15 @@ fn finish(run: &mut Run, out: &mut dyn Write, why: &str) -> Result<Phase> {
     Ok(Phase::Finished)
 }
 
-fn park(run: &mut Run, out: &mut dyn Write, phase: Phase) -> Result<Phase> {
-    run.set_phase(phase)?;
-    say(out, &format!("run {} parked ({phase})", run.id()))?;
-    Ok(phase)
-}
-
 fn say(out: &mut dyn Write, line: &str) -> Result<()> {
     writeln!(out, "{} {line}", clock::now_rfc3339()).map_err(io("driver output"))
+}
+
+fn pad_list(ns: &[u32]) -> String {
+    ns.iter()
+        .map(|n| format!("{n:02}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// The slice's frontmatter status as the board reports it; `""` when unknown.
@@ -408,9 +763,9 @@ pub fn slice_status(board: &Status, slice: u32) -> &str {
         .unwrap_or("")
 }
 
-/// Append `body` at the end of the `heading` section of a log fragment,
-/// creating the file or the section when missing. Every line of a fragment
-/// must sit under a `## ` heading (`docs log merge`).
+/// Append `body` at the end of the `heading` section of a log file, creating
+/// the file or the section when missing; a `_(none)_` placeholder gives way.
+/// Every line of a fragment must sit under a `## ` heading (`docs log merge`).
 pub fn append_under(path: &Path, heading: &str, body: &str) -> Result<()> {
     let text = match fs::read_to_string(path) {
         Ok(t) => t,
@@ -428,6 +783,12 @@ pub fn append_under(path: &Path, heading: &str, body: &str) -> Result<()> {
             let mut at = next;
             while at > h + 1 && lines[at - 1].trim().is_empty() {
                 at -= 1;
+            }
+            if at > h + 1 && lines[at - 1].trim() == "_(none)_" {
+                at -= 1;
+                while at > h + 1 && lines[at - 1].trim().is_empty() {
+                    at -= 1;
+                }
             }
             let mut insert: Vec<String> = Vec::new();
             if at == h + 1 || body.starts_with("### ") {
@@ -459,6 +820,13 @@ pub fn append_under(path: &Path, heading: &str, body: &str) -> Result<()> {
 
 /// `status: <status>` in a slice file's frontmatter, nothing else touched.
 pub fn set_slice_status(path: &Path, status: &str) -> Result<()> {
+    set_frontmatter(path, &[("status", status)])
+}
+
+/// Set `key: value` lines in a slice file's frontmatter: an existing key is
+/// rewritten in place, a missing one appended before the closing `---`.
+/// Nothing below the frontmatter is touched.
+pub fn set_frontmatter(path: &Path, pairs: &[(&str, &str)]) -> Result<()> {
     let text = fs::read_to_string(path).map_err(io(format!("read {}", path.display())))?;
     let rest = text
         .strip_prefix("---\n")
@@ -467,23 +835,15 @@ pub fn set_slice_status(path: &Path, status: &str) -> Result<()> {
         .find("\n---")
         .ok_or_else(|| crate::Error::Msg(format!("{} has no frontmatter end", path.display())))?;
     let fm = &rest[..end];
-    let mut replaced = false;
-    let new_fm: Vec<String> = fm
-        .lines()
-        .map(|l| {
-            if l.starts_with("status:") {
-                replaced = true;
-                format!("status: {status}")
-            } else {
-                l.to_string()
-            }
-        })
-        .collect();
-    let mut new_fm = new_fm.join("\n");
-    if !replaced {
-        new_fm.push_str(&format!("\nstatus: {status}"));
+    let mut lines: Vec<String> = fm.lines().map(str::to_string).collect();
+    for (key, value) in pairs {
+        let prefix = format!("{key}:");
+        match lines.iter_mut().find(|l| l.starts_with(&prefix)) {
+            Some(l) => *l = format!("{key}: {value}"),
+            None => lines.push(format!("{key}: {value}")),
+        }
     }
-    let out = format!("---\n{new_fm}{}", &rest[end..]);
+    let out = format!("---\n{}{}", lines.join("\n"), &rest[end..]);
     fs::write(path, out).map_err(io(format!("write {}", path.display())))
 }
 
@@ -516,6 +876,18 @@ mod tests {
     }
 
     #[test]
+    fn append_under_replaces_the_none_placeholder() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("agent-log.md");
+        fs::write(&p, "# Agent log\n\n## Traps\n\n_(none)_\n\n## Decisions\n\n_(none)_\n\n## Checkpoints\n\n_(none)_\n").unwrap();
+        append_under(&p, "## Decisions", "- **DEC (2026-10-10)**: preflight ask \"x\" answered: proceed").unwrap();
+        assert_eq!(
+            fs::read_to_string(&p).unwrap(),
+            "# Agent log\n\n## Traps\n\n_(none)_\n\n## Decisions\n\n- **DEC (2026-10-10)**: preflight ask \"x\" answered: proceed\n\n## Checkpoints\n\n_(none)_\n"
+        );
+    }
+
+    #[test]
     fn set_slice_status_touches_only_the_status_line() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("slice-01-a.md");
@@ -525,5 +897,23 @@ mod tests {
             fs::read_to_string(&p).unwrap(),
             "---\nslice: 01\nstatus: blocked\ndepends_on: []\n---\n\n# A\n\nstatus: not this\n"
         );
+    }
+
+    #[test]
+    fn set_frontmatter_rewrites_or_appends_the_lane() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("slice-02-b.md");
+        fs::write(&p, "---\nslice: 02\nstatus: pending\ndepends_on: []\n---\n\n# B\n").unwrap();
+        set_frontmatter(&p, &[("status", "building"), ("lane", "2")]).unwrap();
+        assert_eq!(
+            fs::read_to_string(&p).unwrap(),
+            "---\nslice: 02\nstatus: building\ndepends_on: []\nlane: 2\n---\n\n# B\n"
+        );
+        set_frontmatter(&p, &[("lane", "1")]).unwrap();
+        assert_eq!(
+            fs::read_to_string(&p).unwrap(),
+            "---\nslice: 02\nstatus: building\ndepends_on: []\nlane: 1\n---\n\n# B\n"
+        );
+        assert!(set_frontmatter(&dir.path().join("none.md"), &[("lane", "1")]).is_err());
     }
 }

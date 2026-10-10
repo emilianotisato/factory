@@ -213,13 +213,14 @@ fn stub_claude_delay_leaves_the_slice_building_mid_spawn() {
 #[test]
 fn stub_claude_refuses_an_outcome_a_later_slice_owns() {
     let fx = Fixture::new("stub-unknown");
-    fx.write_plan(&[json!({ "outcome": "blocked" })]);
+    // `blocked` landed with slice 04; `rate_limit` is slice 07's (PRD §17).
+    fx.write_plan(&[json!({ "outcome": "rate_limit" })]);
     let pack = format!("{}\n", fx.slice_path(1).display());
     let out = claude(&fx, &["--append-system-prompt", &pack])
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(65));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("\"blocked\" is not built yet"));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("\"rate_limit\" is not built yet"));
     assert_eq!(fx.slice_status(1), "pending");
     assert_eq!(
         fx.calls().len(),

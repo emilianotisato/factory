@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
@@ -273,7 +273,7 @@ pub struct LogSummary {
 // ── preflight --json ─────────────────────────────────────────────────────────
 
 /// `docs preflight NNN --json` (PRD §20).
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Preflight {
     pub feature: Option<FeatureRef>,
@@ -285,7 +285,7 @@ pub struct Preflight {
     pub branch: Branch,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FeatureRef {
     pub number: u32,
@@ -295,7 +295,7 @@ pub struct FeatureRef {
 
 /// Where the repo is and where the feature lives. `feature` is already the
 /// branch to use: the tool swaps in `alt` when that is the one that exists.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Branch {
     pub current: Option<String>,

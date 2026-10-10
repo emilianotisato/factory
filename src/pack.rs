@@ -28,6 +28,17 @@ pub struct Pack {
     pub missing_sections: Vec<u32>,
 }
 
+/// The `# Block and answer` section of an answered slice's pack (PRD §5
+/// FR-3): the `BLOCK-n` entry with its `**Resolution**` line, verbatim from
+/// the log file it lives in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockSection {
+    pub id: String,
+    /// The repo-relative file the entry was read from.
+    pub source: String,
+    pub text: String,
+}
+
 impl Pack {
     /// Write the pack for `slice` (its board number) into `packs_dir`.
     /// `spawn` numbers the file so a respawn never overwrites the record of
@@ -38,6 +49,19 @@ impl Pack {
         slice: u32,
         packs_dir: &Path,
         spawn: u32,
+    ) -> Result<Pack> {
+        Self::for_slice_with(docs, board, slice, packs_dir, spawn, None)
+    }
+
+    /// [`Pack::for_slice`] with, for an answered slice, the block and its
+    /// answer as a `# Block and answer` section right after the slice.
+    pub fn for_slice_with(
+        docs: &Docs,
+        board: &Status,
+        slice: u32,
+        packs_dir: &Path,
+        spawn: u32,
+        block: Option<&BlockSection>,
     ) -> Result<Pack> {
         let entry = board
             .slices
@@ -65,7 +89,12 @@ impl Pack {
                 None => missing.push(*n),
             }
         }
-        let files = vec![slice_rel.clone(), prd_rel.clone()];
+        let mut files = vec![slice_rel.clone(), prd_rel.clone()];
+        if let Some(b) = block
+            && !files.contains(&b.source)
+        {
+            files.push(b.source.clone());
+        }
         let contract = CONTRACT
             .replace("{NNN}", &feature)
             .replace("{NN}", &nn)
@@ -74,6 +103,13 @@ impl Pack {
         let mut text = format!("<!-- factory-pack files: {} -->\n\n", files.join(","));
         text.push_str(&format!("# Slice\n\n<!-- {slice_rel} -->\n\n"));
         text.push_str(slice_text.trim_end());
+        if let Some(b) = block {
+            text.push_str(&format!(
+                "\n\n# Block and answer\n\n<!-- {}: {} -->\n\n",
+                b.source, b.id
+            ));
+            text.push_str(b.text.trim_end());
+        }
         text.push_str(&format!(
             "\n\n# PRD sections\n\n<!-- {prd_rel}: {} -->\n\n",
             if cited.is_empty() {

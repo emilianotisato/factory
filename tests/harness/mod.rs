@@ -290,6 +290,20 @@ impl Fixture {
     }
 
     /// Script the full gate: one outcome per line of `scenario/gate`.
+    /// Make slice 02 depend on 01 so the plan is a chain, 01 → 02 → 03, and
+    /// the two lanes of the index build one slice at a time. The default
+    /// fixture leaves 01 and 02 independent (slice 04 builds them at once);
+    /// the tests of the one-at-a-time loop want them in order.
+    pub fn chain(&self) {
+        let p = self.slice_path(2);
+        let text = fs::read_to_string(&p).unwrap();
+        assert!(text.contains("depends_on: []"), "{text}");
+        fs::write(&p, text.replacen("depends_on: []", "depends_on: [1]", 1)).unwrap();
+        self.docs(&["render", "--write"]);
+        self.git(&["add", "-A"]);
+        self.git(&["commit", "-q", "-m", "chore: chain the fixture slices"]);
+    }
+
     pub fn script_gate(&self, outcomes: &[&str]) {
         self.script("gate", outcomes);
     }

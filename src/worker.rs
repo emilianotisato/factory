@@ -7,7 +7,8 @@
 //! `setsid`), so one group signal reaches the driver and its worker together.
 //! It does not inherit `CLAUDECODE` or any `CLAUDE_*` variable: a driver
 //! started from inside a Claude Code session would otherwise hand its workers
-//! the nested-session guard.
+//! the nested-session guard. It does get its lane (FR-3): `FACTORY_LANE=N`
+//! and whatever `env` the lane file declares.
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::process::ExitStatusExt;
@@ -25,7 +26,8 @@ use crate::{Error, Result};
 
 pub const DIR: &str = "workers";
 
-/// A running worker; `wait` turns it into an [`Exit`].
+/// A running worker; `wait` or a `try_wait` that returns `Some` turns it
+/// into an [`Exit`].
 pub struct Worker {
     pub slice: u32,
     pub role: String,
@@ -57,13 +59,15 @@ pub fn stream_path(run_dir: &Path, session_id: &str) -> PathBuf {
 }
 
 impl Worker {
-    /// Spawn `claude -p` for `slice` with FR-2's flags, record it in the run.
+    /// Spawn `claude -p` for `slice` with FR-2's flags and `env` on top of the
+    /// driver's environment, record it in the run.
     pub fn spawn(
         run: &mut Run,
         role: &str,
         slice: u32,
         pack: &Pack,
         cfg: &config::Worker,
+        env: &[(String, String)],
     ) -> Result<Worker> {
         let session_id = uuid_v4()?;
         let wdir = dir(run.dir());
@@ -94,6 +98,9 @@ impl Worker {
             if k == "CLAUDECODE" || k.starts_with("CLAUDE_") {
                 cmd.env_remove(&*k);
             }
+        }
+        for (k, v) in env {
+            cmd.env(k, v);
         }
         let mut child = cmd.spawn().map_err(|e| Error::Tool {
             cmd: format!("claude -p … --session-id {session_id}"),
@@ -149,12 +156,30 @@ impl Worker {
             .child
             .wait()
             .map_err(io(format!("wait for worker {}", self.session_id)))?;
+        Ok(self.exit(status))
+    }
+
+    /// Has the process exited? `Some` drains the stream and settles the
+    /// worker; `None` leaves it running. The scheduler polls its table with
+    /// this between board reads.
+    pub fn try_wait(&mut self) -> Result<Option<Exit>> {
+        match self
+            .child
+            .try_wait()
+            .map_err(io(format!("poll worker {}", self.session_id)))?
+        {
+            Some(status) => Ok(Some(self.exit(status))),
+            None => Ok(None),
+        }
+    }
+
+    fn exit(&mut self, status: std::process::ExitStatus) -> Exit {
         let code = status.code().or_else(|| status.signal().map(|s| 128 + s));
         let summary = match self.tee.take() {
             Some(t) => t.join().unwrap_or_else(|_| Summary::dead()),
             None => Summary::dead(),
         };
-        Ok(Exit { code, summary })
+        Exit { code, summary }
     }
 }
 

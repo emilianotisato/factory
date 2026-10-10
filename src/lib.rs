@@ -7,6 +7,7 @@
 //! and lands in the SQLite store in [`db`], and [`config`] reads
 //! `config.toml`. The driver itself lands slice by slice
 //! (`docs/features/001-driver`).
+pub mod answers;
 pub mod cli;
 pub mod clock;
 pub mod config;
@@ -15,6 +16,7 @@ pub mod db;
 pub mod docs;
 pub mod error;
 pub mod events;
+pub mod lanes;
 pub mod pack;
 pub mod paths;
 pub mod run;

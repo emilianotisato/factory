@@ -321,20 +321,15 @@ fn run_on_the_clean_fixture_starts_notes_the_judge_lines_then_resumes() {
     assert!(!text.contains("ASK-"), "{text}");
     assert!(text.contains("driver pid "), "{text}");
 
-    // The detached driver builds to the checkpoint and stops there.
+    // The detached driver builds to the checkpoint and stops there. 01 and
+    // 02 are independent and the index has two lanes: both spawn in the same
+    // tick and finish in either order (slice 04).
     wait_until("the checkpoint", 40, || state(dir)["phase"] == "checkpoint");
     let k = kinds(dir);
-    assert_eq!(
-        k[5..],
-        [
-            "slice_spawned",
-            "slice_done",
-            "slice_spawned",
-            "slice_done",
-            "checkpoint_due"
-        ],
-        "{k:?}"
-    );
+    assert_eq!(k.len(), 10, "{k:?}");
+    assert!(k[5..7].iter().all(|k| k == "slice_spawned"), "{k:?}");
+    assert!(k[7..9].iter().all(|k| k == "slice_done"), "{k:?}");
+    assert_eq!(k[9], "checkpoint_due", "{k:?}");
     assert_eq!(fx.slice_status(1), "done");
     assert_eq!(fx.slice_status(2), "done");
     assert_eq!(fx.slice_status(3), "pending");
@@ -612,6 +607,7 @@ fn stop_finishes_a_dead_run_and_only_flags_a_live_one() {
 #[test]
 fn stop_during_a_slice_lets_the_worker_finish_then_ends_the_run() {
     let fx = Fixture::new("stop-live");
+    fx.chain();
     fx.write_plan(&[
         json!({"outcome": "done", "delay_ms": 2500}),
         json!({"outcome": "done"}),

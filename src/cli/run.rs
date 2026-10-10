@@ -10,14 +10,15 @@
 //! slices. Then the loop (slice 03): a daemon re-executed as the hidden
 //! `factory daemon <id>` and detached with `setsid`, or in this process with
 //! `--foreground`.
+use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 
 use clap::Args;
 
-use crate::docs::{Branch, Docs};
-use crate::error::io;
+use crate::docs::{Branch, Docs, Preflight};
+use crate::error::{io, json};
 use crate::events::EventKind;
 use crate::run::{Phase, Run};
 use crate::{Error, Result, config, daemon, paths, scheduler};
@@ -84,6 +85,7 @@ pub fn run(args: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i
     }
     if !pf.ask.is_empty() {
         let mut run = Run::create(&data_dir, &repo, &feature, None, budget)?;
+        save_preflight(run.dir(), &pf)?;
         for (i, text) in pf.ask.iter().enumerate() {
             let id = format!("ASK-{}", i + 1);
             writeln!(out, "{id}: {text}").map_err(io("stdout"))?;
@@ -179,6 +181,28 @@ pub fn begin(run: &mut Run, docs: &Docs, out: &mut dyn Write) -> Result<i32> {
     )
     .map_err(io("stdout"))?;
     print_board(docs, &run.state().feature.clone(), out)
+}
+
+/// `runs/<id>/preflight.json`: the preflight a run parked on asks was created
+/// from, so the ask→branch step (slice 04) follows its `branch` instead of
+/// re-running preflight against a tree the owner may since have touched.
+pub const PREFLIGHT_FILE: &str = "preflight.json";
+
+pub fn save_preflight(run_dir: &Path, pf: &Preflight) -> Result<()> {
+    let path = run_dir.join(PREFLIGHT_FILE);
+    let text = serde_json::to_string_pretty(pf).map_err(json("serialize preflight"))?;
+    fs::write(&path, text + "\n").map_err(io(format!("write {}", path.display())))
+}
+
+pub fn load_preflight(run_dir: &Path) -> Result<Option<Preflight>> {
+    let path = run_dir.join(PREFLIGHT_FILE);
+    match fs::read_to_string(&path) {
+        Ok(t) => Ok(Some(
+            serde_json::from_str(&t).map_err(json(format!("parse {}", path.display())))?,
+        )),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(io(format!("read {}", path.display()))(e)),
+    }
 }
 
 /// Follow `branch.feature` from preflight (today's `/deliver` §0 rule): on the

@@ -329,6 +329,24 @@ pub fn write_state(run_dir: &Path, state: &RunState) -> Result<()> {
 
 /// Every state file for `repo` and `feature`, oldest first.
 fn list(data_dir: &Path, repo: &Path, feature: &str) -> Result<Vec<RunState>> {
+    Ok(list_all(data_dir, repo)?
+        .into_iter()
+        .filter(|s| s.feature == feature)
+        .collect())
+}
+
+/// Every run of `repo`, any feature, that is neither finished nor failed,
+/// oldest first: `factory answer ASK-n` finds the one that waits on the ask.
+pub fn list_open(data_dir: &Path, repo: &Path) -> Result<Vec<RunState>> {
+    let repo = canonical(repo)?;
+    Ok(list_all(data_dir, &repo)?
+        .into_iter()
+        .filter(|s| !s.phase.is_over())
+        .collect())
+}
+
+/// Every state file for `repo`, oldest first.
+fn list_all(data_dir: &Path, repo: &Path) -> Result<Vec<RunState>> {
     let runs = Run::runs_dir(data_dir);
     let entries = match fs::read_dir(&runs) {
         Ok(rd) => rd,
@@ -343,7 +361,7 @@ fn list(data_dir: &Path, repo: &Path, feature: &str) -> Result<Vec<RunState>> {
             continue;
         }
         let state = load_state(&dir)?;
-        if state.feature == feature && state.repo == repo {
+        if state.repo == repo {
             out.push(state);
         }
     }

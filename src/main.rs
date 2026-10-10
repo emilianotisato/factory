@@ -21,7 +21,7 @@ enum Command {
     /// Block until the run needs the owner or ends
     Wait(Passthrough),
     /// Answer an open blocker so its lane resumes
-    Answer(Passthrough),
+    Answer(cli::answer::AnswerArgs),
     /// Show the board of the live run
     Status(Passthrough),
     /// Stop the live run
@@ -64,7 +64,7 @@ fn main() -> ExitCode {
         Command::Run(a) => cli::run::run(&a, &mut stdout(), &mut stderr()),
         Command::Stop(a) => cli::stop::stop(&a, &mut stdout()),
         Command::Daemon(a) => cli::run::daemon(&a, &mut stdout(), &mut stderr()),
-        Command::Answer(p) => return not_built(4, &p.args),
+        Command::Answer(a) => cli::answer::answer(&a, &mut stdout()),
         Command::Report(p) => return not_built(8, &p.args),
         Command::Wait(p) | Command::Status(p) => return not_built(10, &p.args),
         Command::Ctx { verb } => match verb {
