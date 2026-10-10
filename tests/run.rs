@@ -110,6 +110,19 @@ fn head(fx: &Fixture) -> String {
 // ── task 2: run dir, state, events ───────────────────────────────────────────
 
 #[test]
+fn a_new_run_directory_and_the_runs_directory_are_private() {
+    // A run's events and prompts are the owner's: `runs/` and `runs/<id>/`
+    // are 0700 whatever the umask leaves a plain mkdir at.
+    use std::os::unix::fs::PermissionsExt;
+    let fx = Fixture::new("private-runs");
+    let data = data_dir(&fx).join("fresh");
+    let run = Run::create(&data, fx.path(), "001", None, 1).unwrap();
+    let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(&data.join("runs")), 0o700);
+    assert_eq!(mode(run.dir()), 0o700);
+}
+
+#[test]
 fn emit_writes_a_line_and_a_row_each_time() {
     let fx = Fixture::new("emit");
     let data = data_dir(&fx);

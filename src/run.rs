@@ -12,6 +12,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
+use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -19,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use crate::db::Db;
 use crate::error::{io, json};
 use crate::events::{self, Event, EventKind};
-use crate::{Error, Result, clock};
+use crate::{Error, Result, clock, paths};
 
 pub const STATE_FILE: &str = "state.json";
 /// The `flock` every writer of `state.json` holds for its read-modify-write.
@@ -280,7 +281,7 @@ impl Run {
     ) -> Result<Run> {
         let repo = canonical(repo)?;
         let runs = Self::runs_dir(data_dir);
-        fs::create_dir_all(&runs).map_err(io(format!("mkdir {}", runs.display())))?;
+        paths::private_dir_all(&runs).map_err(io(format!("mkdir {}", runs.display())))?;
         let mut id = RunId::new(feature);
         let mut bump = salt();
         while runs.join(id.as_str()).exists() {
@@ -288,7 +289,12 @@ impl Run {
             id = RunId::with_salt(feature, bump);
         }
         let dir = runs.join(id.as_str());
-        fs::create_dir(&dir).map_err(io(format!("mkdir {}", dir.display())))?;
+        // Not recursive: a directory another run made meanwhile is an error,
+        // not a shared one.
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&dir)
+            .map_err(io(format!("mkdir {}", dir.display())))?;
         let now = clock::now_rfc3339();
         let state = RunState {
             id,
