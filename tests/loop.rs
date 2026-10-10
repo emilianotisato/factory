@@ -22,7 +22,8 @@ use serde_json::{Value, json};
 
 const BIN: &str = env!("CARGO_BIN_EXE_factory");
 const RECORDING: &str = "docs/features/001-driver/recordings/claude-p-oneshot-2.1.280.jsonl";
-const PROMPT: &str = "Build slice {NN} of PRD-001 as the appended system prompt says. Return the STATUS block.";
+const PROMPT: &str =
+    "Build slice {NN} of PRD-001 as the appended system prompt says. Return the STATUS block.";
 const FRAGMENT: &str = "docs/features/001-fixture/log-slice-01.md";
 
 fn factory(fx: &Fixture, args: &[&str]) -> Output {
@@ -102,7 +103,10 @@ fn dead() -> Value {
 fn wait_until(what: &str, secs: u64, mut ok: impl FnMut() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(secs);
     while !ok() {
-        assert!(Instant::now() < deadline, "timed out after {secs}s waiting for {what}");
+        assert!(
+            Instant::now() < deadline,
+            "timed out after {secs}s waiting for {what}"
+        );
         std::thread::sleep(Duration::from_millis(50));
     }
 }
@@ -140,7 +144,10 @@ fn check_worker_argv(fx: &Fixture, call: &Value, slice: u32, run_dir: &Path) -> 
     assert_eq!(call["cwd"], fx.path().to_str().unwrap());
     assert_eq!(call["pack_source"], "file");
     assert!(
-        run_dir.join("workers").join(format!("{sid}.jsonl")).is_file(),
+        run_dir
+            .join("workers")
+            .join(format!("{sid}.jsonl"))
+            .is_file(),
         "stream of {sid} on disk"
     );
     sid.to_string()
@@ -178,13 +185,18 @@ fn pack_is_the_slice_the_cited_sections_the_contract_and_the_inner_loop() {
     );
     // The slice file byte for byte, the cited section only, the sections in order.
     assert!(text.contains(cited.trim_end()), "{text}");
-    let at = |s: &str| text.find(s).unwrap_or_else(|| panic!("{s} missing in pack"));
+    let at = |s: &str| {
+        text.find(s)
+            .unwrap_or_else(|| panic!("{s} missing in pack"))
+    };
     assert!(at("# Slice") < at("\n# PRD sections\n"));
     assert!(at("\n# PRD sections\n") < at("\n# Contract\n"));
     assert!(at("\n# Contract\n") < at("\n# Autonomy\n"));
     assert!(at("\n# Autonomy\n") < at("\n# Inner loop\n"));
     assert!(
-        text.contains(&format!("<!-- {FEATURE_DIR}/prd.md: §1 -->\n\n## 1. Why now")),
+        text.contains(&format!(
+            "<!-- {FEATURE_DIR}/prd.md: §1 -->\n\n## 1. Why now"
+        )),
         "{text}"
     );
     assert!(!text.contains("## 2. Users affected"), "{text}");
@@ -198,7 +210,10 @@ fn pack_is_the_slice_the_cited_sections_the_contract_and_the_inner_loop() {
         assert!(!text.contains(ph), "{ph} left in pack");
     }
     assert!(text.contains(pack::AUTONOMY.trim_end()), "autonomy copy");
-    assert!(text.ends_with("\n# Inner loop\n\n./gate.sh --inner\n"), "{text}");
+    assert!(
+        text.ends_with("\n# Inner loop\n\n./gate.sh --inner\n"),
+        "{text}"
+    );
 
     // A cited section the PRD lacks is reported, not fatal; a respawn gets
     // its own file.
@@ -213,7 +228,14 @@ fn pack_is_the_slice_the_cited_sections_the_contract_and_the_inner_loop() {
     let idx = fx.path().join("docs/index.md");
     let t = fs::read_to_string(&idx).unwrap();
     assert!(t.contains("inner: ./gate.sh --inner\n"));
-    fs::write(&idx, t.replace("inner: ./gate.sh --inner\n", "inner: ./gate.sh --inner --fast\n")).unwrap();
+    fs::write(
+        &idx,
+        t.replace(
+            "inner: ./gate.sh --inner\n",
+            "inner: ./gate.sh --inner --fast\n",
+        ),
+    )
+    .unwrap();
     let pack3 = Pack::for_slice(&docs, &board, 1, &packs, 3).unwrap();
     let text3 = fs::read_to_string(&pack3.path).unwrap();
     let a: Vec<&str> = text.lines().collect();
@@ -225,7 +247,10 @@ fn pack_is_the_slice_the_cited_sections_the_contract_and_the_inner_loop() {
         .filter(|(x, y)| x != y)
         .map(|(x, y)| (*x, *y))
         .collect();
-    assert_eq!(diff, vec![("./gate.sh --inner", "./gate.sh --inner --fast")]);
+    assert_eq!(
+        diff,
+        vec![("./gate.sh --inner", "./gate.sh --inner --fast")]
+    );
 }
 
 #[test]
@@ -271,7 +296,12 @@ fn stream_recording_parses_into_the_workers_row_fields() {
         .lines()
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
         .filter(|v| v["type"] == "assistant")
-        .flat_map(|v| v["message"]["content"].as_array().cloned().unwrap_or_default())
+        .flat_map(|v| {
+            v["message"]["content"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        })
         .filter(|b| b["type"] == "tool_use")
         .count();
     assert_eq!(s.tool_uses.len(), tool_uses);
@@ -301,7 +331,10 @@ fn stream_recording_parses_into_the_workers_row_fields() {
         StatusHint::from_result("built it\n\nSTATUS: done\nCOMMIT: abc\n"),
         Some(StatusHint::Done)
     );
-    assert_eq!(StatusHint::from_result("STATUS: blocked — BLOCK-301"), Some(StatusHint::Blocked));
+    assert_eq!(
+        StatusHint::from_result("STATUS: blocked — BLOCK-301"),
+        Some(StatusHint::Blocked)
+    );
     assert_eq!(StatusHint::from_result("no status here"), None);
 }
 
@@ -328,7 +361,9 @@ fn run_drives_three_slices_through_the_detached_driver() {
 
     // With every slice done the tool says a checkpoint is due (`allDone`),
     // so the loop stops at `checkpoint` — slice 06 runs it.
-    wait_until("the checkpoint", 40, || state(&dir)["phase"] == "checkpoint");
+    wait_until("the checkpoint", 40, || {
+        state(&dir)["phase"] == "checkpoint"
+    });
     wait_until("the driver to exit", 5, || !pid_alive(driver));
     for n in 1..=3 {
         assert_eq!(fx.slice_status(n), "done", "slice {n:02}");
@@ -338,7 +373,10 @@ fn run_drives_three_slices_through_the_detached_driver() {
     let sids: Vec<String> = (1..=3u32)
         .map(|n| check_worker_argv(&fx, &calls[n as usize - 1], n, &dir))
         .collect();
-    assert_eq!(sids.iter().collect::<std::collections::BTreeSet<_>>().len(), 3);
+    assert_eq!(
+        sids.iter().collect::<std::collections::BTreeSet<_>>().len(),
+        3
+    );
 
     let k = kinds(&dir);
     assert!(k[..4].iter().all(|k| k == "judge_noted"), "{k:?}");
@@ -355,7 +393,10 @@ fn run_drives_three_slices_through_the_detached_driver() {
             "checkpoint_due"
         ]
     );
-    let due = events(&dir).into_iter().find(|e| e["kind"] == "checkpoint_due").unwrap();
+    let due = events(&dir)
+        .into_iter()
+        .find(|e| e["kind"] == "checkpoint_due")
+        .unwrap();
     assert_eq!(due["unverified"], json!([1, 2, 3]));
     assert_eq!(slices_of(&dir, "slice_spawned"), [1, 2, 3]);
     assert_eq!(slices_of(&dir, "slice_done"), [1, 2, 3]);
@@ -385,8 +426,11 @@ fn run_drives_three_slices_through_the_detached_driver() {
         assert_eq!(r.model.as_deref(), Some("opus"));
         assert_eq!(r.effort.as_deref(), Some("high"));
         assert_eq!(r.outcome.as_deref(), Some("done"));
-        assert_eq!((r.input, r.cache_write, r.cache_read, r.output, r.thinking),
-            (Some(18), Some(6514), Some(41674), Some(182), Some(99)), "{r:?}");
+        assert_eq!(
+            (r.input, r.cache_write, r.cache_read, r.output, r.thinking),
+            (Some(18), Some(6514), Some(41674), Some(182), Some(99)),
+            "{r:?}"
+        );
         assert!(r.num_turns.is_some() && r.duration_ms.is_some(), "{r:?}");
         assert!(r.peak_context.is_some(), "{r:?}");
         assert!(r.cost_usd.is_some(), "{r:?}");
@@ -398,11 +442,21 @@ fn run_drives_three_slices_through_the_detached_driver() {
     let log = fs::read_to_string(dir.join("driver.log")).unwrap();
     assert!(log.contains(&format!("took run {id}")), "{log}");
     assert!(log.contains("slice 01 → worker "), "{log}");
-    assert!(log.contains("checkpoint due (unverified: 01, 02, 03)"), "{log}");
+    assert!(
+        log.contains("checkpoint due (unverified: 01, 02, 03)"),
+        "{log}"
+    );
     for (i, sid) in sids.iter().enumerate() {
         let s = fs::read_to_string(dir.join("workers").join(format!("{sid}.jsonl"))).unwrap();
-        assert!(s.lines().any(|l| l.contains("\"type\":\"result\"")), "{sid}");
-        assert!(dir.join("packs").join(format!("slice-{:02}-{}.md", i + 1, i + 1)).is_file());
+        assert!(
+            s.lines().any(|l| l.contains("\"type\":\"result\"")),
+            "{sid}"
+        );
+        assert!(
+            dir.join("packs")
+                .join(format!("slice-{:02}-{}.md", i + 1, i + 1))
+                .is_file()
+        );
     }
 }
 
@@ -418,7 +472,10 @@ fn run_foreground_drives_the_same_loop_in_this_process() {
     assert!(!text.contains("driver pid"), "{text}");
     assert!(text.contains("slice 01 → worker "), "{text}");
     assert!(text.contains("slice 03 done"), "{text}");
-    assert!(text.contains("checkpoint due (unverified: 01, 02, 03)"), "{text}");
+    assert!(
+        text.contains("checkpoint due (unverified: 01, 02, 03)"),
+        "{text}"
+    );
     assert_eq!(state(&dir)["phase"], "checkpoint");
     assert_eq!(db(&fx).run_row(&id).unwrap().unwrap().phase, "checkpoint");
     for n in 1..=3 {
@@ -440,7 +497,10 @@ fn a_dead_worker_is_noted_and_respawned_once() {
     let out = factory(&fx, &["run", "001", "--foreground"]);
     let text = stdout(&out);
     assert_eq!(out.status.code(), Some(0), "{text}");
-    assert!(text.contains("died (exited 137, with no result) — respawning once"), "{text}");
+    assert!(
+        text.contains("died (exited 137, with no result) — respawning once"),
+        "{text}"
+    );
     let dir = only_run_dir(&fx);
     let id = run_id(&dir);
     assert_eq!(state(&dir)["phase"], "checkpoint");
@@ -470,7 +530,10 @@ fn a_dead_worker_is_noted_and_respawned_once() {
             "checkpoint_due"
         ]
     );
-    let dead_ev = events(&dir).into_iter().find(|e| e["kind"] == "worker_dead").unwrap();
+    let dead_ev = events(&dir)
+        .into_iter()
+        .find(|e| e["kind"] == "worker_dead")
+        .unwrap();
     assert_eq!(dead_ev["slice"], 1);
     assert_eq!(dead_ev["session_id"], sid0.as_str());
     assert_eq!(dead_ev["exit_code"], 137);
@@ -479,11 +542,17 @@ fn a_dead_worker_is_noted_and_respawned_once() {
     assert!(frag.starts_with("## "), "{frag}");
     assert!(frag.contains("## Traps\n"), "{frag}");
     assert!(
-        frag.contains(&format!("- **Dead worker (")) && frag.contains(&format!("session {sid0} exited 137 with no result; respawned.")),
+        frag.contains("- **Dead worker (")
+            && frag.contains(&format!(
+                "session {sid0} exited 137 with no result; respawned."
+            )),
         "{frag}"
     );
     assert_eq!(frag.matches("Dead worker").count(), 1);
-    assert!(frag.contains("## Decisions\n"), "the done worker's AD keeps its heading: {frag}");
+    assert!(
+        frag.contains("## Decisions\n"),
+        "the done worker's AD keeps its heading: {frag}"
+    );
     assert!(frag.contains("### AD-101 "), "{frag}");
 
     let rows = db(&fx).workers(&id).unwrap();
@@ -491,7 +560,11 @@ fn a_dead_worker_is_noted_and_respawned_once() {
     assert_eq!(rows[0].outcome.as_deref(), Some("dead"));
     assert_eq!(rows[0].slice, Some(1));
     assert_eq!(rows[0].session_id.as_deref(), Some(sid0.as_str()));
-    assert!(rows[0].input.is_none() && rows[0].num_turns.is_none(), "{:?}", rows[0]);
+    assert!(
+        rows[0].input.is_none() && rows[0].num_turns.is_none(),
+        "{:?}",
+        rows[0]
+    );
     assert!(rows[0].ended_at.is_some());
     for r in &rows[1..] {
         assert_eq!(r.outcome.as_deref(), Some("done"), "{r:?}");
@@ -501,7 +574,11 @@ fn a_dead_worker_is_noted_and_respawned_once() {
     assert_eq!(ws.len(), 4);
     assert_eq!(ws[0]["outcome"], "dead");
     let s0 = fs::read_to_string(dir.join("workers").join(format!("{sid0}.jsonl"))).unwrap();
-    assert_eq!(s0.lines().count(), 1, "the dead worker left its init line only: {s0}");
+    assert_eq!(
+        s0.lines().count(),
+        1,
+        "the dead worker left its init line only: {s0}"
+    );
     assert!(s0.contains("\"subtype\":\"init\""), "{s0}");
     assert!(dir.join("packs/slice-01-1.md").is_file());
     assert!(dir.join("packs/slice-01-2.md").is_file());
@@ -518,14 +595,22 @@ fn two_dead_workers_block_the_slice_and_park_the_run() {
     let dir = only_run_dir(&fx);
     let id = run_id(&dir);
     let driver = state(&dir)["pid"].as_u64().unwrap() as u32;
-    wait_until("the run to park", 40, || state(&dir)["phase"] == "waiting-owner");
+    wait_until("the run to park", 40, || {
+        state(&dir)["phase"] == "waiting-owner"
+    });
     // The driver stays alive on a slow tick, watching for the owner (FR-3).
     assert!(pid_alive(driver));
     let log = fs::read_to_string(dir.join("driver.log")).unwrap();
     assert!(log.contains("respawning once"), "{log}");
-    assert!(log.contains("second death, slice blocked (BLOCK-102)"), "{log}");
+    assert!(
+        log.contains("second death, slice blocked (BLOCK-102)"),
+        "{log}"
+    );
     assert!(log.contains("parked (waiting-owner)"), "{log}");
-    assert!(log.contains("slice 01 blocked — open blocks wait for the owner"), "{log}");
+    assert!(
+        log.contains("slice 01 blocked — open blocks wait for the owner"),
+        "{log}"
+    );
     assert_eq!(fx.slice_status(1), "blocked");
     assert_eq!(fx.slice_status(2), "pending");
     assert_eq!(fx.calls().len(), 2);
@@ -541,11 +626,17 @@ fn two_dead_workers_block_the_slice_and_park_the_run() {
             "run_waiting"
         ]
     );
-    let blocked_ev = events(&dir).into_iter().find(|e| e["kind"] == "slice_blocked").unwrap();
+    let blocked_ev = events(&dir)
+        .into_iter()
+        .find(|e| e["kind"] == "slice_blocked")
+        .unwrap();
     assert_eq!(blocked_ev["slice"], 1);
     assert_eq!(blocked_ev["block_id"], "BLOCK-102");
     assert_eq!(blocked_ev["question"], "Two workers died on slice 01");
-    let waiting = events(&dir).into_iter().find(|e| e["kind"] == "run_waiting").unwrap();
+    let waiting = events(&dir)
+        .into_iter()
+        .find(|e| e["kind"] == "run_waiting")
+        .unwrap();
     assert_eq!(waiting["blocked"], json!([1]));
     assert_eq!(waiting["asks"], json!([]));
     let board = fx.docs_json("status");
@@ -556,15 +647,29 @@ fn two_dead_workers_block_the_slice_and_park_the_run() {
     assert!(frag.starts_with("## Traps\n"), "{frag}");
     assert_eq!(frag.matches("- **Dead worker (").count(), 2, "{frag}");
     assert!(frag.contains("; respawned.\n"), "{frag}");
-    assert!(frag.contains("second death on this slice, blocked (BLOCK-102)."), "{frag}");
-    assert!(frag.contains("\n## Blockers\n\n### BLOCK-102 — Two workers died on slice 01 · slice-01 · open\n"), "{frag}");
+    assert!(
+        frag.contains("second death on this slice, blocked (BLOCK-102)."),
+        "{frag}"
+    );
+    assert!(
+        frag.contains(
+            "\n## Blockers\n\n### BLOCK-102 — Two workers died on slice 01 · slice-01 · open\n"
+        ),
+        "{frag}"
+    );
     for key in ["**Happened:**", "**Options:**", "**Recommended:**"] {
         assert!(frag.contains(key), "{key} missing: {frag}");
     }
     let rows = db(&fx).workers(&id).unwrap();
     assert_eq!(rows.len(), 2);
-    assert!(rows.iter().all(|r| r.outcome.as_deref() == Some("dead")), "{rows:?}");
-    assert_eq!(db(&fx).run_row(&id).unwrap().unwrap().phase, "waiting-owner");
+    assert!(
+        rows.iter().all(|r| r.outcome.as_deref() == Some("dead")),
+        "{rows:?}"
+    );
+    assert_eq!(
+        db(&fx).run_row(&id).unwrap().unwrap().phase,
+        "waiting-owner"
+    );
 
     // The driver gone (a reboot, say): resuming the parked run parks it again
     // with no second `run_waiting` — the open block still waits for the owner.
@@ -575,7 +680,10 @@ fn two_dead_workers_block_the_slice_and_park_the_run() {
     let out = factory(&fx, &["run", "001"]);
     let text = stdout(&out);
     assert_eq!(out.status.code(), Some(0), "{text}");
-    assert!(text.contains(&format!("run {id} resumed (waiting-owner)")), "{text}");
+    assert!(
+        text.contains(&format!("run {id} resumed (waiting-owner)")),
+        "{text}"
+    );
     assert_eq!(run_dirs(&fx).len(), 1);
     let driver2 = state(&dir)["pid"].as_u64().unwrap() as u32;
     assert_ne!(driver2, driver);
@@ -595,10 +703,16 @@ fn two_dead_workers_block_the_slice_and_park_the_run() {
     // `factory stop` reaches a parked driver on its slow tick.
     let out = factory(&fx, &["stop", &id]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
-    wait_until("the parked run to finish", 15, || state(&dir)["phase"] == "finished");
+    wait_until("the parked run to finish", 15, || {
+        state(&dir)["phase"] == "finished"
+    });
     wait_until("the driver to exit", 5, || !pid_alive(driver2));
     let k = kinds(&dir);
-    assert_eq!(&k[k.len() - 3..], ["run_resumed", "stop_requested", "run_finished"], "{k:?}");
+    assert_eq!(
+        &k[k.len() - 3..],
+        ["run_resumed", "stop_requested", "run_finished"],
+        "{k:?}"
+    );
     assert_eq!(fx.slice_status(1), "blocked");
 }
 
@@ -622,7 +736,9 @@ fn the_driver_killed_mid_slice_resumes_and_finishes() {
         run_dirs(&fx).len() == 1
             && fx.calls().len() == 1
             && fx.slice_status(1) == "building"
-            && state(&run_dirs(&fx)[0])["workers"].as_array().is_some_and(|w| w.len() == 1)
+            && state(&run_dirs(&fx)[0])["workers"]
+                .as_array()
+                .is_some_and(|w| w.len() == 1)
     });
     let dir = only_run_dir(&fx);
     let id = run_id(&dir);
@@ -634,7 +750,11 @@ fn the_driver_killed_mid_slice_resumes_and_finishes() {
     // A second `factory run` while the driver lives is refused.
     let out = factory(&fx, &["run", "001"]);
     assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
-    assert!(stdout(&out).contains(&format!("run {id} is live")), "{}", stdout(&out));
+    assert!(
+        stdout(&out).contains(&format!("run {id} is live")),
+        "{}",
+        stdout(&out)
+    );
 
     // Kill the session: the driver and its worker share the group.
     // SAFETY: a plain kill(2) on the test's own child group.
@@ -647,14 +767,20 @@ fn the_driver_killed_mid_slice_resumes_and_finishes() {
     assert_eq!(state(&dir)["phase"], "building");
     assert_eq!(state(&dir)["workers"][0]["outcome"], Value::Null);
     assert_eq!(fx.calls().len(), 1);
-    let sid0 = state(&dir)["workers"][0]["session_id"].as_str().unwrap().to_string();
+    let sid0 = state(&dir)["workers"][0]["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // Resume with the detached driver: the dead worker is settled, the slice
     // gets a fresh one, the run finishes.
     let out = factory(&fx, &["run", "001"]);
     let text = stdout(&out);
     assert_eq!(out.status.code(), Some(0), "{text}");
-    assert!(text.contains(&format!("run {id} resumed (building)")), "{text}");
+    assert!(
+        text.contains(&format!("run {id} resumed (building)")),
+        "{text}"
+    );
     assert!(text.contains("driver pid "), "{text}");
     assert_eq!(run_dirs(&fx).len(), 1);
     wait_until("the resumed run to reach the checkpoint", 40, || {
@@ -681,23 +807,37 @@ fn the_driver_killed_mid_slice_resumes_and_finishes() {
     assert_eq!(k.last().map(String::as_str), Some("checkpoint_due"));
     assert_eq!(slices_of(&dir, "slice_done"), [1, 2, 3]);
     assert_eq!(slices_of(&dir, "slice_spawned"), [1, 1, 2, 3]);
-    let dead_ev = events(&dir).into_iter().find(|e| e["kind"] == "worker_dead").unwrap();
+    let dead_ev = events(&dir)
+        .into_iter()
+        .find(|e| e["kind"] == "worker_dead")
+        .unwrap();
     assert_eq!(dead_ev["session_id"], sid0.as_str());
-    assert_eq!(dead_ev["exit_code"], Value::Null, "an orphan's exit is unknown");
+    assert_eq!(
+        dead_ev["exit_code"],
+        Value::Null,
+        "an orphan's exit is unknown"
+    );
     let i_resumed = k.iter().position(|k| k == "run_resumed").unwrap();
     let i_dead = k.iter().position(|k| k == "worker_dead").unwrap();
     assert!(i_resumed < i_dead, "{k:?}");
 
     let frag = fx.read(FRAGMENT);
     assert!(
-        frag.contains(&format!("session {sid0} exited (code unknown) with no result; respawned.")),
+        frag.contains(&format!(
+            "session {sid0} exited (code unknown) with no result; respawned."
+        )),
         "{frag}"
     );
     let rows = db(&fx).workers(&id).unwrap();
     assert_eq!(rows.len(), 4);
     assert_eq!(rows[0].outcome.as_deref(), Some("dead"));
     assert!(rows[0].ended_at.is_some());
-    assert!(rows[1..].iter().all(|r| r.outcome.as_deref() == Some("done")), "{rows:?}");
+    assert!(
+        rows[1..]
+            .iter()
+            .all(|r| r.outcome.as_deref() == Some("done")),
+        "{rows:?}"
+    );
     let ws = state(&dir)["workers"].as_array().unwrap().clone();
     assert_eq!(ws.len(), 4);
     assert_eq!(ws[0]["outcome"], "dead");

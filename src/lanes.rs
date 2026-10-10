@@ -138,21 +138,45 @@ mod tests {
                 ("PORT".to_string(), "8002".to_string())
             ]
         );
-        assert_eq!(lane.setup.as_deref(), Some("php artisan migrate --database=lane_2"));
+        assert_eq!(
+            lane.setup.as_deref(),
+            Some("php artisan migrate --database=lane_2")
+        );
         assert_eq!(lane.env()[0], ("FACTORY_LANE".to_string(), "2".to_string()));
         assert_eq!(lane.env().len(), 3);
 
         let bare = parse(1, "---\nlane: 1\nenv: []\nsetup: \n---\n");
-        assert_eq!(bare, Lane { n: 1, ..Lane::default() });
-        assert_eq!(bare.env(), vec![("FACTORY_LANE".to_string(), "1".to_string())]);
-        assert_eq!(parse(3, "no frontmatter"), Lane { n: 3, ..Lane::default() });
+        assert_eq!(
+            bare,
+            Lane {
+                n: 1,
+                ..Lane::default()
+            }
+        );
+        assert_eq!(
+            bare.env(),
+            vec![("FACTORY_LANE".to_string(), "1".to_string())]
+        );
+        assert_eq!(
+            parse(3, "no frontmatter"),
+            Lane {
+                n: 3,
+                ..Lane::default()
+            }
+        );
     }
 
     #[test]
     fn load_without_a_file_is_the_bare_lane_and_setup_runs_with_the_env() {
         let dir = tempfile::tempdir().unwrap();
         let lane = load(dir.path(), 1).unwrap();
-        assert_eq!(lane, Lane { n: 1, ..Lane::default() });
+        assert_eq!(
+            lane,
+            Lane {
+                n: 1,
+                ..Lane::default()
+            }
+        );
         assert!(!lane.setup(dir.path()).unwrap());
 
         let lanes = dir.path().join(DIR);
@@ -164,9 +188,16 @@ mod tests {
         .unwrap();
         let lane = load(dir.path(), 2).unwrap();
         assert!(lane.setup(dir.path()).unwrap());
-        assert_eq!(fs::read_to_string(dir.path().join("setup.out")).unwrap(), "2 two\n");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("setup.out")).unwrap(),
+            "2 two\n"
+        );
 
-        fs::write(lanes.join("lane-3.md"), "---\nlane: 3\nenv: []\nsetup: exit 3\n---\n").unwrap();
+        fs::write(
+            lanes.join("lane-3.md"),
+            "---\nlane: 3\nenv: []\nsetup: exit 3\n---\n",
+        )
+        .unwrap();
         let err = load(dir.path(), 3).unwrap().setup(dir.path()).unwrap_err();
         assert!(err.to_string().contains("lane 3 setup"), "{err}");
     }

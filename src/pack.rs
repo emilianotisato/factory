@@ -180,8 +180,10 @@ pub fn cut_section(prd: &str, n: u32) -> Option<&str> {
     let mut start = None;
     let mut offset = 0;
     for line in prd.split_inclusive('\n') {
-        if start.is_some() && line.starts_with("## ") {
-            return Some(&prd[start.unwrap()..offset]);
+        if let Some(s) = start
+            && line.starts_with("## ")
+        {
+            return Some(&prd[s..offset]);
         }
         if start.is_none() && (line.starts_with(&prefix) || line.trim_end() == format!("## {n}")) {
             start = Some(offset);

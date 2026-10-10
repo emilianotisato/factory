@@ -1,0 +1,74 @@
+# FR-2 — the stub receives a pack holding exactly the slice, its cited sections and the contract; one worker row with all usage fields
+date: 2026-10-10T01:48:42-06:00  branch: feat/driver  HEAD: 7e8db9c + the checkpoint's fixes (uncommitted at run time)
+$ FACTORY_KEEP_FIXTURE=1 cargo test --test loop -- --exact --nocapture pack_is_the_slice_the_cited_sections_the_contract_and_the_inner_loop stream_recording_parses_into_the_workers_row_fields run_drives_three_slices_through_the_detached_driver
+fixtures kept at /tmp/factory-pack-vZa0nn (Pack::for_slice snapshot test, packs in repo/scenario/packs/) and /tmp/factory-loop-7k9NxS (three slices through the detached driver); run dir: data/runs/001-20261010-9fbd
+pack snapshot: evidence/cp-2-fr2-pack-slice-01.txt = data/runs/001-20261010-9fbd/packs/slice-01-1.md verbatim, the file the stub's call 1 received through --append-system-prompt-file
+
+## transcript
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running tests/loop.rs (/mnt/devcache/emiliano/cargo-target/debug/deps/loop-016530ca1ed70af7)
+running 3 tests
+fixture pack kept at /tmp/factory-pack-vZa0nn
+fixture loop kept at /tmp/factory-loop-7k9NxS
+test stream_recording_parses_into_the_workers_row_fields ... ok
+test pack_is_the_slice_the_cited_sections_the_contract_and_the_inner_loop ... ok
+test run_drives_three_slices_through_the_detached_driver ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.99s
+
+## what the tests assert
+pack_is_the_slice…: the pack for slice 01 starts with the machine header and '# Slice', holds the slice file byte for byte, the fixture PRD's '## 1.' section and no '## 2.'/'## 3.', then '# Contract' (AD-101/BLOCK-101 seeds filled, no {NNN}/{NN}/{seed} left), '# Autonomy' (the asset whole), '# Inner loop' with './gate.sh --inner'; a cited section the PRD lacks → missing_sections=[9]; a different inner command changes exactly one line.
+stream_recording…: recordings/claude-p-oneshot-2.1.280.jsonl → 18 events, one result, usage (18, 6514, 41674, 182, thinking 99), num_turns 2, duration_ms 3710, peak_context 24215 (measure.py:56-67); cut before result → dead; unknown type kept as Unknown.
+run_drives_three_slices…: factory run 001 returns, the detached driver builds 01, 02, 03 to done; three slice_spawned/slice_done; three workers rows with non-null usage; phase checkpoint (AD-302).
+
+## the stub's call 1 (/tmp/factory-loop-7k9NxS/stub/calls/1.json)
+argv, flag by flag:
+  -p 'Build slice 01 of PRD-001 as the appended system prompt says. Return the STATUS block.'
+  --output-format stream-json
+  --verbose
+  --permission-mode bypassPermissions
+  --append-system-prompt-file /tmp/factory-loop-7k9NxS/data/runs/001-20261010-9fbd/packs/slice-01-1.md
+  --session-id 95f4e1d2-e673-47f9-b8b0-d3b4cb78d6d7
+  --model opus
+  --effort high
+pack_source=file  session_id=95f4e1d2-e673-47f9-b8b0-d3b4cb78d6d7  model=opus  effort=high  cwd=/tmp/factory-loop-7k9NxS/repo
+pack headings: ['<!-- factory-pack files: docs/features/001-fixture/slice-01-a.md,docs/features/001-fixture/prd.md -->', '# Slice', '# Slice 01 — A', '# PRD sections', '# Contract', '# Autonomy', '# Autonomy — the contract for unattended runs', '# Inner loop']
+pack bytes: 15660
+
+## pack sections (grep '^# ' on the snapshot) and the cited-section markers
+1:<!-- factory-pack files: docs/features/001-fixture/slice-01-a.md,docs/features/001-fixture/prd.md -->
+3:# Slice
+5:<!-- docs/features/001-fixture/slice-01-a.md -->
+14:# Slice 01 — A
+48:# PRD sections
+50:<!-- docs/features/001-fixture/prd.md: the slice cites no section -->
+54:# Contract
+85:# Autonomy
+87:# Autonomy — the contract for unattended runs
+188:# Inner loop
+
+## events.jsonl (12 events)
+seq=1  ts="2026-10-10T07:46:59Z"  kind="judge_noted"  text="unstruck OPEN-1 \u2014 a load-bearing one blocks delivery; a deliberately parked one may stay"
+seq=2  ts="2026-10-10T07:46:59Z"  kind="judge_noted"  text="harness on disk: none \u00b7 QA plan says: none \u2014 fixture, gate-only"
+seq=3  ts="2026-10-10T07:46:59Z"  kind="judge_noted"  text="no docs/ux-rubric.md \u2014 a UI diff gets the mechanical UX checks only"
+seq=4  ts="2026-10-10T07:46:59Z"  kind="judge_noted"  text="on main \u2014 create feat/fixture"
+seq=5  ts="2026-10-10T07:46:59Z"  kind="run_started"
+seq=6  ts="2026-10-10T07:47:00Z"  kind="slice_spawned"  slice=1  session_id="95f4e1d2-e673-47f9-b8b0-d3b4cb78d6d7"  pid=132183
+seq=7  ts="2026-10-10T07:47:00Z"  kind="slice_done"  slice=1
+seq=8  ts="2026-10-10T07:47:00Z"  kind="slice_spawned"  slice=2  session_id="fc74e6a2-13a7-4e83-9e11-55b77c8498d1"  pid=132227
+seq=9  ts="2026-10-10T07:47:00Z"  kind="slice_done"  slice=2
+seq=10  ts="2026-10-10T07:47:00Z"  kind="slice_spawned"  slice=3  session_id="ef0c54f0-6224-40f6-9295-c5ed29b5671b"  pid=132273
+seq=11  ts="2026-10-10T07:47:00Z"  kind="slice_done"  slice=3
+seq=12  ts="2026-10-10T07:47:00Z"  kind="checkpoint_due"  unverified=[1, 2, 3]
+
+## workers rows — every usage field (sqlite3 /tmp/factory-loop-7k9NxS/data/factory.db)
+id       run_id        role   slice               session_id               model  effort  input  cache_write  cache_read  output  thinking  cost_usd   num_turns  duration_ms  terminal_reason  outcome  peak_context       started_at             ended_at
+--  -----------------  -----  -----  ------------------------------------  -----  ------  -----  -----------  ----------  ------  --------  ---------  ---------  -----------  ---------------  -------  ------------  --------------------  --------------------
+ 1  001-20261010-9fbd  build      1  95f4e1d2-e673-47f9-b8b0-d3b4cb78d6d7  opus   high       18         6514       41674     182        99  0.0181234          2         3710  completed        done            24215  2026-10-10T07:47:00Z  2026-10-10T07:47:00Z
+ 2  001-20261010-9fbd  build      2  fc74e6a2-13a7-4e83-9e11-55b77c8498d1  opus   high       18         6514       41674     182        99  0.0181234          2         3710  completed        done            24215  2026-10-10T07:47:00Z  2026-10-10T07:47:00Z
+ 3  001-20261010-9fbd  build      3  ef0c54f0-6224-40f6-9295-c5ed29b5671b  opus   high       18         6514       41674     182        99  0.0181234          2         3710  completed        done            24215  2026-10-10T07:47:00Z  2026-10-10T07:47:00Z
+
+## null check
+3|0
+
+## second snapshot — evidence/cp-2-fr2-pack-slice-01-cited-s1.txt
+Pack::for_slice from the pack test (fixture /tmp/factory-pack-vZa0nn, repo/scenario/packs/slice-01-1.md): the fixture slice patched to cite §1, so the pack carries the PRD's `## 1.` section under `# PRD sections` and no `## 2.`; the test asserts the slice file byte for byte, the seeds AD-101/BLOCK-101, and that a different inner command changes exactly one line.

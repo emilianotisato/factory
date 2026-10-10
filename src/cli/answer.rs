@@ -105,7 +105,8 @@ fn answer_block(
     if let Some(n) = entry.slice {
         let slice_file = slice_file(&feature_dir, n)?;
         scheduler::set_slice_status(&slice_file, "building")?;
-        writeln!(out, "slice {n:02} → building ({})", rel(repo, &slice_file)).map_err(io("stdout"))?;
+        writeln!(out, "slice {n:02} → building ({})", rel(repo, &slice_file))
+            .map_err(io("stdout"))?;
     }
     match run {
         None => {
@@ -138,7 +139,10 @@ fn answer_ask(
     let mut target: Option<(Run, String)> = None;
     for s in run::list_open(data_dir, repo)?.into_iter().rev() {
         let run = Run::open(data_dir, s.id.as_str())?;
-        if let Some((_, item)) = answers::asks_pending(&run)?.into_iter().find(|(i, _)| i == id) {
+        if let Some((_, item)) = answers::asks_pending(&run)?
+            .into_iter()
+            .find(|(i, _)| i == id)
+        {
             target = Some((run, item));
             break;
         }
@@ -280,12 +284,7 @@ fn slice_file(feature_dir: &Path, n: u32) -> Result<PathBuf> {
                 .and_then(|f| f.to_str())
                 .is_some_and(|f| f.starts_with(&prefix) && f.ends_with(".md"))
         })
-        .ok_or_else(|| {
-            Error::Msg(format!(
-                "no slice-{n:02}-*.md in {}",
-                feature_dir.display()
-            ))
-        })
+        .ok_or_else(|| Error::Msg(format!("no slice-{n:02}-*.md in {}", feature_dir.display())))
 }
 
 fn rel(repo: &Path, path: &Path) -> String {

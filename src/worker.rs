@@ -74,10 +74,10 @@ impl Worker {
         fs::create_dir_all(&wdir).map_err(io(format!("mkdir {}", wdir.display())))?;
         let stream_path = stream_path(run.dir(), &session_id);
         let stderr_path = wdir.join(format!("{session_id}.stderr"));
-        let stream_file = File::create(&stream_path)
-            .map_err(io(format!("create {}", stream_path.display())))?;
-        let stderr_file = File::create(&stderr_path)
-            .map_err(io(format!("create {}", stderr_path.display())))?;
+        let stream_file =
+            File::create(&stream_path).map_err(io(format!("create {}", stream_path.display())))?;
+        let stderr_file =
+            File::create(&stderr_path).map_err(io(format!("create {}", stderr_path.display())))?;
 
         let mut cmd = Command::new("claude");
         cmd.arg("-p")

@@ -83,12 +83,7 @@ pub fn drive(run: &mut Run, docs: &Docs, cfg: &Config, out: &mut dyn Write) -> R
     }
 }
 
-fn drive_inner(
-    run: &mut Run,
-    docs: &Docs,
-    cfg: &Config,
-    out: &mut dyn Write,
-) -> Result<Phase> {
+fn drive_inner(run: &mut Run, docs: &Docs, cfg: &Config, out: &mut dyn Write) -> Result<Phase> {
     let feature = run.state().feature.clone();
     let mut table: Table = HashMap::new();
     let mut set_up: HashSet<u32> = HashSet::new();
@@ -335,7 +330,10 @@ fn enter_park(
                 asks.join(", ")
             )
         };
-        say(out, &format!("run {} parked (waiting-owner): {what}", run.id()))?;
+        say(
+            out,
+            &format!("run {} parked (waiting-owner): {what}", run.id()),
+        )?;
         *announced = true;
     }
     Ok(())
@@ -431,7 +429,14 @@ fn spawn_on(
             &format!("slice {slice:02} cites §{section}, which prd.md does not have"),
         )?;
     }
-    let w = Worker::spawn(run, "build", slice, &pack, &cfg.workers.build, &lane_def.env())?;
+    let w = Worker::spawn(
+        run,
+        "build",
+        slice,
+        &pack,
+        &cfg.workers.build,
+        &lane_def.env(),
+    )?;
     say(
         out,
         &format!(
@@ -644,7 +649,9 @@ fn settle_dead(
     let fragment = repo
         .join(&board.dir)
         .join(format!("log-slice-{:02}.md", w.slice));
-    let code = exit_code.map_or("exited (code unknown)".to_string(), |c| format!("exited {c}"));
+    let code = exit_code.map_or("exited (code unknown)".to_string(), |c| {
+        format!("exited {c}")
+    });
     let what = if summary.is_dead() {
         "with no result"
     } else {
@@ -666,8 +673,16 @@ fn settle_dead(
             .state()
             .workers
             .iter()
-            .filter(|x| x.slice == w.slice && matches!(x.outcome.as_deref(), Some("dead" | "failed")))
-            .map(|x| format!("`{}` ({})", x.session_id, x.outcome.as_deref().unwrap_or("?")))
+            .filter(|x| {
+                x.slice == w.slice && matches!(x.outcome.as_deref(), Some("dead" | "failed"))
+            })
+            .map(|x| {
+                format!(
+                    "`{}` ({})",
+                    x.session_id,
+                    x.outcome.as_deref().unwrap_or("?")
+                )
+            })
             .collect();
         let entry = format!(
             "### {block} — {title} · slice-{nn} · open\n\n\
@@ -862,16 +877,31 @@ mod tests {
         let p = dir.path().join("log-slice-01.md");
         append_under(&p, "## Traps", "- one").unwrap();
         assert_eq!(fs::read_to_string(&p).unwrap(), "## Traps\n\n- one\n");
-        append_under(&p, "## Decisions", "### AD-101 — q · slice-01 · 2026-10-10\n\n**Chose:** x").unwrap();
+        append_under(
+            &p,
+            "## Decisions",
+            "### AD-101 — q · slice-01 · 2026-10-10\n\n**Chose:** x",
+        )
+        .unwrap();
         append_under(&p, "## Traps", "- two").unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert_eq!(
             text,
             "## Traps\n\n- one\n- two\n\n## Decisions\n\n### AD-101 — q · slice-01 · 2026-10-10\n\n**Chose:** x\n"
         );
-        append_under(&p, "## Blockers", "### BLOCK-102 — w · slice-01 · open\n\n**Happened:** y").unwrap();
+        append_under(
+            &p,
+            "## Blockers",
+            "### BLOCK-102 — w · slice-01 · open\n\n**Happened:** y",
+        )
+        .unwrap();
         let text = fs::read_to_string(&p).unwrap();
-        assert!(text.ends_with("## Blockers\n\n### BLOCK-102 — w · slice-01 · open\n\n**Happened:** y\n"), "{text}");
+        assert!(
+            text.ends_with(
+                "## Blockers\n\n### BLOCK-102 — w · slice-01 · open\n\n**Happened:** y\n"
+            ),
+            "{text}"
+        );
         assert!(!text.contains("\n\n\n"), "{text}");
     }
 
@@ -880,7 +910,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("agent-log.md");
         fs::write(&p, "# Agent log\n\n## Traps\n\n_(none)_\n\n## Decisions\n\n_(none)_\n\n## Checkpoints\n\n_(none)_\n").unwrap();
-        append_under(&p, "## Decisions", "- **DEC (2026-10-10)**: preflight ask \"x\" answered: proceed").unwrap();
+        append_under(
+            &p,
+            "## Decisions",
+            "- **DEC (2026-10-10)**: preflight ask \"x\" answered: proceed",
+        )
+        .unwrap();
         assert_eq!(
             fs::read_to_string(&p).unwrap(),
             "# Agent log\n\n## Traps\n\n_(none)_\n\n## Decisions\n\n- **DEC (2026-10-10)**: preflight ask \"x\" answered: proceed\n\n## Checkpoints\n\n_(none)_\n"
@@ -891,7 +926,11 @@ mod tests {
     fn set_slice_status_touches_only_the_status_line() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("slice-01-a.md");
-        fs::write(&p, "---\nslice: 01\nstatus: building\ndepends_on: []\n---\n\n# A\n\nstatus: not this\n").unwrap();
+        fs::write(
+            &p,
+            "---\nslice: 01\nstatus: building\ndepends_on: []\n---\n\n# A\n\nstatus: not this\n",
+        )
+        .unwrap();
         set_slice_status(&p, "blocked").unwrap();
         assert_eq!(
             fs::read_to_string(&p).unwrap(),
@@ -903,7 +942,11 @@ mod tests {
     fn set_frontmatter_rewrites_or_appends_the_lane() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("slice-02-b.md");
-        fs::write(&p, "---\nslice: 02\nstatus: pending\ndepends_on: []\n---\n\n# B\n").unwrap();
+        fs::write(
+            &p,
+            "---\nslice: 02\nstatus: pending\ndepends_on: []\n---\n\n# B\n",
+        )
+        .unwrap();
         set_frontmatter(&p, &[("status", "building"), ("lane", "2")]).unwrap();
         assert_eq!(
             fs::read_to_string(&p).unwrap(),

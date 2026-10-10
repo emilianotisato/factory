@@ -34,7 +34,7 @@ pub enum StreamEvent {
         #[serde(flatten)]
         rest: Map<String, Value>,
     },
-    Result(ResultEvent),
+    Result(Box<ResultEvent>),
     #[serde(other)]
     Unknown,
 }
@@ -75,7 +75,9 @@ impl Usage {
     }
 
     pub fn thinking(&self) -> Option<u64> {
-        self.output_tokens_details.as_ref().and_then(|d| d.thinking_tokens)
+        self.output_tokens_details
+            .as_ref()
+            .and_then(|d| d.thinking_tokens)
     }
 }
 
@@ -126,7 +128,10 @@ impl StatusHint {
             .lines()
             .map(str::trim)
             .find_map(|l| l.strip_prefix("STATUS:"))?;
-        let word = line.trim().split(|c: char| !c.is_ascii_alphabetic()).next()?;
+        let word = line
+            .trim()
+            .split(|c: char| !c.is_ascii_alphabetic())
+            .next()?;
         match word.to_ascii_lowercase().as_str() {
             "done" => Some(StatusHint::Done),
             "blocked" => Some(StatusHint::Blocked),
@@ -234,7 +239,8 @@ impl Collector {
                         .and_then(Value::as_str)
                         .unwrap_or("")
                         .to_string();
-                    self.pending.insert(id.clone(), self.summary.tool_uses.len());
+                    self.pending
+                        .insert(id.clone(), self.summary.tool_uses.len());
                     self.summary.tool_uses.push(ToolUse {
                         id,
                         name: block
@@ -280,7 +286,9 @@ impl Collector {
                 s.result_text = r.result.clone();
                 s.status_hint = r.result.as_deref().and_then(StatusHint::from_result);
             }
-            StreamEvent::System { .. } | StreamEvent::RateLimitEvent { .. } | StreamEvent::Unknown => {}
+            StreamEvent::System { .. }
+            | StreamEvent::RateLimitEvent { .. }
+            | StreamEvent::Unknown => {}
         }
     }
 

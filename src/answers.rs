@@ -155,10 +155,11 @@ pub fn entries(path: &Path) -> Result<Vec<BlockEntry>> {
             continue;
         }
         let is_heading = line.starts_with("## ") || line.starts_with("### ");
-        if is_heading && let Some(last) = out.last_mut() {
-            if last.end == 0 {
-                last.end = i;
-            }
+        if is_heading
+            && let Some(last) = out.last_mut()
+            && last.end == 0
+        {
+            last.end = i;
         }
         let Some((n, rest)) = block_heading(line) else {
             continue;
@@ -167,7 +168,9 @@ pub fn entries(path: &Path) -> Result<Vec<BlockEntry>> {
         let last = parts.last().copied().unwrap_or("");
         let where_ = parts[1..]
             .iter()
-            .find(|p| p.starts_with("slice-") || p.chars().all(|c| c.is_ascii_lowercase() || c == '-'))
+            .find(|p| {
+                p.starts_with("slice-") || p.chars().all(|c| c.is_ascii_lowercase() || c == '-')
+            })
             .copied();
         let slice = where_
             .and_then(|w| w.strip_prefix("slice-"))
@@ -208,7 +211,9 @@ pub fn log_files(feature_dir: &Path) -> Result<Vec<PathBuf>> {
         Err(e) => return Err(io(format!("read {}", feature_dir.display()))(e)),
     };
     for entry in rd {
-        let p = entry.map_err(io(format!("read {}", feature_dir.display())))?.path();
+        let p = entry
+            .map_err(io(format!("read {}", feature_dir.display())))?
+            .path();
         let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
         if name.starts_with("log-") && name.ends_with(".md") {
             frags.push(p);
@@ -242,8 +247,7 @@ pub fn open_block_of_slice(feature_dir: &Path, slice: u32) -> Result<Option<Bloc
     for file in files {
         if let Some(e) = entries(&file)?
             .into_iter()
-            .filter(|e| !e.resolved && e.slice == Some(slice))
-            .last()
+            .rfind(|e| !e.resolved && e.slice == Some(slice))
         {
             hit = Some(e);
             break;
@@ -254,7 +258,8 @@ pub fn open_block_of_slice(feature_dir: &Path, slice: u32) -> Result<Option<Bloc
 
 /// The entry's lines, heading through body, as the file holds them.
 pub fn entry_text(entry: &BlockEntry) -> Result<String> {
-    let text = fs::read_to_string(&entry.path).map_err(io(format!("read {}", entry.path.display())))?;
+    let text =
+        fs::read_to_string(&entry.path).map_err(io(format!("read {}", entry.path.display())))?;
     let lines: Vec<&str> = text.lines().collect();
     let end = entry.end.min(lines.len());
     Ok(lines[entry.start..end].join("\n"))
@@ -299,7 +304,10 @@ mod tests {
         let es = entries(&frag).unwrap();
         assert_eq!(es.len(), 1);
         let e = &es[0];
-        assert_eq!((e.id.as_str(), e.n, e.slice, e.resolved), ("BLOCK-101", 101, Some(1), false));
+        assert_eq!(
+            (e.id.as_str(), e.n, e.slice, e.resolved),
+            ("BLOCK-101", 101, Some(1), false)
+        );
         assert_eq!(e.title, "Which option?");
         assert_eq!(e.phase, None);
         assert_eq!((e.start, e.end), (2, 9));
@@ -309,7 +317,10 @@ mod tests {
         );
         assert_eq!(find(dir.path(), "BLOCK-101").unwrap().unwrap().path, frag);
         assert!(find(dir.path(), "BLOCK-102").unwrap().is_none());
-        assert_eq!(open_block_of_slice(dir.path(), 1).unwrap().unwrap().id, "BLOCK-101");
+        assert_eq!(
+            open_block_of_slice(dir.path(), 1).unwrap().unwrap().id,
+            "BLOCK-101"
+        );
         assert!(open_block_of_slice(dir.path(), 2).unwrap().is_none());
 
         resolve(e, "Pick 1", "2026-10-10").unwrap();
@@ -335,7 +346,10 @@ mod tests {
         .unwrap();
         let es = entries(&log).unwrap();
         assert_eq!(es.len(), 1);
-        assert_eq!((es[0].slice, es[0].phase.as_deref()), (None, Some("preflight")));
+        assert_eq!(
+            (es[0].slice, es[0].phase.as_deref()),
+            (None, Some("preflight"))
+        );
         // A fenced example inside the entry is the entry's: the resolution
         // lands after it, not inside it.
         assert_eq!(es[0].end, 11);

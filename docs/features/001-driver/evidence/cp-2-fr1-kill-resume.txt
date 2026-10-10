@@ -1,0 +1,60 @@
+# FR-1 — kill the driver mid-slice, factory run again → continues from the board, no slice built twice
+date: 2026-10-10T01:48:19-06:00  branch: feat/driver  HEAD: 7e8db9c + the checkpoint's fixes (uncommitted at run time)
+(the refuse half — refused preflight exits 1 with no spawn — was proven at CP-1: evidence/cp-1-fr1-refused-preflight.txt)
+$ FACTORY_KEEP_FIXTURE=1 cargo test --test loop -- --exact --nocapture the_driver_killed_mid_slice_resumes_and_finishes
+fixture kept at /tmp/factory-resume-dFYVjW (repo/, stub/, data/); run dir: data/runs/001-20261010-a985
+
+## transcript
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running tests/loop.rs (/mnt/devcache/emiliano/cargo-target/debug/deps/loop-016530ca1ed70af7)
+running 1 test
+fixture resume kept at /tmp/factory-resume-dFYVjW
+test the_driver_killed_mid_slice_resumes_and_finishes ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 1.19s
+
+## what the test does (tests/loop.rs::the_driver_killed_mid_slice_resumes_and_finishes)
+plan: done{delay_ms:4000}, done, done on the chained fixture (01 → 02 → 03), checkpoint_every 10. factory run 001 --foreground in a child process group;
+wait until slice 01 is building under a live worker; a second factory run 001 is refused (run is live); kill -9 the group; assert 01 still building, no worker alive, 1 stub call;
+factory run 001 again (detached) → resumed (building); wait for phase checkpoint; assert 01..03 done, 4 stub calls (01 twice — once killed — then 02, 03), events and workers rows as below.
+
+## events.jsonl (15 events)
+seq=1  ts="2026-10-10T07:46:56Z"  kind="judge_noted"  text="unstruck OPEN-1 \u2014 a load-bearing one blocks delivery; a deliberately parked one may stay"
+seq=2  ts="2026-10-10T07:46:56Z"  kind="judge_noted"  text="harness on disk: none \u00b7 QA plan says: none \u2014 fixture, gate-only"
+seq=3  ts="2026-10-10T07:46:56Z"  kind="judge_noted"  text="no docs/ux-rubric.md \u2014 a UI diff gets the mechanical UX checks only"
+seq=4  ts="2026-10-10T07:46:56Z"  kind="judge_noted"  text="on main \u2014 create feat/fixture"
+seq=5  ts="2026-10-10T07:46:56Z"  kind="run_started"
+seq=6  ts="2026-10-10T07:46:56Z"  kind="slice_spawned"  slice=1  session_id="b9aad3cb-3fcf-4dde-8757-b148766568fd"  pid=131661
+seq=7  ts="2026-10-10T07:46:56Z"  kind="run_resumed"
+seq=8  ts="2026-10-10T07:46:56Z"  kind="worker_dead"  slice=1  session_id="b9aad3cb-3fcf-4dde-8757-b148766568fd"
+seq=9  ts="2026-10-10T07:46:56Z"  kind="slice_spawned"  slice=1  session_id="be85217b-b38a-48a8-a2d5-35e4840d77cc"  pid=131723
+seq=10  ts="2026-10-10T07:46:57Z"  kind="slice_done"  slice=1
+seq=11  ts="2026-10-10T07:46:57Z"  kind="slice_spawned"  slice=2  session_id="e9cd7965-921f-4d23-baf3-80a68d9f11b8"  pid=131766
+seq=12  ts="2026-10-10T07:46:57Z"  kind="slice_done"  slice=2
+seq=13  ts="2026-10-10T07:46:57Z"  kind="slice_spawned"  slice=3  session_id="260c5b38-740e-40ff-8145-8387e8c7c107"  pid=131816
+seq=14  ts="2026-10-10T07:46:57Z"  kind="slice_done"  slice=3
+seq=15  ts="2026-10-10T07:46:57Z"  kind="checkpoint_due"  unverified=[1, 2, 3]
+
+## stub claude calls (/tmp/factory-resume-dFYVjW/stub/calls)
+call 1: prompt='Build slice 01 of PRD-001 as the appended system prompt says. Return the STATUS block.' session_id=b9aad3cb-3fcf-4dde-8757-b148766568fd FACTORY_LANE=1 pack_source=file pack=slice-01-1.md answered_section=False
+call 2: prompt='Build slice 01 of PRD-001 as the appended system prompt says. Return the STATUS block.' session_id=be85217b-b38a-48a8-a2d5-35e4840d77cc FACTORY_LANE=1 pack_source=file pack=slice-01-2.md answered_section=False
+call 3: prompt='Build slice 02 of PRD-001 as the appended system prompt says. Return the STATUS block.' session_id=e9cd7965-921f-4d23-baf3-80a68d9f11b8 FACTORY_LANE=1 pack_source=file pack=slice-02-3.md answered_section=False
+call 4: prompt='Build slice 03 of PRD-001 as the appended system prompt says. Return the STATUS block.' session_id=260c5b38-740e-40ff-8145-8387e8c7c107 FACTORY_LANE=1 pack_source=file pack=slice-03-4.md answered_section=False
+
+## slice frontmatter after the run
+slice-01-a.md: status: done lane: 1
+slice-02-b.md: status: done lane: 1
+slice-03-c.md: status: done lane: 1
+
+## the dead-worker line in the slice's fragment (log-slice-01.md § Traps)
+3:- **Dead worker (2026-10-10)**: session b9aad3cb-3fcf-4dde-8757-b148766568fd exited (code unknown) with no result; respawned.
+
+## workers rows (sqlite3 /tmp/factory-resume-dFYVjW/data/factory.db)
+id  slice    sid     outcome  input  cache_write  cache_read  output  thinking  num_turns  duration_ms  terminal_reason  peak_context       started_at             ended_at
+--  -----  --------  -------  -----  -----------  ----------  ------  --------  ---------  -----------  ---------------  ------------  --------------------  --------------------
+ 1      1  b9aad3cb  dead                                                                                                              2026-10-10T07:46:56Z  2026-10-10T07:46:56Z
+ 2      1  be85217b  done        18         6514       41674     182        99          2         3710  completed               24215  2026-10-10T07:46:56Z  2026-10-10T07:46:57Z
+ 3      2  e9cd7965  done        18         6514       41674     182        99          2         3710  completed               24215  2026-10-10T07:46:57Z  2026-10-10T07:46:57Z
+ 4      3  260c5b38  done        18         6514       41674     182        99          2         3710  completed               24215  2026-10-10T07:46:57Z  2026-10-10T07:46:57Z
+
+## state.json phase
+phase= checkpoint  workers= [(1, 'dead'), (1, 'done'), (2, 'done'), (3, 'done')]

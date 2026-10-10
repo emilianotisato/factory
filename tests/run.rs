@@ -334,7 +334,10 @@ fn run_on_the_clean_fixture_starts_notes_the_judge_lines_then_resumes() {
     assert_eq!(fx.slice_status(2), "done");
     assert_eq!(fx.slice_status(3), "pending");
     assert_eq!(fx.calls().len(), 2);
-    let due = events(dir).into_iter().find(|e| e["kind"] == "checkpoint_due").unwrap();
+    let due = events(dir)
+        .into_iter()
+        .find(|e| e["kind"] == "checkpoint_due")
+        .unwrap();
     assert_eq!(due["unverified"], json!([1, 2]));
     let db = Db::open(&data_dir(&fx).join("factory.db")).unwrap();
     let row = db.run_row(&id).unwrap().unwrap();
@@ -359,7 +362,10 @@ fn run_on_the_clean_fixture_starts_notes_the_judge_lines_then_resumes() {
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     let text = stdout(&out);
     assert_eq!(run_dirs(&fx).len(), 1);
-    assert!(text.contains(&format!("run {id} resumed (checkpoint)")), "{text}");
+    assert!(
+        text.contains(&format!("run {id} resumed (checkpoint)")),
+        "{text}"
+    );
     assert!(
         !text.contains("judge_noted") && !text.contains("  · "),
         "{text}"
@@ -503,7 +509,11 @@ fn budget_comes_from_the_flag_then_the_config_then_the_default() {
     .unwrap();
     // In the foreground the loop runs to the checkpoint before `run` returns,
     // so every step below sees a settled run.
-    fx.write_plan(&[json!({"outcome": "done"}), json!({"outcome": "done"}), json!({"outcome": "done"})]);
+    fx.write_plan(&[
+        json!({"outcome": "done"}),
+        json!({"outcome": "done"}),
+        json!({"outcome": "done"}),
+    ]);
     let out = factory(&fx, &["run", "001", "--budget", "7", "--foreground"]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     assert!(
@@ -520,7 +530,11 @@ fn budget_comes_from_the_flag_then_the_config_then_the_default() {
     assert_eq!(state(&dirs[0])["budget_weighted_tokens"], 7);
     factory(&fx, &["run", "001", "--budget", "9", "--foreground"]);
     assert_eq!(state(&dirs[0])["budget_weighted_tokens"], 9);
-    assert_eq!(fx.calls().len(), 2, "checkpoint_every 2: two slices, then nothing on a resume");
+    assert_eq!(
+        fx.calls().len(),
+        2,
+        "checkpoint_every 2: two slices, then nothing on a resume"
+    );
 
     // A new run (the old one finished) reads the config file. The workers
     // left the tree dirty (slice 05 commits); preflight wants it clean.
@@ -546,7 +560,11 @@ fn budget_comes_from_the_flag_then_the_config_then_the_default() {
 #[test]
 fn stop_finishes_a_dead_run_and_only_flags_a_live_one() {
     let fx = Fixture::new("stop");
-    fx.write_plan(&[json!({"outcome": "done"}), json!({"outcome": "done"}), json!({"outcome": "done"})]);
+    fx.write_plan(&[
+        json!({"outcome": "done"}),
+        json!({"outcome": "done"}),
+        json!({"outcome": "done"}),
+    ]);
     factory(&fx, &["run", "001", "--foreground"]);
     let dir = run_dirs(&fx).remove(0);
     let id = dir.file_name().unwrap().to_str().unwrap().to_string();
@@ -627,7 +645,9 @@ fn stop_during_a_slice_lets_the_worker_finish_then_ends_the_run() {
         "{}",
         stdout(&out)
     );
-    wait_until("the run to finish", 30, || state(&dir)["phase"] == "finished");
+    wait_until("the run to finish", 30, || {
+        state(&dir)["phase"] == "finished"
+    });
     assert_eq!(fx.slice_status(1), "done");
     assert_eq!(fx.slice_status(2), "pending");
     assert_eq!(fx.slice_status(3), "pending");
@@ -635,10 +655,19 @@ fn stop_during_a_slice_lets_the_worker_finish_then_ends_the_run() {
     let k = kinds(&dir);
     assert_eq!(
         k[5..],
-        ["slice_spawned", "stop_requested", "slice_done", "run_finished"],
+        [
+            "slice_spawned",
+            "stop_requested",
+            "slice_done",
+            "run_finished"
+        ],
         "{k:?}"
     );
     // Nothing resumes a finished run: the next `run` is a new one.
     let out = factory(&fx, &["run", "001"]);
-    assert!(!stdout(&out).contains(&format!("run {id} resumed")), "{}", stdout(&out));
+    assert!(
+        !stdout(&out).contains(&format!("run {id} resumed")),
+        "{}",
+        stdout(&out)
+    );
 }

@@ -55,10 +55,17 @@ impl Fixture {
     /// A fixture whose `docs/index.md` frontmatter also carries `extra` keys
     /// (`checkpoint_every`, for one).
     pub fn with_index(name: &str, extra: &[(&str, &str)]) -> Fixture {
-        let base = tempfile::Builder::new()
+        let mut base = tempfile::Builder::new()
             .prefix(&format!("factory-{name}-"))
             .tempdir()
             .expect("tempdir");
+        // `FACTORY_KEEP_FIXTURE=1` leaves the repo, the run dir and the stub's
+        // call log on disk after the test: a checkpoint's evidence (CP-2) is the
+        // `events.jsonl` and the pack a passing run leaves behind.
+        if std::env::var_os("FACTORY_KEEP_FIXTURE").is_some() {
+            base.disable_cleanup(true);
+            eprintln!("fixture {name} kept at {}", base.path().display());
+        }
         let root = base.path().join("repo");
         let stub_dir = base.path().join("stub");
         for d in [

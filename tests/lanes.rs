@@ -91,12 +91,17 @@ fn wait_until(fx: &Fixture, dir: &Path, what: &str, secs: u64, mut ok: impl FnMu
     let deadline = Instant::now() + Duration::from_secs(secs);
     while !ok() {
         if Instant::now() >= deadline {
-            let statuses: Vec<String> = (1..=3).map(|n| format!("{n:02}={}", fx.slice_status(n))).collect();
+            let statuses: Vec<String> = (1..=3)
+                .map(|n| format!("{n:02}={}", fx.slice_status(n)))
+                .collect();
             panic!(
                 "timed out after {secs}s waiting for {what}\n--- state.json\n{}\n--- events\n{:?}\n--- slices {statuses:?}\n--- calls {:?}\n--- driver.log\n{}",
                 state(dir),
                 kinds(dir),
-                fx.calls().iter().map(|c| (c["n"].clone(), c["env"]["FACTORY_LANE"].clone())).collect::<Vec<_>>(),
+                fx.calls()
+                    .iter()
+                    .map(|c| (c["n"].clone(), c["env"]["FACTORY_LANE"].clone()))
+                    .collect::<Vec<_>>(),
                 driver_log(dir)
             );
         }
@@ -111,7 +116,9 @@ fn driver_log(dir: &Path) -> String {
 /// The slice a stub call built, from its `-p` prompt.
 fn call_slice(call: &Value) -> u32 {
     let p = call["prompt"].as_str().unwrap();
-    p.strip_prefix("Build slice ").unwrap()[..2].parse().unwrap()
+    p.strip_prefix("Build slice ").unwrap()[..2]
+        .parse()
+        .unwrap()
 }
 
 fn lane_env(call: &Value) -> Option<&str> {
@@ -191,7 +198,9 @@ fn two_lanes_build_two_slices_at_once_and_the_third_waits_for_its_dependency() {
     // stubs sleep 1.5 s, so the two are alive together while 03 waits on 02.
     wait_until(&fx, &dir, "two workers", 20, || {
         fx.calls().len() == 2
-            && state(&dir)["workers"].as_array().is_some_and(|w| w.len() == 2)
+            && state(&dir)["workers"]
+                .as_array()
+                .is_some_and(|w| w.len() == 2)
     });
     let ws = state(&dir)["workers"].as_array().unwrap().clone();
     for w in &ws {
@@ -209,7 +218,9 @@ fn two_lanes_build_two_slices_at_once_and_the_third_waits_for_its_dependency() {
     assert_eq!(board["freeLanes"], json!([]), "{board}");
     assert_eq!(board["spawnable"], 0, "{board}");
 
-    wait_until(&fx, &dir, "the checkpoint", 60, || state(&dir)["phase"] == "checkpoint");
+    wait_until(&fx, &dir, "the checkpoint", 60, || {
+        state(&dir)["phase"] == "checkpoint"
+    });
     wait_until(&fx, &dir, "the driver to exit", 5, || !pid_alive(driver));
     for n in 1..=3 {
         assert_eq!(fx.slice_status(n), "done", "slice {n:02}");
@@ -222,11 +233,19 @@ fn two_lanes_build_two_slices_at_once_and_the_third_waits_for_its_dependency() {
         let n = call_slice(call);
         let lane = slice_lane(&fx, n as u8).unwrap();
         assert_eq!(lane_env(call), Some(lane.to_string().as_str()), "{call}");
-        assert_eq!(call["env"]["FACTORY_LANE_DB"], format!("fixture_{lane}"), "{call}");
+        assert_eq!(
+            call["env"]["FACTORY_LANE_DB"],
+            format!("fixture_{lane}"),
+            "{call}"
+        );
     }
     assert_eq!(slice_lane(&fx, 1), Some(1));
     assert_eq!(slice_lane(&fx, 2), Some(2));
-    assert!(matches!(slice_lane(&fx, 3), Some(1 | 2)), "{:?}", slice_lane(&fx, 3));
+    assert!(
+        matches!(slice_lane(&fx, 3), Some(1 | 2)),
+        "{:?}",
+        slice_lane(&fx, 3)
+    );
     // `setup:` once per lane per run, with the lane's env.
     let setup = fx.read("scenario/lane-setup.log");
     let mut lines: Vec<&str> = setup.lines().collect();
@@ -234,13 +253,21 @@ fn two_lanes_build_two_slices_at_once_and_the_third_waits_for_its_dependency() {
     assert_eq!(lines, ["setup 1 fixture_1", "setup 2 fixture_2"]);
 
     let evs = events(&dir);
-    let spawned: Vec<&Value> = evs.iter().filter(|e| e["kind"] == "slice_spawned").collect();
+    let spawned: Vec<&Value> = evs
+        .iter()
+        .filter(|e| e["kind"] == "slice_spawned")
+        .collect();
     assert_eq!(spawned.len(), 3);
     assert_eq!(spawned[0]["slice"], 1);
     assert_eq!(spawned[1]["slice"], 2);
     assert_eq!(spawned[2]["slice"], 3);
     let gap = (ts_secs(spawned[0]) - ts_secs(spawned[1])).abs();
-    assert!(gap <= 1, "01 and 02 spawned {gap}s apart: {} {}", spawned[0]["ts"], spawned[1]["ts"]);
+    assert!(
+        gap <= 1,
+        "01 and 02 spawned {gap}s apart: {} {}",
+        spawned[0]["ts"],
+        spawned[1]["ts"]
+    );
     assert!(
         seq_of(&dir, "slice_done", 2) < seq_of(&dir, "slice_spawned", 3),
         "03 spawns only after 02 is done: {:?}",
@@ -258,7 +285,10 @@ fn two_lanes_build_two_slices_at_once_and_the_third_waits_for_its_dependency() {
     assert!(log.contains("), lane 2, pack"), "{log}");
     let rows = db(&fx).workers(&id).unwrap();
     assert_eq!(rows.len(), 3);
-    assert!(rows.iter().all(|r| r.outcome.as_deref() == Some("done")), "{rows:?}");
+    assert!(
+        rows.iter().all(|r| r.outcome.as_deref() == Some("done")),
+        "{rows:?}"
+    );
 }
 
 // ── tasks 2 and 3: a blocked slice, the parked run, `factory answer BLOCK-n` ──
@@ -281,7 +311,9 @@ fn a_blocked_slice_parks_its_lane_and_the_answer_respawns_it() {
 
     // 01 blocks on lane 1; 02 and then 03 build on lane 2 — the blocked
     // slice keeps its lane. Nothing left to spawn: the run parks, alive.
-    wait_until(&fx, &dir, "the run to park", 60, || state(&dir)["phase"] == "waiting-owner");
+    wait_until(&fx, &dir, "the run to park", 60, || {
+        state(&dir)["phase"] == "waiting-owner"
+    });
     assert!(pid_alive(driver), "the parked driver stays alive");
     assert_eq!(fx.slice_status(1), "blocked");
     assert_eq!(fx.slice_status(2), "done");
@@ -295,18 +327,27 @@ fn a_blocked_slice_parks_its_lane_and_the_answer_respawns_it() {
     let calls = fx.calls();
     assert_eq!(calls.len(), 3, "{calls:?}");
     assert_eq!(calls.iter().map(call_slice).collect::<Vec<_>>(), [1, 2, 3]);
-    assert_eq!(calls.iter().map(lane_env).collect::<Vec<_>>(), [Some("1"), Some("2"), Some("2")]);
+    assert_eq!(
+        calls.iter().map(lane_env).collect::<Vec<_>>(),
+        [Some("1"), Some("2"), Some("2")]
+    );
     let k = kinds(&dir);
     assert_eq!(count(&k, "slice_spawned"), 3, "{k:?}");
     assert_eq!(count(&k, "slice_done"), 2, "{k:?}");
     assert_eq!(count(&k, "slice_blocked"), 1, "{k:?}");
     assert_eq!(count(&k, "worker_dead"), 0, "{k:?}");
     assert_eq!(k.last().map(String::as_str), Some("run_waiting"), "{k:?}");
-    let blocked_ev = events(&dir).into_iter().find(|e| e["kind"] == "slice_blocked").unwrap();
+    let blocked_ev = events(&dir)
+        .into_iter()
+        .find(|e| e["kind"] == "slice_blocked")
+        .unwrap();
     assert_eq!(blocked_ev["slice"], 1);
     assert_eq!(blocked_ev["block_id"], "BLOCK-101");
     assert_eq!(blocked_ev["question"], QUESTION);
-    let waiting = events(&dir).into_iter().find(|e| e["kind"] == "run_waiting").unwrap();
+    let waiting = events(&dir)
+        .into_iter()
+        .find(|e| e["kind"] == "run_waiting")
+        .unwrap();
     assert_eq!(waiting["blocked"], json!([1]));
     assert_eq!(waiting["asks"], json!([]));
     let frag = fx.read(FRAGMENT);
@@ -315,59 +356,107 @@ fn a_blocked_slice_parks_its_lane_and_the_answer_respawns_it() {
         "{frag}"
     );
     let log = driver_log(&dir);
-    assert!(log.contains(&format!("slice 01 blocked by its worker (BLOCK-101: {QUESTION}) — lane 1 parked")), "{log}");
-    assert!(log.contains("parked (waiting-owner): slice 01 blocked"), "{log}");
+    assert!(
+        log.contains(&format!(
+            "slice 01 blocked by its worker (BLOCK-101: {QUESTION}) — lane 1 parked"
+        )),
+        "{log}"
+    );
+    assert!(
+        log.contains("parked (waiting-owner): slice 01 blocked"),
+        "{log}"
+    );
     let rows = db(&fx).workers(&id).unwrap();
     assert_eq!(rows.len(), 3);
     assert_eq!(rows[0].outcome.as_deref(), Some("blocked"), "{rows:?}");
-    assert_eq!(db(&fx).run_row(&id).unwrap().unwrap().phase, "waiting-owner");
+    assert_eq!(
+        db(&fx).run_row(&id).unwrap().unwrap().phase,
+        "waiting-owner"
+    );
 
     // The owner answers: the entry is resolved in place, the slice is
     // `building` again on its lane, the answer is on disk for the driver.
     let out = factory(&fx, &["answer", "BLOCK-101", ANSWER]);
     let text = stdout(&out);
     assert_eq!(out.status.code(), Some(0), "{text}");
-    assert!(text.contains(&format!("BLOCK-101 resolved ({FRAGMENT} line ")), "{text}");
+    assert!(
+        text.contains(&format!("BLOCK-101 resolved ({FRAGMENT} line ")),
+        "{text}"
+    );
     assert!(text.contains("slice 01 → building"), "{text}");
-    assert!(text.contains(&format!("the driver (pid {driver}) picks it up within 5 s")), "{text}");
+    assert!(
+        text.contains(&format!("the driver (pid {driver}) picks it up within 5 s")),
+        "{text}"
+    );
     let frag = fx.read(FRAGMENT);
     assert!(
-        frag.contains(&format!("### BLOCK-101 — {QUESTION} · slice-01 · resolved\n")),
+        frag.contains(&format!(
+            "### BLOCK-101 — {QUESTION} · slice-01 · resolved\n"
+        )),
         "{frag}"
     );
-    assert!(frag.contains(&format!("**Resolution (20")) && frag.contains(&format!("):** {ANSWER}\n")), "{frag}");
+    assert!(
+        frag.contains("**Resolution (20") && frag.contains(&format!("):** {ANSWER}\n")),
+        "{frag}"
+    );
     assert!(!frag.contains("· open"), "{frag}");
     assert_eq!(slice_lane(&fx, 1), Some(1));
-    let answer: Value = serde_json::from_str(&fs::read_to_string(dir.join("answers/BLOCK-101.json")).unwrap()).unwrap();
+    let answer: Value =
+        serde_json::from_str(&fs::read_to_string(dir.join("answers/BLOCK-101.json")).unwrap())
+            .unwrap();
     assert_eq!(answer["id"], "BLOCK-101");
     assert_eq!(answer["slice"], 1);
     assert_eq!(answer["text"], ANSWER);
-    assert!(answer["at"].as_str().is_some_and(|t| t.ends_with('Z')), "{answer}");
-    let answered = events(&dir).into_iter().find(|e| e["kind"] == "block_answered").unwrap();
+    assert!(
+        answer["at"].as_str().is_some_and(|t| t.ends_with('Z')),
+        "{answer}"
+    );
+    let answered = events(&dir)
+        .into_iter()
+        .find(|e| e["kind"] == "block_answered")
+        .unwrap();
     assert_eq!(answered["id"], "BLOCK-101");
     assert_eq!(answered["slice"], 1);
     assert_eq!(answered["text"], ANSWER);
 
     // Within the slow tick a fresh worker takes slice 01 on lane 1, with the
     // block and the answer in its pack; the run finishes to the checkpoint.
-    wait_until(&fx, &dir, "the answered slice to respawn", 10, || fx.calls().len() == 4);
+    wait_until(&fx, &dir, "the answered slice to respawn", 10, || {
+        fx.calls().len() == 4
+    });
     let calls = fx.calls();
     assert_eq!(call_slice(&calls[3]), 1);
     assert_eq!(lane_env(&calls[3]), Some("1"));
-    assert_ne!(calls[3]["session_id"], calls[0]["session_id"], "a respawn is a new session");
+    assert_ne!(
+        calls[3]["session_id"], calls[0]["session_id"],
+        "a respawn is a new session"
+    );
     let pack = calls[3]["pack"].as_str().unwrap();
     let i_slice = pack.find("# Slice\n").unwrap();
     let i_block = pack.find("# Block and answer\n").unwrap();
     let i_prd = pack.find("# PRD sections\n").unwrap();
     assert!(i_slice < i_block && i_block < i_prd, "{pack}");
     let section = &pack[i_block..i_prd];
-    assert!(section.contains(&format!("<!-- {FRAGMENT}: BLOCK-101 -->")), "{section}");
-    assert!(section.contains(&format!("### BLOCK-101 — {QUESTION} · slice-01 · resolved")), "{section}");
+    assert!(
+        section.contains(&format!("<!-- {FRAGMENT}: BLOCK-101 -->")),
+        "{section}"
+    );
+    assert!(
+        section.contains(&format!("### BLOCK-101 — {QUESTION} · slice-01 · resolved")),
+        "{section}"
+    );
     assert!(section.contains("**Happened:**"), "{section}");
     assert!(section.contains(&format!("):** {ANSWER}")), "{section}");
-    assert!(!calls[0]["pack"].as_str().unwrap().contains("# Block and answer"));
+    assert!(
+        !calls[0]["pack"]
+            .as_str()
+            .unwrap()
+            .contains("# Block and answer")
+    );
 
-    wait_until(&fx, &dir, "the checkpoint", 60, || state(&dir)["phase"] == "checkpoint");
+    wait_until(&fx, &dir, "the checkpoint", 60, || {
+        state(&dir)["phase"] == "checkpoint"
+    });
     wait_until(&fx, &dir, "the driver to exit", 5, || !pid_alive(driver));
     for n in 1..=3 {
         assert_eq!(fx.slice_status(n), "done", "slice {n:02}");
@@ -379,7 +468,11 @@ fn a_blocked_slice_parks_its_lane_and_the_answer_respawns_it() {
     assert_eq!(count(&k, "worker_dead"), 0, "{k:?}");
     assert_eq!(count(&k, "run_waiting"), 1, "{k:?}");
     assert_eq!(count(&k, "block_answered"), 1, "{k:?}");
-    assert_eq!(k.last().map(String::as_str), Some("checkpoint_due"), "{k:?}");
+    assert_eq!(
+        k.last().map(String::as_str),
+        Some("checkpoint_due"),
+        "{k:?}"
+    );
     let answered = seq_first(&dir, "block_answered");
     assert!(seq_of(&dir, "slice_blocked", 1) < seq_first(&dir, "run_waiting"));
     assert!(seq_first(&dir, "run_waiting") < answered);
@@ -404,12 +497,19 @@ fn a_blocked_slice_parks_its_lane_and_the_answer_respawns_it() {
     let log = driver_log(&dir);
     assert!(log.contains("lane 1, answered, pack"), "{log}");
     let frag = fx.read(FRAGMENT);
-    assert!(frag.contains("## Decisions\n"), "the done worker's AD lands too: {frag}");
+    assert!(
+        frag.contains("## Decisions\n"),
+        "the done worker's AD lands too: {frag}"
+    );
 
     // Answering a resolved block is refused.
     let out = factory(&fx, &["answer", "BLOCK-101", "again"]);
     assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
-    assert!(stdout(&out).contains("BLOCK-101 is already resolved"), "{}", stdout(&out));
+    assert!(
+        stdout(&out).contains("BLOCK-101 is already resolved"),
+        "{}",
+        stdout(&out)
+    );
 }
 
 // ── task 4: `factory answer ASK-n` ───────────────────────────────────────────
@@ -449,37 +549,59 @@ fn answering_every_ask_starts_the_parked_run() {
     assert!(!asks.is_empty());
     assert_eq!(asks[0], "ASK-1");
     assert!(fx.calls().is_empty());
-    assert_eq!(fx.git(&["rev-parse", "--abbrev-ref", "HEAD"]).trim(), "main");
+    assert_eq!(
+        fx.git(&["rev-parse", "--abbrev-ref", "HEAD"]).trim(),
+        "main"
+    );
 
     // An unknown ask is refused; every real one takes "proceed".
     let out = factory(&fx, &["answer", "ASK-9", "proceed"]);
     assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
-    assert!(stdout(&out).contains("no open run of this repo waits on ASK-9"), "{}", stdout(&out));
+    assert!(
+        stdout(&out).contains("no open run of this repo waits on ASK-9"),
+        "{}",
+        stdout(&out)
+    );
     for (i, ask) in asks.iter().enumerate() {
         let out = factory(&fx, &["answer", ask, "proceed"]);
         let text = stdout(&out);
         assert_eq!(out.status.code(), Some(0), "{text}");
-        assert!(text.contains(&format!("{ask} answered: proceed — noted in {AGENT_LOG}")), "{text}");
+        assert!(
+            text.contains(&format!("{ask} answered: proceed — noted in {AGENT_LOG}")),
+            "{text}"
+        );
         assert!(dir.join("answers").join(format!("{ask}.json")).is_file());
         if i + 1 < asks.len() {
             assert!(text.contains("still open"), "{text}");
             assert!(!text.contains("driver pid"), "{text}");
         } else {
-            assert!(text.contains("every ask answered — the run proceeds"), "{text}");
+            assert!(
+                text.contains("every ask answered — the run proceeds"),
+                "{text}"
+            );
             assert!(text.contains("driver pid "), "{text}");
         }
     }
     let log = fx.read(AGENT_LOG);
     assert_eq!(log.matches("- **DEC (").count(), asks.len(), "{log}");
-    assert_eq!(log.matches("answered: proceed").count(), asks.len(), "{log}");
+    assert_eq!(
+        log.matches("answered: proceed").count(),
+        asks.len(),
+        "{log}"
+    );
     assert!(log.contains("preflight ask \""), "{log}");
     assert!(log.contains("## Decisions\n"), "{log}");
 
     // The driver takes the run through branch and board, then builds.
-    wait_until(&fx, &dir, "the checkpoint", 60, || state(&dir)["phase"] == "checkpoint");
+    wait_until(&fx, &dir, "the checkpoint", 60, || {
+        state(&dir)["phase"] == "checkpoint"
+    });
     let driver = state(&dir)["pid"].as_u64().unwrap() as u32;
     wait_until(&fx, &dir, "the driver to exit", 5, || !pid_alive(driver));
-    assert_eq!(fx.git(&["rev-parse", "--abbrev-ref", "HEAD"]).trim(), "feat/fixture");
+    assert_eq!(
+        fx.git(&["rev-parse", "--abbrev-ref", "HEAD"]).trim(),
+        "feat/fixture"
+    );
     assert_eq!(state(&dir)["branch"], "feat/fixture");
     for n in 1..=3 {
         assert_eq!(fx.slice_status(n), "done", "slice {n:02}");
@@ -490,20 +612,37 @@ fn answering_every_ask_starts_the_parked_run() {
     assert_eq!(count(&k, "ask_opened"), asks.len(), "{k:?}");
     assert_eq!(count(&k, "ask_answered"), asks.len(), "{k:?}");
     assert_eq!(count(&k, "run_started"), 1, "{k:?}");
-    assert_eq!(count(&k, "run_waiting"), 0, "an ask-parked run was never re-parked: {k:?}");
+    assert_eq!(
+        count(&k, "run_waiting"),
+        0,
+        "an ask-parked run was never re-parked: {k:?}"
+    );
     assert_eq!(count(&k, "slice_spawned"), 3, "{k:?}");
     assert_eq!(count(&k, "slice_done"), 3, "{k:?}");
-    assert_eq!(k.last().map(String::as_str), Some("checkpoint_due"), "{k:?}");
+    assert_eq!(
+        k.last().map(String::as_str),
+        Some("checkpoint_due"),
+        "{k:?}"
+    );
     let last_answer = k.iter().rposition(|k| k == "ask_answered").unwrap();
     let started = k.iter().position(|k| k == "run_started").unwrap();
     assert!(last_answer < started, "{k:?}");
-    let answered_ev = events(&dir).into_iter().find(|e| e["kind"] == "ask_answered").unwrap();
+    let answered_ev = events(&dir)
+        .into_iter()
+        .find(|e| e["kind"] == "ask_answered")
+        .unwrap();
     assert_eq!(answered_ev["id"], "ASK-1");
     assert_eq!(answered_ev["text"], "proceed");
     let row = db(&fx).run_row(&id).unwrap().unwrap();
     assert_eq!(row.phase, "checkpoint");
     assert_eq!(row.branch.as_deref(), Some("feat/fixture"));
     let log = driver_log(&dir);
-    assert!(log.contains("every ask answered — the run proceeds"), "{log}");
-    assert!(log.contains(&format!("run {id} started on feat/fixture")), "{log}");
+    assert!(
+        log.contains("every ask answered — the run proceeds"),
+        "{log}"
+    );
+    assert!(
+        log.contains(&format!("run {id} started on feat/fixture")),
+        "{log}"
+    );
 }

@@ -48,7 +48,10 @@ fn every_subcommand_says_not_built_yet_and_exits_2() {
 
 #[test]
 fn answer_refuses_an_id_that_is_neither_block_nor_ask() {
-    let out = Command::new(BIN).args(["answer", "1", "2"]).output().unwrap();
+    let out = Command::new(BIN)
+        .args(["answer", "1", "2"])
+        .output()
+        .unwrap();
     assert_eq!(out.status.code(), Some(1));
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("`1` is neither BLOCK-n nor ASK-n"), "{err}");
