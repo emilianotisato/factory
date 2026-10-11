@@ -25,4 +25,3 @@ Loose one-liners for things not yet worth a PRD. Cheap to add, cheap to drop.
 ## Graduated → became a feature
 
 - _(move lines here with their `{NNN}` when they get a PRD, or just delete)_
-- **v3 docs format, at port time (PRD-002).** State out of markdown (`state.toml`, rendered on read), append-only JSONL log replacing fragments and `log merge`, `project.toml` instead of index frontmatter, frontmatter-only PRD header, feature-scoped FR ids, retro numbers in the metrics store. Why: half of `docs.mjs` is drift machinery for derived state stored twice; porting it and removing it later costs more than a migration done once. Agreed 2026-10-09.
