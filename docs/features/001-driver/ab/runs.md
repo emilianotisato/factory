@@ -85,3 +85,9 @@ Owner work at 17:09, by the A/B operator at the owner's call: removed the title 
 Gate cost of the format slip: two extra full-gate runs, about 14 minutes of wall-clock, and two owner interrupts. Run A paid none.
 
 **The cockpit found the leftovers itself (17:21).** After BLOCK-2 it checked `git ls-files` and `git status`, named the 11 uncommitted files, and asked the owner whether to commit them now or after the run. The owner's earlier call stands: leave them to the run.
+
+**The cockpit committed the leftovers (17:23).** The owner told the cockpit "Proceed as you see fit", overriding the earlier call. Between slices, it committed the 11 files by pathspec as `37c30c0 fix(018): add files slice 02 left uncommitted`. This is owner-approved repair by the cockpit, and its tokens count as cockpit tokens.
+
+**Slice 06 left two edited files out (17:46).** `Inbox.php` and `InboxController.php` were tracked by then, and slice 06's worker changed them. The driver still skipped them: `scheduler::unnamed` drops any path an earlier `untracked_leftovers` event listed (`listed_before`), even after the path is tracked. Once a path is listed, the driver never commits it again. The cockpit found the gap and committed `6d0f223 fix(018): add Inbox::forRequest slice 06 left out`.
+
+**BLOCK-3, the same format slip in `log-slice-05.md` and `log-slice-06.md` (17:53).** Four of six workers wrote the `# Log fragment — slice NN` title. The cockpit answered by reusing the BLOCK-2 text and edited nothing, so the run would have looped again. At 17:55 the A/B operator removed both title lines and checked with `docs log merge 018 --dry`. That check merged nothing, so the driver's own merge folds both fragments after gate attempt 2.
