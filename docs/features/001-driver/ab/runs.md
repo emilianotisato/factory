@@ -77,3 +77,11 @@ Factory findings: a merge refused for format is mechanical and should be fixed b
 Factory finding, major: with one lane, a new untracked file that appears while the only worker runs is that worker's; listing it instead of committing it ships a branch that does not build.
 
 Owner's call at 17:01: leave run B alone. No hand commit; the run either recovers in CI or fails on it, and `factory report` splits out what the CI-fix workers cost.
+
+**BLOCK-2, the same refusal again (17:05).** The owner's BLOCK-1 answer was relayed as text and nobody acted on it: the cockpit only relays, and the driver reran the gate (attempt 2, 7.12 min) and refused the same merge. The block's own text says "answer this block once the fragment is fixed", so the fix is the owner's by design, but neither the cockpit's question nor its options said so. Its options are written for an AD-number clash ("renumber the clashing entry"), not for a format slip.
+
+Owner work at 17:09, by the A/B operator at the owner's call: removed the title line and the blank line under it from both fragments. A check meant as a dry run (`docs log merge 018 --dry-run`; the flag is `--dry`) ran the real merge, so both fragments were folded into `agent-log.md` and deleted by hand, not by the driver. The result is the same file the driver's merge would write; on resume the driver finds no fragment (`Fold::Nothing`, no `log_merged` event for CP-2) and its checkpoint commit takes `agent-log.md` and the two deletions with the feature folder. The owner answered BLOCK-2 in the cockpit at 17:21; gate attempt 3 started at once.
+
+Gate cost of the format slip: two extra full-gate runs, about 14 minutes of wall-clock, and two owner interrupts. Run A paid none.
+
+**The cockpit found the leftovers itself (17:21).** After BLOCK-2 it checked `git ls-files` and `git status`, named the 11 uncommitted files, and asked the owner whether to commit them now or after the run. The owner's earlier call stands: leave them to the run.
