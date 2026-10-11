@@ -28,3 +28,20 @@ Run B gets the same text under its own block id, with "option 1" dropped if its 
 - Draft PR #24 at 15:16. CI green first time; the re-run after the owner review was pending at 15:50.
 - Review interview (15:25–15:42): all reviewed, 8 ADs kept, 1 changed (AD-601, fixed in `ddedf1b`). Three UX-rubric lines added; both DEC candidates kept local.
 - Open quality questions for the questionnaire: the Cursor second opinion timed out (a fresh Claude reviewer stood in), and 13 browser tests outside the gate failed at CP-2. Rerun 15:48 in a third worktree `wt-base`, same setup for both, without the generated Demo and Second modules: the base `cde31ac` and run A's head `6dae3d0` give identical results file by file. The same 5 tests fail on both, and 15 module-dependent tests skip on both. Run A broke none of them; the 5 are already red before PRD-018. Run B's head gets the same check.
+
+### Questionnaire, run A
+
+Answered by the owner 2026-10-11 at 16:04, before seeing any token or cost number, after manual QA in `wt-a` (seeded, logged in, inbox driven).
+
+| # | question | run A | run B |
+|---|---|---|---|
+| 1 | Does the result do what the PRD asked? | yes | |
+| 2 | Merge after normal review, at most small fixes? | yes | |
+| 3 | Decisions you would overturn | 2–3 | |
+| 4 | Code quality against the project's standard (1–5) | 5 | |
+| 5 | Tests prove the FRs, or only pass? | prove | |
+| 6 | Built but not asked for | none | |
+| 7 | Asked for but missing | none | |
+| 8 | Overall | ship after minor fixes | |
+
+Run B passes the questionnaire if it scores yes on 1 and 2, lists nothing on 6 and 7, scores at least 4 on question 4, and is "ship after fixes" or better on 8.
