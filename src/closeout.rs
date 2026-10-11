@@ -64,6 +64,12 @@ pub const RETRO_KEYS: [&str; 12] = [
 /// The PR body the polish worker writes, in the run dir.
 pub const PR_BODY_FILE: &str = "pr-body.md";
 
+/// The `what` of a `template_stand_in` (AD-904): the retro or the PR body.
+pub const STAND_IN_RETRO: &str = "retro";
+pub const STAND_IN_BODY: &str = "pr_body";
+/// How the PR body's stand-in line starts, so a later pass replaces it.
+const STAND_IN_MARK: &str = "**Template stand-in";
+
 // The closeout blocks whose `proceed` answer the driver reads, by title.
 const POLISH_DIED: &str = "Two polish workers died";
 const PR_EDIT: &str = "gh pr edit refused";
@@ -98,6 +104,8 @@ pub fn run(
             fresh: false,
         });
     }
+    // A second check: `docs new` creates agent-log.md now (AD-503), but a
+    // feature made by a vendored docs.mjs older than that fix has none.
     if !agent_log.exists() {
         fs::write(&agent_log, format!("# Agent log — PRD-{feature}\n"))
             .map_err(io(format!("write {}", agent_log.display())))?;
@@ -337,7 +345,9 @@ fn polish(
 /// (`reviewed:`) and `retro.md` — the polish worker is the one worker allowed
 /// to write those two; `docs/index.md` stays the ship's. A missing `retro.md`
 /// is created from the template first, a missing PR body from a fallback, so
-/// the ship and the PR never wait on a worker that skipped its last turn.
+/// the ship and the PR never wait on a worker that skipped its last turn —
+/// but each stand-in is flagged (AD-904): a `template_stand_in` event the
+/// cockpit relays, and a first line in the PR body naming it.
 /// What it changed unnamed since `before` is swept or listed (AD-50002).
 fn commit_polish(
     run: &mut Run,
@@ -359,6 +369,7 @@ fn commit_polish(
             out,
             &format!("polish: worker left no {retro_rel} — created from the template"),
         )?;
+        stood_in(run, STAND_IN_RETRO, &retro_rel)?;
     }
     let body = run.dir().join(PR_BODY_FILE);
     if !body.exists() {
@@ -371,7 +382,9 @@ fn commit_polish(
                 body.display()
             ),
         )?;
+        stood_in(run, STAND_IN_BODY, &body.display().to_string())?;
     }
+    flag_body(run, &body)?;
     let spec = Pathspec::from_stream(summary, board, &repo);
     let mut paths = spec.paths.clone();
     for p in &spec.protected {
@@ -405,6 +418,87 @@ fn commit_polish(
         None => say(out, "polish: worker changed nothing to commit")?,
     }
     Ok(committed)
+}
+
+/// Emit `template_stand_in` for `what` (AD-904), once per run: a resume that
+/// finds the file it filled already there does not repeat it.
+fn stood_in(run: &mut Run, what: &str, path: &str) -> Result<()> {
+    let seen = run
+        .events()?
+        .iter()
+        .any(|e| matches!(&e.kind, EventKind::TemplateStandIn { what: w, .. } if w == what));
+    if !seen {
+        run.emit(EventKind::TemplateStandIn {
+            what: what.to_string(),
+            path: path.to_string(),
+        })?;
+    }
+    Ok(())
+}
+
+/// The PR body's first line when a closeout file is a template stand-in
+/// (AD-904), from the run's `template_stand_in` events: the retro, the PR
+/// body, or both. `None` when the workers wrote both.
+pub fn stand_in_line(events: &[crate::events::Event]) -> Option<String> {
+    let mut retro: Option<&str> = None;
+    let mut body = false;
+    for e in events {
+        if let EventKind::TemplateStandIn { what, path } = &e.kind {
+            match what.as_str() {
+                STAND_IN_RETRO => retro = Some(path),
+                STAND_IN_BODY => body = true,
+                _ => {}
+            }
+        }
+    }
+    let the_retro = |path: &str| {
+        if path.is_empty() {
+            "the retro".to_string()
+        } else {
+            format!("the retro (`{path}`)")
+        }
+    };
+    match (retro, body) {
+        (None, false) => None,
+        (Some(r), false) => Some(format!(
+            "{STAND_IN_MARK}:** {} is factory's template — the polish worker wrote none.",
+            the_retro(r)
+        )),
+        (None, true) => Some(format!(
+            "{STAND_IN_MARK}:** this PR body is factory's template — the polish worker wrote none."
+        )),
+        (Some(r), true) => Some(format!(
+            "{STAND_IN_MARK}s:** this PR body and {} are factory's templates — the polish worker wrote neither.",
+            the_retro(r)
+        )),
+    }
+}
+
+/// `body` with `line` first: a stand-in line an earlier pass put there gives
+/// way, so a resume or a second stand-in never stacks them (AD-904).
+pub fn flagged(body: &str, line: &str) -> String {
+    let rest = if body.starts_with(STAND_IN_MARK) {
+        body.split_once('\n')
+            .map_or("", |(_, r)| r)
+            .trim_start_matches(['\n', '\r'])
+    } else {
+        body
+    };
+    format!("{line}\n\n{rest}")
+}
+
+/// Put the stand-in line first in the PR body file, if the run has one; a
+/// body no stand-in touched is left as the worker wrote it.
+fn flag_body(run: &Run, body: &Path) -> Result<()> {
+    let Some(line) = stand_in_line(&run.events()?) else {
+        return Ok(());
+    };
+    let text = fs::read_to_string(body).map_err(io(format!("read {}", body.display())))?;
+    let want = flagged(&text, &line);
+    if want != text {
+        scheduler::write_atomic(body, &want)?;
+    }
+    Ok(())
 }
 
 /// A PR body when the polish worker wrote none: the PRD and the pointers.
@@ -482,6 +576,12 @@ fn ship(
             retro_template(docs, board).replace("{NNN}", &feature),
         )
         .map_err(io(format!("write {}", retro.display())))?;
+        let retro_rel = format!("{}/retro.md", board.dir);
+        say(
+            out,
+            &format!("ship: no {retro_rel} — created from the template"),
+        )?;
+        stood_in(run, STAND_IN_RETRO, &retro_rel)?;
     }
     fill_retro(&retro, &report)?;
     docs.render_write()?;
@@ -568,7 +668,13 @@ fn open_pr(
     if !body.exists() {
         fs::write(&body, fallback_body(board, &feature))
             .map_err(io(format!("write {}", body.display())))?;
+        say(
+            out,
+            &format!("pr: no {} — a minimal body stands in", body.display()),
+        )?;
+        stood_in(run, STAND_IN_BODY, &body.display().to_string())?;
     }
+    flag_body(run, &body)?;
     // The PR this run opened, or the one a previous run on this branch did
     // (`gh pr view`): either way the body is refreshed, no second PR.
     let known = match run.state().pr_url.clone() {
@@ -2051,6 +2157,57 @@ pub fn pr_body_path(run_dir: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn stand_in(what: &str, path: &str) -> crate::events::Event {
+        crate::events::Event {
+            seq: 1,
+            ts: "2026-10-11T00:00:00Z".to_string(),
+            kind: EventKind::TemplateStandIn {
+                what: what.into(),
+                path: path.into(),
+            },
+        }
+    }
+
+    #[test]
+    fn the_stand_in_line_names_the_retro_the_body_or_both() {
+        let retro = stand_in(STAND_IN_RETRO, "docs/features/001-x/retro.md");
+        let body = stand_in(STAND_IN_BODY, "/runs/r/pr-body.md");
+        assert_eq!(stand_in_line(&[]), None);
+        assert_eq!(
+            stand_in_line(std::slice::from_ref(&retro)).as_deref(),
+            Some(
+                "**Template stand-in:** the retro (`docs/features/001-x/retro.md`) is factory's template — the polish worker wrote none."
+            )
+        );
+        assert_eq!(
+            stand_in_line(std::slice::from_ref(&body)).as_deref(),
+            Some(
+                "**Template stand-in:** this PR body is factory's template — the polish worker wrote none."
+            )
+        );
+        assert_eq!(
+            stand_in_line(&[body, retro]).as_deref(),
+            Some(
+                "**Template stand-ins:** this PR body and the retro (`docs/features/001-x/retro.md`) are factory's templates — the polish worker wrote neither."
+            )
+        );
+    }
+
+    #[test]
+    fn a_flagged_body_keeps_one_stand_in_line() {
+        let worker = "## PRD-001 — x\n\nBody.\n";
+        let once = flagged(worker, "**Template stand-in:** a");
+        assert_eq!(
+            once,
+            "**Template stand-in:** a\n\n## PRD-001 — x\n\nBody.\n"
+        );
+        assert_eq!(flagged(&once, "**Template stand-in:** a"), once);
+        assert_eq!(
+            flagged(&once, "**Template stand-ins:** b"),
+            "**Template stand-ins:** b\n\n## PRD-001 — x\n\nBody.\n"
+        );
+    }
 
     #[test]
     fn a_block_title_from_tool_output_keeps_the_heading_parseable() {

@@ -455,6 +455,8 @@ fn the_cockpit_skill_is_under_sixty_lines_and_names_the_five_commands() {
         "replays every event",
         "repeats every question and park still open",
         "prints a question again on every call until it is answered",
+        // AD-904: a template stand-in is relayed, not asked about.
+        "`stand-in: …`: information",
     ] {
         assert!(text.contains(needle), "{needle:?} missing in:\n{text}");
     }

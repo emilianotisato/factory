@@ -1,4 +1,4 @@
 source: ~/.claude/skills/feature-docs/bin/docs.mjs (feature-docs skill)
-sha256: 3b1fbd5c8b2b591c300f49684d76bec249077f618e3f7eb6ddc134059aa4d606
-vendored: 2026-10-09
-refresh: node ~/.claude/skills/feature-docs/bin/docs.mjs vendor --root <scratch> && cp -r <scratch>/.docs tests/fixture/.docs
+sha256: 56e19268743abced1c73607534fd86af2ff1fee520ac4576dc7367688e556f0c
+vendored: 2026-10-11
+refresh: node ~/.claude/skills/feature-docs/bin/docs.mjs vendor --root <scratch> && cp -r <scratch>/.docs tests/fixture/

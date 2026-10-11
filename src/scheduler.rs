@@ -637,6 +637,8 @@ fn start_after_asks(run: &mut Run, docs: &Docs, out: &mut dyn Write) -> Result<(
 
 /// The lanes this driver may spawn on now: the board's free lanes minus
 /// those a `blocked` slice parks (AD-401) and those this table holds.
+/// The `blocked` filter is a second check: docs.mjs leaves those lanes out
+/// of `freeLanes` itself now, but a vendored copy older than that fix does not.
 fn free_lanes(board: &Status, table: &Table) -> Vec<u32> {
     let parked: HashSet<u32> = board
         .slices
@@ -1844,7 +1846,25 @@ fn edit_frontmatter(path: &Path, edit: impl FnOnce(&mut Vec<String>)) -> Result<
         .collect();
     edit(&mut lines);
     let out = format!("---{nl}{}{}", lines.join(nl), &rest[end..]);
-    fs::write(path, out).map_err(io(format!("write {}", path.display())))
+    // DEC-3: `docs status` in another process, `factory answer` or a worker
+    // reading its slice must never meet a half-written file.
+    write_atomic(path, &out)
+}
+
+/// Replace `path` with `text` atomically (DEC-3): a temp file beside it,
+/// so the rename stays on one filesystem, then the rename. A reader sees
+/// the old file or the new one, whole; a failed rename leaves no temp.
+pub fn write_atomic(path: &Path, text: &str) -> Result<()> {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let tmp = path.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
+    fs::write(&tmp, text).map_err(io(format!("write {}", tmp.display())))?;
+    fs::rename(&tmp, path).map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        io(format!("rename {} to {}", tmp.display(), path.display()))(e)
+    })
 }
 
 /// `runs/<id>/packs`.
@@ -1965,5 +1985,38 @@ mod tests {
             fs::read_to_string(&p).unwrap(),
             "---\r\nslice: 02\r\nstatus: building\r\nowner: x\r\n---\r\n\r\n# B\r\n"
         );
+    }
+
+    /// DEC-3: the edit lands by a rename, so a reader holding the old file
+    /// still reads it whole and a new reader gets the new one whole; no temp
+    /// is left beside the slice.
+    #[test]
+    fn a_frontmatter_edit_replaces_the_file_by_rename() {
+        use std::io::Read;
+        use std::os::unix::fs::MetadataExt;
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("slice-02-b.md");
+        let before = "---\nslice: 02\nstatus: pending\n---\n\n# B\n";
+        fs::write(&p, before).unwrap();
+        let ino = fs::metadata(&p).unwrap().ino();
+        let mut held = fs::File::open(&p).unwrap();
+        set_frontmatter(&p, &[("status", "building")]).unwrap();
+        assert_ne!(
+            fs::metadata(&p).unwrap().ino(),
+            ino,
+            "a new file, renamed in"
+        );
+        let mut old = String::new();
+        held.read_to_string(&mut old).unwrap();
+        assert_eq!(old, before);
+        assert_eq!(
+            fs::read_to_string(&p).unwrap(),
+            "---\nslice: 02\nstatus: building\n---\n\n# B\n"
+        );
+        let names: Vec<String> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["slice-02-b.md".to_string()]);
     }
 }

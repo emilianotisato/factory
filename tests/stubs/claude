@@ -37,6 +37,8 @@
 // src/other.rs that nothing reads — so `followup_reads` is 1 of 2.
 // Polish fix 1 records `env_keys` (every variable's name, never a value) and
 // `gh_config_dir`, so a test can see what the driver scrubs from a worker.
+// AD-10001 records `git_config`: the worker's `GIT_CONFIG_COUNT`,
+// `GIT_CONFIG_KEY_<i>` and `GIT_CONFIG_VALUE_<i>`, values included.
 const fs = require('node:fs')
 const path = require('node:path')
 const crypto = require('node:crypto')
@@ -90,6 +92,7 @@ writeAtomic(path.join(callsDir, `${n}.json`), JSON.stringify({
   env: factoryEnv,
   env_keys: Object.keys(process.env).sort(),
   gh_config_dir: process.env.GH_CONFIG_DIR ?? null,
+  git_config: Object.fromEntries(Object.entries(process.env).filter(([k]) => /^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)$/.test(k))),
   prompt: flags['-p'] ?? null,
   pack,
   pack_source: packSource,
@@ -268,7 +271,9 @@ if (role === 'checkpoint') {
 // src/lib.txt), write retro.md from the template under `# Retro`, stamp
 // `reviewed:` in prd.md, write the PR body; `step.slices` (`{"02":
 // "building"}`) forces slice statuses first, so a test can make `docs ship`
-// refuse. `blocked`: a BLOCK-n `· polish · open` in agent-log.md.
+// refuse; `step.skip` (`["retro"]`, `["body"]` or both) leaves those files
+// unwritten, a worker that skipped its last turn (AD-904). `blocked`: a
+// BLOCK-n `· polish · open` in agent-log.md.
 if (role === 'polish') {
   const runDir = pack.match(/^<!-- run dir: (.+?) -->$/m)?.[1]
   const dirM = pack.match(/<!-- (docs\/features\/[^/\s]+)\//)
@@ -313,13 +318,14 @@ if (role === 'polish') {
   }
   writeStray(step)
   const rel = touched.map((f) => path.relative(cwd, f)).join(', ')
+  const skip = new Set(step.skip ?? [])
   // The template's frontmatter as the pack carries it; the driver fills the keys.
   const tplM = pack.match(/^# Retro\n[\s\S]*?\n````markdown\n([\s\S]*?)\n````/m)
   if (!tplM) fail(65, 'the polish pack has no ````markdown retro template under # Retro')
   const fmEnd = tplM[1].indexOf('\n---', 4)
   if (!tplM[1].startsWith('---\n') || fmEnd === -1) fail(65, 'the retro template in the pack has no frontmatter')
   const retroText = `${tplM[1].slice(0, fmEnd)}\n---\n\n# Retro — PRD-${dirM[1].match(/(\d{3})-/)[1]}\n\n## Cost vs catch\n\nStub retro (spawn ${n}).\n\n## Score\n\nThe owner's.\n`
-  writeAtomic(retro, retroText)
+  if (!skip.has('retro')) writeAtomic(retro, retroText)
   const prdText = fs.readFileSync(prd, 'utf8')
   const prdEnd = prdText.startsWith('---\n') ? prdText.indexOf('\n---', 4) : -1
   if (prdEnd === -1) fail(65, `${prd} has no frontmatter`)
@@ -328,20 +334,20 @@ if (role === 'polish') {
   writeAtomic(prd, stamped + prdText.slice(prdEnd))
   const body = path.join(runDir, 'pr-body.md')
   fs.mkdirSync(runDir, { recursive: true })
-  writeAtomic(body, `## PRD-${dirM[1].match(/(\d{3})-/)[1]} — Fixture\n\nStub PR body (spawn ${n}). PR: \`${dirM[1]}/prd.md\`\n\n### Needs your review\n\n- none\n\n### Human QA\n\nNone — every QA-plan row was proven by the run.\n`)
+  if (!skip.has('body')) writeAtomic(body, `## PRD-${dirM[1].match(/(\d{3})-/)[1]} — Fixture\n\nStub PR body (spawn ${n}). PR: \`${dirM[1]}/prd.md\`\n\n### Needs your review\n\n- none\n\n### Human QA\n\nNone — every QA-plan row was proven by the run.\n`)
   emit(init)
   readFile(prd)
   for (const f of touched) tool('Write', { file_path: f, content: `polished by spawn ${n}\n` })
   innerRun(step)
-  tool('Write', { file_path: retro, content: retroText })
+  if (!skip.has('retro')) tool('Write', { file_path: retro, content: retroText })
   tool('Edit', { file_path: prd, old_string: 'status:', new_string: `reviewed: ${today}\nstatus:` })
-  tool('Write', { file_path: body, content: fs.readFileSync(body, 'utf8') })
+  if (!skip.has('body')) tool('Write', { file_path: body, content: fs.readFileSync(body, 'utf8') })
   emit(assistant([{ type: 'text', text: 'STATUS: done' }]))
   result([
     'STATUS: done',
     `FIXED: ${rel} — stub polish (spawn ${n})`,
-    'RETRO: written',
-    'PR_BODY: written',
+    skip.has('retro') ? 'RETRO: not written: skipped' : 'RETRO: written',
+    skip.has('body') ? 'PR_BODY: not written: skipped' : 'PR_BODY: written',
     'DECISIONS: none',
     'BLOCK: none',
   ])
@@ -547,10 +553,16 @@ function appendSection(file, heading, entry) {
     writeAtomic(file, existing ? `${existing.trimEnd()}\n\n${heading}\n\n${entry}` : `${heading}\n\n${entry}`)
     return
   }
-  let next = lines.findIndex((l, i) => i > h && l.startsWith('## '))
+  // A section ends at the next `## ` or at the `---` above the template's
+  // fenced examples, which close a log `docs new` created (AD-503).
+  let next = lines.findIndex((l, i) => i > h && (l.startsWith('## ') || l.trim() === '---'))
   if (next === -1) next = lines.length
   let at = next
   while (at > h + 1 && lines[at - 1].trim() === '') at--
+  if (at > h + 1 && lines[at - 1].trim() === '_(none)_') {
+    at--
+    while (at > h + 1 && lines[at - 1].trim() === '') at--
+  }
   const insert = ['', ...entry.trimEnd().split('\n')]
   if (next < lines.length) insert.push('')
   lines.splice(at, next - at, ...insert)

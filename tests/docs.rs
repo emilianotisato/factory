@@ -69,11 +69,19 @@ fn errors_name_the_command_and_quote_stderr() {
     let err = docs.status("999").unwrap_err().to_string();
     assert!(err.contains("docs status 999 --json"), "{err}");
     assert!(err.contains("999"), "{err}");
-    // `log merge` hands back the tool's verdict rather than erroring: the
-    // fixture has no agent-log.md, so the tool says so and exits 2.
+    // `docs new` creates agent-log.md (AD-503), so a fresh fixture has a log
+    // and no fragments: the tool says so and exits 0.
+    let log = fx.path().join("docs/features/001-fixture/agent-log.md");
+    assert!(log.exists(), "docs new created the log");
+    let merge = docs.log_merge("001").unwrap();
+    assert_eq!(merge.code, 0, "{merge:?}");
+    assert!(merge.stdout.contains("nothing to merge"), "{merge:?}");
+    // `log merge` hands back the tool's verdict rather than erroring: with
+    // the log gone, the tool says so and exits 2.
+    fs::remove_file(&log).unwrap();
     let merge = docs.log_merge("001").unwrap();
     assert_eq!(merge.code, 2, "{merge:?}");
-    assert!(merge.stderr.contains("nothing to merge"), "{merge:?}");
+    assert!(merge.stderr.contains("nothing to merge into"), "{merge:?}");
 
     let missing = Docs::locate(fx.path().join("nowhere").as_path());
     // Either the skill's global copy exists on this machine or nothing does;

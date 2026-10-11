@@ -276,8 +276,15 @@ fn gate_shape(rows: &[GateRow], n: u32) -> Vec<(bool, bool, u32)> {
         .collect()
 }
 
+/// The log's own entries, without the template's fenced examples: `docs new`
+/// creates agent-log.md from a template whose examples include a `### CP-1`.
+fn entries(log: &str) -> &str {
+    log.find("\n```markdown").map_or(log, |i| &log[..i])
+}
+
 fn assert_cp(log: &str, n: u32, after: u8, covers: &str) {
     let heading = format!("### CP-{n} — after slice-{after:02} · ");
+    let log = entries(log);
     let i = log
         .find(&heading)
         .unwrap_or_else(|| panic!("{heading} missing from\n{log}"));
@@ -998,7 +1005,7 @@ fn a_run_killed_during_the_checkpoint_worker_resumes_at_the_checkpoint() {
     }
     assert_eq!(state(&dir)["phase"], "checkpoint");
     assert_eq!(state(&dir)["workers"][2]["outcome"], Value::Null);
-    assert!(!fx.read(AGENT_LOG).contains("### CP-1"));
+    assert!(!entries(&fx.read(AGENT_LOG)).contains("### CP-1"));
 
     // Resume: the orphan is settled, the gate is a cache hit, a fresh
     // checkpoint worker writes CP-1, and the run goes on to the end.
@@ -1303,7 +1310,7 @@ fn a_checkpoint_worker_that_outlives_its_driver_gets_its_checkpoint_committed() 
     assert_eq!(unsafe { libc::kill(driver as i32, libc::SIGKILL) }, 0);
     wait_until(&fx, &dir, "the driver to die", 5, || !pid_alive(driver));
     wait_until(&fx, &dir, "the orphan to write CP-1", 20, || {
-        fx.read(AGENT_LOG).contains("### CP-1")
+        entries(&fx.read(AGENT_LOG)).contains("### CP-1")
     });
     assert!(!subjects(&fx).iter().any(|s| s == "docs: checkpoint 1"));
 

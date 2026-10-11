@@ -226,6 +226,16 @@ pub enum EventKind {
         sha: Option<String>,
         files: Vec<String>,
     },
+    /// A closeout file no worker wrote, filled from a template so the ship
+    /// and the PR go on (AD-904): `what` is `retro` or `pr_body`, `path` the
+    /// file filled. The cockpit relays it and the PR body's first line flags
+    /// it. Both default, so a bare `template_stand_in` still parses.
+    TemplateStandIn {
+        #[serde(default)]
+        what: String,
+        #[serde(default)]
+        path: String,
+    },
     /// `docs ship` ran, the retro keys are filled and `docs: ship PRD-NNN`
     /// is committed (`sha`, `None` when nothing was left to commit).
     Shipped {

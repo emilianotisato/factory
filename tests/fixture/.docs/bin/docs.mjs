@@ -1281,6 +1281,9 @@ function newFeature(root, slug, opts) {
     .replaceAll('{{FR}}', String(fr))
     .replaceAll('{{GATE}}', gate.declared ? `\`${gate.declared}\` *(declared in index.md)*` : '_(none declared — run /guardrails before slicing)_')
   write(path.join(dir, 'prd.md'), body)
+  // The log exists from birth, so every reader and writer — a builder's Traps, /deliver,
+  // `docs log merge`, the factory driver — finds the file and its sections in one shape.
+  write(path.join(dir, 'agent-log.md'), read(path.join(TEMPLATES, 'agent-log.md')).replaceAll('{NNN}', pad(number)))
 
   // index row, inserted at the end of the Live features table
   let text = read(p.indexPath)
@@ -1299,7 +1302,7 @@ function newFeature(root, slug, opts) {
   }
 
   render(root, { write: true, quiet: true })
-  console.log(`created docs/features/${pad(number)}-${slug}/prd.md`)
+  console.log(`created docs/features/${pad(number)}-${slug}/prd.md, agent-log.md`)
   console.log(`PRD-${pad(number)} · next free FR: FR-${fr}${shared ? '' : ' (no git — number not reserved across worktrees)'}`)
   console.log(gate.declared ? `gate: ${gate.declared}` : '⚠ no verify gate declared — mention /guardrails in the hand-off (`docs gate --candidates`)')
 }
@@ -1377,7 +1380,10 @@ function featureState(root, p, f) {
   // head, kept so a one-lane run and an older caller read the same field as before.
   const building = slices.filter((s) => s.status === 'building')
   const ready = slices.filter((s) => s.status === 'pending' && s.depends_on.every((d) => done.has(d)))
-  const heldLanes = building.map((s) => s.lane).filter((x) => x !== null)
+  // A blocked slice holds its lane too: its half-finished work still owns the lane's
+  // database, ports and scratch paths, and the owner's answer resumes it there. Free
+  // that lane and the next builder lands beside the parked work.
+  const heldLanes = slices.filter((s) => s.status === 'building' || s.status === 'blocked').map((s) => s.lane).filter((x) => x !== null)
   const freeLanes = []
   for (let i = 1; i <= p.lanes; i++) if (!heldLanes.includes(i)) freeLanes.push(i)
   const entries = f.log?.entries ?? []
@@ -1686,8 +1692,10 @@ function preflight(root, ref, opts = {}) {
   } else {
     const st = computedStatus(f)
     // A /deliver run ships in its closeout commit, then still has the PR, CI and the
-    // owner's review ahead of it — so shipped with an agent log is a run to resume.
-    if (st === 'shipped' && f.log) ok.push('status shipped by /deliver — resumes at the PR, CI or owner review')
+    // owner's review ahead of it — so shipped with a written agent log is a run to
+    // resume. Written, not present: `docs new` creates the log empty, and a run always
+    // leaves at least the CP entry of its last checkpoint.
+    if (st === 'shipped' && f.log?.entries.length) ok.push('status shipped by /deliver — resumes at the PR, CI or owner review')
     else if (!['draft', 'ready', 'in-progress'].includes(st)) refuse.push(`PRD-${pad(f.number)} is ${st} — nothing to deliver`)
     else ok.push(`status ${st}${st === 'draft' ? ' — becomes ready when this preflight passes' : ''}`)
     // reviewed: records /polish over the code. Set before any code exists, it makes a

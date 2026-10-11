@@ -88,6 +88,8 @@ pub fn run(
 
     let n = board.checkpoints.iter().map(|c| c.n).max().unwrap_or(0) + 1;
     let covers = board.unverified.clone();
+    // A second check: `docs new` creates agent-log.md now (AD-503), but a
+    // feature made by a vendored docs.mjs older than that fix has none.
     if !agent_log.exists() {
         fs::write(&agent_log, format!("# Agent log — PRD-{feature}\n"))
             .map_err(io(format!("write {}", agent_log.display())))?;

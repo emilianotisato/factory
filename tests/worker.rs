@@ -1,9 +1,10 @@
 //! What a worker process gets from the driver, seen from the stub `claude`:
 //! no GitHub credential and no session `CLAUDE_*` variable, but the account
 //! and the provider (S1, L17); absolute paths on its command line however
-//! the data dir is spelled (Ln6); files only its owner reads (S-n2); and a
+//! the data dir is spelled (Ln6); files only its owner reads (S-n2); a
 //! stream that is a file of its own, so the worker finishes its record even
-//! when the driver dies first (L9).
+//! when the driver dies first (L9); and a git env that pushes nowhere
+//! (AD-10001).
 #[path = "harness/mod.rs"]
 mod harness;
 
@@ -87,6 +88,7 @@ fn a_worker_gets_no_github_and_no_session_but_keeps_the_account() {
             ("SSH_AUTH_SOCK", "/nonexistent/agent.sock"),
         ])
         .env("CLAUDE_CONFIG_DIR", &account)
+        .env_remove("GIT_CONFIG_COUNT")
         .output()
         .unwrap();
     let text = String::from_utf8_lossy(&out.stdout);
@@ -135,6 +137,14 @@ fn a_worker_gets_no_github_and_no_session_but_keeps_the_account() {
         assert_eq!(real(&gh), real(&dir.join("gh-config")));
         assert_eq!(mode(&gh), 0o700);
         assert_eq!(fs::read_dir(&gh).unwrap().count(), 0);
+        // git pushes nowhere (AD-10001); nothing inherited, so ours start at 0.
+        let git = &call["git_config"];
+        assert_eq!(git["GIT_CONFIG_COUNT"], "3", "{git}");
+        assert_eq!(
+            git["GIT_CONFIG_KEY_0"],
+            "url.factory-no-push://.pushInsteadOf"
+        );
+        assert_eq!(git["GIT_CONFIG_VALUE_0"], "git@");
 
         let argv = call["argv"].as_array().unwrap();
         let pack = Path::new(flag(argv, "--append-system-prompt-file"));
@@ -153,6 +163,166 @@ fn a_worker_gets_no_github_and_no_session_but_keeps_the_account() {
         ] {
             assert_eq!(mode(&workers.join(&file)), 0o600, "{file}");
         }
+    }
+}
+
+/// Run `git args` in `repo` with the fixture's git env and `extra` on top.
+fn git_in(
+    fx: &Fixture,
+    repo: &Path,
+    extra: &[(String, String)],
+    args: &[&str],
+) -> std::process::Output {
+    fx.command("git")
+        .current_dir(repo)
+        .env_remove("GIT_CONFIG_COUNT")
+        .envs(extra.iter().map(|(k, v)| (k, v)))
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+/// AD-10001: a worker's push URLs go to a transport git has no helper for.
+/// The driver inherits one env-config entry of the owner's; the worker keeps
+/// it and gets the three `pushInsteadOf` entries after it. Then, with the
+/// env the stub saw, a push to an https or an scp-style ssh origin fails at
+/// the helper lookup, before any connection, and fetch URLs are untouched.
+#[test]
+fn a_worker_pushes_nowhere_through_the_git_push_off_env() {
+    let fx = Fixture::with_index("worker-push-off", &[("checkpoint_every", "10")]);
+    fx.write_plan(&[json!({"outcome": "done"})]);
+    let out = fx
+        .command(BIN)
+        .args(["run", "001", "--foreground"])
+        .envs([
+            ("GIT_CONFIG_COUNT", "1"),
+            ("GIT_CONFIG_KEY_0", "factory.owner"),
+            ("GIT_CONFIG_VALUE_0", "kept"),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let calls = fx.calls();
+    assert!(calls.len() >= 4, "three slices and a checkpoint: {calls:?}");
+    let key = "url.factory-no-push://.pushInsteadOf";
+    let want = json!({
+        "GIT_CONFIG_COUNT": "4",
+        "GIT_CONFIG_KEY_0": "factory.owner",
+        "GIT_CONFIG_VALUE_0": "kept",
+        "GIT_CONFIG_KEY_1": key,
+        "GIT_CONFIG_VALUE_1": "git@",
+        "GIT_CONFIG_KEY_2": key,
+        "GIT_CONFIG_VALUE_2": "ssh://",
+        "GIT_CONFIG_KEY_3": key,
+        "GIT_CONFIG_VALUE_3": "https://",
+    });
+    for call in &calls {
+        assert_eq!(call["git_config"], want, "call {}", call["n"]);
+    }
+    let env: Vec<(String, String)> = calls[0]["git_config"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string()))
+        .collect();
+
+    let repo = fx.path().parent().unwrap().join("push-off");
+    fs::create_dir_all(&repo).unwrap();
+    let ok = |o: std::process::Output| {
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8(o.stdout).unwrap().trim().to_string()
+    };
+    ok(git_in(&fx, &repo, &[], &["init", "-q", "-b", "main"]));
+    ok(git_in(
+        &fx,
+        &repo,
+        &[],
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "x",
+        ],
+    ));
+    ok(git_in(
+        &fx,
+        &repo,
+        &[],
+        &["remote", "add", "origin", "https://example.invalid/x.git"],
+    ));
+    assert_eq!(
+        ok(git_in(&fx, &repo, &env, &["config", "factory.owner"])),
+        "kept"
+    );
+
+    // ssh would leave this mark if git ever reached for it.
+    let mark = repo.join("ssh-ran");
+    let ssh = (
+        "GIT_SSH_COMMAND".to_string(),
+        format!("touch {} && false", mark.display()),
+    );
+    for (url, rewritten) in [
+        (
+            "https://example.invalid/x.git",
+            "factory-no-push://example.invalid/x.git",
+        ),
+        (
+            "git@example.invalid:x.git",
+            "factory-no-push://example.invalid:x.git",
+        ),
+    ] {
+        ok(git_in(
+            &fx,
+            &repo,
+            &[],
+            &["remote", "set-url", "origin", url],
+        ));
+        let push_url = ok(git_in(
+            &fx,
+            &repo,
+            &env,
+            &["remote", "get-url", "--push", "origin"],
+        ));
+        assert!(
+            push_url.starts_with("factory-no-push://"),
+            "{url}: {push_url}"
+        );
+        assert_eq!(push_url, rewritten);
+        assert_eq!(
+            ok(git_in(&fx, &repo, &env, &["remote", "get-url", "origin"])),
+            url
+        );
+        let mut with_ssh = env.clone();
+        with_ssh.push(ssh.clone());
+        let push = git_in(
+            &fx,
+            &repo,
+            &with_ssh,
+            &["push", "origin", "HEAD:refs/heads/main"],
+        );
+        let err = String::from_utf8_lossy(&push.stderr);
+        assert!(!push.status.success(), "{url}: {err}");
+        assert!(err.contains("remote-factory-no-push"), "{url}: {err}");
+        assert!(!err.contains("resolve") && !mark.exists(), "{url}: {err}");
+        // Without the push-off env the same push would reach for the network.
+        let push_url = ok(git_in(
+            &fx,
+            &repo,
+            &[],
+            &["remote", "get-url", "--push", "origin"],
+        ));
+        assert_eq!(push_url, url);
     }
 }
 

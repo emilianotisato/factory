@@ -24,6 +24,9 @@
 //! owns, so nothing is installed under the owner's `~/.claude/` or the
 //! project's `.claude/`. `FACTORY_PACK=<pack>` tells the hook which files
 //! the pack holds and `FACTORY_REPO=<repo>` what they are relative to.
+//! On top of those, a git push-off env ([`push_off_env`], AD-10001) rewrites
+//! every ssh and https push URL to a transport git has no helper for, so a
+//! push that slips past the rules and the hook still goes nowhere.
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
@@ -85,6 +88,45 @@ pub fn scrubbed(name: &str) -> bool {
 
 /// The worker env var naming the repo the pack's paths are relative to.
 pub const REPO_ENV: &str = "FACTORY_REPO";
+
+/// git's count of `GIT_CONFIG_KEY_<i>`/`GIT_CONFIG_VALUE_<i>` pairs.
+pub const GIT_CONFIG_COUNT: &str = "GIT_CONFIG_COUNT";
+
+/// Where a worker's push URLs are sent (AD-10001): a transport no git has a
+/// `git-remote-*` helper for, so a push fails before any connection opens.
+pub const PUSH_OFF_BASE: &str = "factory-no-push://";
+
+/// The URL prefixes rewritten to [`PUSH_OFF_BASE`] on push: scp-style ssh
+/// (`git@host:path`), `ssh://` and `https://`.
+pub const PUSH_OFF_PREFIXES: [&str; 3] = ["git@", "ssh://", "https://"];
+
+/// The git push-off env (AD-10001, DEC-2): one
+/// `url.factory-no-push://.pushInsteadOf` entry per [`PUSH_OFF_PREFIXES`],
+/// set through git's `GIT_CONFIG_KEY_<i>`/`GIT_CONFIG_VALUE_<i>` env config.
+/// `inherited` is the `GIT_CONFIG_COUNT` the worker would get otherwise: its
+/// `n` entries are the owner's and stay, ours go at `n`, `n+1`, `n+2` and the
+/// count becomes `n+3`. A count git itself would reject as bogus counts as 0.
+/// Only push URLs change; fetch, pull and `get-url` keep the remote's URL.
+///
+/// Known gap: git ignores `pushInsteadOf` for a remote with an explicit
+/// `pushurl` (`remote.<name>.pushurl`), which it pushes to unrewritten. The
+/// other layers still cover that remote: the deny rules and the hook refuse
+/// any `git push`, and no GitHub token reaches the worker.
+pub fn push_off_env(inherited: Option<&str>) -> Vec<(String, String)> {
+    let n: usize = inherited.and_then(|c| c.parse().ok()).unwrap_or(0);
+    let mut env = vec![(
+        GIT_CONFIG_COUNT.to_string(),
+        (n + PUSH_OFF_PREFIXES.len()).to_string(),
+    )];
+    for (i, prefix) in PUSH_OFF_PREFIXES.iter().enumerate() {
+        env.push((
+            format!("GIT_CONFIG_KEY_{}", n + i),
+            format!("url.{PUSH_OFF_BASE}.pushInsteadOf"),
+        ));
+        env.push((format!("GIT_CONFIG_VALUE_{}", n + i), (*prefix).to_string()));
+    }
+    env
+}
 
 /// The empty `GH_CONFIG_DIR` of a run's workers: `runs/<id>/gh-config`.
 pub fn gh_config_dir(run_dir: &Path) -> PathBuf {
@@ -266,6 +308,15 @@ impl Worker {
             cmd.env_remove(k);
         }
         cmd.env("GH_CONFIG_DIR", &gh_config);
+        // After the lane's env too: the count a lane sets wins over the
+        // driver's, and either way its entries stay and ours go after them.
+        let inherited = env
+            .iter()
+            .rev()
+            .find(|(k, _)| k == GIT_CONFIG_COUNT)
+            .map(|(_, v)| v.clone())
+            .or_else(|| std::env::var(GIT_CONFIG_COUNT).ok());
+        cmd.envs(push_off_env(inherited.as_deref()));
         cmd.env(crate::cli::hook::PACK_ENV, &pack_path);
         cmd.env(REPO_ENV, &repo);
         let mut child = cmd.spawn().map_err(|e| Error::Tool {
@@ -520,6 +571,28 @@ mod tests {
         );
         child.kill().unwrap();
         child.wait().unwrap();
+    }
+
+    #[test]
+    fn the_push_off_env_goes_after_the_inherited_git_config() {
+        let key = format!("url.{PUSH_OFF_BASE}.pushInsteadOf");
+        let ours = |from: usize| -> Vec<(String, String)> {
+            let mut v = vec![(GIT_CONFIG_COUNT.to_string(), (from + 3).to_string())];
+            for (i, p) in ["git@", "ssh://", "https://"].iter().enumerate() {
+                v.push((format!("GIT_CONFIG_KEY_{}", from + i), key.clone()));
+                v.push((format!("GIT_CONFIG_VALUE_{}", from + i), p.to_string()));
+            }
+            v
+        };
+        assert_eq!(push_off_env(None), ours(0));
+        assert_eq!(push_off_env(Some("0")), ours(0));
+        assert_eq!(
+            push_off_env(Some("")),
+            ours(0),
+            "git reads an empty count as 0"
+        );
+        assert_eq!(push_off_env(Some("2")), ours(2));
+        assert_eq!(push_off_env(Some("bogus")), ours(0));
     }
 
     #[test]

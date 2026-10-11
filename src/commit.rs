@@ -391,6 +391,8 @@ pub fn fold_logs(docs: &Docs, repo: &Path, board: &Status, feature: &str) -> Res
         return Ok(Fold::Nothing);
     }
     let log = dir.join("agent-log.md");
+    // A second check: `docs new` creates agent-log.md now (AD-503), but a
+    // feature made by a vendored docs.mjs older than that fix has none.
     if !log.exists() {
         fs::write(&log, format!("# Agent log — PRD-{feature}\n"))
             .map_err(io(format!("write {}", log.display())))?;

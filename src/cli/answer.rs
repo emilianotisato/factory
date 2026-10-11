@@ -317,6 +317,8 @@ fn answer_ask(
     let logged = match fs::read_to_string(&log) {
         Ok(t) => t.lines().any(|l| l == dec),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // A second check: `docs new` creates agent-log.md now (AD-503), but a
+            // feature made by a vendored docs.mjs older than that fix has none.
             fs::write(&log, format!("# Agent log — PRD-{feature}\n"))
                 .map_err(io(format!("write {}", log.display())))?;
             false

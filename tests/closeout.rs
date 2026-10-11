@@ -556,6 +556,121 @@ fn a_finished_board_polishes_ships_pushes_and_opens_the_draft_pr() {
     );
 }
 
+/// AD-904: a polish worker that leaves out `skip` (`retro`, `body` or both)
+/// still gets its run shipped and its PR opened, from templates — and each
+/// stand-in is flagged: one `template_stand_in` event naming the file, which
+/// `factory wait` relays, and one first line in the PR body. Returns the run
+/// dir, the PR body and the cockpit's replayed lines.
+fn stood_in_run(name: &str, skip: &[&str]) -> (Fixture, PathBuf, String, String) {
+    let fx = Fixture::new(name);
+    fx.chain();
+    fx.write_plan(&plan_with(&[json!({"outcome": "polish", "skip": skip})]));
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "finished", 90);
+    assert_eq!(
+        subjects(&fx)[subjects(&fx).len() - 2..],
+        ["polish: review fixes", "docs: ship PRD-001"]
+    );
+    assert_eq!(fx.git(&["status", "--porcelain"]).trim(), "", "tree dirty");
+    let body_path = dir.join("pr-body.md");
+    assert_eq!(
+        gh_calls(&fx, "pr create"),
+        [format!(
+            "pr create --draft --base main --title \"PRD-001: Fixture\" --body-file {} --head feat/fixture",
+            body_path.display()
+        )]
+    );
+    let body = fs::read_to_string(&body_path).unwrap();
+    let out = factory(&fx, &["wait", &run_id(&dir), "--replay"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    (fx, dir, body, stdout(&out))
+}
+
+fn stand_in_relay(file: &str) -> String {
+    format!(
+        "stand-in: {file} is a template, the polish worker wrote none — the PR body's first line says so"
+    )
+}
+
+#[test]
+fn a_retro_the_polish_worker_left_out_is_a_flagged_stand_in() {
+    let (fx, dir, body, relayed) = stood_in_run("closeout-stand-in-retro", &["retro"]);
+    // The retro is the template, committed with the polish and filled at ship.
+    let polish_sha = sha_of(&fx, "polish: review fixes");
+    assert!(files_of(&fx, &polish_sha).contains(&RETRO.to_string()));
+    assert!(!fx.read(RETRO).contains("Stub retro"), "{}", fx.read(RETRO));
+    assert_eq!(fm_value(&fx, RETRO, "slices"), "3");
+    // One event, naming the retro; the body is the worker's, flagged first.
+    let stood = of_kind(&dir, "template_stand_in");
+    assert_eq!(stood.len(), 1, "{stood:?}");
+    assert_eq!(stood[0]["what"], "retro");
+    assert_eq!(stood[0]["path"], RETRO);
+    assert_eq!(
+        body.lines().next().unwrap(),
+        format!(
+            "**Template stand-in:** the retro (`{RETRO}`) is factory's template — the polish worker wrote none."
+        )
+    );
+    assert!(
+        body.contains("\n\n## PRD-001 — Fixture\n\nStub PR body"),
+        "{body}"
+    );
+    assert_eq!(body.matches("**Template stand-in").count(), 1, "{body}");
+    assert!(relayed.contains(&stand_in_relay(RETRO)), "{relayed}");
+    assert_eq!(
+        kinds_from(&dir, "polish_spawned"),
+        [
+            "polish_spawned",
+            "template_stand_in",
+            "polish_done",
+            "shipped",
+            "pr_opened",
+            "ci_green",
+            "run_finished"
+        ]
+    );
+}
+
+#[test]
+fn a_pr_body_the_polish_worker_left_out_is_a_flagged_stand_in() {
+    let (fx, dir, body, relayed) = stood_in_run("closeout-stand-in-body", &["body"]);
+    assert!(fx.read(RETRO).contains("Stub retro"), "the worker's retro");
+    let path = dir.join("pr-body.md").display().to_string();
+    let stood = of_kind(&dir, "template_stand_in");
+    assert_eq!(stood.len(), 1, "{stood:?}");
+    assert_eq!(stood[0]["what"], "pr_body");
+    assert_eq!(stood[0]["path"], path.as_str());
+    assert!(
+        body.starts_with(
+            "**Template stand-in:** this PR body is factory's template — the polish worker wrote none.\n\n## PRD-001 — fixture\n"
+        ),
+        "{body}"
+    );
+    assert!(relayed.contains(&stand_in_relay(&path)), "{relayed}");
+}
+
+#[test]
+fn a_polish_worker_that_wrote_neither_gets_both_flagged() {
+    let (_fx, dir, body, relayed) = stood_in_run("closeout-stand-in-both", &["retro", "body"]);
+    let path = dir.join("pr-body.md").display().to_string();
+    let stood = of_kind(&dir, "template_stand_in");
+    let named: Vec<(&str, &str)> = stood
+        .iter()
+        .map(|e| (e["what"].as_str().unwrap(), e["path"].as_str().unwrap()))
+        .collect();
+    assert_eq!(named, [("retro", RETRO), ("pr_body", path.as_str())]);
+    assert_eq!(
+        body.lines().next().unwrap(),
+        format!(
+            "**Template stand-ins:** this PR body and the retro (`{RETRO}`) are factory's templates — the polish worker wrote neither."
+        )
+    );
+    assert_eq!(body.matches("**Template stand-in").count(), 1, "{body}");
+    for file in [RETRO, path.as_str()] {
+        assert!(relayed.contains(&stand_in_relay(file)), "{relayed}");
+    }
+}
+
 #[test]
 fn a_slice_not_done_at_ship_blocks_the_closeout_in_phase_polish() {
     let fx = Fixture::new("closeout-ship-refused");

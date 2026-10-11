@@ -15,7 +15,8 @@ use crate::{Result, clock};
 pub const CURSOR_FILE: &str = "cockpit.cursor";
 
 /// §9: a block, an ask, a quota pause, a cap reached, finished, failed — and
-/// `run_stopped`, the end of a stopped run (AD-1002). Everything else is
+/// `run_stopped`, the end of a stopped run (AD-1002), and a closeout file
+/// filled from a template (`template_stand_in`, AD-904). Everything else is
 /// progress and only shows in `factory status`.
 pub fn is_cockpit(kind: &EventKind) -> bool {
     matches!(
@@ -30,6 +31,7 @@ pub fn is_cockpit(kind: &EventKind) -> bool {
             | EventKind::RunFinished { .. }
             | EventKind::RunStopped { .. }
             | EventKind::RunFailed { .. }
+            | EventKind::TemplateStandIn { .. }
     )
 }
 
@@ -93,6 +95,17 @@ pub fn line(ev: &Event, feature: &str) -> Option<String> {
             )
         }
         EventKind::RunFailed { error } => format!("failed: {}", first_line(error)),
+        EventKind::TemplateStandIn { what, path } => {
+            let file = match (path.is_empty(), what.as_str()) {
+                (false, _) => path.as_str(),
+                (true, "retro") => "the retro",
+                (true, "pr_body") => "the PR body",
+                (true, _) => "a closeout file",
+            };
+            format!(
+                "stand-in: {file} is a template, the polish worker wrote none — the PR body's first line says so"
+            )
+        }
         _ => return None,
     })
 }
@@ -433,6 +446,30 @@ mod tests {
                 error: "boom\nstack".into(),
             }),
             Some("failed: boom".into())
+        );
+        assert_eq!(
+            l(EventKind::TemplateStandIn {
+                what: "retro".into(),
+                path: "docs/features/001-x/retro.md".into(),
+            }),
+            Some(
+                "stand-in: docs/features/001-x/retro.md is a template, the polish worker wrote none — the PR body's first line says so"
+                    .into()
+            )
+        );
+        // A bare `template_stand_in` (AD-904's fields default) still parses
+        // and still names what it can.
+        let bare: Event = serde_json::from_str(
+            r#"{"seq":1,"ts":"2026-10-11T00:00:00Z","kind":"template_stand_in"}"#,
+        )
+        .unwrap();
+        assert!(is_cockpit(&bare.kind));
+        assert_eq!(
+            line(&bare, f),
+            Some(
+                "stand-in: a closeout file is a template, the polish worker wrote none — the PR body's first line says so"
+                    .into()
+            )
         );
         for progress in [
             EventKind::RunStarted,

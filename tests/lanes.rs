@@ -824,21 +824,24 @@ fn answer_takes_the_open_block_and_prefers_the_parked_feature() {
 #[test]
 fn block_answered_is_logged_before_the_slice_flips() {
     // The flip is what a live driver acts on; an event logged after it can
-    // land behind the `slice_spawned` it caused. A read-only slice file
-    // makes the flip fail: whatever was logged before it shows.
+    // land behind the `slice_spawned` it caused. A read-only feature dir
+    // makes the flip fail — it lands by a rename from a temp beside the
+    // slice (DEC-3) — while the fragment is still edited in place: whatever
+    // was logged before the flip shows.
     let fx = Fixture::new("answer-order");
-    let frag = fx.path().join(harness::FEATURE_DIR).join("log-slice-01.md");
+    let feature_dir = fx.path().join(harness::FEATURE_DIR);
+    let frag = feature_dir.join("log-slice-01.md");
     fs::write(&frag, block_fragment("open")).unwrap();
     let slice = fx.slice_path(1);
     factory::scheduler::set_slice_status(&slice, "blocked").unwrap();
     let run = parked_run(&fx);
     let mode = |m: u32| {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&slice, fs::Permissions::from_mode(m)).unwrap();
+        fs::set_permissions(&feature_dir, fs::Permissions::from_mode(m)).unwrap();
     };
-    mode(0o444);
+    mode(0o555);
     let out = factory(&fx, &["answer", "BLOCK-101", "use sqlite"]);
-    mode(0o644);
+    mode(0o755);
     assert_ne!(out.status.code(), Some(0), "{}", stdout(&out));
     let answered: Vec<Value> = events(run.dir())
         .into_iter()
@@ -854,18 +857,21 @@ fn block_answered_is_logged_before_the_slice_flips() {
 #[test]
 fn an_answer_that_stopped_before_the_flip_is_finished_by_a_retry() {
     let fx = Fixture::new("answer-retry");
-    let frag = fx.path().join(harness::FEATURE_DIR).join("log-slice-01.md");
+    let feature_dir = fx.path().join(harness::FEATURE_DIR);
+    let frag = feature_dir.join("log-slice-01.md");
     fs::write(&frag, block_fragment("open")).unwrap();
     let slice = fx.slice_path(1);
     factory::scheduler::set_slice_status(&slice, "blocked").unwrap();
     let run = parked_run(&fx);
+    // A read-only feature dir fails the flip (a rename, DEC-3), not the
+    // fragment's in-place edit.
     let mode = |m: u32| {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&slice, fs::Permissions::from_mode(m)).unwrap();
+        fs::set_permissions(&feature_dir, fs::Permissions::from_mode(m)).unwrap();
     };
-    mode(0o444);
+    mode(0o555);
     let out = factory(&fx, &["answer", "BLOCK-101", "use sqlite"]);
-    mode(0o644);
+    mode(0o755);
     assert_ne!(out.status.code(), Some(0), "{}", stdout(&out));
     assert!(fs::read_to_string(&frag).unwrap().contains("· resolved\n"));
 
