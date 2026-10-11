@@ -1,0 +1,13 @@
+== php/HasTimestamps.php ==
+5  class  trait HasTimestamps
+
+== php/Notifier.php ==
+7  class  interface Notifier
+
+== php/OtherService.php ==
+7  class  class OtherService implements Notifier
+
+== php/UserService.php ==
+11  class  final class UserService
+
+6 nested definitions hidden (--depth)

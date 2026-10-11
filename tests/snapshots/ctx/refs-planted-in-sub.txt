@@ -1,0 +1,31 @@
+refs/sub/caller31.go:5  ref  total += planted(0)
+    total += planted(1)
+
+refs/sub/caller31.go:6  ref  total += planted(1)
+    total += planted(2)
+
+refs/sub/caller31.go:7  ref  total += planted(2)
+    total += planted(3)
+
+refs/sub/caller32.rs:3  ref  total += planted(0);
+    total += planted(1);
+
+refs/sub/caller32.rs:4  ref  total += planted(1);
+    total += planted(2);
+
+refs/sub/caller32.rs:5  ref  total += planted(2);
+    total += planted(3);
+
+refs/sub/caller33.ts:3  ref  total += planted(0)
+    total += planted(1)
+
+refs/sub/caller33.ts:4  ref  total += planted(1)
+    total += planted(2)
+
+refs/sub/caller33.ts:5  ref  total += planted(2)
+    total += planted(3)
+
+refs/sub/caller34.php:5  ref  $total += planted(0);
+    $total += planted(1);
+
+60 more hits in 10 files (--max, --per-file to widen)

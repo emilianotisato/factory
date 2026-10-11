@@ -1,0 +1,3 @@
+== vue/UserCard.vue ==
+6  fn  function greet(name: string): string {
+10  fn  const useThing = (prefix: string) => {

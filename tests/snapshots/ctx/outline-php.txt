@@ -1,0 +1,17 @@
+== php/HasTimestamps.php ==
+5  class  trait HasTimestamps
+  7  method  public function touch(): void
+
+== php/Notifier.php ==
+7  class  interface Notifier
+  9  method  public function notify(User $user, string $template): void;
+
+== php/OtherService.php ==
+7  class  class OtherService implements Notifier
+  9  method  public function welcome(User $user): void
+  14  method  public function notify(User $user, string $template): void
+
+== php/UserService.php ==
+11  class  final class UserService
+  15  method  public function __construct(private OtherService $mail)
+  19  method  public function handle(array $input): User

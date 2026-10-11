@@ -1,6 +1,7 @@
 ---
 slice: 12
-status: pending
+status: done
+lane: 1
 depends_on: [11]
 ---
 
@@ -9,7 +10,31 @@ depends_on: [11]
 **Source**: [`prd.md`](prd.md) → §14 FR-12 decision 2 (tree-sitter half: definition-node confirmation, body as node range, comments and strings dropped, `outline` from `tags.scm`, the Vue shim), decision 5 ("(2) tree-sitter tags for the four grammars, `outline`, the kind filter, the Vue script shim"), and its acceptance. **Depends on**: 11 (same files: the regex hits are the candidates tree-sitter confirms; the printer and fixtures are reused).
 **Created**: 2026-10-09 · **Status**: pending
 
-**Progress**: _(written as it lands)_
+**Progress** (2026-10-10, lane 1):
+- **Built.** `src/ctx/lang.rs`: `Grammar` (PHP, TypeScript, TSX, Go, Rust; AD-1204) with `language()` and `tags_config()`, the latter built once per process in a `OnceLock` from each crate's `TAGS_QUERY` with our patterns in front (AD-1203); the comment and string node sets (AD-1208); `Unit` (a whole file, or a Vue script block at its offset) with `definitions()` and `in_comment_or_string()`; the `--kind` mapping and `kind_matches` (AD-1201). `src/ctx/vue.rs`: `script_block`. `def.rs`: each candidate file is tagged once; a regex hit is kept when a definition tag's name sits on its line, kind from the tag, filtered by `--kind`, body = the node's range printed whole; an unconfirmed hit is classed (comment or string, or no definition node) with one parse and counted in the trailer (AD-1205); a file whose tree holds an error keeps slice 11's output with a trailer note (AD-1206). `refs.rs`: each file with hits (test files only under `--tests`) is parsed once, and a line is dropped before the caps when every match on it lies in a comment or a string, counted as `N dropped (comments/strings)`. `outline.rs` and `print::outline`: tags only, one parse per file, a `== path ==` header each, members indented under their container, `--depth` default 2 as task 4 says (the §14 synopsis shows the flag as `[--depth 1]`), a directory outlined non-recursively (AD-1202, AD-1207). Slice 11's outline stub and its "applied from slice 12" `--kind` note are gone.
+- **Crates and the version check.** `tree-sitter` 0.27.1, `tree-sitter-tags` 0.27.1, `tree-sitter-php` 0.25.1, `tree-sitter-go` 0.25.0, `tree-sitter-rust` 0.24.2 and `tree-sitter-typescript` 0.23.2 compiled together on the first build: all four grammars share `tree-sitter-language` 0.1.9, whose `LanguageFn` the 0.27 core takes, so no pin was needed. Nothing else added.
+- **Tests.** Un-ignored slice 11's `def_drops_the_docblock_mention` and `refs_drops_the_comment_and_string_hits`; both pass (298 real hits = 300 - 2, trailer `2 dropped (comments/strings)`). New in `tests/ctx.rs`: `def_kind_filters_and_fn_takes_methods`; `def_body_is_the_node_range` (UserService ends at its brace, Config is whole, a 40-line body is not cut and its last line stops where the node does); `outline_prints_definitions_and_nothing_else` (the PHP fixture, `--depth 1`, and a temp class whose `use`, constant and property print nothing); `outline_covers_go_rust_vue_and_empty_files` (Vue lines 6 and 10; an empty `.rs` and a template-only `.vue` print their header and exit 0; an unreadable path exits 2); `a_file_that_does_not_parse_keeps_its_textual_matches`. Eight new snapshots, each read line by line: `def-handle-kind-method`, `def-handle-kind-class`, `def-new-kind-fn`, `outline-php`, `outline-php-depth-1`, `outline-go`, `outline-rs`, `outline-vue`. Unit tests: `lang.rs` (task 1: one fixture per language parses to `program`, `program`, `source_file`, `source_file`, and the Vue block to `program`, each with a definition tag; the kind mapping; comments and strings in four grammars, with `${…}` as code), `vue.rs`, `outline.rs` (nesting, locals, bodyless modules), `def.rs` (the fallback's keyword vocabulary).
+- **Inner loop:** 5 runs of `cargo test`, 1 red, about 2 min (5 s, 20 s, 2 s, 36 s, 37 s). Run 1 was `--lib ctx::`, the version check. The red run was the snapshot test, by design: seven slice 11 snapshots moved and eight new ones were absent. They were blessed with `FACTORY_BLESS=1`, then read. The other 15 `ctx` tests passed on their first run. The final run was green: 141 passed, 0 ignored. `cargo fmt` reflowed long lines in `def.rs`, `refs.rs`, `lang.rs` and `print.rs`; `cargo clippy --all-targets -- -D warnings` caught nothing.
+- **Earlier-slice expectation shifts** (`tests/ctx.rs`):
+  - `def_prints_location_kind_signature_and_body_on_every_stack`: the kinds `function`→`method`, `func`→`fn`, `struct`→`class`, `const`→`fn`.
+  - `def_still_prints_the_docblock_mention` → `def_prints_only_the_definition_node`: one hit, the drop counted.
+  - `refs_still_prints_the_comment_and_string_hits` → `refs_starts_at_the_first_real_hit`: the first hit is `caller01.ts:5`.
+  - `refs_caps_at_10_with_a_trailer`: 290 → 288 more hits.
+  - `a_hit_in_a_test_file_shows_only_with_tests`: 300 → 298 and 301 → 299 hits, plus `; 2 dropped (comments/strings)`.
+  - `outline_says_it_needs_tree_sitter_and_exits_2`: replaced by the outline tests above.
+  - `a_bad_flag_or_an_unreadable_root_exits_2`: `--kind class` now prints `rs/config.rs:4  class`.
+  - `SNAPSHOTS`: 12 → 20.
+
+  Snapshots re-blessed:
+  - `def-Config`, `def-NewClient`, `def-OtherService`, `def-handle`, `def-useThing`: the kinds, and the docblock hit is gone.
+  - `refs-planted`, `refs-planted-max-20-per-file-1`: the comment and string hits are gone, and the trailers changed.
+
+  `def-UserService` and its `--no-body` twin did not move: the node range ends where the heuristic did.
+- **Deviations:** AD-1201 (`--kind fn` takes methods, which task 2's acceptance needs) and AD-1202 (`outline` prints Rust `impl` lines and trait declarations) are both `decide`. AD-1203 (`fyi`) puts our tag patterns in front of the upstream ones.
+- **Prove (task 7), CP-6 2026-10-10:** passed. "`def` returns exactly the definition with kind and signature and drops the docblock mention", "`refs` … 300 - 2" and "`outline` prints every top-level definition with its signature and nothing else": `cargo test --test ctx -- --nocapture` green, 17 tests with the two un-ignored slice 11 assertions, and the same commands driven by hand on the fixture, byte-identical to the snapshots across two runs. `outline` under 1 s warm on both checkouts, 0.046 s and 0.052 s medians, in [slice 11's table](slice-11-ctx-search.md). Driving `def` on icg-cloud found a defect the fixture could not show. An attributed PHP class or method, or a decorated TypeScript class, was located at its attribute line, with the attribute printed as its signature. Fixed at the checkpoint: the header is the name's line, and the body is the whole node range (AD-9003, `decide`). Evidence: [`evidence/cp-6-fr12-ctx-tests.txt`](evidence/cp-6-fr12-ctx-tests.txt), [`evidence/cp-6-fr12-pinned-output.txt`](evidence/cp-6-fr12-pinned-output.txt), [`evidence/cp-6-fr12-timing.txt`](evidence/cp-6-fr12-timing.txt).
+
+**Code-review fixes (2026-10-10).**
+- `vue::script_block` read only the first `<script>` block, so a component with both `<script>` and `<script setup>` lost its setup half from `outline`, `def` and the `refs` comment check (C4). `vue::script_blocks` now reads every complete `<script` block in file order at its real line numbers; **this supersedes AD-1208's first-block-only clause**, and the rest of AD-1208 (the quoted `>` rule, no `lang`, template hits kept) stands (AD-40002).
 
 **Slice**: After this slice `def` returns exactly the definition: each regex candidate is parsed with tree-sitter and kept only when the match sits inside a definition node of the right kind and outside comments and strings; the body is the node's exact range; `--kind class|fn|method|type` filters. `refs` drops hits inside comments and strings. `outline` prints every top-level definition with its signature from the grammar's `tags.scm`, and Vue files are outlined by parsing the `<script>` block with the TypeScript grammar at offset. The docblock mention from slice 11's fixture now disappears, which is the acceptance.
 

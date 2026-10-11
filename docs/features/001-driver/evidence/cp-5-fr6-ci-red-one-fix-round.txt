@@ -1,0 +1,129 @@
+# FR-6 — fixture closeout with a red CI check: docs ship, the twelve retro keys, one draft PR call, one fix worker, then green
+date: 2026-10-10T07:29:15-06:00  branch: feat/driver  HEAD: 9248211 (slice-10) + the uncommitted CP-5 changes (the log merge, AD-9002's transcript echo in tests/cockpit.rs and tests/run.rs, the status gate-minutes format in src/cli/status.rs) — none touches src/closeout.rs, src/ci.rs, the stubs or tests/closeout.rs
+$ FACTORY_KEEP_FIXTURE=1 cargo test --test closeout -- --nocapture --test-threads=1 a_red_check_gets_one_fix_round_then_green a_flaky_check_is_rerun_once_then_green
+test: tests/closeout.rs::a_red_check_gets_one_fix_round_then_green — plan: done, done, checkpoint, done, checkpoint, polish, fix (chain 01→02→03, checkpoint_every 2); scenario/ci: red:test, green; `factory run 001` detached, the test waits for phase finished (120 s cap)
+kept fixture: /tmp/factory-closeout-ci-red-green-GAHoTM (repo/, origin.git, stub/gh.log, data/runs/001-20261010-32eb). Every `gh` call is the stub tests/stubs/gh; origin is the fixture's bare repo; the real gh was never run and nothing was pushed outside the temp dir.
+
+## test output
+    running 2 tests
+    test a_red_check_gets_one_fix_round_then_green ... fixture closeout-ci-red-green kept at /tmp/factory-closeout-ci-red-green-GAHoTM
+    test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 4.13s
+
+## acceptance (prd §16 FR-6: `docs ship`, retro keys filled, one draft PR call, one fix worker on red CI, one flaky rerun — evidence: stubbed `gh` call log)
+- `docs ship` ran: the PRD reads `status: shipped` (and `reviewed:`, the polish worker's), and the commit after `polish: review fixes` is `docs: ship PRD-001` (prd.md, retro.md, docs/index.md); event `shipped` at seq 27.
+- retro keys filled: all twelve numeric keys of retro.md carry a value, `score:` is empty (the owner's). `ci_cycles` was 0 in the ship commit and the `fix: CI test` commit bumped it to 1 (AD-905), matching `run_finished.ci_cycles: 1`.
+- one draft PR call: gh.log line 2 is the only `pr create`: `--draft --base main --title "PRD-001: Fixture" --body-file <run dir>/pr-body.md`; line 1 is the AD-903 `pr view` reuse probe, which found no PR (the stub exits 1 before a create). No `pr edit`, no `pr merge`, no `pr ready`.
+- one fix worker on red CI: scenario/ci `red:test, green` → gh.log line 3 the first `pr checks 1 --watch --interval 60` (red), line 4 `run list` (no success at that head, so not flaky — AD-902), line 5 `run view 1000 --log-failed` (the log in the fix pack's `# CI failure`), line 6 the second `pr checks` (green). Exactly one `fix` worker row (id 7, slice and checkpoint NULL, outcome done), one `fix: CI test` commit (retro.md + src/lib.txt) pushed to origin, `ci_red → ci_fix_spawned → ci_fix_committed → ci_green → run_finished`; no `run rerun` line.
+
+## stub gh.log (whole, numbered)
+         1	pr view feat/fixture --json url,state
+         2	pr create --draft --base main --title "PRD-001: Fixture" --body-file /tmp/factory-closeout-ci-red-green-GAHoTM/data/runs/001-20261010-32eb/pr-body.md
+         3	pr checks 1 --watch --interval 60
+         4	run list --branch feat/fixture --limit 20 --json databaseId,name,workflowName,conclusion,headSha
+         5	run view 1000 --log-failed
+         6	pr checks 1 --watch --interval 60
+
+## repo/scenario/ci
+    red:test
+    green
+
+## the twelve retro keys — docs/features/001-fixture/retro.md frontmatter at HEAD (12 of 12 numeric keys with a value; score empty)
+    ---
+    score:
+    gate_runs: 2
+    gate_red: 0
+    gate_minutes: 0.00
+    ci_cycles: 1
+    slices: 3
+    checkpoints: 2
+    build_minutes: 0.19
+    polish_minutes: 0.06
+    out_tokens: 1092
+    cache_read_tokens: 250044
+    start_context: 24215
+    peak_context: 24215
+    ---
+  at the ship commit f16dc98: ci_cycles: 0  ·  at HEAD: ci_cycles: 1
+
+## PRD frontmatter (docs ship)
+    status: shipped
+    reviewed: 2026-10-10
+
+## git log --stat after docs: checkpoint 2 (9d9bd91)
+    5e77f24 polish: review fixes
+     docs/features/001-fixture/prd.md   |  1 +
+     docs/features/001-fixture/retro.md | 25 +++++++++++++++++++++++++
+     src/lib.txt                        |  1 +
+     3 files changed, 27 insertions(+)
+    f16dc98 docs: ship PRD-001
+     docs/features/001-fixture/prd.md   |  2 +-
+     docs/features/001-fixture/retro.md | 22 +++++++++++-----------
+     docs/index.md                      |  2 +-
+     3 files changed, 13 insertions(+), 13 deletions(-)
+    b764d5a fix: CI test
+     docs/features/001-fixture/retro.md | 2 +-
+     src/lib.txt                        | 1 +
+     2 files changed, 2 insertions(+), 1 deletion(-)
+  origin.git refs/heads/feat/fixture: b764d5a  ·  repo HEAD: b764d5a
+
+## workers — sqlite3 data/factory.db
+    id     role     slice  checkpoint  outcome  commit_sha
+    --  ----------  -----  ----------  -------  ----------
+     1  build           1              done     cdc1ae6
+     2  build           2              done     d2b2dfe
+     3  checkpoint                  1  done     58236c5
+     4  build           3              done     1cd46bd
+     5  checkpoint                  2  done     9d9bd91
+     6  polish                         done     5e77f24
+     7  fix                            done     b764d5a
+  runs.pr_url: https://example.invalid/pr/1  ·  state.json pr_url: "pr_url": "https://example.invalid/pr/1"  ·  phase: "phase": "finished"
+
+## events.jsonl from polish_spawned (seq, kind, the fields that matter)
+    {"attempt":1,"kind":"polish_spawned","seq":25,"ts":"2026-10-10T13:29:18Z"}
+    {"files":["src/lib.txt","docs/features/001-fixture/retro.md","docs/features/001-fixture/prd.md"],"kind":"polish_done","seq":26,"sha":"5e77f24c81f79d04427f4bc6558f00f97ba2f765","ts":"2026-10-10T13:29:18Z"}
+    {"kind":"shipped","seq":27,"sha":"f16dc98b7e4853d2fc6e36dd62d8611bc50de95c","ts":"2026-10-10T13:29:19Z"}
+    {"kind":"pr_opened","seq":28,"ts":"2026-10-10T13:29:19Z","url":"https://example.invalid/pr/1"}
+    {"check":"test","head":"f16dc98b7e4853d2fc6e36dd62d8611bc50de95c","kind":"ci_red","round":0,"seq":29,"ts":"2026-10-10T13:29:19Z"}
+    {"attempt":1,"kind":"ci_fix_spawned","round":1,"seq":30,"ts":"2026-10-10T13:29:19Z"}
+    {"files":["src/lib.txt","docs/features/001-fixture/retro.md"],"kind":"ci_fix_committed","round":1,"seq":31,"sha":"b764d5af96fe4b4c8a51b257191193a4f3e0eaae","ts":"2026-10-10T13:29:19Z"}
+    {"head":"b764d5af96fe4b4c8a51b257191193a4f3e0eaae","kind":"ci_green","seq":32,"ts":"2026-10-10T13:29:19Z"}
+    {"checkpoints":2,"ci_cycles":1,"duration_minutes":0.03,"kind":"run_finished","pr_url":"https://example.invalid/pr/1","seq":33,"slices":3,"ts":"2026-10-10T13:29:19Z","weighted_tokens":81266}
+
+## driver.log (whole; <fixture> = /tmp/factory-closeout-ci-red-green-GAHoTM)
+    2026-10-10T13:29:17Z driver pid 1388991 took run 001-20261010-32eb
+    2026-10-10T13:29:17Z slice 01 → worker e8b3e5df-812d-436f-bb59-efa2c013a722 (pid 1389041), lane 1, pack <fixture>/data/runs/001-20261010-32eb/packs/slice-01-1.md
+    2026-10-10T13:29:18Z slice 01 done (worker e8b3e5df-812d-436f-bb59-efa2c013a722, 2 turns, hint done, lane 1 free)
+    2026-10-10T13:29:18Z slice 01 committed cdc1ae6 — 3 file(s): src/lib.txt, docs/features/001-fixture/log-slice-01.md, docs/features/001-fixture/slice-01-a.md
+    2026-10-10T13:29:18Z slice 02 → worker c78175f2-b480-4890-a92f-2debe98570df (pid 1389093), lane 1, pack <fixture>/data/runs/001-20261010-32eb/packs/slice-02-2.md
+    2026-10-10T13:29:18Z slice 02 done (worker c78175f2-b480-4890-a92f-2debe98570df, 2 turns, hint done, lane 1 free)
+    2026-10-10T13:29:18Z slice 02 committed d2b2dfe — 3 file(s): src/lib.txt, docs/features/001-fixture/log-slice-02.md, docs/features/001-fixture/slice-02-b.md
+    2026-10-10T13:29:18Z checkpoint 1 (covers 01, 02) — started
+    2026-10-10T13:29:18Z checkpoint 1: gate attempt 1 — `./gate.sh`
+    2026-10-10T13:29:18Z checkpoint 1: gate attempt 1 green in 0.00 min (gates/1-1.log)
+    2026-10-10T13:29:18Z slice logs merged into agent-log.md (docs/features/001-fixture/log-slice-01.md, docs/features/001-fixture/log-slice-02.md)
+    2026-10-10T13:29:18Z checkpoint 1: worker df2cffb8-20f1-4909-8498-24545d5877f9 spawned (pid 1389168, attempt 1, pack <fixture>/data/runs/001-20261010-32eb/packs/checkpoint-1-3.md)
+    2026-10-10T13:29:18Z checkpoint 1 done — committed 58236c5 (8 file(s))
+    2026-10-10T13:29:18Z slice 03 → worker 2f3b8d8f-577f-4f9c-bf63-3b835bc98b34 (pid 1389232), lane 1, pack <fixture>/data/runs/001-20261010-32eb/packs/slice-03-4.md
+    2026-10-10T13:29:18Z slice 03 done (worker 2f3b8d8f-577f-4f9c-bf63-3b835bc98b34, 2 turns, hint done, lane 1 free)
+    2026-10-10T13:29:18Z slice 03 committed 1cd46bd — 3 file(s): src/lib.txt, docs/features/001-fixture/log-slice-03.md, docs/features/001-fixture/slice-03-c.md
+    2026-10-10T13:29:18Z checkpoint 2 (covers 03) — started
+    2026-10-10T13:29:18Z checkpoint 2: gate attempt 1 — `./gate.sh`
+    2026-10-10T13:29:18Z checkpoint 2: gate attempt 1 green in 0.00 min (gates/2-1.log)
+    2026-10-10T13:29:18Z slice logs merged into agent-log.md (docs/features/001-fixture/log-slice-03.md)
+    2026-10-10T13:29:18Z checkpoint 2: worker a4283a62-409e-4199-8ef0-8ee21b5dbf5a spawned (pid 1389308, attempt 1, pack <fixture>/data/runs/001-20261010-32eb/packs/checkpoint-2-5.md)
+    2026-10-10T13:29:18Z checkpoint 2 done — committed 9d9bd91 (7 file(s))
+    2026-10-10T13:29:18Z closeout — polish
+    2026-10-10T13:29:18Z polish: worker a00b0142-cc6a-4aaf-93c9-c59048342c79 spawned (pid 1389360, attempt 1, pack <fixture>/data/runs/001-20261010-32eb/packs/polish-6.md)
+    2026-10-10T13:29:18Z polish: committed 5e77f24 — 3 file(s): src/lib.txt, docs/features/001-fixture/retro.md, docs/features/001-fixture/prd.md
+    2026-10-10T13:29:19Z ship: PRD-001 shipped, f16dc98 — 7 file(s)
+    2026-10-10T13:29:19Z pr: pushed feat/fixture to origin
+    2026-10-10T13:29:19Z pr: draft opened against main — https://example.invalid/pr/1
+    2026-10-10T13:29:19Z ci: watching the checks of https://example.invalid/pr/1
+    2026-10-10T13:29:19Z ci: `test` red at f16dc98 (0 fix round(s) so far)
+    2026-10-10T13:29:19Z ci: fix worker 65612c0c-84db-4ad6-8f06-c78132e80973 spawned for `test` (round 1, attempt 1, pid 1389501, pack <fixture>/data/runs/001-20261010-32eb/packs/ci-fix-1-7.md)
+    2026-10-10T13:29:19Z ci: round 1 committed b764d5a — 2 file(s): src/lib.txt, docs/features/001-fixture/retro.md
+    2026-10-10T13:29:19Z pr: pushed feat/fixture to origin
+    2026-10-10T13:29:19Z ci: watching the checks of https://example.invalid/pr/1
+    2026-10-10T13:29:19Z ci: green at b764d5a
+    2026-10-10T13:29:19Z run 001-20261010-32eb finished (every slice done) — PR https://example.invalid/pr/1
+  `ship: … 7 file(s)` counts the ship's expanded pathspec (the six files of docs/features/001-fixture plus docs/index.md); git committed the three that changed, as the --stat above shows.

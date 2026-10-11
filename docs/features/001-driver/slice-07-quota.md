@@ -1,6 +1,7 @@
 ---
 slice: 07
-status: pending
+status: done
+lane: 1
 depends_on: [6]
 ---
 
@@ -9,7 +10,35 @@ depends_on: [6]
 **Source**: [`prd.md`](prd.md) → §11 FR-9 (all bullets and acceptance); §4 FR-2 bullet 5 (the `rate_limit_event` and the `result` error fields are in the record). **Depends on**: 06 (pause must hold across every spawn site: slice workers, fix workers and checkpoint workers; the last two exist only after 06).
 **Created**: 2026-10-09 · **Status**: pending
 
-**Progress**: _(written as it lands)_
+**Progress**: built — `src/quota.rs` (`WEIGHTS` const citing `~/.claude/skills/feature-docs/MAINTAINING.md:298`, `RETRY_SECS = 900`, `Limit::from`, `weigh` / `weighted` over the `workers` rows, `Hold` / `hold` / `can_spawn`, `pause` / `resume` / `pause_tick`, `park_budget`), `stream::Summary.rate_limit` from the last `rate_limit_event`, events `run_paused {literal, resets_at}` / `run_resumed_from_pause` / `run_parked {reason, weighted, budget}`, `RunState.paused_until` and `run::WorkerOutcome` (`counts_as_death` exhaustive: `rate_limited` is no death at `scheduler::settle_dead` and the checkpoint-worker cap; `// quota: rate_limited is not a red` at the gate loop), the scheduler asks `quota::hold` before every spawn (phase `paused` while it holds; a limited build worker settles `rate_limited`, its slice goes back to `pending` with `lane` removed by `remove_frontmatter_keys`; over budget → `park_budget`, `waiting-owner`, and the driver exits), `checkpoint::await_quota` before fix and checkpoint workers, `fix_once -> bool` (a limited fix worker retries the same gate attempt with no gate run and no red between) and `Outcome::Budget`; `clock::unix_now` scaled by `FACTORY_CLOCK_SCALE` / `FACTORY_CLOCK_ANCHOR` plus `from_rfc3339`; stub outcomes `rate_limited` / `rate_limited_no_reset` for every role and a `rate_limit_event` template in `stream.json`; `tests/quota.rs` (five scenarios: pause until the reset with no spawn inside it, a no-reset limit retried after 15 minutes, two pauses on one slice under the cap, a limited fix worker is not a red, `--budget 1` parks with `weighted: 11609` and `--budget 100000000` resumes) and five unit tests in `quota` · inner loop: 7 runs, 4 red, ~2 min — red caught: a temporary borrowed past its statement in the no-cap test (compile), the closing checkpoint's worker is a stub call (`calls().len()` is builds + 1, two assertions), and two slice 02 tests in `tests/run.rs` whose budgets of 7 and 9 FR-9 now parks on (one stub worker weighs 11609) — expectation shift only: `run_on_the_clean_fixture_starts_notes_the_judge_lines_then_resumes` resumes with `--budget 90000000`, `budget_comes_from_the_flag_then_the_config_then_the_default` starts with `--budget 70000000`, the runs that spawn nothing keep 5 and 9; fmt reflowed 2 files, clippy caught nothing · deviations: AD-702 (`allowed_warning` is not a limit; the board's word wins over the stream), AD-703 (a budget park exits the driver so `factory run --budget` can resume), AD-704 (the scaled clock is an environment knob in the binary) — all in [`agent-log.md`](agent-log.md), merged at CP-4 · **CP-4 (2026-10-10)** drove the FR-9 row on two kept fixtures (`FACTORY_KEEP_FIXTURE=1`, the named test with `--exact --nocapture`; each file holds the test transcript, the whole `events.jsonl`, `state.json`, the `workers` rows, the stub call count and `driver.log`): [`evidence/cp-4-fr9-rate-limit-pause.txt`](evidence/cp-4-fr9-rate-limit-pause.txt) — `a_rate_limited_worker_pauses_the_run_until_the_reset` at clock ×20: exactly one `run_paused` (seq 7, `literal: rejected`, `resets_at` 1791631965 = 120 s after its own `ts` 1791631845), no event at all until `run_resumed_from_pause` (seq 8, `ts` = `resets_at` exactly) while the stub call count stayed at 1, then three `slice_spawned` (seq 9, 12, 15), workers `rate_limited, done, done, done` + checkpoint `done`, no `worker_dead`, `slice_blocked` or `run_parked`, slice 01 `done` with `lane` restored; and [`evidence/cp-4-fr9-budget-park.txt`](evidence/cp-4-fr9-budget-park.txt) — `a_spent_budget_parks_the_run_and_a_higher_budget_resumes_it`: `run_parked {reason: budget, weighted: 11609, budget: 1}` at seq 9 after exactly one `slice_spawned`, the one `workers` row giving 18 + 6514 + 0.1 × 41674 + 5 × 182 = 11609.4, the driver exited (AD-703), then `factory run 001 --budget 100000000` → `run_resumed` seq 10 on the same run dir, two more builds, a green checkpoint, `run_finished`.
+
+Evidence for the FR-9 Prove row, from the two `tests/quota.rs` runs kept with `FACTORY_KEEP_FIXTURE=1` (pids dropped, session ids cut; the clock runs at ×20 in the first):
+
+```jsonl
+{"kind": "slice_spawned", "seq": 6, "session_id": "cd4954a7…", "slice": 1, "ts": "2026-10-10T10:58:44Z"}
+{"kind": "run_paused", "literal": "rejected", "resets_at": 1791630044, "seq": 7, "ts": "2026-10-10T10:58:44Z"}
+{"kind": "run_resumed_from_pause", "seq": 8, "ts": "2026-10-10T11:00:44Z"}
+{"kind": "slice_spawned", "seq": 9, "session_id": "63237b06…", "slice": 1, "ts": "2026-10-10T11:00:44Z"}
+{"kind": "slice_done", "seq": 10, "slice": 1, "ts": "2026-10-10T11:00:44Z"}
+{"kind": "slice_spawned", "seq": 12, "session_id": "7bbabfb3…", "slice": 2, "ts": "2026-10-10T11:00:44Z"}
+{"kind": "slice_spawned", "seq": 15, "session_id": "7ad9fab5…", "slice": 3, "ts": "2026-10-10T11:00:44Z"}
+{"kind": "run_finished", "seq": 23, "ts": "2026-10-10T11:01:04Z"}
+```
+
+```jsonl
+{"kind": "slice_spawned", "seq": 6, "session_id": "eceeb63c…", "slice": 1, "ts": "2026-10-10T10:58:32Z"}
+{"kind": "slice_done", "seq": 7, "slice": 1, "ts": "2026-10-10T10:58:32Z"}
+{"budget": 1, "kind": "run_parked", "reason": "budget", "seq": 9, "ts": "2026-10-10T10:58:32Z", "weighted": 11609}
+{"kind": "run_resumed", "seq": 10, "ts": "2026-10-10T10:58:32Z"}
+{"kind": "slice_spawned", "seq": 11, "session_id": "cae74780…", "slice": 2, "ts": "2026-10-10T10:58:32Z"}
+{"kind": "slice_spawned", "seq": 14, "session_id": "1085ff3d…", "slice": 3, "ts": "2026-10-10T10:58:33Z"}
+{"kind": "run_finished", "seq": 22, "ts": "2026-10-10T10:58:33Z"}
+```
+
+**Code-review fixes (2026-10-10).**
+- `quota::pause` kept the later deadline, so a 15-minute guess (a limit with no `resetsAt`) held spawning past an earlier reported reset (Xq1). A reported `resetsAt` now replaces a guess, earlier or later, a guess never pushes past a report, and one pause announces once.
+- The budget was compared after rounding, so a spend of 1.4 passed a budget of 1 (Xq2). `quota::hold` now parks when the unrounded weighted sum is above the budget, still `>` as §11's "Past the budget" says (AD-20014), and slice 10's `status` line rounds up to match (AD-50004).
+- The tick checked `quota::hold` before it settled orphans and then went on, so an orphan whose limit or tokens should have paused or parked the run was followed by a spawn in the same tick, and a settled checkpoint orphan ran the gate during a pause (Xc1, Xd6). The hold is now checked again after any orphan settles.
 
 **Slice**: After this slice a run survives the five-hour window closing. The driver reads the `rate_limit_event` and the `result` error of every worker; a limit reached means pause: no new spawns, in-flight workers finish, one event, resume at the reset time the stream gave or on a 15-minute retry when it gave none. A pause never counts against any cap. The second half is spend: a per-run weighted token budget from `config.toml`, summed over every worker row, that parks the run when crossed and resumes with `--budget`.
 

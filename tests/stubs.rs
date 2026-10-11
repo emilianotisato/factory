@@ -1,0 +1,284 @@
+//! The stub `claude` and `gh` (PRD-001 FR-10, slice 01 tasks 5 and 6).
+#[path = "harness/mod.rs"]
+mod harness;
+
+use std::fs;
+use std::process::{Command, Stdio};
+use std::thread::sleep;
+use std::time::Duration;
+
+use harness::Fixture;
+use serde_json::{Value, json};
+
+const SESSION: &str = "11111111-2222-4333-8444-555555555555";
+
+/// The stub with FR-2's flags; `pack` is the `--append-system-prompt[-file]` pair.
+fn claude(fx: &Fixture, pack: &[&str]) -> Command {
+    let mut c = fx.command(harness::stubs_dir().join("claude"));
+    c.args([
+        "-p",
+        "build the slice",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+    ])
+    .args(["--permission-mode", "bypassPermissions"])
+    .args(pack)
+    .args([
+        "--session-id",
+        SESSION,
+        "--model",
+        "claude-sonnet-4-5",
+        "--effort",
+        "medium",
+    ]);
+    c
+}
+
+fn tool_use_paths(events: &[Value]) -> Vec<String> {
+    events
+        .iter()
+        .filter(|e| e["type"] == "assistant")
+        .flat_map(|e| {
+            e["message"]["content"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        })
+        .filter(|c| c["type"] == "tool_use")
+        // Slice 08's stream also has a `Bash` inner run, which names no file.
+        .filter_map(|c| c["input"]["file_path"].as_str().map(str::to_string))
+        .collect()
+}
+
+#[test]
+fn stub_claude_flips_the_slice_then_replays_a_result() {
+    let fx = Fixture::new("stub-claude");
+    let slice = fx.slice_path(1);
+    let pack_text = format!(
+        "{}\n\nBuild slice 01 as the contract says.\n",
+        slice.display()
+    );
+    let pack = fx.stub_dir().join("pack-01.md");
+    fs::write(&pack, &pack_text).unwrap();
+
+    let out = claude(
+        &fx,
+        &["--append-system-prompt-file", pack.to_str().unwrap()],
+    )
+    .output()
+    .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let events: Vec<Value> = stdout
+        .lines()
+        .map(|l| serde_json::from_str(l).expect(l))
+        .collect();
+
+    // The stream: init first, result last, tool_use events naming what moved.
+    assert_eq!(events[0]["type"], "system");
+    assert_eq!(events[0]["subtype"], "init");
+    assert_eq!(events[0]["cwd"], fx.path().to_str().unwrap());
+    assert_eq!(events[0]["session_id"], SESSION);
+    assert_eq!(events[0]["model"], "claude-sonnet-4-5");
+    let last = events.last().unwrap();
+    assert_eq!(last["type"], "result");
+    assert_eq!(last["subtype"], "success");
+    assert_eq!(last["session_id"], SESSION);
+    let usage = &last["usage"];
+    for k in [
+        "input_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+        "output_tokens",
+    ] {
+        assert!(usage[k].is_number(), "{k} missing in {usage}");
+    }
+    assert!(
+        usage["output_tokens_details"]["thinking_tokens"].is_number(),
+        "{usage}"
+    );
+    assert!(
+        last["modelUsage"].is_object()
+            && last["num_turns"].is_number()
+            && last["duration_ms"].is_number()
+    );
+    assert!(
+        last["result"]
+            .as_str()
+            .unwrap()
+            .starts_with("STATUS: done\n"),
+        "{}",
+        last["result"]
+    );
+    let paths = tool_use_paths(&events);
+    assert!(
+        paths.contains(&fx.path().join("src/lib.txt").to_str().unwrap().to_string()),
+        "{paths:?}"
+    );
+    assert!(
+        paths.iter().any(|p| p.ends_with("/log-slice-01.md")),
+        "{paths:?}"
+    );
+    assert!(
+        paths.contains(&slice.to_str().unwrap().to_string()),
+        "{paths:?}"
+    );
+    // One tool_result per tool_use: two Reads, two Writes, the inner run,
+    // the Edit (slice 08 added the Reads and the `Bash ./gate.sh --inner`).
+    assert_eq!(events.iter().filter(|e| e["type"] == "user").count(), 6);
+
+    // The side effects: the board moved before the stream was printed.
+    assert_eq!(fx.slice_status(1), "done");
+    let fragment = fx.read("docs/features/001-fixture/log-slice-01.md");
+    assert!(fragment.starts_with("## Decisions\n"), "{fragment}");
+    assert!(fragment.contains("\n### AD-101 — "), "{fragment}");
+    assert!(fragment.contains("**Review:** no"), "{fragment}");
+    assert_eq!(
+        fx.read("src/lib.txt"),
+        "fixture code file\ntouched by spawn 1\n"
+    );
+    assert!(
+        fs::read_to_string(&slice)
+            .unwrap()
+            .contains("**Progress**: built by the stub claude (spawn 1)")
+    );
+
+    // The call record slice 03's FR-2 acceptance reads.
+    let calls = fx.calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0]["n"], 1);
+    assert_eq!(calls[0]["pack"], pack_text);
+    assert_eq!(calls[0]["pack_source"], "file");
+    assert_eq!(calls[0]["prompt"], "build the slice");
+    assert_eq!(calls[0]["model"], "claude-sonnet-4-5");
+    assert_eq!(calls[0]["effort"], "medium");
+    assert_eq!(
+        calls[0]["env"]["FACTORY_STUB_DIR"],
+        fx.stub_dir().to_str().unwrap()
+    );
+    assert!(
+        calls[0]["argv"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a == "--permission-mode")
+    );
+
+    // The board as the driver reads it: 01 done, 02 ready, 03 still waiting on 02.
+    let s = fx.docs_json("status");
+    assert_eq!(s["slices"][0]["status"], "done", "{s}");
+    assert_eq!(
+        s["ready"],
+        json!([{ "number": 2, "file": "001-fixture/slice-02-b.md" }]),
+        "{s}"
+    );
+    assert_eq!(s["unverified"], json!([1]), "{s}");
+    assert_eq!(s["spawnable"], 1, "{s}");
+}
+
+#[test]
+fn stub_claude_delay_leaves_the_slice_building_mid_spawn() {
+    let fx = Fixture::new("stub-delay");
+    fx.write_plan(&[
+        json!({ "outcome": "done", "delay_ms": 2000, "touch": ["src/lib.txt", "src/other.txt"] }),
+    ]);
+    let slice = fx.slice_path(2);
+    let pack = format!("{}\n", slice.display());
+
+    let child = claude(&fx, &["--append-system-prompt", &pack])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    sleep(Duration::from_millis(500));
+    assert_eq!(fx.slice_status(2), "building");
+
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(fx.slice_status(2), "done");
+    assert_eq!(fx.read("src/other.txt"), "touched by spawn 1\n");
+    assert!(
+        fx.read("docs/features/001-fixture/log-slice-02.md")
+            .contains("### AD-201 — ")
+    );
+    assert_eq!(fx.calls()[0]["pack_source"], "inline");
+}
+
+#[test]
+fn stub_claude_refuses_an_outcome_a_later_slice_owns() {
+    let fx = Fixture::new("stub-unknown");
+    // `blocked` landed with slice 04; `rate_limit` is slice 07's (PRD §17).
+    fx.write_plan(&[json!({ "outcome": "rate_limit" })]);
+    let pack = format!("{}\n", fx.slice_path(1).display());
+    let out = claude(&fx, &["--append-system-prompt", &pack])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(65));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("\"rate_limit\" is not built yet"));
+    assert_eq!(fx.slice_status(1), "pending");
+    assert_eq!(
+        fx.calls().len(),
+        1,
+        "the call is recorded before the step is judged"
+    );
+}
+
+#[test]
+fn stub_gh_records_calls_and_answers_pr_create() {
+    let fx = Fixture::new("stub-gh");
+    let gh = harness::stubs_dir().join("gh");
+
+    let out = fx
+        .command(&gh)
+        .args(["pr", "create", "--draft", "--body-file", "x"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8(out.stdout).unwrap().trim(),
+        "https://example.invalid/pr/1"
+    );
+    assert!(
+        fx.command(&gh)
+            .args(["auth", "status"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    let view = fx
+        .command(&gh)
+        .args(["pr", "view", "1", "--json", "number,url"])
+        .output()
+        .unwrap();
+    let v: Value = serde_json::from_slice(&view.stdout).unwrap();
+    assert_eq!(v["number"], 1);
+    assert_eq!(v["url"], "https://example.invalid/pr/1");
+    let edit = fx
+        .command(&gh)
+        .args(["pr", "edit", "1", "--title", "two words"])
+        .output()
+        .unwrap();
+    assert!(edit.status.success() && edit.stdout.is_empty());
+
+    let log = fs::read_to_string(fx.stub_dir().join("gh.log")).unwrap();
+    let lines: Vec<&str> = log.lines().collect();
+    assert_eq!(
+        lines,
+        [
+            "pr create --draft --body-file x",
+            "auth status",
+            "pr view 1 --json number,url",
+            "pr edit 1 --title \"two words\""
+        ]
+    );
+}

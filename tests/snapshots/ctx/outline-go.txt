@@ -1,0 +1,4 @@
+== go/client.go ==
+6  class  type Client struct {
+12  fn  func NewClient(base string) *Client {
+17  method  func (c *Client) Get(path string) (*http.Response, error) {

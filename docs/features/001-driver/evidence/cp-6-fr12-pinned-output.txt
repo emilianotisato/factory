@@ -1,0 +1,300 @@
+# CP-6 — FR-12 pinned output, driven by hand on the fixture (after slice-12)
+date: 2026-10-10, ended 08:25:46 -06:00  branch: feat/driver  tree: 25abef4 + the CP-6 merge and fix (AD-9003)
+binary: /mnt/devcache/emiliano/cargo-target/debug/factory (the one `cargo test` built from this tree)
+cwd: tests/fixture/ctx
+
+Each command run twice; run 1's stdout and exit printed, run 2 compared byte for byte with run 1, run 1 compared byte for byte with its snapshot in tests/snapshots/ctx/. 17 commands, 34 comparisons, 34 byte-identical, 0 differing.
+
+$ factory ctx def OtherService
+php/OtherService.php:7  class  class OtherService implements Notifier
+    {
+        public function welcome(User $user): void
+        {
+            $this->notify($user, 'welcome');
+        }
+
+        public function notify(User $user, string $template): void
+        {
+            mail($user->email, $template, '');
+        }
+    }
+
+1 definition (searched 48 files); 1 textual match dropped: inside comments or strings
+exit=0
+run 2: exit=0, byte-identical to run 1
+snapshot tests/snapshots/ctx/def-OtherService.txt: byte-identical
+
+$ factory ctx def UserService
+php/UserService.php:11  class  final class UserService
+    {
+        use HasTimestamps;
+
+        public function __construct(private OtherService $mail)
+        {
+        }
+
+        public function handle(array $input): User
+        {
+            $user = User::create($input);
+            $this->mail->welcome($user);
+            $this->touch();
+
+            return $user;
+        }
+    }
+
+1 definition (searched 48 files)
+exit=0
+run 2: exit=0, byte-identical to run 1
+snapshot tests/snapshots/ctx/def-UserService.txt: byte-identical
+
+$ factory ctx def UserService --no-body
+php/UserService.php:11  class  final class UserService
+
+1 definition (searched 48 files)
+exit=0
+run 2: exit=0, byte-identical to run 1
+snapshot tests/snapshots/ctx/def-UserService-no-body.txt: byte-identical
+
+$ factory ctx def handle
+php/UserService.php:19  method  public function handle(array $input): User
+    {
+        $user = User::create($input);
+        $this->mail->welcome($user);
+        $this->touch();
+
+        return $user;
+    }
+
+1 definition (searched 48 files)
+exit=0
+run 2: exit=0, byte-identical to run 1
+snapshot tests/snapshots/ctx/def-handle.txt: byte-identical
+
+$ factory ctx def handle --kind class
+no definition of handle found (searched 48 files); 1 definition of another kind (--kind)
+exit=0
+run 2: exit=0, byte-identical to run 1
+snapshot tests/snapshots/ctx/def-handle-kind-class.txt: byte-identical
+
+$ factory ctx def new --kind fn
+rs/config.rs:10  method  pub fn new(root: PathBuf) -> Self {
+        Self {
+            root,
+            verbose: false,
+        }
+    }
+
+1 definition (searched 48 files)
+exit=0
+run 2: exit=0, byte-identical to run 1
+snapshot tests/snapshots/ctx/def-new-kind-fn.txt: byte-identical
+
+$ factory ctx def NewClient
+go/client.go:12  fn  func NewClient(base string) *Client {
+    	return &Client{base: base, http: http.DefaultClient}
+    }
+
+1 definition (searched 48 files)
+exit=0
+run 2: exit=0, byte-identical to run 1
+snapshot tests/snapshots/ctx/def-NewClient.txt: byte-identical
+
+$ factory ctx def Config
+rs/config.rs:4  class  pub struct Config {
+        pub root: PathBuf,
+        pub verbose: bool,
+    }
+
+1 definition (searched 48 files)
+exit=0
+run 2: exit=0, byte-identical to run 1
+snapshot tests/snapshots/ctx/def-Config.txt: byte-identical
+
+$ factory ctx def useThing
+vue/UserCard.vue:10  fn  const useThing = (prefix: string) => {
+      return computed(() => `${prefix} ${props.name}`)
+    }
+
+1 definition (searched 48 files)
+exit=0
+run 2: exit=0, byte-identical to run 1
+snapshot tests/snapshots/ctx/def-useThing.txt: byte-identical
+
+$ factory ctx def made_by_macro
+no definition of made_by_macro found (searched 48 files)
+exit=0
+run 2: exit=0, byte-identical to run 1
+snapshot tests/snapshots/ctx/def-made_by_macro.txt: byte-identical
+
+$ factory ctx refs planted
+refs/caller01.ts:5  ref  total += planted(0)
+    total += planted(1)
+
+refs/caller01.ts:6  ref  total += planted(1)
+    total += planted(2)
+
+refs/caller01.ts:7  ref  total += planted(2)
+    total += planted(3)
+
+refs/caller02.php:5  ref  $total += planted(0);
+    $total += planted(1);
+
+refs/caller02.php:6  ref  $total += planted(1);
+    $total += planted(2);
+
+refs/caller02.php:7  ref  $total += planted(2);
+    $total += planted(3);
+
+refs/caller03.go:5  ref  total += planted(0)
+    total += planted(1)
+
+refs/caller03.go:6  ref  total += planted(1)
+    total += planted(2)
+
+refs/caller03.go:7  ref  total += planted(2)
+    total += planted(3)
+
+refs/caller04.rs:3  ref  total += planted(0);
+    total += planted(1);
+
+288 more hits in 40 files (--max, --per-file to widen); 2 dropped (comments/strings); 1 in test files (--tests)
+exit=0
+run 2: exit=0, byte-identical to run 1
+snapshot tests/snapshots/ctx/refs-planted.txt: byte-identical
+
+$ factory ctx refs planted --max 20 --per-file 1
+refs/caller01.ts:5  ref  total += planted(0)
+    total += planted(1)
+
+refs/caller02.php:5  ref  $total += planted(0);
+    $total += planted(1);
+
+refs/caller03.go:5  ref  total += planted(0)
+    total += planted(1)
+
+refs/caller04.rs:3  ref  total += planted(0);
+    total += planted(1);
+
+refs/caller05.ts:3  ref  total += planted(0)
+    total += planted(1)
+
+refs/caller06.php:5  ref  $total += planted(0);
+    $total += planted(1);
+
+refs/caller07.go:5  ref  total += planted(0)
+    total += planted(1)
+
+refs/caller08.rs:3  ref  total += planted(0);
+    total += planted(1);
+
+refs/caller09.ts:3  ref  total += planted(0)
+    total += planted(1)
+
+refs/caller10.php:5  ref  $total += planted(0);
+    $total += planted(1);
+
+refs/caller11.go:5  ref  total += planted(0)
+    total += planted(1)
+
+refs/caller12.rs:3  ref  total += planted(0);
+    total += planted(1);
+
+refs/caller13.ts:3  ref  total += planted(0)
+    total += planted(1)
+
+refs/caller14.php:5  ref  $total += planted(0);
+    $total += planted(1);
+
+refs/caller15.go:5  ref  total += planted(0)
+    total += planted(1)
+
+refs/caller16.rs:3  ref  total += planted(0);
+    total += planted(1);
+
+refs/caller17.ts:3  ref  total += planted(0)
+    total += planted(1)
+
+refs/caller18.php:5  ref  $total += planted(0);
+    $total += planted(1);
+
+refs/caller19.go:5  ref  total += planted(0)
+    total += planted(1)
+
+refs/caller20.rs:3  ref  total += planted(0);
+    total += planted(1);
+
+278 more hits in 40 files (--max, --per-file to widen); 2 dropped (comments/strings); 1 in test files (--tests)
+exit=0
+run 2: exit=0, byte-identical to run 1
+snapshot tests/snapshots/ctx/refs-planted-max-20-per-file-1.txt: byte-identical
+
+$ factory ctx outline php
+== php/HasTimestamps.php ==
+5  class  trait HasTimestamps
+  7  method  public function touch(): void
+
+== php/Notifier.php ==
+7  class  interface Notifier
+  9  method  public function notify(User $user, string $template): void;
+
+== php/OtherService.php ==
+7  class  class OtherService implements Notifier
+  9  method  public function welcome(User $user): void
+  14  method  public function notify(User $user, string $template): void
+
+== php/UserService.php ==
+11  class  final class UserService
+  15  method  public function __construct(private OtherService $mail)
+  19  method  public function handle(array $input): User
+exit=0
+run 2: exit=0, byte-identical to run 1
+snapshot tests/snapshots/ctx/outline-php.txt: byte-identical
+
+$ factory ctx outline php --depth 1
+== php/HasTimestamps.php ==
+5  class  trait HasTimestamps
+
+== php/Notifier.php ==
+7  class  interface Notifier
+
+== php/OtherService.php ==
+7  class  class OtherService implements Notifier
+
+== php/UserService.php ==
+11  class  final class UserService
+
+6 nested definitions hidden (--depth)
+exit=0
+run 2: exit=0, byte-identical to run 1
+snapshot tests/snapshots/ctx/outline-php-depth-1.txt: byte-identical
+
+$ factory ctx outline go/client.go
+== go/client.go ==
+6  class  type Client struct {
+12  fn  func NewClient(base string) *Client {
+17  method  func (c *Client) Get(path string) (*http.Response, error) {
+exit=0
+run 2: exit=0, byte-identical to run 1
+snapshot tests/snapshots/ctx/outline-go.txt: byte-identical
+
+$ factory ctx outline rs/config.rs
+== rs/config.rs ==
+4  class  pub struct Config {
+9  impl  impl Config {
+  10  method  pub fn new(root: PathBuf) -> Self {
+  17  method  pub fn loud(mut self) -> Self {
+23  class  pub trait Load {
+  24  method  fn load(&self) -> Config;
+exit=0
+run 2: exit=0, byte-identical to run 1
+snapshot tests/snapshots/ctx/outline-rs.txt: byte-identical
+
+$ factory ctx outline vue/UserCard.vue
+== vue/UserCard.vue ==
+6  fn  function greet(name: string): string {
+10  fn  const useThing = (prefix: string) => {
+exit=0
+run 2: exit=0, byte-identical to run 1
+snapshot tests/snapshots/ctx/outline-vue.txt: byte-identical
+

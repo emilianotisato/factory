@@ -1,0 +1,43 @@
+# CP-6 — FR-12 pinned output: `cargo test --test ctx -- --nocapture` (after slice-12)
+date: 2026-10-10, ended 08:25:35 -06:00  branch: feat/driver  tree: 25abef4 + the CP-6 merge and fix (AD-9003)
+target dir: /mnt/devcache/emiliano/cargo-target (warm, debug)
+
+What the binary checks (tests/ctx.rs, on tests/fixture/ctx/: php/ vue/ go/ rs/ refs/, 48 source files):
+- each_command_prints_its_snapshot_byte_for_byte_twice: 20 commands (11 def, 4 refs, 5 outline), each run twice and compared byte for byte, then against tests/snapshots/ctx/<name>.txt.
+- def_drops_the_docblock_mention, def_prints_only_the_definition_node: `def OtherService` prints one hit, `php/OtherService.php:7  class  class OtherService implements Notifier`, and never UserService.php's docblock line; trailer `1 definition (searched 48 files); 1 textual match dropped: inside comments or strings` (PRD §14: "def returns exactly the definition with kind and signature and drops the docblock mention").
+- def_prints_location_kind_signature_and_body_on_every_stack, def_body_is_the_node_range, def_kind_filters_and_fn_takes_methods: path:line, kind and signature on PHP, Go, Rust and Vue; the body is the node's range; `--kind`.
+- refs_drops_the_comment_and_string_hits, refs_caps_at_10_with_a_trailer, refs_starts_at_the_first_real_hit, a_hit_in_a_test_file_shows_only_with_tests: 300 textual hits of `planted`, the comment and string hits dropped, 10 lines printed + `288 more hits in 40 files (--max, --per-file to widen); 2 dropped (comments/strings)`, 298 = 300 - 2 real hits in all (PRD §14: "at most --max lines plus a trailer"; slice 12: "300 - 2").
+- outline_prints_definitions_and_nothing_else, outline_covers_go_rust_vue_and_empty_files: every top-level definition with its signature, members indented, no `use`, constant or property lines; Go, Rust, Vue at real line numbers; empty files print the header alone (PRD §14: "outline prints every top-level definition with its signature and nothing else").
+- def_locates_an_attributed_definition_at_its_name: new at CP-6 (AD-9003).
+
+The tests assert on the output without printing it, so --nocapture shows the names and results only; the hand-driven outputs are in cp-6-fr12-pinned-output.txt.
+
+$ cargo test --test ctx -- --nocapture
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+     Running tests/ctx.rs
+
+running 17 tests
+test refs_starts_at_the_first_real_hit ... ok
+test refs_drops_the_comment_and_string_hits ... ok
+test a_hit_in_a_test_file_shows_only_with_tests ... ok
+test refs_caps_at_10_with_a_trailer ... ok
+test the_walk_skips_vendor_and_gitignored_paths_unless_vendor ... ok
+test def_of_a_macro_made_function_finds_nothing_and_exits_0 ... ok
+test def_prints_only_the_definition_node ... ok
+test outline_prints_definitions_and_nothing_else ... ok
+test a_bad_flag_or_an_unreadable_root_exits_2 ... ok
+test outline_covers_go_rust_vue_and_empty_files ... ok
+test a_file_that_does_not_parse_keeps_its_textual_matches ... ok
+test def_drops_the_docblock_mention ... ok
+test def_locates_an_attributed_definition_at_its_name ... ok
+test def_body_is_the_node_range ... ok
+test def_kind_filters_and_fn_takes_methods ... ok
+test def_prints_location_kind_signature_and_body_on_every_stack ... ok
+test each_command_prints_its_snapshot_byte_for_byte_twice ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.77s
+
+
+real	0m2.831s
+user	0m6.461s
+sys	0m0.524s

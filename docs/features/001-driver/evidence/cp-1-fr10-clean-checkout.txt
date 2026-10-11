@@ -1,0 +1,138 @@
+# FR-10 — cargo test on a clean checkout, no claude, no gh
+date: 2026-10-09T23:47:19-06:00
+clone: git clone --branch feat/driver /home/emiliano/Projects/factory  → commit 95c57a1 (feat(001): slice-02 route judge lines as events), Cargo.lock in tree: 1
+PATH=/tmp/claude-1000/-home-emiliano-Projects-factory/f2d0ea47-dc8a-4e99-a020-910d85d9dcef/scratchpad/path/usr:/tmp/claude-1000/-home-emiliano-Projects-factory/f2d0ea47-dc8a-4e99-a020-910d85d9dcef/scratchpad/path/node:/home/emiliano/.cargo/bin
+  usr  = symlinks to every entry of /usr/bin except gh
+  node = symlinks to every entry of the mise node 20 bin except claude
+  cargo = ~/.cargo/bin (rustup proxies)
+CARGO_TARGET_DIR unset → fresh target/ inside the clone (cold compile, nothing cached)
+which -a claude → which: no claude in (/tmp/claude-1000/-home-emiliano-Projects-factory/f2d0ea47-dc8a-4e99-a020-910d85d9dcef/scratchpad/path/usr:/tmp/claude-1000/-home-emiliano-Projects-factory/f2d0ea47-dc8a-4e99-a020-910d85d9dcef/scratchpad/path/node:/home/emiliano/.cargo/bin)
+not found (exit 1)
+which -a gh     → which: no gh in (/tmp/claude-1000/-home-emiliano-Projects-factory/f2d0ea47-dc8a-4e99-a020-910d85d9dcef/scratchpad/path/usr:/tmp/claude-1000/-home-emiliano-Projects-factory/f2d0ea47-dc8a-4e99-a020-910d85d9dcef/scratchpad/path/node:/home/emiliano/.cargo/bin)
+not found (exit 1)
+which node git cargo → /tmp/claude-1000/-home-emiliano-Projects-factory/f2d0ea47-dc8a-4e99-a020-910d85d9dcef/scratchpad/path/usr/node /tmp/claude-1000/-home-emiliano-Projects-factory/f2d0ea47-dc8a-4e99-a020-910d85d9dcef/scratchpad/path/usr/git /home/emiliano/.cargo/bin/cargo 
+
+$ cargo test
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.26
+   Compiling serde_core v1.0.229
+   Compiling quote v1.0.47
+   Compiling shlex v2.0.1
+   Compiling find-msvc-tools v0.1.14
+   Compiling pkg-config v0.3.34
+   Compiling utf8parse v0.2.2
+   Compiling vcpkg v0.2.15
+   Compiling zmij v1.0.23
+   Compiling anstyle-query v1.1.5
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling bitflags v2.13.2
+   Compiling foldhash v0.2.0
+   Compiling colorchoice v1.0.5
+   Compiling anstyle v1.0.14
+   Compiling winnow v1.0.4
+   Compiling strsim v0.11.1
+   Compiling serde_json v1.0.151
+   Compiling libc v0.2.190
+   Compiling anstyle-parse v1.0.0
+   Compiling heck v0.5.0
+   Compiling serde v1.0.229
+   Compiling clap_lex v1.1.1
+   Compiling memchr v2.8.3
+   Compiling cc v1.7.0
+   Compiling anstream v1.0.0
+   Compiling hashbrown v0.17.1
+   Compiling getrandom v0.4.3
+   Compiling toml_writer v1.1.3+spec-1.1.0
+   Compiling fallible-streaming-iterator v0.1.9
+   Compiling smallvec v1.16.3
+   Compiling itoa v1.0.18
+   Compiling rustix v1.1.5
+   Compiling fallible-iterator v0.3.0
+   Compiling cfg-if v1.0.5
+   Compiling linux-raw-sys v0.12.1
+   Compiling clap_builder v4.6.7
+   Compiling fastrand v2.5.0
+   Compiling once_cell v1.21.4
+   Compiling toml_parser v1.1.5+spec-1.1.0
+   Compiling syn v3.0.7
+   Compiling hashlink v0.12.2
+   Compiling libsqlite3-sys v0.38.2
+   Compiling tempfile v3.27.0
+   Compiling toml_datetime v1.1.2+spec-1.1.0
+   Compiling serde_spanned v1.1.2
+   Compiling toml v1.1.8+spec-1.1.0
+   Compiling clap_derive v4.6.7
+   Compiling serde_derive v1.0.229
+   Compiling clap v4.6.7
+   Compiling rusqlite v0.40.2
+   Compiling factory v0.1.0 (/tmp/claude-1000/-home-emiliano-Projects-factory/f2d0ea47-dc8a-4e99-a020-910d85d9dcef/scratchpad/clone)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.31s
+     Running unittests src/lib.rs (target/debug/deps/factory-c5b1aec7731e8a36)
+
+running 1 test
+test clock::tests::known_instants ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/debug/deps/factory-ec5864ee623ccc19)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/cli.rs (target/debug/deps/cli-d20b62bebae28c30)
+
+running 2 tests
+test help_lists_the_eight_subcommands ... ok
+test every_subcommand_says_not_built_yet_and_exits_2 ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/docs.rs (target/debug/deps/docs-9d058a662f6a102e)
+
+running 2 tests
+test errors_name_the_command_and_quote_stderr ... ok
+test status_and_preflight_deserialize_from_the_fixture ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.62s
+
+     Running tests/harness.rs (target/debug/deps/harness-adfce12559a69493)
+
+running 1 test
+test fixture_is_a_runnable_board_with_stubs_on_path ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.66s
+
+     Running tests/run.rs (target/debug/deps/run-362e46071ce44685)
+
+running 10 tests
+test config_defaults_file_and_unknown_keys ... ok
+test opening_the_store_twice_applies_the_schema_once ... ok
+test emit_writes_a_line_and_a_row_each_time ... ok
+test find_live_sees_only_a_living_pid ... ok
+test run_parks_on_an_ask_line_and_creates_no_branch ... ok
+test pass_path_creates_the_branch_and_starts_the_run ... ok
+test stop_finishes_a_dead_run_and_only_flags_a_live_one ... ok
+test run_refuses_a_dirty_tree_with_no_run_dir_and_no_spawn ... ok
+test run_on_the_clean_fixture_starts_notes_the_judge_lines_then_resumes ... ok
+test budget_comes_from_the_flag_then_the_config_then_the_default ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.63s
+
+     Running tests/stubs.rs (target/debug/deps/stubs-a908b13eba6a956d)
+
+running 4 tests
+test stub_claude_refuses_an_outcome_a_later_slice_owns ... ok
+test stub_claude_flips_the_slice_then_replays_a_result ... ok
+test stub_gh_records_calls_and_answers_pr_create ... ok
+test stub_claude_delay_leaves_the_slice_building_mid_spawn ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.30s
+
+   Doc-tests factory
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+exit=0  wall clock=12.658 s (cold compile + tests)

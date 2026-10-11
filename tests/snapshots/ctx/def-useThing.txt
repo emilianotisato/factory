@@ -1,0 +1,5 @@
+vue/UserCard.vue:10  fn  const useThing = (prefix: string) => {
+      return computed(() => `${prefix} ${props.name}`)
+    }
+
+1 definition (searched 48 files)

@@ -1,0 +1,14 @@
+php/OtherService.php:7  class  class OtherService implements Notifier
+    {
+        public function welcome(User $user): void
+        {
+            $this->notify($user, 'welcome');
+        }
+
+        public function notify(User $user, string $template): void
+        {
+            mail($user->email, $template, '');
+        }
+    }
+
+1 definition (searched 48 files); 1 textual match dropped: inside comments or strings
