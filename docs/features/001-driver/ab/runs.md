@@ -9,7 +9,7 @@ Both runs: Opus 5.5, effort high, bypass permissions, `autoCompactWindow` 200000
 | run | tool | worktree / branch | started | session | PR |
 |---|---|---|---|---|---|
 | A | `/deliver 018` | `wt-a` · `feat/018-cross-client-dashboard` | 2026-10-11 12:09 | session_01WGNvo9koY6fY8J21kJQjZY, local `480153fa-444d-439a-936f-8dfbccc268ac` (tmux `ab-a`) | [#24](https://github.com/ICG-Argentina/icg-cloud/pull/24), draft at 15:16 |
-| B | `/factory-deliver 018` | `wt-b` · `feat/cross-client-dashboard` | | | |
+| B | `/factory-deliver 018` | `wt-b` · `feat/cross-client-dashboard` | 2026-10-11 16:06 | session_017KA5ccBXhGm2fxFttyc2MS, local `708546d1-e7b4-4dea-b685-03dc9331686b` (tmux `ab-b`); run `018-20261011-6490` | |
 
 ### Owner answers
 
@@ -53,3 +53,11 @@ Measured 2026-10-11 after the questionnaire, from the orchestrator transcript an
 - **weighted_tokens(A) = 16,149,327.** The orchestrator alone is 2,178,976 (13%).
 - Build 115 min, 220 min wall from start to the last CI check.
 - **Run B's bar: at most 9,689,596 weighted tokens**, with its cockpit at most 5% of its own total.
+
+### Run B launch
+
+Started 16:06, the same day as run A, at the owner's call ("dont wait, lets do it now"), not after the Oct 15 reset. At launch `factory status` read the weekly limit at `allowed_warning 85%`, so a quota pause mid-run is likely; factory pauses and resumes by itself, and a pause counts as wall-clock, not tokens.
+
+The launch text carried the same preflight answer as run A's. The cockpit passed it through as `factory answer ASK-1 "proceed as-is, serial (1 lane)"`.
+
+Factory finding, minor: `factory answer` notes the ask under `## Decisions` as `- **DEC (2026-10-11)**: …`. That is neither an `AD-n` nor a project `DEC-n`.
