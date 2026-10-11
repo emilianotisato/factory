@@ -27,4 +27,4 @@ Run B gets the same text under its own block id, with "option 1" dropped if its 
 
 - Draft PR #24 at 15:16. CI green first time; the re-run after the owner review was pending at 15:50.
 - Review interview (15:25–15:42): all reviewed, 8 ADs kept, 1 changed (AD-601, fixed in `ddedf1b`). Three UX-rubric lines added; both DEC candidates kept local.
-- Open quality questions for the questionnaire: the Cursor second opinion timed out (a fresh Claude reviewer stood in), and 13 browser tests outside the gate fail, not yet compared with the base.
+- Open quality questions for the questionnaire: the Cursor second opinion timed out (a fresh Claude reviewer stood in), and 13 browser tests outside the gate failed at CP-2. Rerun 15:48 in a third worktree `wt-base`, same setup for both, without the generated Demo and Second modules: the base `cde31ac` and run A's head `6dae3d0` give identical results file by file. The same 5 tests fail on both, and 15 module-dependent tests skip on both. Run A broke none of them; the 5 are already red before PRD-018. Run B's head gets the same check.
