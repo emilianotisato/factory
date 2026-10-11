@@ -139,7 +139,7 @@ fn a_worker_gets_no_github_and_no_session_but_keeps_the_account() {
         assert_eq!(fs::read_dir(&gh).unwrap().count(), 0);
         // git pushes nowhere (AD-10001); nothing inherited, so ours start at 0.
         let git = &call["git_config"];
-        assert_eq!(git["GIT_CONFIG_COUNT"], "3", "{git}");
+        assert_eq!(git["GIT_CONFIG_COUNT"], "5", "{git}");
         assert_eq!(
             git["GIT_CONFIG_KEY_0"],
             "url.factory-no-push://.pushInsteadOf"
@@ -184,9 +184,10 @@ fn git_in(
 
 /// AD-10001: a worker's push URLs go to a transport git has no helper for.
 /// The driver inherits one env-config entry of the owner's; the worker keeps
-/// it and gets the three `pushInsteadOf` entries after it. Then, with the
-/// env the stub saw, a push to an https or an scp-style ssh origin fails at
-/// the helper lookup, before any connection, and fetch URLs are untouched.
+/// it and gets the five `pushInsteadOf` entries after it. Then, with the env
+/// the stub saw, a push to an https, an http, a git:// or an scp-style ssh
+/// origin fails at the helper lookup, before any connection, and fetch URLs
+/// are untouched.
 #[test]
 fn a_worker_pushes_nowhere_through_the_git_push_off_env() {
     let fx = Fixture::with_index("worker-push-off", &[("checkpoint_every", "10")]);
@@ -212,7 +213,7 @@ fn a_worker_pushes_nowhere_through_the_git_push_off_env() {
     assert!(calls.len() >= 4, "three slices and a checkpoint: {calls:?}");
     let key = "url.factory-no-push://.pushInsteadOf";
     let want = json!({
-        "GIT_CONFIG_COUNT": "4",
+        "GIT_CONFIG_COUNT": "6",
         "GIT_CONFIG_KEY_0": "factory.owner",
         "GIT_CONFIG_VALUE_0": "kept",
         "GIT_CONFIG_KEY_1": key,
@@ -221,6 +222,10 @@ fn a_worker_pushes_nowhere_through_the_git_push_off_env() {
         "GIT_CONFIG_VALUE_2": "ssh://",
         "GIT_CONFIG_KEY_3": key,
         "GIT_CONFIG_VALUE_3": "https://",
+        "GIT_CONFIG_KEY_4": key,
+        "GIT_CONFIG_VALUE_4": "http://",
+        "GIT_CONFIG_KEY_5": key,
+        "GIT_CONFIG_VALUE_5": "git://",
     });
     for call in &calls {
         assert_eq!(call["git_config"], want, "call {}", call["n"]);
@@ -280,6 +285,14 @@ fn a_worker_pushes_nowhere_through_the_git_push_off_env() {
         (
             "git@example.invalid:x.git",
             "factory-no-push://example.invalid:x.git",
+        ),
+        (
+            "http://example.invalid/x.git",
+            "factory-no-push://example.invalid/x.git",
+        ),
+        (
+            "git://example.invalid/x.git",
+            "factory-no-push://example.invalid/x.git",
         ),
     ] {
         ok(git_in(

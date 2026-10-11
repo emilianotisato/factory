@@ -25,8 +25,9 @@
 //! project's `.claude/`. `FACTORY_PACK=<pack>` tells the hook which files
 //! the pack holds and `FACTORY_REPO=<repo>` what they are relative to.
 //! On top of those, a git push-off env ([`push_off_env`], AD-10001) rewrites
-//! every ssh and https push URL to a transport git has no helper for, so a
-//! push that slips past the rules and the hook still goes nowhere.
+//! every ssh, https, http and git:// push URL to a transport git has no
+//! helper for, so a push that slips past the rules and the hook still goes
+//! nowhere.
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
@@ -97,15 +98,15 @@ pub const GIT_CONFIG_COUNT: &str = "GIT_CONFIG_COUNT";
 pub const PUSH_OFF_BASE: &str = "factory-no-push://";
 
 /// The URL prefixes rewritten to [`PUSH_OFF_BASE`] on push: scp-style ssh
-/// (`git@host:path`), `ssh://` and `https://`.
-pub const PUSH_OFF_PREFIXES: [&str; 3] = ["git@", "ssh://", "https://"];
+/// (`git@host:path`), `ssh://`, `https://`, `http://` and `git://`.
+pub const PUSH_OFF_PREFIXES: [&str; 5] = ["git@", "ssh://", "https://", "http://", "git://"];
 
 /// The git push-off env (AD-10001, DEC-2): one
 /// `url.factory-no-push://.pushInsteadOf` entry per [`PUSH_OFF_PREFIXES`],
 /// set through git's `GIT_CONFIG_KEY_<i>`/`GIT_CONFIG_VALUE_<i>` env config.
 /// `inherited` is the `GIT_CONFIG_COUNT` the worker would get otherwise: its
-/// `n` entries are the owner's and stay, ours go at `n`, `n+1`, `n+2` and the
-/// count becomes `n+3`. A count git itself would reject as bogus counts as 0.
+/// `n` entries are the owner's and stay, ours go at `n` through `n+4` and the
+/// count becomes `n+5`. A count git itself would reject as bogus counts as 0.
 /// Only push URLs change; fetch, pull and `get-url` keep the remote's URL.
 ///
 /// Known gap: git ignores `pushInsteadOf` for a remote with an explicit
@@ -577,8 +578,11 @@ mod tests {
     fn the_push_off_env_goes_after_the_inherited_git_config() {
         let key = format!("url.{PUSH_OFF_BASE}.pushInsteadOf");
         let ours = |from: usize| -> Vec<(String, String)> {
-            let mut v = vec![(GIT_CONFIG_COUNT.to_string(), (from + 3).to_string())];
-            for (i, p) in ["git@", "ssh://", "https://"].iter().enumerate() {
+            let mut v = vec![(GIT_CONFIG_COUNT.to_string(), (from + 5).to_string())];
+            for (i, p) in ["git@", "ssh://", "https://", "http://", "git://"]
+                .iter()
+                .enumerate()
+            {
                 v.push((format!("GIT_CONFIG_KEY_{}", from + i), key.clone()));
                 v.push((format!("GIT_CONFIG_VALUE_{}", from + i), p.to_string()));
             }
