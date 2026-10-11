@@ -63,3 +63,5 @@ Gate numbers come from the `CP-1`..`CP-7` entries in `agent-log.md` (17 runs, 5 
 ## Score
 
 4. The run built 13 slices and got through polish with one owner answer. The review layers caught about 100 real findings that seven green checkpoints had not, including a worker sandbox hole. Lost: about 45 min of Cursor timeouts, and a model pin that burned the wrong quota.
+
+**Owner review (2026-10-11):** 73 kept, 5 changed (AD-401, AD-503, AD-904, AD-10001, AD-40008). DEC candidates: 3 of 4 recorded, as DEC-1 to DEC-3.

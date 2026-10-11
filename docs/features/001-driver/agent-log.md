@@ -110,6 +110,7 @@ _(none)_
 **Because:** autonomy.md lists CI workflow files under Never, and says the PRD outranks that list for a file it names, with the entry marked `decide`
 **Undo:** delete the file
 **Review:** decide
+**Owner (2026-10-11):** kept
 
 ### AD-104 — How do the test binaries share the fixture code? · slice-01 · 2026-10-09
 
@@ -142,6 +143,7 @@ _(none)_
 **Because:** the PRD names the run id (`<NNN>-<yyyymmdd>-<4 hex>`) and `ts` on every event but no library (§3, §19 lists the dependencies it minds); the arithmetic is public domain and never changes
 **Undo:** replace two functions with `chrono::Utc::now().format(…)` and add the dependency
 **Review:** fyi
+**Owner (2026-10-11):** kept
 
 ### AD-202 — How does `find_live` know a pid is alive? · slice-02 · 2026-10-09
 
@@ -158,6 +160,7 @@ _(none)_
 **Because:** task 3 says "an existing run dir → skip preflight, `run_resumed`" without saying which; a terminal run has nothing to resume
 **Undo:** `src/run.rs::find_resumable`
 **Review:** fyi
+**Owner (2026-10-11):** kept
 
 ### AD-204 — What does an `ask_opened` event carry? · slice-02 · 2026-10-09
 
@@ -166,6 +169,7 @@ _(none)_
 **Because:** §3 says one question each but not the payload; slices 04 and 10 read it, and BLOCK-201 may turn on `source`
 **Undo:** one field in `src/events.rs::EventKind::AskOpened` and its readers
 **Review:** fyi
+**Owner (2026-10-11):** kept
 
 ### AD-205 — Does `ask_opened` keep its `source` field once `judge[]` no longer parks? · slice-02 · 2026-10-09
 
@@ -182,6 +186,7 @@ _(none)_
 **Because:** §3 FR-1 wants a detached process and §19 names Linux as the target; the PRD does not list the crate. It is already a transitive dependency of `rusqlite` and `tempfile`, so the lockfile gains nothing new.
 **Undo:** one `use`, one `pre_exec` closure, one line of the test.
 **Review:** decide
+**Owner (2026-10-11):** kept
 
 ### AD-302 — What does the loop do when every slice is done but none is verified? · slice-03 · 2026-10-10
 
@@ -190,6 +195,7 @@ _(none)_
 **Because:** `docs.mjs` `checkpointDueFor` returns true on `allDone` regardless of the cadence; §3 FR-1 says "an unverified checkpoint runs first", so the final checkpoint is part of the run, not after it. The PRD outranks the slice's acceptance wording.
 **Undo:** one branch in `scheduler::drive_inner` and the `checkpoint` assertions in `tests/loop.rs`, `tests/run.rs`.
 **Review:** decide
+**Owner (2026-10-11):** kept
 
 ### AD-303 — Does the contract inline the inner-loop command? · slice-03 · 2026-10-10
 
@@ -198,6 +204,7 @@ _(none)_
 **Because:** task 2's acceptance says a different inner command changes exactly one line of the pack; an inlined copy makes it two. The slice contradicted itself and the acceptance is the testable half.
 **Undo:** one sentence in `assets/contract-slice.md` and one `replace` in `pack.rs`.
 **Review:** fyi
+**Owner (2026-10-11):** kept
 
 ### AD-304 — Double fork or re-exec for the detached driver? · slice-03 · 2026-10-10
 
@@ -214,6 +221,7 @@ _(none)_
 **Because:** a driver started from inside a Claude Code session (the dogfood case, §1) hands its workers the nested-session guard otherwise; the PRD does not mention the variables.
 **Undo:** the `env_remove` loop in `worker.rs`.
 **Review:** fyi
+**Owner (2026-10-11):** kept, as refined by AD-10007
 
 ### AD-306 — What outcome does a worker get whose stream had a `result` but whose slice is neither `done` nor `blocked`? · slice-03 · 2026-10-10
 
@@ -230,6 +238,7 @@ _(none)_
 **Because:** the behaviour they pinned no longer exists; the judge-line, refusal and resume assertions survive unchanged.
 **Undo:** `git show 2861352:tests/run.rs`.
 **Review:** fyi
+**Owner (2026-10-11):** kept
 
 ### AD-308 — How many entry probes, and which ones? · slice-03 · 2026-10-10
 
@@ -246,6 +255,7 @@ _(none)_
 **Because:** `docs.mjs status` computes `heldLanes` from `building[]` only, so a blocked slice's lane is free again on the next read and the third slice would have taken lane 1 beside the parked block. The tool is out of this repo's hands; the parking is the driver's rule to keep, and the acceptance (02 and 03 on lane 2) holds.
 **Undo:** drop the `blocked` filter in `free_lanes` once the tool holds the lane itself.
 **Review:** fyi
+**Owner (2026-10-11):** changed — docs.mjs `freeLanes` now leaves out the lanes of blocked slices, and the fixture copy is re-vendored; the driver keeps its own filter as a second check while older vendored copies exist
 
 ### AD-402 — Same second, or one tick, for the two-spawn acceptance? · slice-04 · 2026-10-10
 
@@ -254,6 +264,7 @@ _(none)_
 **Because:** both spawns happen in one tick, but a tick that starts at `.98` crosses a second boundary between them; a `docs status` read sits in between. The same-second form fails on timing the code does not control. What the criterion measures — one tick, not one-after-the-other — is what the gap and the two-alive assertions pin.
 **Undo:** `gap == 0`.
 **Review:** fyi
+**Owner (2026-10-11):** kept
 
 ### AD-403 — Checkpoint or park when both are due? · slice-04 · 2026-10-10
 
@@ -262,6 +273,7 @@ _(none)_
 **Because:** slice 03 settled that a due checkpoint stops spawns (AD-302) and slice 06 owns what happens next; a parked run with verified-nothing would hide the checkpoint behind the owner's answer. The cost: task 2's acceptance (`blocked, done, done` → `waiting-owner`) only holds when the checkpoint is not due at that point — with the fixture's default `checkpoint_every: 2`, two `done` slices make it due — so the lanes tests set `checkpoint_every: 10`.
 **Undo:** swap the two branches at the bottom of `drive_inner`.
 **Review:** fyi
+**Owner (2026-10-11):** kept
 
 ### AD-404 — Who starts the driver of an ask-parked run, and from which preflight? · slice-04 · 2026-10-10
 
@@ -270,6 +282,7 @@ _(none)_
 **Because:** task 4 says "the driver (slow tick) proceeds", but an ask-parked run has no driver — `factory run` returns after printing the asks. The answer is the one owner command the slice promises. The saved preflight makes the run proceed on the questions the owner actually answered.
 **Undo:** remove the `daemon::spawn` branch of `answer::wake` and `load_preflight`.
 **Review:** fyi
+**Owner (2026-10-11):** kept
 
 ### AD-405 — How do the slice-03 tests survive two lanes? · slice-04 · 2026-10-10
 
@@ -278,6 +291,7 @@ _(none)_
 **Because:** with `lanes: 2` in the index, 01 and 02 spawn together and the stub's "first free number" let whichever started first eat the other's plan line — a `dead` meant for 01 killed 02. The spawn suffix is the driver's order, which is the plan's.
 **Undo:** `chain()` is one call per test; the stub falls back to the first free number when the pack name carries no suffix.
 **Review:** fyi
+**Owner (2026-10-11):** kept
 
 ### AD-406 — What does an answer file carry? · slice-04 · 2026-10-10
 
@@ -302,6 +316,7 @@ _(none)_
 **Because:** FR-5 says the driver blocks; the id shape is the tool's, not the PRD's. Builders use `NN01`, `NN02`, … so the driver's own blocks stay below 100 without colliding.
 **Undo:** one format string in `scheduler::merge_or_block` and the test's expected heading.
 **Review:** decide
+**Owner (2026-10-11):** kept
 
 ### AD-502 — Which events report the commit path? · slice-05 · 2026-10-10
 
@@ -310,6 +325,7 @@ _(none)_
 **Because:** `events.jsonl` is the cockpit's record (§9 FR-7) and FR-5 leaves the payloads open.
 **Undo:** five variants in `events.rs` and the assertions in `tests/commits.rs`.
 **Review:** decide
+**Owner (2026-10-11):** kept
 
 ### AD-503 — Does the driver create `agent-log.md` when the feature has none? · slice-05 · 2026-10-10
 
@@ -318,6 +334,7 @@ _(none)_
 **Because:** `answer_ask` (slice 04) already creates it the same way; two writers of the header is one convention.
 **Undo:** drop the `fs::write` in `commit::merge_logs`.
 **Review:** fyi
+**Owner (2026-10-11):** changed — `docs new` now creates `agent-log.md` at birth; the driver keeps its fallback as a second check for older vendored copies
 
 ### AD-504 — What does the merge commit stage? · slice-05 · 2026-10-10
 
@@ -326,6 +343,7 @@ _(none)_
 **Because:** the fragments were committed with their slices (they are in every slice's pathspec); the merge is what removes them.
 **Undo:** drop the fragments from the path list in `commit::merge_logs`.
 **Review:** fyi
+**Owner (2026-10-11):** kept
 
 ### AD-505 — How are a slice's leftovers told apart from another lane's half-written work? · slice-05 · 2026-10-10
 
@@ -334,6 +352,7 @@ _(none)_
 **Because:** FR-5 wants the list to be the worker's own unnamed files; the files themselves are never committed either way. Residual: a file lane 2 wrote whose stream line is not yet flushed can still be listed — cosmetic.
 **Undo:** `Running.untracked_before` and `scheduler::leftovers`.
 **Review:** fyi
+**Owner (2026-10-11):** kept
 
 ### AD-506 — Does `commit_sha` bump `schema_version`? · slice-05 · 2026-10-10
 
@@ -350,6 +369,7 @@ _(none)_
 **Because:** the same answer as AD-501; whichever way that review goes, this follows it.
 **Undo:** `checkpoint::lowest_free_block` and the ids in `tests/checkpoints.rs`.
 **Review:** fyi
+**Owner (2026-10-11):** kept
 
 ### AD-602 — When does the driver trust a cached red gate? · slice-06 · 2026-10-10
 
@@ -358,6 +378,7 @@ _(none)_
 **Because:** FR-4's cache exists to skip a *rerun* when nothing changed; a red the owner was just asked about is the one result worth rerunning, and the slice's own acceptance has the answer rerun the gate.
 **Undo:** drop the `trust_red` filter in `checkpoint::gate_once`.
 **Review:** fyi
+**Owner (2026-10-11):** kept
 
 ### AD-603 — Which events report the checkpoint, and what became of `checkpoint_due` and `log_merged.sha`? · slice-06 · 2026-10-10
 
@@ -366,6 +387,7 @@ _(none)_
 **Because:** FR-4 names `checkpoint_started`, `gate_run`, `fix_spawned`, `checkpoint_done` and leaves the payloads open; `events.jsonl` is the cockpit's record (§9).
 **Undo:** the variants in `events.rs` and the exact tails in `tests/loop.rs`, `tests/commits.rs`, `tests/lanes.rs`, `tests/run.rs`, `tests/checkpoints.rs`.
 **Review:** fyi
+**Owner (2026-10-11):** kept
 
 ### AD-604 — On a resume, where does the killed checkpoint worker's death land? · slice-06 · 2026-10-10
 
@@ -374,6 +396,7 @@ _(none)_
 **Because:** one orphan path; and the cockpit sees the death before the retry, the order it happened in.
 **Undo:** move `scheduler::settle_checkpoint_orphan` behind `checkpoint::run`'s resume branch; the `k[16..]` tail in `tests/run.rs`.
 **Review:** decide
+**Owner (2026-10-11):** kept
 
 ### AD-605 — What does the checkpoint commit stage? · slice-06 · 2026-10-10
 
@@ -398,6 +421,7 @@ _(none)_
 **Because:** PRD §6: "hash of the tree minus `docs/**`".
 **Undo:** `gatecache::tree_id`.
 **Review:** decide
+**Owner (2026-10-11):** kept
 
 ### AD-608 — How do the checkpoint's workers fit the schema? · slice-06 · 2026-10-10
 
@@ -430,6 +454,7 @@ _(none)_
 **Because:** FR-9 lists the three triggers but not the `allowed_warning` literal nor the finished-anyway case; §4 FR-2 bullet 5 only says the fields are recorded.
 **Undo:** `quota::Limit::from` and the three call sites (`scheduler::route_exit`, `settle_orphans`, `settle_checkpoint_orphan`; `checkpoint::fix_once` and the checkpoint-worker loop).
 **Review:** decide
+**Owner (2026-10-11):** kept
 
 ### AD-703 — Does a budget park keep the driver up like a block park? · slice-07 · 2026-10-10
 
@@ -438,6 +463,7 @@ _(none)_
 **Because:** FR-9 says "parks" and "`factory run NNN --budget <n>` resumes" without saying how those meet a live driver.
 **Undo:** replace the two `return quota::park_budget(..)` with `enter_park` + a budget re-check on the tick, and teach `cli::run` to apply `--budget` to a live run.
 **Review:** fyi
+**Owner (2026-10-11):** kept
 
 ### AD-704 — How do the tests wait out a 15-minute pause in seconds? · slice-07 · 2026-10-10
 
@@ -446,6 +472,7 @@ _(none)_
 **Because:** FR-9's acceptance ("no spawn until the reset time", the 15-minute retry) needs real elapsed time the tests cannot afford; PRD §16's "wall-clock timing" fixture note settles nothing about pauses.
 **Undo:** delete `clock::scale`/`wall_now`, make `unix_now` the wall clock, and give `tests/quota.rs` another way to pass time (slower tests or a trait).
 **Review:** decide
+**Owner (2026-10-11):** kept
 
 ### AD-801 — Where are `tool_calls` and the worker gate rows written, and where does the gate string come from? · slice-08 · 2026-10-10
 
@@ -462,6 +489,7 @@ _(none)_
 **Because:** the slice contradicts itself between its task text and its acceptance; §10 lists keys without saying "only these".
 **Undo:** delete the three `format!` lines at the end of `Report::lines` and the three fields; `KEYS`/`EXTRA_KEYS` in `cli::report` name them.
 **Review:** decide
+**Owner (2026-10-11):** kept
 
 ### AD-803 — What do a worker gate row's `minutes` and `red` carry? · slice-08 · 2026-10-10
 
@@ -470,6 +498,7 @@ _(none)_
 **Because:** §10 says the rows exist with `cmd, red, minutes`; neither it nor the slice says what a timestamp-less stream yields on a `NOT NULL` column, nor how much of a result to keep.
 **Undo:** a nullable `minutes` is one guarded `ALTER` plus `GateInsert.minutes: Option<f64>`; `RESULT_HEAD` is one constant.
 **Review:** decide
+**Owner (2026-10-11):** kept
 
 ### AD-804 — Where does the report's `start_context` come from? · slice-08 · 2026-10-10
 
@@ -478,6 +507,7 @@ _(none)_
 **Because:** §10 names `start_context` among the keys and the `workers` columns it lists stop at `peak_context`; nothing says where a per-worker first-message context lives.
 **Undo:** drop the column from the `ALTER` list and compute 0; `tests/metrics.rs` asserts the column is set.
 **Review:** decide
+**Owner (2026-10-11):** kept
 
 ### AD-805 — How far does the `measure.py` port go? · slice-08 · 2026-10-10
 
@@ -494,6 +524,7 @@ _(none)_
 **Because:** §10 lists six kinds and two flags without the unknown-tool case or the flags' overlap.
 **Undo:** `metrics::classify`'s fallback arm and the `seen_run.insert` inside `call_rows`.
 **Review:** fyi
+**Owner (2026-10-11):** kept
 
 ### AD-901 — What id does a closeout block get? · slice-09 · 2026-10-10
 
@@ -502,6 +533,7 @@ _(none)_
 **Because:** `factory answer BLOCK-n` (slice 04) and `docs log merge` parse one id shape; a second would need a second parser and a second numbering, and the phase is already in the heading where the owner reads it.
 **Undo:** format the id in `closeout::block`; `tests/closeout.rs::block_heading` pins the shape.
 **Review:** decide
+**Owner (2026-10-11):** kept
 
 ### AD-902 — When is a red check "flaky" (one rerun) rather than a fix round? · slice-09 · 2026-10-10
 
@@ -510,6 +542,7 @@ _(none)_
 **Because:** that comparison never matches on the first red after a push — no green exists at the new head yet — so a flaky first check would always cost a fix round, and after any fix commit the heads always differ. The run list says whether the same sha passed, which is what "no diff since the last green" means.
 **Undo:** replace `green_at` with a lookup of `ci_green {head}` events in `closeout::watch_ci`.
 **Review:** decide
+**Owner (2026-10-11):** kept, as superseded by AD-30005 and AD-30006
 
 ### AD-903 — What does a new `factory run NNN` do on a PRD already `shipped`? · slice-09 · 2026-10-10
 
@@ -518,6 +551,7 @@ _(none)_
 **Because:** nothing in §8 or the slice says what a run on a delivered feature does; the preflight's own line says "resumes at the PR".
 **Undo:** drop `already_shipped` in `closeout::run` and the `pr_view` call in `open_pr`.
 **Review:** decide
+**Owner (2026-10-11):** kept
 
 ### AD-904 — What does the driver fill in when the polish worker leaves gaps? · slice-09 · 2026-10-10
 
@@ -526,6 +560,7 @@ _(none)_
 **Because:** the slice says the worker writes them "in its last turn" and the acceptance checks they exist; it does not say what happens when they do not. A block would cost the owner a round-trip for a file the driver can write.
 **Undo:** replace the two `fs::write` fallbacks in `commit_polish` with a `block(.., "polish", ..)`.
 **Review:** decide
+**Owner (2026-10-11):** changed — keep the template fill, but flag it: an event the cockpit relays, and a line at the top of the PR body saying the retro or body is a template stand-in
 
 ### AD-905 — What do `run_finished`, `pr_url` and `ci_cycles` carry? · slice-09 · 2026-10-10
 
@@ -534,6 +569,7 @@ _(none)_
 **Because:** task 5 names the fields and task 3 names the two homes of `pr_url`; the defaults, the `ALTER` and the retro bump are what a diff reviewer would miss.
 **Undo:** the column is one line in `db.rs`'s `ALTER` list; the bump is `commit_ci_fix`.
 **Review:** fyi
+**Owner (2026-10-11):** kept
 
 ### AD-906 — How do the two new workers appear in the tables and the packs? · slice-09 · 2026-10-10
 
@@ -542,6 +578,7 @@ _(none)_
 **Because:** the slice names the roles (`polish`, fix) and the pack sections; the column values and the header line are the parts a reader of the tables would otherwise guess.
 **Undo:** `Job::role` in `worker.rs`; `Pack::for_polish` / `for_ci_fix` in `pack.rs`.
 **Review:** fyi
+**Owner (2026-10-11):** kept
 
 ### AD-907 — What happens when `gh pr checks` reports no checks at all? · slice-09 · 2026-10-10
 
@@ -550,6 +587,7 @@ _(none)_
 **Because:** §8 says CI red is handled and green finishes; a repo without CI is neither, and the dogfood repo has a workflow so the case is only the fixture's and other repos'.
 **Undo:** turn the `Checks::None` arm in `watch_ci` into a `block`.
 **Review:** decide
+**Owner (2026-10-11):** kept
 
 ### AD-908 — Where does the watch interval come from? · slice-09 · 2026-10-10
 
@@ -558,6 +596,7 @@ _(none)_
 **Because:** task 4 says "interval injectable for tests" and nothing more; an env var is the smallest knob that a test harness and an owner can both turn, and the stub ignores it anyway.
 **Undo:** read it from `Config` in `ci::interval`.
 **Review:** fyi
+**Owner (2026-10-11):** kept
 
 ### AD-909 — Where does the closeout read `branch.default` from on a fresh run? · slice-09 · 2026-10-10
 
@@ -566,6 +605,7 @@ _(none)_
 **Because:** the slice says the default branch comes from the board's `branch.default` and that "the resume path has it in `state.json`"; the fresh path did not persist it anywhere.
 **Undo:** delete the one `save_preflight` call; the fallback chain still works.
 **Review:** fyi
+**Owner (2026-10-11):** kept
 
 ### AD-910 — How is a dead, rate-limited or blocked polish worker handled? · slice-09 · 2026-10-10
 
@@ -582,6 +622,7 @@ _(none)_
 **Because:** task 4's acceptance scripts four CI shapes; a line-per-call file is the smallest thing that does.
 **Undo:** both stubs document their formats at the top.
 **Review:** fyi
+**Owner (2026-10-11):** kept
 
 ### AD-1001 — How does `factory wait` tail `events.jsonl`? · slice-10 · 2026-10-10
 
@@ -598,6 +639,7 @@ _(none)_
 **Because:** task 3 names `run_stopped` but not its payload, and the list of `wait` kinds was written before it existed; the skill needs one line that says the run ended on a stop and how to resume it.
 **Undo:** drop `RunStopped` from `cockpit::is_cockpit`; its payload is one variant in `events.rs`.
 **Review:** decide
+**Owner (2026-10-11):** kept
 
 ### AD-1003 — Where do `wait` and `status` learn which blocks and asks are open? · slice-10 · 2026-10-10
 
@@ -614,6 +656,7 @@ _(none)_
 **Because:** slice 07 made the budget park exit its driver (AD-703); the slice's dead-driver rule and its skill recipe were written as if every park kept one.
 **Undo:** drop the `parked_on` term from `cockpit::driver_dead` and the `parked:` bullet of the skill.
 **Review:** decide
+**Owner (2026-10-11):** kept
 
 ### AD-1005 — How does `wait` avoid acting on a half-written ending? · slice-10 · 2026-10-10
 
@@ -638,6 +681,7 @@ _(none)_
 **Because:** the poll works whether or not a long background Bash wakes the session; the long wait only saves the session a wake every 25 minutes. Switching later is one number in the skill and one needle in `tests/cockpit.rs`.
 **Undo:** `--timeout 1500` → `--timeout 7200` in `skills/factory-deliver/SKILL.md` and the test.
 **Review:** decide
+**Owner (2026-10-11):** kept
 
 ### AD-9002 — How does a checkpoint get the `wait`, `status` and `stop` transcripts? · checkpoint · 2026-10-10
 
@@ -654,6 +698,7 @@ _(none)_
 **Because:** task 2 gives the rule in one line and its own fixture breaks it; bracket depth plus indentation keeps the rule's intent on all four stacks. Slice 12 replaces the body with the tree-sitter node range.
 **Undo:** one function in `src/ctx/def.rs` and the def snapshots.
 **Review:** decide — deviates from the slice's literal body rule (orchestrator regrade, autonomy.md)
+**Owner (2026-10-11):** kept
 
 ### AD-1102 — What does a `refs` hit print, and what does the trailer say when nothing was cut? · slice-11 · 2026-10-10
 
@@ -718,6 +763,7 @@ _(none)_
 **Because:** task 2's acceptance asks `def new --kind fn` to find the `impl` method as kind `method`, which the literal mapping cannot do; one rule for all four grammars beats a Rust-only exception, and "a function" in an agent's question usually includes methods.
 **Undo:** one line in `src/ctx/lang.rs` (`kind_matches`) and the `def-new-kind-fn` snapshot.
 **Review:** decide — reconciles the slice's kind mapping with its own acceptance, a public flag's meaning
+**Owner (2026-10-11):** kept
 
 ### AD-1202 — How does `outline` nest Rust methods, and what else does it list? · slice-12 · 2026-10-10
 
@@ -726,6 +772,7 @@ _(none)_
 **Because:** a Rust method has no class to sit under, and the impl line carries what a reader needs (which type, which trait); the trait's declarations are its interface, the same as a PHP interface's methods, which the slice wants listed.
 **Undo:** the `impl_item` and `function_signature_item` patterns in `RUST_EXTRA` (`src/ctx/lang.rs`) and `"impl"` in `outline::outlined`; the `outline-rs` snapshot.
 **Review:** decide — prints lines the acceptance's list does not name
+**Owner (2026-10-11):** kept
 
 ### AD-1203 — Upstream `tags.scm` as shipped, or with patterns of our own? · slice-12 · 2026-10-10
 
@@ -734,6 +781,7 @@ _(none)_
 **Because:** tree-sitter-typescript's `tags.scm` leaves functions, classes and methods to tree-sitter-javascript's, so without these `def useThing` and `outline` on the Vue fixture find nothing; PHP methods come out as `fn`, which task 2's `def handle --kind method` rules out. The locals query only hides references, and only definitions are read.
 **Undo:** delete the four constants' lines; the snapshots show what moves.
 **Review:** fyi — the kinds come from our query text, not only the grammar crates'
+**Owner (2026-10-11):** kept
 
 ### AD-1204 — Which grammar for `.tsx`, `.js`, `.jsx` and `.mjs`? · slice-12 · 2026-10-10
 
@@ -782,6 +830,7 @@ _(none)_
 **Because:** §14 promises `path:line, kind, signature` and "`def` returns exactly the definition with kind and signature"; the fixture has no attributed definition, so the slice's rule held there and failed on the owner's own repository. Rust attributes and TypeScript member decorators are sibling nodes and were never affected.
 **Undo:** `node_def` in `src/ctx/def.rs` (three lines) and the one test.
 **Review:** decide — changes slice 12 task 2's signature rule
+**Owner (2026-10-11):** kept
 
 ### AD-1301 — `--settings` as inline JSON or as a file? · slice-13 · 2026-10-10
 
@@ -790,6 +839,7 @@ _(none)_
 **Because:** the run brief requires the settings to live in a file the driver owns under the run's directory. The file also leaves a record of what each worker ran under next to its stream, keeps argv short in `ps` and in `calls/N.json`, and `claude --help` 2.1.280 takes either form. Nothing is written under `~/.claude/` or a project's `.claude/`.
 **Undo:** in `Worker::spawn`, pass `settings(&exe).to_string()` in place of the path and drop the `fs::write`. `check_worker_argv` in `tests/loop.rs` then reads the JSON from argv.
 **Review:** decide — deviates from the slice's stated argv form
+**Owner (2026-10-11):** kept
 
 ### AD-1302 — What is the shape of the new columns and report keys? · slice-13 · 2026-10-10
 
@@ -810,6 +860,7 @@ _(none)_
 **Because:** the pack file can be pruned with the run, while the row cannot. The flag is stored per row so the report needs no path matching. The text lines are the slice's own wording.
 **Undo:** the two columns in `src/db.rs` (the schema and the add-if-missing list), and `Report`/`PerWorker`/`Thresholds` in `src/cli/report.rs`.
 **Review:** decide — new schema columns and a public report and JSON surface that the PRD does not specify
+**Owner (2026-10-11):** kept
 
 ### AD-1303 — Does the hook also deny `gh pr merge` and `git push --force`? · slice-13 · 2026-10-10
 
@@ -822,6 +873,7 @@ _(none)_
 The checkpoint's real-worker probe confirms the hook half.
 **Undo:** two match arms in `cli::hook::bash` returning `Verdict::Deny`.
 **Review:** fyi — a fallback named in the task is deliberately absent
+**Owner (2026-10-11):** kept
 
 ### AD-1304 — Which whole-file reads does the hook refuse? · slice-13 · 2026-10-10
 
@@ -843,6 +895,7 @@ The checkpoint's real-worker probe confirms the hook half.
 In all three cases, refusing would point the worker at text it does not have.
 **Undo:** `Held::section` in `src/cli/hook.rs`.
 **Review:** fyi — a worker must now `Read` its own slice by range before its first `Edit`. Watch for that at the checkpoint's real-worker run.
+**Owner (2026-10-11):** kept
 
 ### AD-1305 — What counts as a grep "over the repo"? · slice-13 · 2026-10-10
 
@@ -861,6 +914,7 @@ In all three cases, refusing would point the worker at text it does not have.
 **Because:** the hook must answer in well under 20 ms with no I/O beyond the pack's first line (task 1). It measured a 2.9 ms median and 4.1 ms max over 50 runs. The deny is a hint, not a guard.
 **Undo:** `over_repo`/`repo_dir` in `src/cli/hook.rs`.
 **Review:** fyi — `ls && grep -rn foo .` is not refused
+**Owner (2026-10-11):** kept, as superseded by AD-10005, which already stats each path
 
 ### AD-1306 — Where do the pack's Outline paths and `def` symbols come from? · slice-13 · 2026-10-10
 
@@ -887,6 +941,7 @@ In all three cases, refusing would point the worker at text it does not have.
 - A cut mid-line would hand the hook a file the pack does not hold.
 **Undo:** `Recon::of` in `src/pack.rs`.
 **Review:** fyi — the outlined set is larger than the cited paths
+**Owner (2026-10-11):** kept
 
 ### AD-1307 — What do `followup_reads` and `pack_doc_read_chars` count? · slice-13 · 2026-10-10
 
@@ -903,6 +958,7 @@ In all three cases, refusing would point the worker at text it does not have.
 - `ctx_share` is ctx rows among lookup rows (§14 decision 4), which needs them counted as lookups.
 **Undo:** `Followups` and the `pack_doc` sum in `src/cli/report.rs`; `LOOKUP_KINDS` in `src/metrics.rs`.
 **Review:** fyi — the report's `followup_reads` follows the slice, not §10's wording
+**Owner (2026-10-11):** kept
 
 ### AD-1308 — When is a call "expanded"? · slice-13 · 2026-10-10
 
@@ -942,6 +998,7 @@ In all three cases, refusing would point the worker at text it does not have.
 **Because:** the never-list is held against an agent under pressure, not a malicious one (the brief's threat model). Three layers mean an accidental `gh` or push fails even when one layer misses it. What still gets through: a script file the worker writes and then runs, a git alias from config, a `make` or `npm` target, a wrapper not in the table, and a `git push` through SSH or a credential helper, since only the GitHub tokens and `gh`'s config are withheld. The real Claude Code check refused all three probes (`evidence/polish-f1-deny-real.txt`).
 **Undo:** `DENY_RULES`, `GH_TOKEN_VARS` and `gh_config_dir` in `src/worker.rs`; `guard` and its helpers in `src/cli/hook.rs`; `shell::script` in `src/shell.rs`.
 **Review:** decide — the worker env and deny rules are the PRD's §4 FR-2 interface, widened; `SSH_AUTH_SOCK` stays.
+**Owner (2026-10-11):** changed — keep the three layers, and add a git push-off env at spawn (`url.factory-no-push://.pushInsteadOf` for `git@`, `ssh://`, `https://`), so a push from a script, a make target or an alias fails too
 
 ### AD-10002 — How do the pack and the hook name the `factory` binary? · polish · 2026-10-10
 
@@ -971,6 +1028,7 @@ In all three cases, refusing would point the worker at text it does not have.
 **Because:** without this, the pack tells a worker to do what its own hook refuses (Cn2), and to run `gh run rerun` and `git push`.
 **Undo:** the asset lines.
 **Review:** fyi — `assets/autonomy.md` is no longer byte-identical to `~/.claude/skills/feature-docs/autonomy.md`. It is this repo's own copy (slice-03), and line 67 may be worth taking upstream.
+**Owner (2026-10-11):** kept
 
 ### AD-10005 — When is a grep's operand a directory, and where is it resolved? · polish · 2026-10-10
 
@@ -1002,6 +1060,7 @@ In all three cases, refusing would point the worker at text it does not have.
 **Because:** the account, config dir and provider must reach the worker, or it logs in as someone else or not at all (L17). The session's variables must not reach it.
 **Undo:** `KEEP_CLAUDE_VARS`/`scrubbed` in `src/worker.rs`.
 **Review:** fyi — a provider or auth variable outside the list is dropped; add it there.
+**Owner (2026-10-11):** kept
 
 ### AD-10008 — Which files and directories are private? · polish · 2026-10-10
 
@@ -1070,6 +1129,7 @@ In all three cases, refusing would point the worker at text it does not have.
 **Because:** switching back is the whole fix, so a block and an answer would add a step without adding information. A park that clears itself keeps the run. The process-wide hold also covers the polish, ship and CI-fix commits in `closeout.rs`, which this fixer may not edit.
 **Undo:** drop the `branch_refusal` block at the top of the `drive_inner` loop, and the `held` check in `commit::commit`.
 **Review:** fyi
+**Owner (2026-10-11):** kept
 
 ### AD-20006 — How are emitters in several processes serialised? · polish · 2026-10-10
 
@@ -1086,6 +1146,7 @@ In all three cases, refusing would point the worker at text it does not have.
 **Because:** with one worker running, a tracked file that changed under it is its work. The commit message already names the worker, so the sweep loses nothing, and `git diff` of the commit shows it. An untracked file can be a scratch file, a build output that `.gitignore` misses, or a secret, so it stays a human call. The cost is that an owner editing a tracked file by hand during a lone worker's run sees the edit in that worker's commit.
 **Undo:** pass `alone: false` to `scheduler::unnamed` everywhere, so every unnamed change is listed.
 **Review:** fyi
+**Owner (2026-10-11):** kept
 
 ### AD-20008 — Does a slice whose worker died wait for a due checkpoint? · polish · 2026-10-10
 
@@ -1094,6 +1155,7 @@ In all three cases, refusing would point the worker at text it does not have.
 **Because:** PRD §5 FR-4 says to drain the lanes on `checkpointDue`, and the board reports `spawnable: 0`. A respawn is a spawn. Respawning first also lets a checkpoint cover more than `checkpoint_every` slices. The cost is that the gate runs over the dead worker's half-written changes. The checkpoint commit leaves them out, because they are in its spawn baseline, so the respawned worker still owns them.
 **Undo:** drop the `board.checkpoint_due` skip in the building-respawn loop of `drive_inner`.
 **Review:** fyi
+**Owner (2026-10-11):** kept
 
 ### AD-20009 — When `factory answer BLOCK-n` fails partway, how does a retry finish it? · polish · 2026-10-10
 
@@ -1110,6 +1172,7 @@ In all three cases, refusing would point the worker at text it does not have.
 **Because:** ask numbers start at 1 in every run, so two features parked at preflight in one repo both have an ASK-1. A refusal with no option would leave both runs unanswerable. The run id is what the refusal prints, so it is what the owner copies.
 **Undo:** remove `AnswerArgs::run`, and take the first run that waits.
 **Review:** fyi
+**Owner (2026-10-11):** kept
 
 ### AD-20011 — Does a run parked on its budget get its own phase? · polish · 2026-10-10
 
@@ -1134,6 +1197,7 @@ In all three cases, refusing would point the worker at text it does not have.
 **Because:** the old behaviour hid a worker's later `BLOCK-n` from `slice_blocked` and `factory answer`, and wrote the resolution as code. After the repair, the driver and docs.mjs read the same entries. Closing at a heading when the count is even would break the template's fenced examples, which hold BLOCK headings.
 **Undo:** in `answers.rs`, make `dangling_fence` return `None`.
 **Review:** fyi
+**Owner (2026-10-11):** kept
 
 ### AD-20014 — Does a run that reaches its budget exactly park? · polish · 2026-10-10
 
@@ -1162,6 +1226,7 @@ Past it:
 **Because:** GitHub registers a pushed head's check suite seconds to minutes after the push. Five polls covers that without turning a repo with no workflow into a 6 h wait. The expected-names rule stops a red table that is still partly registered from reading as a smaller red.
 **Undo:** set `GRACE_POLLS` to 0 in `src/ci.rs`; `judge` then decides on the first poll.
 **Review:** fyi
+**Owner (2026-10-11):** kept
 
 ### AD-30002 — When does a check that stays pending become a block? · polish · 2026-10-10
 
@@ -1173,6 +1238,7 @@ Past it:
 **Because:** a queued job with no runner and a check app that never reports are both real. Six hours is the longest a GitHub-hosted job can legitimately run, and the env var follows AD-908's knob.
 **Undo:** raise `DEFAULT_TIMEOUT` in `src/ci.rs`.
 **Review:** fyi
+**Owner (2026-10-11):** kept
 
 ### AD-30003 — What do the CI caps count once the owner has answered a CI block? · polish · 2026-10-10
 
@@ -1188,6 +1254,7 @@ Round numbers keep counting from the run's highest round. The fourth round's pac
 **Because:** `autonomy.md:77` caps the driver's own attempts between owner decisions. Once the owner has looked and answered, the driver gets another bounded try, never an unbounded one.
 **Undo:** set `window` to 0 in `closeout::watch_ci`.
 **Review:** fyi
+**Owner (2026-10-11):** kept
 
 ### AD-30004 — What does each closeout block's `proceed` answer do? · polish · 2026-10-10
 
@@ -1209,6 +1276,7 @@ Any other answer, and any answer to a block with no `proceed` option, re-runs th
 **Because:** each block now promises an effect the code delivers, and `tests/closeout.rs` answers four of them and checks what follows. A first-word rule is something the owner can type without guessing.
 **Undo:** drop the `is_proceed` checks in `closeout::run`, `open_pr` and `watch_ci`, and the `proceed` options from the block texts.
 **Review:** decide
+**Owner (2026-10-11):** kept
 
 ### AD-30005 — What makes a red check flaky, and how often is it rerun? · polish · 2026-10-10
 
@@ -1223,6 +1291,7 @@ Any other answer, and any answer to a block with no `proceed` option, re-runs th
 **Because:** "flaky" means the same check passed on the same tree. Only the same workflow at the same sha says that, and only the check's own link names its run.
 **Undo:** `ci::passed_once` and `ci::runs_at` in `src/ci.rs`.
 **Review:** fyi
+**Owner (2026-10-11):** kept
 
 ### AD-30006 — What happens when `gh` refuses a call the red verdict needs? · polish · 2026-10-10
 
@@ -1231,6 +1300,7 @@ Any other answer, and any answer to a block with no `proceed` option, re-runs th
 **Because:** a fix worker given a flaky check, or a check whose run it cannot name, changes code that is not broken. A `gh` that refuses is a login or permission problem for the owner, as the other `gh` refusals already are.
 **Undo:** map the `Err` arms in `closeout::on_red` back to `Next::Fix`.
 **Review:** fyi
+**Owner (2026-10-11):** kept
 
 ### AD-30007 — Which check states are infrastructure, and do they wait for the rest of the table? · polish · 2026-10-10
 
@@ -1245,6 +1315,7 @@ Any other answer, and any answer to a block with no `proceed` option, re-runs th
 **Because:** `autonomy.md:79` says infrastructure blocks at once. A timeout or a runner that never started is not something a fix worker can see in a diff.
 **Undo:** move the states to `Class::Fail` in `ci::class`.
 **Review:** fyi
+**Owner (2026-10-11):** kept
 
 ### AD-30008 — How does the watch tell a rerun's old rows from its new ones? · polish · 2026-10-10
 
@@ -1268,6 +1339,7 @@ Any other answer, and any answer to a block with no `proceed` option, re-runs th
 **Because:** the driver must never push the default branch or one the run does not own. A guard at each push is the only place the check cannot go stale.
 **Undo:** remove the two `branch_guard` calls.
 **Review:** fyi
+**Owner (2026-10-11):** kept
 
 ### AD-30010 — When is the ship done on a re-entry? · polish · 2026-10-10
 
@@ -1308,6 +1380,7 @@ Any other answer, and any answer to a block with no `proceed` option, re-runs th
 **Because:** a nested `build/` or `storage/` is as often source as output (`src/build/`, `app/storage/`), and a `.gitignore` already hides the real output trees; a dependency tree is never source.
 **Undo:** fold `ROOT_DIRS` back into `VENDOR_DIRS` and restore the planted `php/build/Gen.php`.
 **Review:** decide — deviates from slice 11's walk test, which planted `php/build/` as skipped
+**Owner (2026-10-11):** kept
 
 ### AD-40005 — What does `wait` do with a question a dead cockpit was shown but never relayed? · polish · 2026-10-10
 
@@ -1316,6 +1389,7 @@ Any other answer, and any answer to a block with no `proceed` option, re-runs th
 **Because:** PRD §9 says a dead cockpit reattaches by calling `wait`; the cursor only knows what was printed, not what reached the owner, and an open question is still owed whoever saw it.
 **Undo:** drop `cockpit::owed` from `src/cli/wait.rs` and restore the exit-3 step in `tests/cockpit.rs` and the skill's "Wait again either way."
 **Review:** decide — deviates from slice 10's acceptance (second `wait` exits 3 on an open block) and amends AD-1004's "relays the park once"
+**Owner (2026-10-11):** kept
 
 ### AD-40006 — Which shell reading picks the `grep`/`sed`/`cat` kinds? · polish · 2026-10-10
 
@@ -1324,6 +1398,7 @@ Any other answer, and any answer to a block with no `proceed` option, re-runs th
 **Because:** one command line should get one first word; the research's counts compare on the commands both readings agree on, which are nearly all of them.
 **Undo:** restore the whitespace loop and `is_assignment` in `src/metrics.rs`.
 **Review:** fyi — supersedes AD-1309's whitespace clause; `src/shell.rs`'s module doc still describes the old split and is not in this fixer's files
+**Owner (2026-10-11):** kept
 
 ### AD-40007 — What does a threshold line say with nothing to compare? · polish · 2026-10-10
 
@@ -1340,6 +1415,7 @@ Any other answer, and any answer to a block with no `proceed` option, re-runs th
 **Because:** the global rule names `/deliver NNN` only, so whether a push from this skill is asked for is the owner's call, not the skill's; leaving the text as it is keeps the behaviour the slice wrote until he says.
 **Undo:** replace "Push once." with "Ask the owner, then push once." in `skills/factory-deliver/SKILL.md`.
 **Review:** decide — the owner's push exception names `/deliver NNN`; extend it to `/factory-deliver NNN`, or make the skill ask?
+**Owner (2026-10-11):** changed — the owner's global CLAUDE.md now names `/factory-deliver NNN` beside `/deliver NNN` in its push exception, with the same limits; the skill text stays "Push once."
 
 ### AD-50001 — Who handles a HEAD off the run's branch once the closeout is due? · polish · 2026-10-10
 
@@ -1348,6 +1424,7 @@ Any other answer, and any answer to a block with no `proceed` option, re-runs th
 **Because:** in the closeout, the owner is already answering blocks, and a park with no block and no ask says nothing in `factory status` about what to do. Before the closeout, the self-clearing park keeps lanes of slices moving without an answer step. Each phase has one owner and one outcome. The cost: if HEAD moves while a polish or CI fix worker is running, `hold_branch` still makes that worker's commit error, and the run fails (AD-20005's cost, unchanged).
 **Undo:** drop the `closeout_owns` condition on the tick's `branch_refusal` check in `scheduler::drive_inner`, and the entry `branch_guard` call in `closeout::run`.
 **Review:** fyi
+**Owner (2026-10-11):** kept
 
 ### AD-50002 — Whose are the files a closeout worker changed without naming them? · polish · 2026-10-10
 
@@ -1356,6 +1433,7 @@ Any other answer, and any answer to a block with no `proceed` option, re-runs th
 **Because:** the slice and checkpoint workers already work this way (a354d0d). The polish and CI fix workers were the two left out. Both run alone, so a tracked change under them is their work.
 **Undo:** pass `alone: false` to `scheduler::unnamed` in `commit_polish` and `commit_ci_fix`, or drop the `unnamed` calls and `EventKind::CloseoutLeftovers`.
 **Review:** fyi
+**Owner (2026-10-11):** kept
 
 ### AD-50003 — How does the CI fix contract name the round? · polish · 2026-10-10
 
