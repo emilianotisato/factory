@@ -15,8 +15,16 @@ Both runs: Opus 5.5, effort high, bypass permissions, `autoCompactWindow` 200000
 
 Every answer one run gets, the other gets word for word, so the runs differ only in the tool.
 
-**BLOCK-101 (run A, slice-01, 12:24).** A gap in the shared base, so run B should hit it too. PRD §9 seeds the inbox fixtures in `QaSeeder::run()`, and 32 Sync feature tests count whole tables after seeding. The owner chose the builder's option 1, sent at 12:25:
+**BLOCK-101 (run A, slice-01, 12:24).** A gap in the shared base, so run B should hit it too. PRD §9 seeds the inbox fixtures in `QaSeeder::run()`, and 32 Sync feature tests count whole tables after seeding. The owner chose the builder's option 1, sent at 12:26:
 
 > BLOCK-101: option 1. Scope the whole-table SyncRun and StagedRecord counts in the failing Sync tests to the profile under test, and exclude the seeded inbox run where a test asserts a list. Fix the browser-test assertions that break the same way (AD-101). §9 stays as written: the inbox fixtures stay in QaSeeder::run(). Record this as the resolution and resume the run.
 
 Run B gets the same text under its own block id, with "option 1" dropped if its options differ.
+
+**Owner steering (run A, 13:37, during CP-2).** Unprompted, in the session: "But checkpoint should not take this long". The orchestrator narrowed CP-3's browser sweep to the feature's own tests in response. This can only have made run A cheaper, so it biases the comparison against run B, not for it. Run B gets no unprompted messages: the owner answers what the cockpit asks and nothing else.
+
+### Run A outcome
+
+- Draft PR #24 at 15:16. CI green first time; the re-run after the owner review was pending at 15:50.
+- Review interview (15:25–15:42): all reviewed, 8 ADs kept, 1 changed (AD-601, fixed in `ddedf1b`). Three UX-rubric lines added; both DEC candidates kept local.
+- Open quality questions for the questionnaire: the Cursor second opinion timed out (a fresh Claude reviewer stood in), and 13 browser tests outside the gate fail, not yet compared with the base.
