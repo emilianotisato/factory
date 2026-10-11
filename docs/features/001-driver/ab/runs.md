@@ -8,7 +8,7 @@ Both runs: Opus 5.5, effort high, bypass permissions, `autoCompactWindow` 200000
 
 | run | tool | worktree / branch | started | session | PR |
 |---|---|---|---|---|---|
-| A | `/deliver 018` | `wt-a` · `feat/018-cross-client-dashboard` | 2026-10-11 12:09 | session_01WGNvo9koY6fY8J21kJQjZY, local `480153fa-444d-439a-936f-8dfbccc268ac` (tmux `ab-a`) | |
+| A | `/deliver 018` | `wt-a` · `feat/018-cross-client-dashboard` | 2026-10-11 12:09 | session_01WGNvo9koY6fY8J21kJQjZY, local `480153fa-444d-439a-936f-8dfbccc268ac` (tmux `ab-a`) | [#24](https://github.com/ICG-Argentina/icg-cloud/pull/24), draft at 15:16 |
 | B | `/factory-deliver 018` | `wt-b` · `feat/cross-client-dashboard` | | | |
 
 ### Owner answers
