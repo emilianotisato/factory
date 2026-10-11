@@ -45,3 +45,11 @@ Answered by the owner 2026-10-11 at 16:04, before seeing any token or cost numbe
 | 8 | Overall | ship after minor fixes | |
 
 Run B passes the questionnaire if it scores yes on 1 and 2, lists nothing on 6 and 7, scores at least 4 on question 4, and is "ship after fixes" or better on 8.
+
+### Numbers, run A
+
+Measured 2026-10-11 after the questionnaire, from the orchestrator transcript and its 21 subagent transcripts (`icg/run-a-*.txt`). Weighted with `quota.rs`: input + cache write + 0.1 × cache read + 5 × output.
+
+- **weighted_tokens(A) = 16,149,327.** The orchestrator alone is 2,178,976 (13%).
+- Build 115 min, 220 min wall from start to the last CI check.
+- **Run B's bar: at most 9,689,596 weighted tokens**, with its cockpit at most 5% of its own total.
