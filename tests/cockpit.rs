@@ -268,6 +268,119 @@ fn wait_relays_the_block_the_still_running_line_the_dead_driver_and_the_end() {
     }
 }
 
+/// The lines of `events.jsonl` that parse, as `(line number, event)`: the
+/// file holds a torn line on purpose here, which `events()` would refuse.
+fn readable(dir: &Path) -> Vec<(usize, Value)> {
+    fs::read_to_string(dir.join("events.jsonl"))
+        .unwrap()
+        .lines()
+        .enumerate()
+        .filter_map(|(i, l)| Some((i + 1, serde_json::from_str(l).ok()?)))
+        .collect()
+}
+
+/// DEC-3: a line of a kind this binary does not know and a torn one break
+/// no reader. `status` and `wait` still answer and say which line they
+/// skipped on stderr; the driver says it once in its log; the next emit
+/// takes the next `seq` on a line of its own and the run finishes.
+#[test]
+fn an_unreadable_event_line_is_skipped_and_said_and_the_run_goes_on() {
+    let fx = Fixture::with_index("cockpit-torn-event", &[("checkpoint_every", "10")]);
+    fx.write_plan(&[
+        json!({"outcome": "blocked", "question": QUESTION}),
+        done(),
+        done(),
+        done(),
+        checkpoint(),
+    ]);
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let dir = only_run_dir(&fx);
+    let id = run_id(&dir);
+    wait_until(&fx, &dir, "the run to park", 60, || {
+        state(&dir)["phase"] == "waiting-owner"
+    });
+
+    // A newer `factory`'s kind, then a write cut short, under the emitters'
+    // lock so no event of the driver's lands between them.
+    let last = events(&dir).last().unwrap()["seq"].as_u64().unwrap();
+    let unknown = last + 1;
+    let path = dir.join("events.jsonl");
+    let mut f = fs::OpenOptions::new().append(true).open(&path).unwrap();
+    f.lock().unwrap();
+    std::io::Write::write_all(
+        &mut f,
+        format!(
+            "{{\"seq\":{unknown},\"ts\":\"2026-10-11T00:00:00Z\",\"kind\":\"from_a_newer_factory\",\"x\":1}}\n{{\"seq\":{},\"ts\":\"2026-10-11T00:00:00Z\",\"kind\":\"run_fin",
+            unknown + 1
+        )
+        .as_bytes(),
+    )
+    .unwrap();
+    drop(f);
+    let torn = fs::read_to_string(&path).unwrap().lines().count();
+    let note = format!(
+        "factory: {}: skipped unreadable line {torn}\n",
+        path.display()
+    );
+
+    let out = factory(&fx, &["status", &id]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let text = stdout(&out);
+    assert!(text.lines().count() <= 10, "{text}");
+    assert!(text.contains("open: BLOCK-101 (slice 01)"), "{text}");
+    assert!(
+        !text.contains("unknown"),
+        "an unknown kind is passed over: {text}"
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stderr), note);
+
+    let out = factory(&fx, &["wait", &id, "--timeout", "10"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    assert_eq!(stdout(&out), format!("{BLOCK_LINE}\n"));
+    assert_eq!(String::from_utf8_lossy(&out.stderr), note);
+
+    // The answer's event goes on the line after the torn one, with the
+    // next `seq` after the last line that parses; the run finishes.
+    let out = factory(&fx, &["answer", "BLOCK-101", ANSWER]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let after = readable(&dir);
+    let answered = after
+        .iter()
+        .find(|(_, e)| e["kind"] == "block_answered")
+        .unwrap();
+    assert_eq!(answered.0, torn + 1);
+    assert_eq!(answered.1["seq"].as_u64(), Some(unknown + 1));
+    wait_until(&fx, &dir, "the run to end", 60, || {
+        let p = state(&dir)["phase"].clone();
+        p == "finished" || p == "failed"
+    });
+    assert_eq!(state(&dir)["phase"], "finished", "{}", driver_log(&dir));
+    let log = driver_log(&dir);
+    assert_eq!(
+        log.matches(&format!("events.jsonl line {torn} is not an event ("))
+            .count(),
+        1,
+        "said once: {log}"
+    );
+    assert!(!log.contains(&format!("line {} is not", torn - 1)), "{log}");
+    // Every seq is still unique, and the torn line is now a middle one:
+    // `status` reads the finished run and still names it.
+    let seqs: Vec<u64> = readable(&dir)
+        .iter()
+        .map(|(_, e)| e["seq"].as_u64().unwrap())
+        .collect();
+    assert!(seqs.windows(2).all(|w| w[0] < w[1]), "{seqs:?}");
+    let out = factory(&fx, &["status", &id]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    assert!(
+        stdout(&out).contains(&format!("run {id} · finished")),
+        "{}",
+        stdout(&out)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stderr), note);
+}
+
 #[test]
 fn a_budget_park_is_relayed_and_is_not_a_dead_driver() {
     // FR-9's budget park exits the driver by design (AD-703): `wait` relays

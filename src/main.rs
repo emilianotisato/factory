@@ -49,8 +49,8 @@ fn main() -> ExitCode {
         Command::Daemon(a) => cli::run::daemon(&a, &mut stdout(), &mut stderr()),
         Command::Answer(a) => cli::answer::answer(&a, &mut stdout()),
         Command::Report(a) => cli::report::report(&a, &mut stdout()),
-        Command::Wait(a) => cli::wait::wait(&a, &mut stdout()),
-        Command::Status(a) => cli::status::status(&a, &mut stdout()),
+        Command::Wait(a) => cli::wait::wait(&a, &mut stdout(), &mut stderr()),
+        Command::Status(a) => cli::status::status(&a, &mut stdout(), &mut stderr()),
         Command::Ctx { verb } => ctx::run(&verb, Path::new("."), &mut stdout(), &mut stderr()),
         Command::Hook => cli::hook::hook(&mut stdin(), &mut stdout(), &mut stderr()),
     };

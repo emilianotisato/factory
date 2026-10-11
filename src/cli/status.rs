@@ -4,6 +4,8 @@
 //! a stop is pending or the driver is dead. Slices and lanes come from the
 //! board (`docs status --json`, the truth); everything else from the run's
 //! own files. No run id, or an unknown one, lists the live runs and exits 1.
+//! An `events.jsonl` line that does not parse is skipped, and one line on
+//! stderr says which (DEC-3).
 use std::io::Write;
 
 use clap::Args;
@@ -11,7 +13,7 @@ use clap::Args;
 use crate::cockpit::{self, tokens};
 use crate::docs::{Docs, Status};
 use crate::error::io;
-use crate::events::{Event, EventKind};
+use crate::events::{self, Event, EventKind};
 use crate::run::Run;
 use crate::scheduler::pad_list;
 use crate::stream::RateLimit;
@@ -23,7 +25,7 @@ pub struct StatusArgs {
     pub run: Option<String>,
 }
 
-pub fn status(args: &StatusArgs, out: &mut dyn Write) -> Result<i32> {
+pub fn status(args: &StatusArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i32> {
     let data_dir = paths::data_dir();
     let Some(id) = &args.run else {
         cockpit::list_live(&data_dir, out)?;
@@ -34,6 +36,9 @@ pub fn status(args: &StatusArgs, out: &mut dyn Write) -> Result<i32> {
     };
     for l in board(&run)?.iter().take(10) {
         writeln!(out, "{l}").map_err(io("stdout"))?;
+    }
+    if let Some(note) = events::skip_note(run.dir(), &events::scan(run.dir())?.1) {
+        writeln!(err, "{note}").map_err(io("stderr"))?;
     }
     Ok(0)
 }
@@ -261,13 +266,18 @@ fn last_rate_limit(run: &Run) -> Option<RateLimit> {
 }
 
 /// `slice_done(03) → run_waiting → stop_requested`: the kind and the one
-/// field that names its subject, when it has one.
+/// field that names its subject, when it has one. A kind this binary does
+/// not know is passed over.
 fn last_three(events: &[Event]) -> String {
-    if events.is_empty() {
+    let known: Vec<&Event> = events
+        .iter()
+        .filter(|e| e.kind != EventKind::Unknown)
+        .collect();
+    if known.is_empty() {
         return "none yet".to_string();
     }
-    events
-        .iter()
+    known
+        .into_iter()
         .rev()
         .take(3)
         .collect::<Vec<_>>()
@@ -335,11 +345,14 @@ mod tests {
                     text: "x".into(),
                 },
             ),
+            ev(5, EventKind::Unknown),
         ];
         assert_eq!(
             last_three(&events),
-            "slice_done(03) → run_waiting → block_answered(01)"
+            "slice_done(03) → run_waiting → block_answered(01)",
+            "a kind this binary does not know is passed over"
         );
         assert_eq!(last_three(&[]), "none yet");
+        assert_eq!(last_three(&[ev(1, EventKind::Unknown)]), "none yet");
     }
 }

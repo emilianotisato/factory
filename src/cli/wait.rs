@@ -8,7 +8,8 @@
 //! the cursor is past it: the cockpit that was shown it may have died before
 //! the owner saw it (AD-40005). The tail is a 2-second poll of
 //! `events.jsonl` (AD-1001): no watcher crate for a file the driver appends
-//! to a few times an hour.
+//! to a few times an hour. An `events.jsonl` line that does not parse is
+//! skipped, and one line on stderr says which (DEC-3).
 use std::io::Write;
 use std::time::{Duration, Instant};
 
@@ -37,7 +38,7 @@ pub const POLL: Duration = Duration::from_secs(2);
 const SETTLE: Duration = Duration::from_millis(100);
 const SETTLE_REREADS: u32 = 20;
 
-pub fn wait(args: &WaitArgs, out: &mut dyn Write) -> Result<i32> {
+pub fn wait(args: &WaitArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i32> {
     let data_dir = paths::data_dir();
     let Some(run) = cockpit::resolve(&data_dir, &args.run, out)? else {
         return Ok(1);
@@ -58,9 +59,14 @@ pub fn wait(args: &WaitArgs, out: &mut dyn Write) -> Result<i32> {
     // stale. A dead driver and an ended run without its last event are each
     // read again before they are believed (AD-1005).
     let mut rereads = 0u32;
+    let mut noted = false;
     loop {
         let state = run::load_state(&dir)?;
-        let events = events::read_all(&dir)?;
+        let (events, skipped) = events::scan(&dir)?;
+        if !noted && let Some(note) = events::skip_note(&dir, &skipped) {
+            writeln!(err, "{note}").map_err(io("stderr"))?;
+            noted = true;
+        }
         let owed = cockpit::owed(&state, &events, cursor);
         let fresh: Vec<&Event> = events
             .iter()

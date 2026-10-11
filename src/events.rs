@@ -312,6 +312,11 @@ pub enum EventKind {
     RunFailed {
         error: String,
     },
+    /// A kind this binary does not know: a line a newer `factory` wrote
+    /// (DEC-3). It parses, keeps its `seq`, and every consumer passes over
+    /// it. Never written: serializing it is an error, so [`emit`] refuses it.
+    #[serde(other, skip_serializing)]
+    Unknown,
 }
 
 impl EventKind {
@@ -350,7 +355,8 @@ pub fn emit(run_dir: &Path, db: &Db, run_id: &str, kind: EventKind) -> Result<Ev
         .open(&path)
         .map_err(io(format!("open {}", path.display())))?;
     f.lock().map_err(io(format!("lock {}", path.display())))?;
-    let seq = last_seq(&path)? + 1;
+    let (last, torn) = tail(&path)?;
+    let seq = last + 1;
     let event = Event {
         seq,
         ts: clock::now_rfc3339(),
@@ -358,6 +364,8 @@ pub fn emit(run_dir: &Path, db: &Db, run_id: &str, kind: EventKind) -> Result<Ev
     };
     let mut value = serde_json::to_value(&event).map_err(json("serialize event"))?;
     let line = serde_json::to_string(&value).map_err(json("serialize event"))? + "\n";
+    // A torn last line keeps its own line: this one starts on the next.
+    let line = if torn { format!("\n{line}") } else { line };
     f.write_all(line.as_bytes())
         .map_err(io(format!("append {}", path.display())))?;
 
@@ -376,30 +384,176 @@ pub fn emit(run_dir: &Path, db: &Db, run_id: &str, kind: EventKind) -> Result<Ev
     Ok(event)
 }
 
-/// Every line of `<run_dir>/events.jsonl`, in order; empty when none.
-pub fn read_all(run_dir: &Path) -> Result<Vec<Event>> {
+/// A line of `events.jsonl` that does not parse: `(line number, error)`,
+/// the number 1-based.
+pub type Skipped = (usize, String);
+
+/// Every event of `<run_dir>/events.jsonl`, in order, and each line that does
+/// not parse — torn by a crash mid-write, or a known kind with a broken
+/// payload: skipped, for the reader to say so, never a reason to fail the run
+/// (DEC-3). A kind this binary does not know is no skip: it reads as
+/// [`EventKind::Unknown`]. Read as bytes, so a write cut inside a multi-byte
+/// character tears only its own line.
+pub fn scan(run_dir: &Path) -> Result<(Vec<Event>, Vec<Skipped>)> {
     let path = run_dir.join(FILE);
-    let text = match fs::read_to_string(&path) {
-        Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+    let bytes = match fs::read(&path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((Vec::new(), Vec::new())),
         Err(e) => return Err(io(format!("read {}", path.display()))(e)),
     };
-    text.lines()
-        .filter(|l| !l.trim().is_empty())
-        .map(|l| serde_json::from_str(l).map_err(json(format!("parse {}: {l}", path.display()))))
-        .collect()
+    let mut out = Vec::new();
+    let mut bad = Vec::new();
+    for (i, l) in String::from_utf8_lossy(&bytes).lines().enumerate() {
+        if l.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str(l) {
+            Ok(e) => out.push(e),
+            Err(e) => bad.push((i + 1, e.to_string())),
+        }
+    }
+    Ok((out, bad))
 }
 
-fn last_seq(path: &Path) -> Result<u64> {
-    let text = match fs::read_to_string(path) {
-        Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+/// Every event of `<run_dir>/events.jsonl`, in order; empty when none. A line
+/// that does not parse is left out without a word: the driver loop, `status`
+/// and `wait` read through [`scan`] and say so.
+pub fn read_all(run_dir: &Path) -> Result<Vec<Event>> {
+    Ok(scan(run_dir)?.0)
+}
+
+/// The one line a reader with no driver log prints for what [`scan`]
+/// skipped; `None` when nothing was.
+pub fn skip_note(run_dir: &Path, skipped: &[Skipped]) -> Option<String> {
+    if skipped.is_empty() {
+        return None;
+    }
+    let lines: Vec<String> = skipped.iter().map(|(n, _)| n.to_string()).collect();
+    Some(format!(
+        "factory: {}: skipped unreadable line{} {}",
+        run_dir.join(FILE).display(),
+        if lines.len() == 1 { "" } else { "s" },
+        lines.join(", ")
+    ))
+}
+
+/// The `seq` of the last line that parses with one — a torn last line falls
+/// back to the line before it (DEC-3) — and whether the file ends mid-line.
+fn tail(path: &Path) -> Result<(u64, bool)> {
+    let bytes = match fs::read(path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((0, false)),
         Err(e) => return Err(io(format!("read {}", path.display()))(e)),
     };
-    let Some(last) = text.lines().rev().find(|l| !l.trim().is_empty()) else {
-        return Ok(0);
-    };
-    let v: serde_json::Value =
-        serde_json::from_str(last).map_err(json(format!("parse {}: {last}", path.display())))?;
-    Ok(v.get("seq").and_then(|s| s.as_u64()).unwrap_or(0))
+    let seq = String::from_utf8_lossy(&bytes)
+        .lines()
+        .rev()
+        .find_map(|l| {
+            serde_json::from_str::<serde_json::Value>(l)
+                .ok()?
+                .get("seq")?
+                .as_u64()
+        })
+        .unwrap_or(0);
+    Ok((seq, bytes.last().is_some_and(|b| *b != b'\n')))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::run::Run;
+
+    /// Line 2 is a kind from a newer `factory`; line 3 is torn inside a
+    /// multi-byte character; line 4 is a known kind missing its payload;
+    /// line 6 is torn at the end of the file.
+    fn mixed() -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(br#"{"seq":1,"ts":"t","kind":"run_started"}"#);
+        b.push(b'\n');
+        b.extend_from_slice(br#"{"seq":2,"ts":"t","kind":"from_a_newer_factory","x":1}"#);
+        b.push(b'\n');
+        b.extend_from_slice(
+            b"{\"seq\":3,\"ts\":\"t\",\"kind\":\"run_failed\",\"error\":\"a \xe2\x80",
+        );
+        b.push(b'\n');
+        b.extend_from_slice(br#"{"seq":4,"ts":"t","kind":"slice_done"}"#);
+        b.push(b'\n');
+        b.extend_from_slice(br#"{"seq":5,"ts":"t","kind":"slice_done","slice":2}"#);
+        b.push(b'\n');
+        b.extend_from_slice(br#"{"seq":6,"ts":"t","kind":"run_fin"#);
+        b
+    }
+
+    fn run() -> (tempfile::TempDir, Run) {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        let run = Run::create(&tmp.path().join("data"), &repo, "001", None, 1).unwrap();
+        (tmp, run)
+    }
+
+    #[test]
+    fn an_unknown_kind_reads_as_unknown_and_an_unreadable_line_is_skipped() {
+        let (_tmp, run) = run();
+        fs::write(run.dir().join(FILE), mixed()).unwrap();
+        let (events, skipped) = scan(run.dir()).unwrap();
+        let got: Vec<(u64, EventKind)> = events.into_iter().map(|e| (e.seq, e.kind)).collect();
+        assert_eq!(
+            got,
+            vec![
+                (1, EventKind::RunStarted),
+                (2, EventKind::Unknown),
+                (5, EventKind::SliceDone { slice: 2 }),
+            ]
+        );
+        assert_eq!(
+            skipped.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
+            [3, 4, 6]
+        );
+        assert_eq!(read_all(run.dir()).unwrap().len(), 3);
+        assert_eq!(
+            skip_note(run.dir(), &skipped),
+            Some(format!(
+                "factory: {}: skipped unreadable lines 3, 4, 6",
+                run.dir().join(FILE).display()
+            ))
+        );
+        assert_eq!(
+            skip_note(run.dir(), &skipped[..1])
+                .unwrap()
+                .split(": ")
+                .last(),
+            Some("skipped unreadable line 3")
+        );
+        assert_eq!(skip_note(run.dir(), &[]), None);
+    }
+
+    #[test]
+    fn an_emit_after_a_torn_last_line_takes_the_next_seq_on_a_line_of_its_own() {
+        let (_tmp, mut run) = run();
+        fs::write(run.dir().join(FILE), mixed()).unwrap();
+        // The torn line 6 falls back to line 5's seq.
+        let e = run.emit(EventKind::SliceDone { slice: 3 }).unwrap();
+        assert_eq!(e.seq, 6);
+        let (events, skipped) = scan(run.dir()).unwrap();
+        assert_eq!(
+            events.last().map(|e| &e.kind),
+            Some(&EventKind::SliceDone { slice: 3 })
+        );
+        assert_eq!(
+            skipped.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
+            [3, 4, 6]
+        );
+        let e = run.emit(EventKind::RunStarted).unwrap();
+        assert_eq!(e.seq, 7);
+    }
+
+    #[test]
+    fn an_unknown_kind_is_never_written() {
+        let (_tmp, mut run) = run();
+        assert!(run.emit(EventKind::Unknown).is_err());
+        assert_eq!(fs::read_to_string(run.dir().join(FILE)).unwrap(), "");
+        assert!(run.db().events(run.id().as_str()).unwrap().is_empty());
+        assert_eq!(EventKind::Unknown.name(), "unknown");
+    }
 }

@@ -54,7 +54,7 @@ use crate::commit::{self, Pathspec};
 use crate::config::Config;
 use crate::docs::{Docs, Status};
 use crate::error::{io, json};
-use crate::events::EventKind;
+use crate::events::{self, EventKind};
 use crate::pack::{BlockSection, Pack};
 use crate::quota::{self, Hold, Limit};
 use crate::run::{GateCmds, Phase, Run, WorkerOutcome, WorkerRef};
@@ -188,6 +188,8 @@ fn drive_inner(
     let mut waiting: HashSet<String> = HashSet::new();
     // Answer files that do not parse, said once each.
     let mut unreadable: HashSet<String> = HashSet::new();
+    // `events.jsonl` lines that do not parse, said once each (DEC-3).
+    let mut torn: HashSet<usize> = HashSet::new();
     if !parked && run.state().branch.is_some() && run.state().paused_until.is_none() {
         run.set_phase(Phase::Building)?;
     }
@@ -198,6 +200,17 @@ fn drive_inner(
                 "run {} was taken over by pid {pid}",
                 run.id()
             )));
+        }
+        for (n, err) in events::scan(run.dir())?.1 {
+            if torn.insert(n) {
+                say(
+                    out,
+                    &format!(
+                        "{} line {n} is not an event ({err}) — skipped",
+                        events::FILE
+                    ),
+                )?;
+            }
         }
         // HEAD off the run's branch: nothing is reaped (a reap commits),
         // nothing spawns; the run parks until the owner switches back. Once
