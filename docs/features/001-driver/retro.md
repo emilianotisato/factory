@@ -145,11 +145,11 @@ All fixes are on `fix/001-ab-findings`: 268 tests before the claim change, 272 a
 | Commit subjects carried no feature scope (`feat: Core sync kinds`, `docs: checkpoint 1`). | minor | `b713aa8`, `b395562`: `feat(018): slice-02 …`, `docs(018): checkpoint 1`, and the same in the worker contracts. |
 | The owner asked why a worker cannot claim a file it generated. | design | `c911674`: `git add <file>` claims it. `git add <dir>` claims new files under it while no other worker is live. `git add -A` and `.` claim nothing. A staged-new file no longer counts as tracked, so a lone worker's `git add -A` cannot sweep a secret into its commit. |
 
-**Still open, minor:**
+**The three minor ones, fixed 2026-10-12 on `main`** (gate green at 276 tests):
 
-- `factory answer` notes the preflight ask as `- **DEC (date)**`, which is neither an `AD-n` nor a `DEC-n`.
-- The cockpit's BLOCK-1 question named one of the two fragments, and its options were written for an AD clash, not a format slip.
-- `factory report` lacks the cockpit's own output, cache-read and start-context figures.
+- `factory answer` noted the preflight ask as `- **DEC (date)**`, neither an `AD-n` nor a `DEC-n`. `bc89299`: it writes a `### AD-n — Preflight ASK-n: … · preflight · date` entry, numbered after the highest AD below 100. Slicing owns that range and is finished before preflight.
+- The cockpit's BLOCK-1 question named one of the two fragments, because `factory wait` printed only the first line of the merge output. Its options were written for an AD clash, not a format slip. `67137fb`: the wait line and the block title join every refusal, and a format slip gets format options. Either way the block says the driver edits no fragment, so the fix is the owner's.
+- `factory report` lacked the cockpit's own output, cache-read and start-context figures. `9442a04`: `cockpit_out_tokens`, `cockpit_cache_read_tokens` and `cockpit_start_context`. On run B's cockpit session they print 17,844, 4,553,507 and 49,700, the same figures as `measure.py`, so the FR-8 cross-check now compares all four.
 
 **Not factory's, carried to the project:** icg-cloud's CI runs no browser suite, so the two browser tests B broke reached a green PR. That is a `/guardrails` question for icg-cloud.
 
@@ -157,7 +157,7 @@ All fixes are on `fix/001-ab-findings`: 268 tests before the claim change, 272 a
 
 - **arca-api round:** the repo is `~/Projects/Prokey/arca-api` (`~/Projects/ICG/arca-api` is a copy with no git). Branch from `main`, since its PR #63 is open. It has no draft PRD: the owner writes PRD-023 with `/prd` in a fresh arca-api session, then runs A (`/deliver`) and B (`/factory-deliver`). Run B uses the binary from `fix/001-ab-findings`, so the round also tests these fixes on a real project.
 - **Per-role split, decided 2026-10-12, built and merged 2026-10-12** (`d414119`): `factory report` prints `followup_reads_by_role` in text and JSON. On run `018-20261011-6490` it prints `build 2 of 7 (29%), polish 5 of 14 (36%)`. Each follow-up was a 25–80 line read of a neighbouring method or a callee. Also seen: the polish worker ran `factory ctx --help` twice.
-- **Branches (2026-10-12):** the owner dropped the PR ceremony for this repo while it is early: work merges into `main` locally and `main` is pushed. `main` now holds the six A/B fixes (PR #3, `81ba7ee`), the per-role split, and this branch's A/B records and PRD-002 draft. Gate green at 273 tests. The installed binary (`~/.cargo/bin/factory`) is built from that `main`, so arca-api's run B uses it. `qa/001-ab`, `fix/001-ab-findings` and `feat/report-role-split` are fully merged and can be deleted.
+- **Branches (2026-10-12):** the owner dropped the PR ceremony for this repo while it is early: work merges into `main` locally and `main` is pushed. `main` holds the six A/B fixes (PR #3, `81ba7ee`), the per-role split, the A/B records, the PRD-002 draft and the three minor fixes above. Gate green at 276 tests. The installed binary (`~/.cargo/bin/factory`) is built from that `main`, so arca-api's run B uses it. Every other branch is deleted; `main` is the only one.
 - **PR pick for icg-cloud, owner's call (2026-10-12): #24.** Done as [#26](https://github.com/ICG-Argentina/icg-cloud/pull/26) (2026-10-12): #24's head plus the badge fix and B's extras (the inbox link above the company search, the count beside the subject, year-first times, the failing source named in the log, and its isolation tests), without B's defects. Close #24 and #25 when it merges; the merge stays the owner's. #24 won the blind review, and its polish caught the leak #25 still has.
 
 ## FR-7 — Cockpit from the phone
