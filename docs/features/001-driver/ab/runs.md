@@ -116,6 +116,6 @@ From the six build-worker streams in `runs/018-20261011-6490/workers/`, mapped b
 | `78bfbab6` | 05 | a `python3` heredoc in `Bash`, no `Read` or `Edit` |
 | `1e7c80a9` | 06 | a `python3` heredoc in `Bash`, no `Read` or `Edit` |
 
-**Pass on the guide's terms:** no "file has not been read" error and no loop of retried whole reads in any stream. Three of six builders never tried `Read` or `Edit` on the slice file, so the deny was not what pushed them to Bash; nothing in their streams shows a denial. Bash writes are the same habit that left slice 02's code uncommitted.
+**Pass on the guide's terms:** no "file has not been read" error and no loop of retried whole reads in any stream. Three of six builders never tried `Read` or `Edit` on the slice file, so the deny was not what pushed them to Bash. The only deny in those three streams hit builder 02's `cat` of `CompanyDirectoryController.php` and two other files, all in its pack under `# Outline`; it did not retry the whole read. Bash writes are the same habit that left slice 02's code uncommitted.
 
 Where the title line came from: builder 06 read `log-slice-05.md`, which already had `# Log fragment — slice 05`, before writing its own fragment. Builders copy a sibling fragment's shape, so one slip spreads to every later slice.
