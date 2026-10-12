@@ -400,8 +400,8 @@ fn a_refused_merge_blocks_in_agent_log_and_the_answer_retries_it() {
     let dir = start(&fx);
     wait_phase(&fx, &dir, "waiting-owner", 40);
 
-    // Three slice commits, a green gate, then the merge refuses (slice 06
-    // runs it inside the checkpoint); the fragments are still there.
+    // Three slice commits, then the merge refuses before any gate is paid
+    // for; the fragments are still there.
     assert_eq!(
         sorted(subjects(&fx)),
         sorted(
@@ -435,6 +435,7 @@ fn a_refused_merge_blocks_in_agent_log_and_the_answer_retries_it() {
     let k = kinds(&dir);
     assert_eq!(k.last().map(String::as_str), Some("run_waiting"));
     assert_eq!(count(&k, "log_merged"), 0);
+    assert_eq!(count(&k, "gate_run"), 0);
     let driver = state(&dir)["pid"].as_u64().unwrap() as u32;
     assert!(pid_alive(driver), "driver gone");
     assert!(
@@ -451,8 +452,8 @@ fn a_refused_merge_blocks_in_agent_log_and_the_answer_retries_it() {
     assert_eq!(open[0]["phase"], "checkpoint");
 
     // The owner renumbers the clashing entry and answers; the checkpoint
-    // resumes (the green gate is cached), the merge runs again and the
-    // checkpoint commit lands.
+    // resumes, the gate runs once, the merge runs again and the checkpoint
+    // commit lands.
     let frag = fx.path().join(fragment(2));
     let fixed = fs::read_to_string(&frag)
         .unwrap()
@@ -500,6 +501,7 @@ fn a_refused_merge_blocks_in_agent_log_and_the_answer_retries_it() {
     assert!(seq_first(&dir, "log_merged") < seq_first(&dir, "checkpoint_done"));
     assert_eq!(count(&k, "run_waiting"), 1);
     assert_eq!(count(&k, "merge_refused"), 1);
+    assert_eq!(count(&k, "gate_run") + count(&k, "gate_cached"), 1);
     assert_eq!(k.last().map(String::as_str), Some("run_finished"));
 }
 

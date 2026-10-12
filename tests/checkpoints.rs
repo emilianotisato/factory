@@ -1266,26 +1266,35 @@ fn a_dead_fix_workers_changes_are_committed_before_the_gate_runs_again() {
 }
 
 #[test]
-fn a_green_gate_on_a_tree_dirty_outside_docs_is_not_cached() {
+fn a_green_on_a_dirty_tree_serves_its_own_checkpoint_only() {
     let fx = Fixture::new("cp-dirty-green");
     fx.chain();
-    // notes.txt is listed, never committed: both gates run on a dirty tree.
+    // notes.txt is listed, never committed: every gate runs on a dirty tree.
+    // Checkpoint 1's worker dies twice and the answer reuses its green (run
+    // B of the A/B reran 7 minutes). Slice 03 touches no code, so checkpoint
+    // 2 sees the same tree and still runs it (Xb7).
     fx.write_plan(&[
         json!({"outcome": "done", "stray": ["notes.txt"]}),
         done(),
+        step("dead"),
+        step("dead"),
         step("checkpoint"),
-        done(),
+        json!({"outcome": "done", "touch": []}),
         step("checkpoint"),
     ]);
     let dir = start(&fx);
+    wait_phase(&fx, &dir, "waiting-owner", 60);
+    let out = factory(&fx, &["answer", "BLOCK-1", "logged in again"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     wait_phase(&fx, &dir, "finished", 60);
 
     assert!(fx.path().join("notes.txt").exists());
     let rows = gates(&fx, &dir);
-    assert_eq!(gate_shape(&rows, 1), [(false, false, 1)]);
+    assert_eq!(gate_shape(&rows, 1), [(false, false, 1), (false, true, 2)]);
     assert_eq!(gate_shape(&rows, 2), [(false, false, 1)]);
+    assert_eq!(fx.gate_log().len(), 2);
     let cache = factory::gatecache::GateCache::load(&dir).unwrap();
-    assert!(cache.is_empty(), "{cache:?}");
+    assert_eq!(cache.len(), 1, "{cache:?}");
 }
 
 // ── finding Xc4: a checkpoint worker that outlives its driver ───────────────

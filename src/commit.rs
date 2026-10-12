@@ -445,14 +445,44 @@ pub enum Fold {
 }
 
 /// `docs log merge <feature>` at a checkpoint (FR-5), before the checkpoint
-/// worker reads `agent-log.md`. A missing `agent-log.md` is created with its
-/// header first — the tool merges into an existing file only. The render
-/// and the commit are the checkpoint's, once the worker has written `CP-n`.
+/// worker reads `agent-log.md`. The render and the commit are the
+/// checkpoint's, once the worker has written `CP-n`.
 pub fn fold_logs(docs: &Docs, repo: &Path, board: &Status, feature: &str) -> Result<Fold> {
+    let names = ready_fragments(repo, board, feature)?;
+    if names.is_empty() {
+        return Ok(Fold::Nothing);
+    }
+    if let Some(detail) = refusal(docs.log_merge(feature)?) {
+        return Ok(Fold::Refused { detail });
+    }
+    Ok(Fold::Folded {
+        fragments: names.iter().map(|n| format!("{}/{n}", board.dir)).collect(),
+    })
+}
+
+/// What `docs log merge --dry` refuses, if anything: the checkpoint asks
+/// before it pays for the gate. Run B of the FR-11 A/B (2026-10-11) learned
+/// of a refusal after a 7-minute green, and paid for the gate again once
+/// the owner answered.
+pub fn check_logs(
+    docs: &Docs,
+    repo: &Path,
+    board: &Status,
+    feature: &str,
+) -> Result<Option<String>> {
+    if ready_fragments(repo, board, feature)?.is_empty() {
+        return Ok(None);
+    }
+    Ok(refusal(docs.log_merge_dry(feature)?))
+}
+
+/// The feature's fragments, made fit to merge: `agent-log.md` exists (the
+/// tool merges into an existing file only) and no fragment has a title.
+fn ready_fragments(repo: &Path, board: &Status, feature: &str) -> Result<Vec<String>> {
     let dir = repo.join(&board.dir);
     let names = fragments_in(&dir)?;
     if names.is_empty() {
-        return Ok(Fold::Nothing);
+        return Ok(names);
     }
     let log = dir.join("agent-log.md");
     // A second check: `docs new` creates agent-log.md now (AD-503), but a
@@ -468,20 +498,20 @@ pub fn fold_logs(docs: &Docs, repo: &Path, board: &Status, feature: &str) -> Res
             fs::write(&path, body).map_err(io(format!("write {}", path.display())))?;
         }
     }
-    let out = docs.log_merge(feature)?;
-    if out.code != 0 {
-        let detail = if out.stderr.trim().is_empty() {
-            out.stdout
-        } else {
-            out.stderr
-        };
-        return Ok(Fold::Refused {
-            detail: detail.trim().to_string(),
-        });
+    Ok(names)
+}
+
+/// A refused merge's message; `None` when it exited 0.
+fn refusal(out: crate::docs::ToolOutput) -> Option<String> {
+    if out.code == 0 {
+        return None;
     }
-    Ok(Fold::Folded {
-        fragments: names.iter().map(|n| format!("{}/{n}", board.dir)).collect(),
-    })
+    let detail = if out.stderr.trim().is_empty() {
+        out.stdout
+    } else {
+        out.stderr
+    };
+    Some(detail.trim().to_string())
 }
 
 /// A fragment without the title (`# ...`) lines above its first `## `

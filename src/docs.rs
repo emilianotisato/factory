@@ -142,6 +142,11 @@ impl Docs {
         self.run(&["log", "merge", feature])
     }
 
+    /// `log merge NNN --dry`: the same checks, nothing written.
+    pub fn log_merge_dry(&self, feature: &str) -> Result<ToolOutput> {
+        self.run(&["log", "merge", feature, "--dry"])
+    }
+
     /// `ship NNN`; same contract as `log_merge`.
     pub fn ship(&self, feature: &str) -> Result<ToolOutput> {
         self.run(&["ship", feature])
