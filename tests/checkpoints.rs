@@ -330,7 +330,7 @@ fn assert_two_checkpoints(fx: &Fixture, dir: &Path) {
     let prd = fx.read(&format!("{FEATURE_DIR}/prd.md"));
     assert_eq!(prd.matches("| ✅ done |").count(), 3, "{prd}");
     for n in 1..=2u32 {
-        let sha = sha_of(fx, &format!("docs: checkpoint {n}"));
+        let sha = sha_of(fx, &format!("docs(001): checkpoint {n}"));
         let files = files_of(fx, &sha);
         assert!(files.contains(&AGENT_LOG.to_string()), "CP-{n}: {files:?}");
         assert!(
@@ -354,7 +354,7 @@ fn assert_two_checkpoints(fx: &Fixture, dir: &Path) {
         assert_eq!(row.slice, None);
         assert_eq!(row.commit_sha.as_deref(), Some(sha.as_str()));
     }
-    let f1 = files_of(fx, &sha_of(fx, "docs: checkpoint 1"));
+    let f1 = files_of(fx, &sha_of(fx, "docs(001): checkpoint 1"));
     assert!(
         f1.contains(&fragment(1)) && f1.contains(&fragment(2)),
         "{f1:?}"
@@ -419,13 +419,13 @@ fn the_driver_runs_the_gate_at_each_checkpoint_and_commits_the_cp_entries() {
         [
             "chore: fixture repo",
             "chore: chain the fixture slices",
-            "feat: A",
-            "feat: B",
-            "docs: checkpoint 1",
-            "feat: C",
-            "docs: checkpoint 2",
-            "polish: review fixes",
-            "docs: ship PRD-001",
+            "feat(001): slice-01 A",
+            "feat(001): slice-02 B",
+            "docs(001): checkpoint 1",
+            "feat(001): slice-03 C",
+            "docs(001): checkpoint 2",
+            "fix(001): polish review fixes",
+            "docs(001): ship PRD-001",
         ]
     );
 
@@ -591,7 +591,7 @@ fn an_unchanged_code_tree_reuses_the_cached_gate_result() {
     );
     let (_, pack) = pack_of(&fx.calls()[4]);
     assert!(pack.contains("<!-- checkpoint 2, cached green: "), "{pack}");
-    let c = files_of(&fx, &sha_of(&fx, "feat: C"));
+    let c = files_of(&fx, &sha_of(&fx, "feat(001): slice-03 C"));
     assert!(c.contains(&"docs/notes.txt".to_string()), "{c:?}");
     assert_two_checkpoints(&fx, &dir);
 }
@@ -666,15 +666,15 @@ fn red_red_green_runs_two_fix_workers_and_three_gates_before_the_cp() {
         [
             "chore: fixture repo",
             "chore: chain the fixture slices",
-            "feat: A",
-            "feat: B",
-            "fix: gate red at checkpoint 1",
-            "fix: gate red at checkpoint 1",
-            "docs: checkpoint 1",
-            "feat: C",
-            "docs: checkpoint 2",
-            "polish: review fixes",
-            "docs: ship PRD-001",
+            "feat(001): slice-01 A",
+            "feat(001): slice-02 B",
+            "fix(001): gate red at checkpoint 1",
+            "fix(001): gate red at checkpoint 1",
+            "docs(001): checkpoint 1",
+            "feat(001): slice-03 C",
+            "docs(001): checkpoint 2",
+            "fix(001): polish review fixes",
+            "docs(001): ship PRD-001",
         ]
     );
     let fixes: Vec<String> = fx
@@ -683,7 +683,7 @@ fn red_red_green_runs_two_fix_workers_and_three_gates_before_the_cp() {
             "--reverse",
             "--format=%H",
             "--grep",
-            "^fix: gate red at checkpoint 1$",
+            "^fix(001): gate red at checkpoint 1$",
         ])
         .lines()
         .map(str::to_string)
@@ -809,10 +809,10 @@ fn three_reds_block_the_run_and_the_answer_reruns_the_gate() {
     assert_eq!(
         subjects(&fx)[2..],
         [
-            "feat: A",
-            "feat: B",
-            "fix: gate red at checkpoint 1",
-            "fix: gate red at checkpoint 1",
+            "feat(001): slice-01 A",
+            "feat(001): slice-02 B",
+            "fix(001): gate red at checkpoint 1",
+            "fix(001): gate red at checkpoint 1",
         ]
     );
     for n in 1..=2 {
@@ -1163,7 +1163,10 @@ fn two_dead_checkpoint_workers_block_the_run_and_the_answer_spawns_a_third() {
         assert_eq!(w.checkpoint, Some(1));
         assert_eq!(w.outcome.as_deref(), Some("dead"));
     }
-    assert_eq!(subjects(&fx).last().map(String::as_str), Some("feat: B"));
+    assert_eq!(
+        subjects(&fx).last().map(String::as_str),
+        Some("feat(001): slice-02 B")
+    );
 
     // The answer: the two deaths before it no longer count, a third worker
     // reads the same (cached) transcript and writes CP-1.
@@ -1245,7 +1248,7 @@ fn a_dead_fix_workers_changes_are_committed_before_the_gate_runs_again() {
     wait_phase(&fx, &dir, "finished", 60);
 
     assert_eq!(prompts(&fx)[2], fix(1));
-    let sha = sha_of(&fx, "fix: gate red at checkpoint 1");
+    let sha = sha_of(&fx, "fix(001): gate red at checkpoint 1");
     assert_eq!(files_of(&fx, &sha), ["src/lib.txt"]);
     let committed = of_kind(&dir, "fix_committed");
     assert_eq!(committed.len(), 1, "{committed:?}");
@@ -1262,7 +1265,7 @@ fn a_dead_fix_workers_changes_are_committed_before_the_gate_runs_again() {
     );
     let subjects = subjects(&fx);
     let at = |s: &str| subjects.iter().position(|x| x == s).unwrap();
-    assert!(at("fix: gate red at checkpoint 1") < at("docs: checkpoint 1"));
+    assert!(at("fix(001): gate red at checkpoint 1") < at("docs(001): checkpoint 1"));
 }
 
 #[test]
@@ -1321,7 +1324,7 @@ fn a_checkpoint_worker_that_outlives_its_driver_gets_its_checkpoint_committed() 
     wait_until(&fx, &dir, "the orphan to write CP-1", 20, || {
         entries(&fx.read(AGENT_LOG)).contains("### CP-1")
     });
-    assert!(!subjects(&fx).iter().any(|s| s == "docs: checkpoint 1"));
+    assert!(!subjects(&fx).iter().any(|s| s == "docs(001): checkpoint 1"));
 
     let out = factory(&fx, &["run", "001"]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
@@ -1345,9 +1348,15 @@ fn a_checkpoint_worker_that_outlives_its_driver_gets_its_checkpoint_committed() 
             .position(|x| x == s)
             .unwrap_or_else(|| panic!("{s}: {subjects:?}"))
     };
-    assert!(at("feat: B") < at("docs: checkpoint 1"), "{subjects:?}");
-    assert!(at("docs: checkpoint 1") < at("feat: C"), "{subjects:?}");
-    let sha = sha_of(&fx, "docs: checkpoint 1");
+    assert!(
+        at("feat(001): slice-02 B") < at("docs(001): checkpoint 1"),
+        "{subjects:?}"
+    );
+    assert!(
+        at("docs(001): checkpoint 1") < at("feat(001): slice-03 C"),
+        "{subjects:?}"
+    );
+    let sha = sha_of(&fx, "docs(001): checkpoint 1");
     assert!(
         files_of(&fx, &sha).contains(&AGENT_LOG.to_string()),
         "{:?}",

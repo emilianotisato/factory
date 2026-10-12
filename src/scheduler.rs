@@ -1020,7 +1020,11 @@ fn commit_slice(
         .find(|s| s.number == slice)
         .and_then(|s| s.title.clone())
         .unwrap_or_else(|| format!("slice {slice:02}"));
-    match commit::commit(&repo, &paths, &format!("feat: {title}"))? {
+    match commit::commit(
+        &repo,
+        &paths,
+        &commit::subject(board, "feat", &format!("slice-{slice:02} {title}")),
+    )? {
         Some(c) => {
             run.db().set_worker_commit(row_id, &c.sha)?;
             say(

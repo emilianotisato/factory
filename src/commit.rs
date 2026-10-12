@@ -1,16 +1,16 @@
 //! One commit per slice, by pathspec (PRD §7 FR-5). The paths are the
 //! `file_path` of every `Edit` and `Write` call and the `notebook_path` of
 //! every `NotebookEdit` call in the worker's stream (§4 FR-2: the stream is the record) plus the slice file
-//! and its log fragment; the message is `feat: <slice title>`, no body, no
+//! and its log fragment; the message is `feat(NNN): slice-NN <title>`, no body, no
 //! trailers, the repo's own `user.*`. Never `git add -A`: another lane may be
 //! mid-write in the same tree, and only named paths move. A `Bash` call that
 //! types a file out in full (`cat > f <<EOF`) names it too ([`heredoc_paths`]).
 //! What the worker wrote without naming it (a generator, a script) is listed in the
 //! fragment under `## Untracked leftovers` and stays in the tree for the
 //! owner. At a checkpoint (FR-4) the same path commits a fix worker's files
-//! (`fix: gate red at checkpoint n`, [`Pathspec::from_stream`]) and, after
+//! (`fix(NNN): gate red at checkpoint n`, [`Pathspec::from_stream`]) and, after
 //! [`fold_logs`] merged the fragments into `agent-log.md`, the feature folder
-//! and the checkpoint worker's files as `docs: checkpoint n`.
+//! and the checkpoint worker's files as `docs(NNN): checkpoint n`.
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -512,6 +512,13 @@ fn refusal(out: crate::docs::ToolOutput) -> Option<String> {
         out.stderr
     };
     Some(detail.trim().to_string())
+}
+
+/// A commit subject scoped to the feature, as `/deliver`'s builders write
+/// theirs: `feat(018): slice-02 Harness`. The A/B of 2026-10-11 found the
+/// driver's bare `feat: {title}` gave no feature and no slice to search by.
+pub fn subject(board: &Status, kind: &str, text: &str) -> String {
+    format!("{kind}({:03}): {text}", board.number)
 }
 
 /// A fragment without the title (`# ...`) lines above its first `## `

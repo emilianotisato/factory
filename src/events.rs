@@ -197,7 +197,7 @@ pub enum EventKind {
         session_id: String,
         pid: u32,
     },
-    /// The fix worker's files, committed by pathspec: `fix: gate red at checkpoint n`.
+    /// The fix worker's files, committed by pathspec: `fix(NNN): gate red at checkpoint n`.
     FixCommitted {
         n: u32,
         attempt: u32,
@@ -232,7 +232,7 @@ pub enum EventKind {
         session_id: String,
         pid: u32,
     },
-    /// The polish worker returned; `sha` is its `polish: review fixes`
+    /// The polish worker returned; `sha` is its `fix(NNN): polish review fixes`
     /// commit, `None` when it changed nothing.
     PolishDone {
         sha: Option<String>,
@@ -248,7 +248,7 @@ pub enum EventKind {
         #[serde(default)]
         path: String,
     },
-    /// `docs ship` ran, the retro keys are filled and `docs: ship PRD-NNN`
+    /// `docs ship` ran, the retro keys are filled and `docs(NNN): ship PRD-NNN`
     /// is committed (`sha`, `None` when nothing was left to commit).
     Shipped {
         sha: Option<String>,

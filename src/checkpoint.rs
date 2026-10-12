@@ -4,11 +4,11 @@
 //! `runs/<id>/gates/<n>-<attempt>.log`, a `gates` row per run (source
 //! `driver`) or per cache hit (`cached = 1`, `minutes = 0`). Red spawns a
 //! fix worker with the failing output, commits its files by pathspec as
-//! `fix: gate red at checkpoint n` and reruns; three reds in a row block the
+//! `fix(NNN): gate red at checkpoint n` and reruns; three reds in a row block the
 //! run on a `BLOCK-n` in `agent-log.md` (phase `checkpoint`). Green folds
 //! the slice logs into `agent-log.md` (FR-5), then a checkpoint worker reads
 //! the transcript, drives the covered Prove rows and writes `CP-n`; the
-//! driver renders and commits `docs: checkpoint n`. A worker that dies gets
+//! driver renders and commits `docs(NNN): checkpoint n`. A worker that dies gets
 //! one more spawn, then the block; a worker that blocks parks the run.
 //!
 //! Every step is re-entrant from the board and the run dir alone: a resume
@@ -713,7 +713,7 @@ fn fix_once(
 /// A fix worker's commit: the paths its stream named (less the protected
 /// files) and the tracked files it changed unnamed — nothing else is live at
 /// a checkpoint (AD-20007); its new unnamed files are listed, not committed.
-/// `fix: gate red at checkpoint n`. A worker that changed nothing says so
+/// `fix(NNN): gate red at checkpoint n`. A worker that changed nothing says so
 /// only when `say_nothing`. The scheduler settles a dead driver's fix worker
 /// through here too.
 #[allow(clippy::too_many_arguments)]
@@ -744,7 +744,11 @@ pub fn commit_fix(
     note_leftovers(run, n, "fix", &found, out)?;
     let mut paths = spec.paths.clone();
     paths.extend(found.sweep);
-    match commit::commit(&repo, &paths, &format!("fix: gate red at checkpoint {n}"))? {
+    match commit::commit(
+        &repo,
+        &paths,
+        &commit::subject(board, "fix", &format!("gate red at checkpoint {n}")),
+    )? {
         Some(c) => {
             run.db().set_worker_commit(row_id, &c.sha)?;
             say(
@@ -832,7 +836,11 @@ pub fn commit_checkpoint(
     let found = scheduler::unnamed(run, board, before, &skip, true)?;
     note_leftovers(run, n, "checkpoint", &found, out)?;
     files.extend(found.sweep);
-    match commit::commit(&repo, &files, &format!("docs: checkpoint {n}"))? {
+    match commit::commit(
+        &repo,
+        &files,
+        &commit::subject(board, "docs", &format!("checkpoint {n}")),
+    )? {
         Some(c) => {
             run.db().set_worker_commit(row_id, &c.sha)?;
             say(

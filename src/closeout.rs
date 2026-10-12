@@ -4,9 +4,9 @@
 //!
 //! Polish is one worker (`/polish` Unattended) that writes the retro prose
 //! and the PR body in its last turn; the driver commits what it wrote as
-//! `polish: review fixes`. Ship is `docs ship NNN`, the twelve numeric retro
+//! `fix(NNN): polish review fixes`. Ship is `docs ship NNN`, the twelve numeric retro
 //! keys from the store (`factory report`'s rows, FR-8), `render --write` and
-//! `docs: ship PRD-NNN`. The PR is `gh pr create --draft --head <branch>`; a
+//! `docs(NNN): ship PRD-NNN`. The PR is `gh pr create --draft --head <branch>`; a
 //! resume after `pr_opened` edits it instead. Ship and push happen only from
 //! the run's feature branch, never the default one. CI is bounded polls of
 //! the PR's checks at the pushed head, three fix rounds and one flaky rerun
@@ -113,7 +113,7 @@ pub fn run(
 
     // A PRD `shipped` on the board has had its polish: `docs ship` runs only
     // after it. Its ship is done only once HEAD holds it — a driver killed
-    // between `docs ship` and `docs: ship PRD-NNN` left it staged, and the
+    // between `docs ship` and `docs(NNN): ship PRD-NNN` left it staged, and the
     // ship runs again (`docs ship` on a shipped PRD is a no-op). A new run on
     // a delivered feature finds both and resumes at the PR.
     let board_shipped = board.status.as_deref() == Some("shipped");
@@ -341,7 +341,7 @@ fn polish(
     }
 }
 
-/// `polish: review fixes`: the paths the stream named plus `prd.md`
+/// `fix(NNN): polish review fixes`: the paths the stream named plus `prd.md`
 /// (`reviewed:`) and `retro.md` — the polish worker is the one worker allowed
 /// to write those two; `docs/index.md` stays the ship's. A missing `retro.md`
 /// is created from the template first, a missing PR body from a fallback, so
@@ -401,7 +401,11 @@ fn commit_polish(
     let found = scheduler::unnamed(run, board, before, &skip, true)?;
     note_leftovers(run, "polish", "polish: worker", &found, out)?;
     paths.extend(found.sweep);
-    let committed = commit::commit(&repo, &paths, "polish: review fixes")?;
+    let committed = commit::commit(
+        &repo,
+        &paths,
+        &commit::subject(board, "fix", "polish review fixes"),
+    )?;
     match &committed {
         Some(c) => {
             run.db().set_worker_commit(row_id, &c.sha)?;
@@ -516,7 +520,7 @@ fn fallback_body(board: &Status, feature: &str) -> String {
 
 // ── ship ────────────────────────────────────────────────────────────────────
 
-/// `docs ship`, the retro keys, `render --write`, `docs: ship PRD-NNN`. A
+/// `docs ship`, the retro keys, `render --write`, `docs(NNN): ship PRD-NNN`. A
 /// refusal (a slice not `done`) blocks with phase `polish` and the tool's
 /// text. `None` when the ship commit landed.
 fn ship(
@@ -586,7 +590,11 @@ fn ship(
     fill_retro(&retro, &report)?;
     docs.render_write()?;
     let want = commit::expand(&repo, &[board.dir.clone(), "docs/index.md".to_string()])?;
-    let committed = commit::commit(&repo, &want, &format!("docs: ship PRD-{feature}"))?;
+    let committed = commit::commit(
+        &repo,
+        &want,
+        &commit::subject(board, "docs", &format!("ship PRD-{feature}")),
+    )?;
     match &committed {
         Some(c) => say(
             out,
@@ -1494,7 +1502,7 @@ fn indent(text: &str) -> String {
 }
 
 /// One CI fix round: a fix worker (once more after a death, then block),
-/// its files committed as `fix: CI <check>` with `ci_cycles` bumped in the
+/// its files committed as `fix(NNN): CI <check>` with `ci_cycles` bumped in the
 /// same commit. `None` when the round is committed (or changed nothing).
 #[allow(clippy::too_many_arguments)]
 fn fix_round(
@@ -1651,7 +1659,7 @@ fn fix_round(
     }
 }
 
-/// `fix: CI <check>`: the stream's paths plus `retro.md` with `ci_cycles`
+/// `fix(NNN): CI <check>`: the stream's paths plus `retro.md` with `ci_cycles`
 /// bumped to the rounds committed, this one included (`retro.md:11`). What
 /// the worker changed unnamed since `before` is swept or listed (AD-50002).
 #[allow(clippy::too_many_arguments)]
@@ -1691,7 +1699,11 @@ fn commit_ci_fix(
     let found = scheduler::unnamed(run, board, before, &skip, true)?;
     note_leftovers(run, "ci-fix", "ci: fix worker", &found, out)?;
     paths.extend(found.sweep);
-    match commit::commit(&repo, &paths, &format!("fix: CI {check}"))? {
+    match commit::commit(
+        &repo,
+        &paths,
+        &commit::subject(board, "fix", &format!("CI {check}")),
+    )? {
         Some(c) => {
             run.db().set_worker_commit(row_id, &c.sha)?;
             say(

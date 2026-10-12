@@ -165,11 +165,11 @@ fn sorted(mut v: Vec<String>) -> Vec<String> {
     v
 }
 
-/// One slice's commit as FR-5 asks for it: `feat: <title>`, no body, the
+/// One slice's commit as FR-5 asks for it: `feat(NNN): slice-NN <title>`, no body, the
 /// repo's own author, exactly the named paths plus slice file and fragment;
 /// the `slice_committed` event and the worker row name the same sha.
 fn assert_slice_commit(fx: &Fixture, dir: &Path, n: u8, title: &str, code: &[&str]) -> String {
-    let sha = sha_of(fx, &format!("feat: {title}"));
+    let sha = sha_of(fx, &format!("feat(001): slice-{n:02} {title}"));
     assert_eq!(
         fx.git(&["log", "-1", "--format=%b", &sha]),
         "\n",
@@ -227,12 +227,12 @@ fn each_done_slice_is_committed_by_pathspec_and_the_logs_merge_at_the_end() {
         [
             "chore: fixture repo",
             "chore: chain the fixture slices",
-            "feat: A",
-            "feat: B",
-            "feat: C",
-            "docs: checkpoint 1",
-            "polish: review fixes",
-            "docs: ship PRD-001",
+            "feat(001): slice-01 A",
+            "feat(001): slice-02 B",
+            "feat(001): slice-03 C",
+            "docs(001): checkpoint 1",
+            "fix(001): polish review fixes",
+            "docs(001): ship PRD-001",
         ]
     );
     assert_slice_commit(&fx, &dir, 1, "A", &["src/gen/new.rs", "src/lib.txt"]);
@@ -276,7 +276,7 @@ fn each_done_slice_is_committed_by_pathspec_and_the_logs_merge_at_the_end() {
     // what `render --write` changed (here prd.md's slice table; the index
     // was already current) and the fragments' removal. HEAD itself is the
     // ship commit (slice 09), two commits later.
-    let merge = sha_of(&fx, "docs: checkpoint 1");
+    let merge = sha_of(&fx, "docs(001): checkpoint 1");
     let merged_files = files_of(&fx, &merge);
     for f in [
         AGENT_LOG.to_string(),
@@ -360,17 +360,20 @@ fn two_lanes_commit_out_of_order_and_each_commit_takes_only_its_own_files() {
             .position(|x| x == s)
             .unwrap_or_else(|| panic!("{s}: {subjects:?}"))
     };
-    assert!(at("feat: B") < at("feat: A"), "{subjects:?}");
+    assert!(
+        at("feat(001): slice-02 B") < at("feat(001): slice-01 A"),
+        "{subjects:?}"
+    );
     assert_eq!(
         subjects.last().map(String::as_str),
-        Some("docs: ship PRD-001")
+        Some("docs(001): ship PRD-001")
     );
     assert_eq!(subjects.len(), 7, "{subjects:?}");
     assert!(
         subjects.ends_with(&[
-            "docs: checkpoint 1".to_string(),
-            "polish: review fixes".to_string(),
-            "docs: ship PRD-001".to_string()
+            "docs(001): checkpoint 1".to_string(),
+            "fix(001): polish review fixes".to_string(),
+            "docs(001): ship PRD-001".to_string()
         ]),
         "{subjects:?}"
     );
@@ -405,9 +408,14 @@ fn a_refused_merge_blocks_in_agent_log_and_the_answer_retries_it() {
     assert_eq!(
         sorted(subjects(&fx)),
         sorted(
-            ["chore: fixture repo", "feat: A", "feat: B", "feat: C"]
-                .map(String::from)
-                .to_vec()
+            [
+                "chore: fixture repo",
+                "feat(001): slice-01 A",
+                "feat(001): slice-02 B",
+                "feat(001): slice-03 C"
+            ]
+            .map(String::from)
+            .to_vec()
         )
     );
     for n in 1..=3 {
@@ -470,9 +478,9 @@ fn a_refused_merge_blocks_in_agent_log_and_the_answer_retries_it() {
 
     assert_eq!(
         fx.git(&["log", "-1", "--format=%s"]).trim(),
-        "docs: ship PRD-001"
+        "docs(001): ship PRD-001"
     );
-    let merged_files = files_of(&fx, &sha_of(&fx, "docs: checkpoint 1"));
+    let merged_files = files_of(&fx, &sha_of(&fx, "docs(001): checkpoint 1"));
     assert!(merged_files.contains(&fragment(2)), "{merged_files:?}");
     assert!(
         merged_files.contains(&AGENT_LOG.to_string()),
@@ -537,7 +545,7 @@ fn a_driver_killed_at_the_slice_commit_leaves_the_worker_for_the_resume() {
     });
     // Slice 01 is done and uncommitted, and its worker is not settled.
     assert_eq!(fx.slice_status(1), "done");
-    assert!(!subjects(&fx).iter().any(|s| s == "feat: A"));
+    assert!(!subjects(&fx).iter().any(|s| s == "feat(001): slice-01 A"));
     assert_eq!(state(&dir)["workers"][0]["outcome"], Value::Null);
     assert_eq!(count(&kinds(&dir), "slice_done"), 1);
 
@@ -546,7 +554,7 @@ fn a_driver_killed_at_the_slice_commit_leaves_the_worker_for_the_resume() {
     wait_until(&fx, &dir, "slice 01 to be committed", 20, || {
         count(&kinds(&dir), "slice_committed") == 1
     });
-    let sha = sha_of(&fx, "feat: A");
+    let sha = sha_of(&fx, "feat(001): slice-01 A");
     assert!(files_of(&fx, &sha).contains(&slice_rel(&fx, 1)));
     // The commit lands before the outcome: wait for the settle too.
     wait_until(&fx, &dir, "slice 01's worker to be settled", 20, || {
