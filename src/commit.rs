@@ -461,6 +461,13 @@ pub fn fold_logs(docs: &Docs, repo: &Path, board: &Status, feature: &str) -> Res
         fs::write(&log, format!("# Agent log — PRD-{feature}\n"))
             .map_err(io(format!("write {}", log.display())))?;
     }
+    for name in &names {
+        let path = dir.join(name);
+        let text = fs::read_to_string(&path).map_err(io(format!("read {}", path.display())))?;
+        if let Some(body) = untitled(&text) {
+            fs::write(&path, body).map_err(io(format!("write {}", path.display())))?;
+        }
+    }
     let out = docs.log_merge(feature)?;
     if out.code != 0 {
         let detail = if out.stderr.trim().is_empty() {
@@ -475,6 +482,29 @@ pub fn fold_logs(docs: &Docs, repo: &Path, board: &Status, feature: &str) -> Res
     Ok(Fold::Folded {
         fragments: names.iter().map(|n| format!("{}/{n}", board.dir)).collect(),
     })
+}
+
+/// A fragment without the title (`# ...`) lines above its first `## `
+/// heading, or `None` when there is none to drop. `docs log merge` refuses
+/// any line up there, and run B of the FR-11 A/B (2026-10-11) parked on a
+/// `# Log fragment — slice 03` the merge would have thrown away anyway.
+/// Prose up there is left alone: losing it is the merge's call to refuse.
+fn untitled(text: &str) -> Option<String> {
+    let mut titled = false;
+    let mut offset = 0;
+    for line in text.split_inclusive('\n') {
+        let bare = line.trim_end();
+        if bare.starts_with("## ") {
+            break;
+        }
+        if bare.starts_with("# ") {
+            titled = true;
+        } else if !bare.trim().is_empty() {
+            return None;
+        }
+        offset += line.len();
+    }
+    titled.then(|| text[offset..].to_string())
 }
 
 /// `log-slice-NN.md` and `log-fix-N.md` in the feature folder, by name.
@@ -782,5 +812,17 @@ mod tests {
             git(r, &["status", "--porcelain"]).unwrap(),
             "A  owner.txt\n"
         );
+    }
+
+    #[test]
+    fn a_title_above_the_first_section_is_dropped_and_prose_is_not() {
+        let titled = "# Log fragment — slice 03\n\n## Decisions\n\n### AD-301 — q\n";
+        assert_eq!(
+            untitled(titled).as_deref(),
+            Some("## Decisions\n\n### AD-301 — q\n")
+        );
+        assert_eq!(untitled("## Decisions\n\n- a\n"), None);
+        assert_eq!(untitled("# Title\nSome prose.\n\n## Decisions\n"), None);
+        assert_eq!(untitled("# Title only\n").as_deref(), Some(""));
     }
 }
