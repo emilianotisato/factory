@@ -5,9 +5,10 @@
 //! trailers, the repo's own `user.*`. Never `git add -A`: another lane may be
 //! mid-write in the same tree, and only named paths move. A `Bash` call that
 //! types a file out in full (`cat > f <<EOF`) names it too ([`heredoc_paths`]).
-//! What the worker wrote without naming it (a generator, a script) is listed in the
-//! fragment under `## Untracked leftovers` and stays in the tree for the
-//! owner. At a checkpoint (FR-4) the same path commits a fix worker's files
+//! A file the worker made with a command (a generator, a script) is its own
+//! once it `git add`s it by name or by folder ([`added_paths`]); one it never
+//! claims is listed in the fragment under `## Untracked leftovers` and stays
+//! in the tree for the owner. At a checkpoint (FR-4) the same path commits a fix worker's files
 //! (`fix(NNN): gate red at checkpoint n`, [`Pathspec::from_stream`]) and, after
 //! [`fold_logs`] merged the fragments into `agent-log.md`, the feature folder
 //! and the checkpoint worker's files as `docs(NNN): checkpoint n`.
@@ -60,6 +61,9 @@ pub struct Pathspec {
     pub protected: Vec<String>,
     /// Named in the stream but outside the repo root: left out.
     pub outside: Vec<String>,
+    /// Directories a `git add` named: their new files are the worker's only
+    /// while no other worker is live ([`crate::scheduler::unnamed`]).
+    pub dirs: Vec<String>,
 }
 
 impl Pathspec {
@@ -101,6 +105,14 @@ impl Pathspec {
                 None => {}
             }
         }
+        for raw in added_paths(summary) {
+            match relativize(repo, &canon, &raw) {
+                Some(rel) if repo.join(&rel).is_dir() => push_once(&mut spec.dirs, rel),
+                Some(rel) if protected.contains(&rel) => push_once(&mut spec.protected, rel),
+                Some(rel) => push_once(&mut spec.paths, rel),
+                None => {}
+            }
+        }
         spec
     }
 }
@@ -132,22 +144,9 @@ pub fn written_paths(summary: &Summary) -> impl Iterator<Item = &str> {
 /// exist, which [`commit`] drops.
 pub fn heredoc_paths(summary: &Summary) -> Vec<String> {
     let mut out = Vec::new();
-    for t in summary.tool_uses.iter().filter(|t| t.name == "Bash") {
-        let Some(cmd) = t.input.get("command").and_then(|v| v.as_str()) else {
-            continue;
-        };
-        let sc = shell::script(cmd);
-        let program = |c: &shell::Simple| c.words.first().map(|w| shell::program(w).to_string());
-        if sc.unbalanced
-            || sc
-                .commands
-                .iter()
-                .any(|c| matches!(program(c).as_deref(), Some("cd" | "pushd")))
-        {
-            continue;
-        }
+    for sc in rooted_scripts(summary) {
         for c in sc.commands.iter().filter(|c| !c.stdin.is_empty()) {
-            let targets: Vec<&String> = match program(c).as_deref() {
+            let targets: Vec<&String> = match program(c) {
                 Some("cat") if c.words[1..].iter().all(|a| a == "-") => c.writes.iter().collect(),
                 Some("tee") => c.words[1..]
                     .iter()
@@ -156,14 +155,71 @@ pub fn heredoc_paths(summary: &Summary) -> Vec<String> {
                     .collect(),
                 _ => continue,
             };
-            for p in targets {
-                if !p.is_empty() && !p.contains(['$', '`', '*', '?', '[', '~']) {
-                    push_once(&mut out, p.clone());
-                }
+            for p in targets.into_iter().filter(|p| literal(p)) {
+                push_once(&mut out, p.clone());
             }
         }
     }
     out
+}
+
+/// The paths the stream's `git add` calls name one by one: the worker's
+/// claim on a file it made with a command (a generator, a script), which
+/// the driver cannot otherwise tell from a scratch file or a secret.
+/// `git add -A`, `git add .`, a glob and pathspec magic (`:/`) name nothing
+/// in particular, so they claim nothing; nor does `git add -n`, nor a
+/// `git -C dir add`, which adds elsewhere.
+pub fn added_paths(summary: &Summary) -> Vec<String> {
+    let mut out = Vec::new();
+    for sc in rooted_scripts(summary) {
+        for c in &sc.commands {
+            if program(c) != Some("git") || c.words.get(1).map(String::as_str) != Some("add") {
+                continue;
+            }
+            let args = &c.words[2..];
+            let end = args.iter().position(|a| a == "--").unwrap_or(args.len());
+            if args[..end].iter().any(|a| a == "-n" || a == "--dry-run") {
+                continue;
+            }
+            let named = args[..end]
+                .iter()
+                .filter(|a| !a.starts_with('-'))
+                .chain(args.get(end + 1..).unwrap_or_default());
+            let whole_tree = |p: &str| p.split('/').all(|s| s.is_empty() || s == ".");
+            for p in named.filter(|p| literal(p) && !p.starts_with(':') && !whole_tree(p)) {
+                push_once(&mut out, p.clone());
+            }
+        }
+    }
+    out
+}
+
+/// The stream's `Bash` calls, parsed, less those whose relative paths need
+/// not be read from the repo root: an unbalanced one, or one with a `cd` or
+/// `pushd` anywhere.
+fn rooted_scripts(summary: &Summary) -> impl Iterator<Item = shell::Script> + '_ {
+    summary
+        .tool_uses
+        .iter()
+        .filter(|t| t.name == "Bash")
+        .filter_map(|t| t.input.get("command").and_then(|v| v.as_str()))
+        .map(shell::script)
+        .filter(|sc| {
+            !sc.unbalanced
+                && !sc
+                    .commands
+                    .iter()
+                    .any(|c| matches!(program(c), Some("cd" | "pushd")))
+        })
+}
+
+fn program(c: &shell::Simple) -> Option<&str> {
+    c.words.first().map(|w| shell::program(w))
+}
+
+/// A path spelled out, not by an expansion or a glob.
+fn literal(p: &str) -> bool {
+    !p.is_empty() && !p.contains(['$', '`', '*', '?', '[', '~'])
 }
 
 fn push_once(v: &mut Vec<String>, s: String) {
@@ -206,7 +262,9 @@ pub fn relativize(repo: &Path, canon: &Path, raw: &str) -> Option<String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Changed {
     pub path: String,
-    /// Changed against HEAD, staged or not; `false` for an untracked file.
+    /// In HEAD and changed against it, staged or not; `false` for an
+    /// untracked file and for one only staged as new, since `git add -A`
+    /// stages every scratch file too ([`added_paths`] names a real claim).
     pub tracked: bool,
 }
 
@@ -225,7 +283,7 @@ pub fn changed(repo: &Path) -> Result<Vec<Changed>> {
             continue;
         }
         let (xy, path) = (&entry[..2], &entry[3..]);
-        let tracked = xy != "??";
+        let tracked = xy != "??" && !xy.starts_with('A');
         if xy == "!!" {
             continue;
         }
@@ -690,6 +748,38 @@ mod tests {
             ["docs/features/001-fixture/prd.md", "docs/index.md"]
         );
         assert_eq!(spec.outside, ["/tmp/elsewhere.txt"]);
+    }
+
+    #[test]
+    fn a_git_add_claims_only_the_paths_it_spells_out() {
+        let added = |cmds: &[&str]| {
+            let mut summary = Summary::dead();
+            summary.tool_uses = cmds
+                .iter()
+                .map(|c| ToolUse {
+                    input: json!({ "command": c }),
+                    ..tool("Bash", "")
+                })
+                .collect();
+            added_paths(&summary)
+        };
+        assert_eq!(added(&["git add src/a.rs gen"]), ["src/a.rs", "gen"]);
+        assert_eq!(added(&["git add -f -- -odd.rs"]), ["-odd.rs"]);
+        assert_eq!(added(&["make gen && git add gen/out.rs"]), ["gen/out.rs"]);
+        for none in [
+            "git add -A",
+            "git add .",
+            "git add ./",
+            "git add --all",
+            "git add src/*.rs",
+            "git add :/",
+            "git add -n src/a.rs",
+            "git -C sub add a.rs",
+            "cd sub && git add a.rs",
+            "git status",
+        ] {
+            assert!(added(&[none]).is_empty(), "{none}");
+        }
     }
 
     #[test]

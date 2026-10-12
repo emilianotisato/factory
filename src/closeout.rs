@@ -398,7 +398,7 @@ fn commit_polish(
         }
     }
     let skip: HashSet<String> = paths.iter().chain(&spec.protected).cloned().collect();
-    let found = scheduler::unnamed(run, board, before, &skip, true)?;
+    let found = scheduler::unnamed(run, board, before, &skip, &spec.dirs, true)?;
     note_leftovers(run, "polish", "polish: worker", &found, out)?;
     paths.extend(found.sweep);
     let committed = commit::commit(
@@ -1696,7 +1696,7 @@ fn commit_ci_fix(
         }
     }
     let skip: HashSet<String> = paths.iter().chain(&spec.protected).cloned().collect();
-    let found = scheduler::unnamed(run, board, before, &skip, true)?;
+    let found = scheduler::unnamed(run, board, before, &skip, &spec.dirs, true)?;
     note_leftovers(run, "ci-fix", "ci: fix worker", &found, out)?;
     paths.extend(found.sweep);
     match commit::commit(

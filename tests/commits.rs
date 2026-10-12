@@ -706,3 +706,84 @@ fn an_unnamed_tracked_change_beside_a_live_sibling_is_listed_not_committed() {
     );
     assert!(fx.read(AGENT_LOG).contains("- src/extra.txt"));
 }
+
+fn leftovers_of(dir: &Path) -> Vec<Value> {
+    events(dir)
+        .into_iter()
+        .filter(|e| e["kind"] == "untracked_leftovers")
+        .collect()
+}
+
+#[test]
+fn a_lone_worker_claims_generated_files_by_git_adding_their_folder() {
+    let fx = Fixture::with_index("commits-claim-dir", &[("checkpoint_every", "10")]);
+    fx.chain();
+    // A generator wrote gen/ and a scratch file; the worker staged gen/ only.
+    fx.write_plan(&[
+        json!({"outcome": "done", "stray": ["gen/a.txt", "gen/b.txt", "scratch.log"], "git_add": "gen"}),
+        json!({"outcome": "done"}),
+        json!({"outcome": "done"}),
+        json!({"outcome": "checkpoint"}),
+    ]);
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "finished", 40);
+
+    assert_slice_commit(
+        &fx,
+        &dir,
+        1,
+        "A",
+        &["gen/a.txt", "gen/b.txt", "src/lib.txt"],
+    );
+    let leftovers = leftovers_of(&dir);
+    assert_eq!(leftovers.len(), 1, "{leftovers:?}");
+    assert_eq!(leftovers[0]["files"], json!(["scratch.log"]));
+    assert_eq!(fx.git(&["status", "--porcelain"]), "?? scratch.log\n");
+}
+
+#[test]
+fn git_add_all_claims_nothing_and_its_new_files_are_listed() {
+    let fx = Fixture::with_index("commits-claim-all", &[("checkpoint_every", "10")]);
+    fx.chain();
+    // `git add -A` stages the scratch file too: staged-new is not tracked,
+    // so even a lone worker's sweep leaves it out.
+    fx.write_plan(&[
+        json!({"outcome": "done", "stray": ["gen/a.txt", "scratch.log"], "git_add": "-A"}),
+        json!({"outcome": "done"}),
+        json!({"outcome": "done"}),
+        json!({"outcome": "checkpoint"}),
+    ]);
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "finished", 40);
+
+    assert_slice_commit(&fx, &dir, 1, "A", &["src/lib.txt"]);
+    let leftovers = leftovers_of(&dir);
+    assert_eq!(leftovers.len(), 1, "{leftovers:?}");
+    assert_eq!(leftovers[0]["files"], json!(["gen/a.txt", "scratch.log"]));
+    assert_eq!(
+        fx.git(&["status", "--porcelain"]),
+        "A  gen/a.txt\nA  scratch.log\n"
+    );
+}
+
+#[test]
+fn a_file_git_added_by_name_is_committed_beside_a_live_sibling() {
+    let fx = Fixture::with_index("commits-claim-sibling", &[("checkpoint_every", "10")]);
+    // 01 returns while 02 still runs: its folder claim waits for the owner,
+    // its claim by name does not.
+    fx.write_plan(&[
+        json!({"outcome": "done", "touch": ["src/a.txt"], "stray": ["gen/a.txt", "gen/b.txt"], "git_add": "gen/a.txt"}),
+        json!({"outcome": "done", "delay_ms": 1500, "touch": ["src/b.txt"]}),
+        json!({"outcome": "done", "touch": ["src/c.txt"]}),
+        json!({"outcome": "checkpoint"}),
+    ]);
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "finished", 40);
+
+    assert_slice_commit(&fx, &dir, 1, "A", &["gen/a.txt", "src/a.txt"]);
+    assert_slice_commit(&fx, &dir, 2, "B", &["src/b.txt"]);
+    let leftovers = leftovers_of(&dir);
+    assert_eq!(leftovers.len(), 1, "{leftovers:?}");
+    assert_eq!(leftovers[0]["slice"], 1);
+    assert_eq!(leftovers[0]["files"], json!(["gen/b.txt"]));
+}

@@ -43,6 +43,9 @@
 // `Bash cat > f <<'EOF'` call the stream carries, which the driver names) and
 // `commit: [...]` (files the worker commits itself before anything else, as
 // an owner committing a listed leftover would).
+// The git-add claim adds `git_add: "<args>"` on a `done` build: after the
+// stray and heredoc files exist, the worker really runs `git add <args>` and
+// the stream carries that Bash call, so the driver can read the claim.
 const fs = require('node:fs')
 const path = require('node:path')
 const crypto = require('node:crypto')
@@ -429,6 +432,9 @@ for (const f of step.heredoc ?? []) {
   fs.mkdirSync(path.dirname(abs), { recursive: true })
   fs.writeFileSync(abs, `heredoc from spawn ${n}\n`)
 }
+if (step.git_add) {
+  require('node:child_process').execFileSync('git', ['add', ...step.git_add.split(' ')], { cwd })
+}
 // `step.stray`: files written with no tool call naming them. The polish and
 // fix workers take it too (AD-50002).
 function writeStray(step) {
@@ -456,6 +462,7 @@ for (const f of touched) tool('Write', { file_path: f, content: `touched by spaw
 for (const f of step.heredoc ?? []) {
   tool('Bash', { command: `mkdir -p ${path.dirname(f)} && cat > ${f} <<'EOF'\nheredoc from spawn ${n}\nEOF`, description: 'write' })
 }
+if (step.git_add) tool('Bash', { command: `git add ${step.git_add}`, description: 'claim' })
 tool('Write', { file_path: fragment, content: fs.readFileSync(fragment, 'utf8') })
 innerRun(step)
 tool('Edit', { file_path: slicePath, old_string: 'status: building', new_string: 'status: done' })

@@ -740,7 +740,7 @@ pub fn commit_fix(
         )?;
     }
     let skip: HashSet<String> = spec.paths.iter().chain(&spec.protected).cloned().collect();
-    let found = scheduler::unnamed(run, board, before, &skip, true)?;
+    let found = scheduler::unnamed(run, board, before, &skip, &spec.dirs, true)?;
     note_leftovers(run, n, "fix", &found, out)?;
     let mut paths = spec.paths.clone();
     paths.extend(found.sweep);
@@ -833,7 +833,7 @@ pub fn commit_checkpoint(
     want.extend(spec.paths.iter().cloned());
     let mut files = commit::expand(&repo, &want)?;
     let skip: HashSet<String> = files.iter().chain(&spec.protected).cloned().collect();
-    let found = scheduler::unnamed(run, board, before, &skip, true)?;
+    let found = scheduler::unnamed(run, board, before, &skip, &spec.dirs, true)?;
     note_leftovers(run, n, "checkpoint", &found, out)?;
     files.extend(found.sweep);
     match commit::commit(

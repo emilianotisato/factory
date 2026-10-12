@@ -1051,8 +1051,9 @@ fn commit_slice(
 /// (FR-5, AD-20007).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Unnamed {
-    /// Tracked files it changed with no other worker live: they go in its
-    /// commit, since no lane can be mid-write in them.
+    /// Tracked files it changed, and new files under a directory it
+    /// `git add`ed, with no other worker live: they go in its commit, since
+    /// no lane can be mid-write in them.
     pub sweep: Vec<String>,
     /// The rest — new untracked files, tracked changes while another worker
     /// was live, the protected files: listed, left in the tree for the owner.
@@ -1074,6 +1075,7 @@ pub fn unnamed(
     board: &Status,
     baseline: &HashSet<String>,
     skip: &HashSet<String>,
+    dirs: &[String],
     alone: bool,
 ) -> Result<Unnamed> {
     let repo = run.state().repo.clone();
@@ -1111,7 +1113,12 @@ pub fn unnamed(
         if same {
             continue;
         }
-        if c.tracked && alone && !protected.contains(&c.path) {
+        let claimed = dirs.iter().any(|d| {
+            c.path
+                .strip_prefix(d.as_str())
+                .is_some_and(|r| r.starts_with('/'))
+        });
+        if (c.tracked || claimed) && alone && !protected.contains(&c.path) {
             found.sweep.push(c.path);
         } else {
             found.listed.push(c.path);
@@ -1146,7 +1153,7 @@ fn leftovers(
         let other = worker::summary_from_disk(run.dir(), sid);
         skip.extend(commit::Pathspec::from_stream(&other, board, &repo).paths);
     }
-    unnamed(run, board, baseline, &skip, live.is_empty())
+    unnamed(run, board, baseline, &skip, &spec.dirs, live.is_empty())
 }
 
 pub fn short(sha: &str) -> &str {
