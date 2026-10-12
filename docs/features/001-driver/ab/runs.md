@@ -119,3 +119,20 @@ From the six build-worker streams in `runs/018-20261011-6490/workers/`, mapped b
 **Pass on the guide's terms:** no "file has not been read" error and no loop of retried whole reads in any stream. Three of six builders never tried `Read` or `Edit` on the slice file, so the deny was not what pushed them to Bash. The only deny in those three streams hit builder 02's `cat` of `CompanyDirectoryController.php` and two other files, all in its pack under `# Outline`; it did not retry the whole read. Bash writes are the same habit that left slice 02's code uncommitted.
 
 Where the title line came from: builder 06 read `log-slice-05.md`, which already had `# Log fragment — slice 05`, before writing its own fragment. Builders copy a sibling fragment's shape, so one slip spreads to every later slice.
+
+### Browser check, run B
+
+The same 11 browser files as run A's check, in `wt-base` at B's head `806992c`, give identical results to the base `cde31ac` file by file: the same 5 failures (Fr16, Fr1, Fr42, Fr47, Fr86Fr88) and the same 15 module-dependent skips. Run B broke none of them. The four browser files run B edited (Fr109, Fr32, Fr45, Fr51) pass on both the base and the head. Its two new files pass in full: `Fr125InboxTest` 8 of 8, `Fr130InboxBadgeTest` 4 of 4.
+
+### Numbers, run B
+
+Measured 2026-10-11 after the questionnaire: `factory report 018-20261011-6490 --cockpit 708546d1-….jsonl`, with the cockpit idle.
+
+- **Workers: 6,078,688 weighted** (10 workers: 6 build, 3 checkpoint, 1 polish). **Cockpit: 619,229.** **Run B total: 6,697,917**, 41.5% of run A's 16,149,327. **Pass**, 2.99M under the 9,689,596 bar.
+- **Cockpit share: fail.** 619,229 is 10.2% of the workers' `weighted_tokens` the report prints, or 9.2% of the run's total; the bar is 5%. It is still 3.5 times smaller than run A's orchestrator (2,178,976). The cockpit did more than relay: three BLOCK relays, finding the leftovers twice, three repair commits, the decision review and the CI watch, most of it caused by the driver's commit bug.
+- Gates: 6 driver gate runs, 0 red, 42.7 min; 11 worker inner-loop runs, 0 red. Polish 58.0 min. 3h 08m wall to `run_finished`.
+- CI: green on the first run, but on a branch missing polish's fixes. The cockpit's repair push started a second run, still pending at measurement. `ci_cycles: 0`, since the report counts only `ci_fix_committed`.
+- Lookups: `ctx_share` 0.073 (under the 10% threshold), `repeat_rate` 0.003, `followup_reads` 7 of 21 (33%, over the 30% threshold).
+- Cockpit context: started at 49,700, peak 101,336.
+
+**FR-8 cross-check: pass on what the report exposes.** `measure.py --retro` on the cockpit session gives `out_tokens` 17,844, `cache_read_tokens` 4,553,507, `start_context` 49,700, `peak_context` 101,336, cache write 74,504. Weighted, that is 619,075 against the report's 619,229 (−0.025%; `measure.py` does not count input tokens). Peak context matches exactly. Gap: `factory report` prints only `cockpit_tokens` and `cockpit_peak_context`, so the cockpit's own output, cache-read and start-context figures cannot be compared one by one as the guide asks.
