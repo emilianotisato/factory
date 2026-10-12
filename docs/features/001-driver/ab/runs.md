@@ -169,7 +169,7 @@ Both runs: Opus 5.5, effort high, bypass permissions, `autoCompactWindow` 200000
 | run | tool | worktree / branch | started | session | PR |
 |---|---|---|---|---|---|
 | A | `/deliver 024` | `wt-a` · `feat/024-admin-inspection-ux` | 2026-10-12 12:37 | session_01SgYjqrN958jg5Pz4bHrk7d, local `64dbba7a-aa7a-46a7-95c2-97ad88737ae9` (tmux `ab-a`) | [#64](https://github.com/prokeycloud/arca/pull/64), draft at 16:33 |
-| B | `/factory-deliver 024` | `wt-b` · `feat/admin-inspection-ux` | | | |
+| B | `/factory-deliver 024` | `wt-b` · `feat/admin-inspection-ux` | 2026-10-12 17:19 | session_01Dg8bGkar5KigL5UA52jMYz, local `f4063ce4-f061-42eb-a1dc-4e7958c35465` (tmux `ab-b`) | |
 
 Run A launched as in the icg round: `claude --model opus --effort high --dangerously-skip-permissions --remote-control ab-run-a` with the prompt "/deliver 024. Preflight ask answered by the owner before launch: lanes, proceed as-is, serial (1 lane)." The repo's SessionStart hook fails with `bd: command not found` (non-blocking); run B will hit the same.
 
@@ -194,3 +194,4 @@ Answered by the owner 2026-10-12 at 17:18, before seeing any token or cost numbe
 | 6 | Built but not asked for | none | |
 | 7 | Asked for but missing | none | |
 | 8 | Overall | ship as is | |
+- Run B launched at 17:19 after the owner's QA and questionnaire for run A; run A's QA stack was stopped first (fixed ports). Same flags and preflight answer as run A.
