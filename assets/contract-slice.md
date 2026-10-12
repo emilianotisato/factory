@@ -12,10 +12,10 @@ Do:
 - Verify: run the inner-loop command given under `# Inner loop` below **in the foreground, and time every run** — never background it and never end your turn while it runs. Red → fix and rerun; 3 attempts on the same failure → block.
 - Do not run the full gate and do not drive the harness: both happen at the checkpoint that covers this slice. Leave the Prove task's rows named for it.
 - **Progress**: what was built · inner-loop runs, red runs, minutes, and what a red run caught · deliberate deviations
-- anything the slice, the PRD or a DEC did not settle → an AD entry under `## Decisions` in the feature folder's `log-slice-{NN}.md`, your own file. Shape: `### AD-n — {question} · slice-{NN} · {date}` with `**Chose:**`, `**Over:**`, `**Because:**`, `**Undo:**`, `**Review:** decide | fyi | no`. **Your AD numbers start at AD-{seed}** and count up; never touch agent-log.md, and never use a number outside your range.
+- anything the slice, the PRD or a DEC did not settle → an AD entry under `## Decisions` in the feature folder's `log-slice-{NN}.md`, your own file. It starts at its first `## ` heading, with no title above it. Shape: `### AD-n — {question} · slice-{NN} · {date}` with `**Chose:**`, `**Over:**`, `**Because:**`, `**Undo:**`, `**Review:** decide | fyi | no`. **Your AD numbers start at AD-{seed}** and count up; never touch agent-log.md, and never use a number outside your range.
 - a trap about this repo that cost you a run → one line under `## Traps` in that same fragment, with what works instead
 - `status: done`, `docs check` with no errors
-- do not commit: the driver commits your slice's files when you return. Leave the working tree as the commit should be.
+- do not commit: the driver commits your slice's files when you return. Leave the working tree as the commit should be. A file you made with a command (a generator, a script) is yours only if you `git add` it by name or by its folder; `git add -A` and `git add .` claim nothing, and an unclaimed new file is left out and listed.
 - touch nothing outside your slice's files and your fragment. A file another slice owns is off limits even when it looks one line from right; put it in an AD instead.
 
 Blocked → Autonomy § Blocker protocol steps 1-2, writing the `BLOCK-{seed}` entry into your fragment (shape `### BLOCK-n — {what} · slice-{NN} · open` with `**Happened:**`, `**Options:**`, `**Recommended:**`), set the slice `status: blocked`, and return. Do not push and do not notify.

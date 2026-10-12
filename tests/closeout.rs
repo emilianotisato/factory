@@ -402,8 +402,8 @@ fn a_finished_board_polishes_ships_pushes_and_opens_the_draft_pr() {
     for want in [
         "Default branch: `main` · feature branch: `feat/fixture`",
         "Commits this branch adds (`git log --oneline main..HEAD`):",
-        " feat: C\n",
-        " docs: checkpoint 2\n",
+        " feat(001): slice-03 C\n",
+        " docs(001): checkpoint 2\n",
         "# Retro",
         &format!("<!-- {FEATURE_DIR}/retro.md -->"),
         "````markdown\n---\nscore:\ngate_runs:\n",
@@ -429,20 +429,20 @@ fn a_finished_board_polishes_ships_pushes_and_opens_the_draft_pr() {
     assert_eq!(
         subjects(&fx)[2..],
         [
-            "feat: A",
-            "feat: B",
-            "docs: checkpoint 1",
-            "feat: C",
-            "docs: checkpoint 2",
-            "polish: review fixes",
-            "docs: ship PRD-001",
+            "feat(001): slice-01 A",
+            "feat(001): slice-02 B",
+            "docs(001): checkpoint 1",
+            "feat(001): slice-03 C",
+            "docs(001): checkpoint 2",
+            "fix(001): polish review fixes",
+            "docs(001): ship PRD-001",
         ]
     );
     assert_eq!(
         fx.git(&["log", "-1", "--format=%s"]).trim(),
-        "docs: ship PRD-001"
+        "docs(001): ship PRD-001"
     );
-    let polish_sha = sha_of(&fx, "polish: review fixes");
+    let polish_sha = sha_of(&fx, "fix(001): polish review fixes");
     assert_eq!(
         files_of(&fx, &polish_sha),
         [
@@ -452,7 +452,7 @@ fn a_finished_board_polishes_ships_pushes_and_opens_the_draft_pr() {
         ]
     );
     assert!(fx.read("src/lib.txt").contains("polished by spawn 6\n"));
-    let ship_files = files_of(&fx, &sha_of(&fx, "docs: ship PRD-001"));
+    let ship_files = files_of(&fx, &sha_of(&fx, "docs(001): ship PRD-001"));
     for f in ["docs/index.md", PRD, RETRO] {
         assert!(
             ship_files.contains(&f.to_string()),
@@ -569,7 +569,7 @@ fn stood_in_run(name: &str, skip: &[&str]) -> (Fixture, PathBuf, String, String)
     wait_phase(&fx, &dir, "finished", 90);
     assert_eq!(
         subjects(&fx)[subjects(&fx).len() - 2..],
-        ["polish: review fixes", "docs: ship PRD-001"]
+        ["fix(001): polish review fixes", "docs(001): ship PRD-001"]
     );
     assert_eq!(fx.git(&["status", "--porcelain"]).trim(), "", "tree dirty");
     let body_path = dir.join("pr-body.md");
@@ -596,7 +596,7 @@ fn stand_in_relay(file: &str) -> String {
 fn a_retro_the_polish_worker_left_out_is_a_flagged_stand_in() {
     let (fx, dir, body, relayed) = stood_in_run("closeout-stand-in-retro", &["retro"]);
     // The retro is the template, committed with the polish and filled at ship.
-    let polish_sha = sha_of(&fx, "polish: review fixes");
+    let polish_sha = sha_of(&fx, "fix(001): polish review fixes");
     assert!(files_of(&fx, &polish_sha).contains(&RETRO.to_string()));
     assert!(!fx.read(RETRO).contains("Stub retro"), "{}", fx.read(RETRO));
     assert_eq!(fm_value(&fx, RETRO, "slices"), "3");
@@ -711,8 +711,8 @@ fn a_slice_not_done_at_ship_blocks_the_closeout_in_phase_polish() {
             "run_waiting"
         ]
     );
-    assert!(subjects(&fx).contains(&"polish: review fixes".to_string()));
-    assert!(!subjects(&fx).contains(&"docs: ship PRD-001".to_string()));
+    assert!(subjects(&fx).contains(&"fix(001): polish review fixes".to_string()));
+    assert!(!subjects(&fx).contains(&"docs(001): ship PRD-001".to_string()));
     assert_eq!(fm_value(&fx, PRD, "status"), "ready");
     assert!(gh_calls(&fx, "pr create").is_empty(), "{:?}", fx.gh_log());
     assert_eq!(origin_head(&fx, "feat/fixture"), None, "nothing pushed");
@@ -757,12 +757,16 @@ fn a_red_check_gets_one_fix_round_then_green() {
         );
     }
 
-    // Its commit is `fix: CI test`, pushed; the retro counts the cycle.
+    // Its commit is `fix(001): CI test`, pushed; the retro counts the cycle.
     assert_eq!(
         subjects(&fx)[7..],
-        ["polish: review fixes", "docs: ship PRD-001", "fix: CI test"]
+        [
+            "fix(001): polish review fixes",
+            "docs(001): ship PRD-001",
+            "fix(001): CI test"
+        ]
     );
-    let fix_sha = sha_of(&fx, "fix: CI test");
+    let fix_sha = sha_of(&fx, "fix(001): CI test");
     assert_eq!(
         files_of(&fx, &fix_sha),
         [RETRO.to_string(), "src/lib.txt".to_string()]
@@ -779,7 +783,7 @@ fn a_red_check_gets_one_fix_round_then_green() {
         gh_calls(&fx, "run list"),
         [format!(
             "run list --commit {} --workflow CI --limit 100 --json {RUN_FIELDS}",
-            sha_of(&fx, "docs: ship PRD-001")
+            sha_of(&fx, "docs(001): ship PRD-001")
         )]
     );
     assert_eq!(
@@ -834,7 +838,7 @@ fn a_flaky_check_is_rerun_once_then_green() {
     assert!(!roles(&fx, &dir).contains(&"fix".to_string()));
     assert_eq!(gh_calls(&fx, "run rerun"), ["run rerun 1000 --failed"]);
     assert_eq!(gh_calls(&fx, "pr checks").len(), 2);
-    assert!(!subjects(&fx).iter().any(|s| s.starts_with("fix: CI")));
+    assert!(!subjects(&fx).iter().any(|s| s.starts_with("fix(001): CI")));
     assert_eq!(fm_value(&fx, RETRO, "ci_cycles"), "0");
     assert_eq!(
         kinds_from(&dir, "pr_opened"),
@@ -933,10 +937,10 @@ fn three_fix_rounds_on_a_red_check_block_the_closeout() {
     assert_eq!(
         subjects(&fx)[8..],
         [
-            "docs: ship PRD-001",
-            "fix: CI test",
-            "fix: CI test",
-            "fix: CI test"
+            "docs(001): ship PRD-001",
+            "fix(001): CI test",
+            "fix(001): CI test",
+            "fix(001): CI test"
         ]
     );
     assert_eq!(fm_value(&fx, RETRO, "ci_cycles"), "3");
@@ -978,7 +982,7 @@ fn a_red_check_at_a_foreign_head_blocks_without_a_fix_worker() {
         gh_calls(&fx, "run view"),
         [format!("run view 1000 --json {RUN_FIELDS}")]
     );
-    assert!(!subjects(&fx).iter().any(|s| s.starts_with("fix: CI")));
+    assert!(!subjects(&fx).iter().any(|s| s.starts_with("fix(001): CI")));
     stop(&fx, &dir);
 }
 
@@ -999,7 +1003,7 @@ fn a_red_check_beside_another_workflows_green_is_not_flaky() {
         gh_calls(&fx, "run list"),
         [format!(
             "run list --commit {} --workflow CI --limit 100 --json {RUN_FIELDS}",
-            sha_of(&fx, "docs: ship PRD-001")
+            sha_of(&fx, "docs(001): ship PRD-001")
         )]
     );
     assert_eq!(
@@ -1049,7 +1053,7 @@ fn two_red_workflows_get_one_fix_round_with_both_runs_logs() {
         assert!(pack.contains(want), "{want:?} missing from:\n{pack}");
     }
     assert!(
-        subjects(&fx).contains(&"fix: CI test, lint".to_string()),
+        subjects(&fx).contains(&"fix(001): CI test, lint".to_string()),
         "{:?}",
         subjects(&fx)
     );
@@ -1130,7 +1134,7 @@ fn a_refused_run_list_blocks_instead_of_a_blind_fix_round() {
     block_heading(&fx, "BLOCK-1", "ci");
     assert_eq!(prompts(&fx).len(), 6, "no fix worker: {:?}", prompts(&fx));
     assert!(gh_calls(&fx, "run rerun").is_empty());
-    assert!(!subjects(&fx).iter().any(|s| s.starts_with("fix: CI")));
+    assert!(!subjects(&fx).iter().any(|s| s.starts_with("fix(001): CI")));
     stop(&fx, &dir);
 }
 
@@ -1178,7 +1182,7 @@ fn after_a_fix_push_the_watch_waits_for_the_pr_to_reach_the_pushed_head() {
     );
     assert_eq!(gh_calls(&fx, "pr checks").len(), 2, "{:?}", fx.gh_log());
     assert_eq!(of_kind(&dir, "ci_green")[0]["head"], head(&fx));
-    let ship = sha_of(&fx, "docs: ship PRD-001");
+    let ship = sha_of(&fx, "docs(001): ship PRD-001");
     let fix = head(&fx);
     assert!(
         driver_log(&dir).contains(&format!(
@@ -1238,7 +1242,7 @@ fn a_refused_rerun_blocks_instead_of_a_fix_round() {
     assert_eq!(gh_calls(&fx, "run rerun"), ["run rerun 1000 --failed"]);
     assert!(of_kind(&dir, "ci_rerun").is_empty());
     assert_eq!(prompts(&fx).len(), 6, "no fix worker: {:?}", prompts(&fx));
-    assert!(!subjects(&fx).iter().any(|s| s.starts_with("fix: CI")));
+    assert!(!subjects(&fx).iter().any(|s| s.starts_with("fix(001): CI")));
     stop(&fx, &dir);
 }
 
@@ -1535,10 +1539,10 @@ fn closeout_workers_commit_their_unnamed_tracked_changes_and_list_the_rest() {
     let dir = start(&fx);
     wait_phase(&fx, &dir, "finished", 120);
 
-    let polish = files_of(&fx, &sha_of(&fx, "polish: review fixes"));
+    let polish = files_of(&fx, &sha_of(&fx, "fix(001): polish review fixes"));
     assert!(polish.contains(&"src/extra.txt".to_string()), "{polish:?}");
     assert!(!polish.contains(&"scratch.txt".to_string()), "{polish:?}");
-    let fix = files_of(&fx, &sha_of(&fx, "fix: CI test"));
+    let fix = files_of(&fx, &sha_of(&fx, "fix(001): CI test"));
     assert!(fix.contains(&"src/extra.txt".to_string()), "{fix:?}");
     assert!(!fix.contains(&"scratch.txt".to_string()), "{fix:?}");
     // Listed once, by the worker that left it; never committed.
@@ -1583,9 +1587,9 @@ fn a_shipped_board_without_its_ship_commit_ships_again() {
     );
     assert_eq!(
         fx.git(&["log", "-1", "--format=%s"]).trim(),
-        "docs: ship PRD-001"
+        "docs(001): ship PRD-001"
     );
-    let ship = sha_of(&fx, "docs: ship PRD-001");
+    let ship = sha_of(&fx, "docs(001): ship PRD-001");
     assert!(files_of(&fx, &ship).contains(&PRD.to_string()));
     assert!(
         fx.git(&["show", &format!("HEAD:{PRD}")])
@@ -1624,7 +1628,7 @@ fn proceed_to_the_dead_polish_block_ships_without_a_third_worker() {
         ["polish", "polish"],
         "no third polish"
     );
-    assert_eq!(subjects(&fx)[7..], ["docs: ship PRD-001"]);
+    assert_eq!(subjects(&fx)[7..], ["docs(001): ship PRD-001"]);
     assert_eq!(fm_value(&fx, PRD, "status"), "shipped");
     assert_eq!(gh_calls(&fx, "pr create").len(), 1);
     assert_eq!(events(&dir).pop().unwrap()["kind"], "run_finished");
@@ -1655,7 +1659,7 @@ fn two_dead_polish_workers_block_and_the_answer_spawns_a_third() {
     );
     let log = fx.read(AGENT_LOG);
     assert_eq!(log.matches("- **Dead polish worker (").count(), 2, "{log}");
-    assert!(!subjects(&fx).contains(&"polish: review fixes".to_string()));
+    assert!(!subjects(&fx).contains(&"fix(001): polish review fixes".to_string()));
     assert!(gh_calls(&fx, "pr create").is_empty());
 
     let out = factory(&fx, &["answer", "BLOCK-1", "try once more"]);
@@ -1665,7 +1669,7 @@ fn two_dead_polish_workers_block_and_the_answer_spawns_a_third() {
     assert_eq!(prompts(&fx)[7], "/polish");
     assert_eq!(
         subjects(&fx)[7..],
-        ["polish: review fixes", "docs: ship PRD-001"]
+        ["fix(001): polish review fixes", "docs(001): ship PRD-001"]
     );
     assert_eq!(gh_calls(&fx, "pr create").len(), 1);
     assert_eq!(events(&dir).pop().unwrap()["kind"], "run_finished");

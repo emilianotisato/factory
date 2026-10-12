@@ -5,8 +5,8 @@
 //! ignored, `docs/` left out — built on a throwaway index so the repo's own
 //! index is never touched, plus the gate command. Hits and misses live in
 //! `runs/<id>/gate-cache.json`, so a resumed run reuses a green gate. A
-//! green on a tree with changes outside `docs/` is not stored: what it
-//! tested is not what HEAD holds.
+//! green on a tree with changes outside `docs/` is kept for its own
+//! checkpoint only: what it tested is not what HEAD holds.
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -27,6 +27,10 @@ pub struct Entry {
     pub at: String,
     /// The transcript of the run that produced it.
     pub log: String,
+    /// Set on a green from a tree with changes outside `docs/`: the only
+    /// checkpoint it may serve.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<u32>,
 }
 
 /// `runs/<id>/gate-cache.json`.
@@ -204,6 +208,7 @@ mod tests {
                 minutes: 0.5,
                 at: "t".into(),
                 log: "gates/1-1.log".into(),
+                checkpoint: None,
             },
         )
         .unwrap();

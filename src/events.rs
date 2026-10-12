@@ -2,6 +2,7 @@
 //! `{seq, ts, kind, ...payload}`. Every event is also a row in the `events`
 //! table, written by the same [`emit`]; nothing writes one without the other.
 //! The cockpit replays the file; the metrics read the table.
+use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::Path;
@@ -117,6 +118,11 @@ pub enum EventKind {
     UntrackedLeftovers {
         slice: u32,
         files: Vec<String>,
+        /// Each listed file's blob id when listed (`git hash-object`, "" for a
+        /// deleted file): the same content is listed once, a later change
+        /// to it is judged afresh. Empty from a driver that kept none.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        blobs: BTreeMap<String, String>,
     },
     /// What a checkpoint's fix or checkpoint worker changed that its stream
     /// never named and its commit does not take: untracked files and the
@@ -125,12 +131,18 @@ pub enum EventKind {
         n: u32,
         role: String,
         files: Vec<String>,
+        /// As [`EventKind::UntrackedLeftovers`]'s.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        blobs: BTreeMap<String, String>,
     },
     /// The same for a closeout worker (`polish` or `ci-fix`): what it
     /// changed unnamed and its commit does not take (AD-50002).
     CloseoutLeftovers {
         role: String,
         files: Vec<String>,
+        /// As [`EventKind::UntrackedLeftovers`]'s.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        blobs: BTreeMap<String, String>,
     },
     /// The stream names one of the three files no worker may write
     /// (`prd.md`, `agent-log.md`, `docs/index.md`); left out of the commit.
@@ -185,7 +197,7 @@ pub enum EventKind {
         session_id: String,
         pid: u32,
     },
-    /// The fix worker's files, committed by pathspec: `fix: gate red at checkpoint n`.
+    /// The fix worker's files, committed by pathspec: `fix(NNN): gate red at checkpoint n`.
     FixCommitted {
         n: u32,
         attempt: u32,
@@ -220,7 +232,7 @@ pub enum EventKind {
         session_id: String,
         pid: u32,
     },
-    /// The polish worker returned; `sha` is its `polish: review fixes`
+    /// The polish worker returned; `sha` is its `fix(NNN): polish review fixes`
     /// commit, `None` when it changed nothing.
     PolishDone {
         sha: Option<String>,
@@ -236,7 +248,7 @@ pub enum EventKind {
         #[serde(default)]
         path: String,
     },
-    /// `docs ship` ran, the retro keys are filled and `docs: ship PRD-NNN`
+    /// `docs ship` ran, the retro keys are filled and `docs(NNN): ship PRD-NNN`
     /// is committed (`sha`, `None` when nothing was left to commit).
     Shipped {
         sha: Option<String>,

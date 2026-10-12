@@ -912,7 +912,7 @@ fn a_branch_switch_mid_run_parks_and_nothing_commits_off_the_branch() {
     });
     assert_eq!(fx.git(&["rev-parse", "main"]), base);
     let subjects = fx.git(&["log", "--format=%s", "main..feat/fixture"]);
-    assert!(subjects.contains("feat: "), "{subjects}");
+    assert!(subjects.contains("feat(001): slice-"), "{subjects}");
 
     let out = factory(&fx, &["stop", &id]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));

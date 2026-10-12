@@ -10,7 +10,7 @@ Do:
 - Verify: run the inner-loop command **in the foreground, and time every run** — never background it and never end your turn while it runs. Red → fix and rerun; 3 attempts on the same failure → block.
 - touch nothing the failure does not name. Slice files, log fragments, `prd.md`, `agent-log.md`, `retro.md` and `docs/index.md` are off limits; a fix that wants one of them is a block, not an edit. Never edit the CI workflow to make it pass.
 - anything the failure did not settle → an AD entry under `## Decisions` in the feature folder's `log-ci-{round}.md`, your own file. Shape: `### AD-n — {question} · ci · {date}` with `**Chose:**`, `**Over:**`, `**Because:**`, `**Undo:**`, `**Review:** decide | fyi | no`. **Your AD numbers start at AD-{seed}** and count up.
-- do not commit, do not push and never run `gh`: the driver commits the files you wrote as `fix: CI {check}`, pushes, and watches the checks again. Leave the working tree as the commit should be.
+- do not commit, do not push and never run `gh`: the driver commits the files you wrote as `fix({NNN}): CI {check}`, pushes, and watches the checks again. Leave the working tree as the commit should be. A file you made with a command is yours only if you `git add` it by name or by its folder.
 
 Blocked → Autonomy § Blocker protocol steps 1-2, writing the `BLOCK-{seed}` entry into `log-ci-{round}.md` (shape `### BLOCK-n — {what} · ci · open` with `**Happened:**`, `**Options:**`, `**Recommended:**`), and return. Do not push and do not notify.
 

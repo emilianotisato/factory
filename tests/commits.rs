@@ -165,11 +165,11 @@ fn sorted(mut v: Vec<String>) -> Vec<String> {
     v
 }
 
-/// One slice's commit as FR-5 asks for it: `feat: <title>`, no body, the
+/// One slice's commit as FR-5 asks for it: `feat(NNN): slice-NN <title>`, no body, the
 /// repo's own author, exactly the named paths plus slice file and fragment;
 /// the `slice_committed` event and the worker row name the same sha.
 fn assert_slice_commit(fx: &Fixture, dir: &Path, n: u8, title: &str, code: &[&str]) -> String {
-    let sha = sha_of(fx, &format!("feat: {title}"));
+    let sha = sha_of(fx, &format!("feat(001): slice-{n:02} {title}"));
     assert_eq!(
         fx.git(&["log", "-1", "--format=%b", &sha]),
         "\n",
@@ -210,10 +210,11 @@ fn assert_slice_commit(fx: &Fixture, dir: &Path, n: u8, title: &str, code: &[&st
 fn each_done_slice_is_committed_by_pathspec_and_the_logs_merge_at_the_end() {
     let fx = Fixture::with_index("commits-chain", &[("checkpoint_every", "10")]);
     fx.chain();
-    // Slice 01 also leaves a file no tool call names (a heredoc, a generator):
-    // it is listed in the fragment and never committed (FR-5).
+    // Slice 01 also leaves a file no tool call names (a generator, a script):
+    // it is listed in the fragment and never committed (FR-5). The file its
+    // `Bash` heredoc typed out is named like a `Write`, and committed.
     fx.write_plan(&[
-        json!({"outcome": "done", "touch": ["src/lib.txt"], "stray": ["notes.txt"]}),
+        json!({"outcome": "done", "touch": ["src/lib.txt"], "stray": ["notes.txt"], "heredoc": ["src/gen/new.rs"]}),
         json!({"outcome": "done"}),
         json!({"outcome": "done"}),
         json!({"outcome": "checkpoint"}),
@@ -226,15 +227,15 @@ fn each_done_slice_is_committed_by_pathspec_and_the_logs_merge_at_the_end() {
         [
             "chore: fixture repo",
             "chore: chain the fixture slices",
-            "feat: A",
-            "feat: B",
-            "feat: C",
-            "docs: checkpoint 1",
-            "polish: review fixes",
-            "docs: ship PRD-001",
+            "feat(001): slice-01 A",
+            "feat(001): slice-02 B",
+            "feat(001): slice-03 C",
+            "docs(001): checkpoint 1",
+            "fix(001): polish review fixes",
+            "docs(001): ship PRD-001",
         ]
     );
-    assert_slice_commit(&fx, &dir, 1, "A", &["src/lib.txt"]);
+    assert_slice_commit(&fx, &dir, 1, "A", &["src/gen/new.rs", "src/lib.txt"]);
     assert_slice_commit(&fx, &dir, 2, "B", &["src/lib.txt"]);
     assert_slice_commit(&fx, &dir, 3, "C", &["src/lib.txt"]);
 
@@ -256,6 +257,8 @@ fn each_done_slice_is_committed_by_pathspec_and_the_logs_merge_at_the_end() {
     assert_eq!(leftovers.len(), 1, "{leftovers:?}");
     assert_eq!(leftovers[0]["slice"], 1);
     assert_eq!(leftovers[0]["files"], json!(["notes.txt"]));
+    let blob = leftovers[0]["blobs"]["notes.txt"].as_str().unwrap();
+    assert_eq!(blob, fx.git(&["hash-object", "notes.txt"]).trim());
     for n in 1..=3 {
         assert!(
             !fx.path().join(fragment(n)).exists(),
@@ -273,7 +276,7 @@ fn each_done_slice_is_committed_by_pathspec_and_the_logs_merge_at_the_end() {
     // what `render --write` changed (here prd.md's slice table; the index
     // was already current) and the fragments' removal. HEAD itself is the
     // ship commit (slice 09), two commits later.
-    let merge = sha_of(&fx, "docs: checkpoint 1");
+    let merge = sha_of(&fx, "docs(001): checkpoint 1");
     let merged_files = files_of(&fx, &merge);
     for f in [
         AGENT_LOG.to_string(),
@@ -357,17 +360,20 @@ fn two_lanes_commit_out_of_order_and_each_commit_takes_only_its_own_files() {
             .position(|x| x == s)
             .unwrap_or_else(|| panic!("{s}: {subjects:?}"))
     };
-    assert!(at("feat: B") < at("feat: A"), "{subjects:?}");
+    assert!(
+        at("feat(001): slice-02 B") < at("feat(001): slice-01 A"),
+        "{subjects:?}"
+    );
     assert_eq!(
         subjects.last().map(String::as_str),
-        Some("docs: ship PRD-001")
+        Some("docs(001): ship PRD-001")
     );
     assert_eq!(subjects.len(), 7, "{subjects:?}");
     assert!(
         subjects.ends_with(&[
-            "docs: checkpoint 1".to_string(),
-            "polish: review fixes".to_string(),
-            "docs: ship PRD-001".to_string()
+            "docs(001): checkpoint 1".to_string(),
+            "fix(001): polish review fixes".to_string(),
+            "docs(001): ship PRD-001".to_string()
         ]),
         "{subjects:?}"
     );
@@ -397,14 +403,19 @@ fn a_refused_merge_blocks_in_agent_log_and_the_answer_retries_it() {
     let dir = start(&fx);
     wait_phase(&fx, &dir, "waiting-owner", 40);
 
-    // Three slice commits, a green gate, then the merge refuses (slice 06
-    // runs it inside the checkpoint); the fragments are still there.
+    // Three slice commits, then the merge refuses before any gate is paid
+    // for; the fragments are still there.
     assert_eq!(
         sorted(subjects(&fx)),
         sorted(
-            ["chore: fixture repo", "feat: A", "feat: B", "feat: C"]
-                .map(String::from)
-                .to_vec()
+            [
+                "chore: fixture repo",
+                "feat(001): slice-01 A",
+                "feat(001): slice-02 B",
+                "feat(001): slice-03 C"
+            ]
+            .map(String::from)
+            .to_vec()
         )
     );
     for n in 1..=3 {
@@ -432,6 +443,7 @@ fn a_refused_merge_blocks_in_agent_log_and_the_answer_retries_it() {
     let k = kinds(&dir);
     assert_eq!(k.last().map(String::as_str), Some("run_waiting"));
     assert_eq!(count(&k, "log_merged"), 0);
+    assert_eq!(count(&k, "gate_run"), 0);
     let driver = state(&dir)["pid"].as_u64().unwrap() as u32;
     assert!(pid_alive(driver), "driver gone");
     assert!(
@@ -448,8 +460,8 @@ fn a_refused_merge_blocks_in_agent_log_and_the_answer_retries_it() {
     assert_eq!(open[0]["phase"], "checkpoint");
 
     // The owner renumbers the clashing entry and answers; the checkpoint
-    // resumes (the green gate is cached), the merge runs again and the
-    // checkpoint commit lands.
+    // resumes, the gate runs once, the merge runs again and the checkpoint
+    // commit lands.
     let frag = fx.path().join(fragment(2));
     let fixed = fs::read_to_string(&frag)
         .unwrap()
@@ -466,9 +478,9 @@ fn a_refused_merge_blocks_in_agent_log_and_the_answer_retries_it() {
 
     assert_eq!(
         fx.git(&["log", "-1", "--format=%s"]).trim(),
-        "docs: ship PRD-001"
+        "docs(001): ship PRD-001"
     );
-    let merged_files = files_of(&fx, &sha_of(&fx, "docs: checkpoint 1"));
+    let merged_files = files_of(&fx, &sha_of(&fx, "docs(001): checkpoint 1"));
     assert!(merged_files.contains(&fragment(2)), "{merged_files:?}");
     assert!(
         merged_files.contains(&AGENT_LOG.to_string()),
@@ -497,6 +509,7 @@ fn a_refused_merge_blocks_in_agent_log_and_the_answer_retries_it() {
     assert!(seq_first(&dir, "log_merged") < seq_first(&dir, "checkpoint_done"));
     assert_eq!(count(&k, "run_waiting"), 1);
     assert_eq!(count(&k, "merge_refused"), 1);
+    assert_eq!(count(&k, "gate_run") + count(&k, "gate_cached"), 1);
     assert_eq!(k.last().map(String::as_str), Some("run_finished"));
 }
 
@@ -532,7 +545,7 @@ fn a_driver_killed_at_the_slice_commit_leaves_the_worker_for_the_resume() {
     });
     // Slice 01 is done and uncommitted, and its worker is not settled.
     assert_eq!(fx.slice_status(1), "done");
-    assert!(!subjects(&fx).iter().any(|s| s == "feat: A"));
+    assert!(!subjects(&fx).iter().any(|s| s == "feat(001): slice-01 A"));
     assert_eq!(state(&dir)["workers"][0]["outcome"], Value::Null);
     assert_eq!(count(&kinds(&dir), "slice_done"), 1);
 
@@ -541,7 +554,7 @@ fn a_driver_killed_at_the_slice_commit_leaves_the_worker_for_the_resume() {
     wait_until(&fx, &dir, "slice 01 to be committed", 20, || {
         count(&kinds(&dir), "slice_committed") == 1
     });
-    let sha = sha_of(&fx, "feat: A");
+    let sha = sha_of(&fx, "feat(001): slice-01 A");
     assert!(files_of(&fx, &sha).contains(&slice_rel(&fx, 1)));
     // The commit lands before the outcome: wait for the settle too.
     wait_until(&fx, &dir, "slice 01's worker to be settled", 20, || {
@@ -638,6 +651,26 @@ fn a_lone_workers_unnamed_tracked_change_goes_in_its_slice_commit() {
 }
 
 #[test]
+fn a_listed_file_committed_since_and_changed_again_goes_in_the_next_commit() {
+    let fx = Fixture::with_index("commits-relisted", &[("checkpoint_every", "10")]);
+    fx.chain();
+    // Run B of 2026-10-11: slice 02 left files, the owner committed them,
+    // and polish's later edits to them went in no commit and on no list.
+    fx.write_plan(&[
+        json!({"outcome": "done", "stray": ["notes.txt"]}),
+        json!({"outcome": "done", "commit": ["notes.txt"]}),
+        json!({"outcome": "done", "stray": ["notes.txt"]}),
+        json!({"outcome": "checkpoint"}),
+    ]);
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "finished", 40);
+
+    assert_eq!(count(&kinds(&dir), "untracked_leftovers"), 1);
+    assert_slice_commit(&fx, &dir, 3, "C", &["notes.txt", "src/lib.txt"]);
+    assert_eq!(fx.git(&["status", "--porcelain"]), "");
+}
+
+#[test]
 fn an_unnamed_tracked_change_beside_a_live_sibling_is_listed_not_committed() {
     let fx = Fixture::with_index("commits-sweep-sibling", &[("checkpoint_every", "10")]);
     track_extra(&fx);
@@ -672,4 +705,85 @@ fn an_unnamed_tracked_change_beside_a_live_sibling_is_listed_not_committed() {
         fx.git(&["status", "--porcelain"])
     );
     assert!(fx.read(AGENT_LOG).contains("- src/extra.txt"));
+}
+
+fn leftovers_of(dir: &Path) -> Vec<Value> {
+    events(dir)
+        .into_iter()
+        .filter(|e| e["kind"] == "untracked_leftovers")
+        .collect()
+}
+
+#[test]
+fn a_lone_worker_claims_generated_files_by_git_adding_their_folder() {
+    let fx = Fixture::with_index("commits-claim-dir", &[("checkpoint_every", "10")]);
+    fx.chain();
+    // A generator wrote gen/ and a scratch file; the worker staged gen/ only.
+    fx.write_plan(&[
+        json!({"outcome": "done", "stray": ["gen/a.txt", "gen/b.txt", "scratch.log"], "git_add": "gen"}),
+        json!({"outcome": "done"}),
+        json!({"outcome": "done"}),
+        json!({"outcome": "checkpoint"}),
+    ]);
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "finished", 40);
+
+    assert_slice_commit(
+        &fx,
+        &dir,
+        1,
+        "A",
+        &["gen/a.txt", "gen/b.txt", "src/lib.txt"],
+    );
+    let leftovers = leftovers_of(&dir);
+    assert_eq!(leftovers.len(), 1, "{leftovers:?}");
+    assert_eq!(leftovers[0]["files"], json!(["scratch.log"]));
+    assert_eq!(fx.git(&["status", "--porcelain"]), "?? scratch.log\n");
+}
+
+#[test]
+fn git_add_all_claims_nothing_and_its_new_files_are_listed() {
+    let fx = Fixture::with_index("commits-claim-all", &[("checkpoint_every", "10")]);
+    fx.chain();
+    // `git add -A` stages the scratch file too: staged-new is not tracked,
+    // so even a lone worker's sweep leaves it out.
+    fx.write_plan(&[
+        json!({"outcome": "done", "stray": ["gen/a.txt", "scratch.log"], "git_add": "-A"}),
+        json!({"outcome": "done"}),
+        json!({"outcome": "done"}),
+        json!({"outcome": "checkpoint"}),
+    ]);
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "finished", 40);
+
+    assert_slice_commit(&fx, &dir, 1, "A", &["src/lib.txt"]);
+    let leftovers = leftovers_of(&dir);
+    assert_eq!(leftovers.len(), 1, "{leftovers:?}");
+    assert_eq!(leftovers[0]["files"], json!(["gen/a.txt", "scratch.log"]));
+    assert_eq!(
+        fx.git(&["status", "--porcelain"]),
+        "A  gen/a.txt\nA  scratch.log\n"
+    );
+}
+
+#[test]
+fn a_file_git_added_by_name_is_committed_beside_a_live_sibling() {
+    let fx = Fixture::with_index("commits-claim-sibling", &[("checkpoint_every", "10")]);
+    // 01 returns while 02 still runs: its folder claim waits for the owner,
+    // its claim by name does not.
+    fx.write_plan(&[
+        json!({"outcome": "done", "touch": ["src/a.txt"], "stray": ["gen/a.txt", "gen/b.txt"], "git_add": "gen/a.txt"}),
+        json!({"outcome": "done", "delay_ms": 1500, "touch": ["src/b.txt"]}),
+        json!({"outcome": "done", "touch": ["src/c.txt"]}),
+        json!({"outcome": "checkpoint"}),
+    ]);
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "finished", 40);
+
+    assert_slice_commit(&fx, &dir, 1, "A", &["gen/a.txt", "src/a.txt"]);
+    assert_slice_commit(&fx, &dir, 2, "B", &["src/b.txt"]);
+    let leftovers = leftovers_of(&dir);
+    assert_eq!(leftovers.len(), 1, "{leftovers:?}");
+    assert_eq!(leftovers[0]["slice"], 1);
+    assert_eq!(leftovers[0]["files"], json!(["gen/b.txt"]));
 }

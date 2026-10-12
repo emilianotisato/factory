@@ -230,12 +230,14 @@ pub fn program(word: &str) -> &str {
 }
 
 /// One simple command of a [`Script`]: its words, quotes removed and
-/// expansions kept as written (`$x`, `$(…)`), and what here-documents and
-/// here-strings hand its stdin.
+/// expansions kept as written (`$x`, `$(…)`), what here-documents and
+/// here-strings hand its stdin, and the files its output redirections
+/// (`>`, `>>`, `>|`, `&>`) name.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Simple {
     pub words: Vec<String>,
     pub stdin: Vec<String>,
+    pub writes: Vec<String>,
 }
 
 /// Every simple command a command line can run, at any depth: `&&`, `||`,
@@ -456,6 +458,7 @@ impl Lexer {
                 owner,
             }),
             3 => self.out[owner].stdin.push(w.text),
+            0 => self.out[owner].writes.push(w.text),
             _ => {}
         }
     }
@@ -836,12 +839,20 @@ mod tests {
         assert_eq!(sc.commands[0].stdin, ["$(a)\n"]);
         assert_eq!(sc.commands[1].stdin, ["$(b) c\n"]);
         assert_eq!(sc.commands[3].stdin, ["e f"]);
+        assert_eq!(sc.commands[0].writes, ["f"]);
         assert!(!sc.unbalanced);
         // A commit message inside a substitution: the body is literal.
         let sc = script("git commit -m \"$(cat <<'EOF'\nfix(x): a ) b `c`\nEOF\n)\" && ls");
         let words: Vec<_> = sc.commands.iter().map(|c| c.words[0].clone()).collect();
         assert_eq!(words, ["git", "cat", "ls"]);
         assert!(!sc.unbalanced);
+    }
+
+    #[test]
+    fn output_redirections_name_their_files_and_nothing_else() {
+        let sc = script("a > o1 >> o2 >| o3 &> o4 2>&1 < i 2> e <<< s <> rw");
+        assert_eq!(sc.commands[0].writes, ["o1", "o2", "o3", "o4", "e"]);
+        assert_eq!(sc.commands[0].words, ["a"]);
     }
 
     #[test]

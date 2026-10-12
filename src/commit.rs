@@ -1,16 +1,18 @@
 //! One commit per slice, by pathspec (PRD §7 FR-5). The paths are the
 //! `file_path` of every `Edit` and `Write` call and the `notebook_path` of
 //! every `NotebookEdit` call in the worker's stream (§4 FR-2: the stream is the record) plus the slice file
-//! and its log fragment; the message is `feat: <slice title>`, no body, no
+//! and its log fragment; the message is `feat(NNN): slice-NN <title>`, no body, no
 //! trailers, the repo's own `user.*`. Never `git add -A`: another lane may be
-//! mid-write in the same tree, and only named paths move. What the worker
-//! wrote without naming it (a `Bash` heredoc, a generator) is listed in the
-//! fragment under `## Untracked leftovers` and stays in the tree for the
-//! owner. At a checkpoint (FR-4) the same path commits a fix worker's files
-//! (`fix: gate red at checkpoint n`, [`Pathspec::from_stream`]) and, after
+//! mid-write in the same tree, and only named paths move. A `Bash` call that
+//! types a file out in full (`cat > f <<EOF`) names it too ([`heredoc_paths`]).
+//! A file the worker made with a command (a generator, a script) is its own
+//! once it `git add`s it by name or by folder ([`added_paths`]); one it never
+//! claims is listed in the fragment under `## Untracked leftovers` and stays
+//! in the tree for the owner. At a checkpoint (FR-4) the same path commits a fix worker's files
+//! (`fix(NNN): gate red at checkpoint n`, [`Pathspec::from_stream`]) and, after
 //! [`fold_logs`] merged the fragments into `agent-log.md`, the feature folder
-//! and the checkpoint worker's files as `docs: checkpoint n`.
-use std::collections::HashSet;
+//! and the checkpoint worker's files as `docs(NNN): checkpoint n`.
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output};
@@ -18,6 +20,7 @@ use std::sync::Mutex;
 
 use crate::docs::{Docs, Status};
 use crate::error::io;
+use crate::shell;
 use crate::stream::Summary;
 use crate::{Error, Result};
 
@@ -58,25 +61,15 @@ pub struct Pathspec {
     pub protected: Vec<String>,
     /// Named in the stream but outside the repo root: left out.
     pub outside: Vec<String>,
+    /// Directories a `git add` named: their new files are the worker's only
+    /// while no other worker is live ([`crate::scheduler::unnamed`]).
+    pub dirs: Vec<String>,
 }
 
 impl Pathspec {
     /// The slice's pathspec from its worker's stream and the board.
     pub fn from(summary: &Summary, board: &Status, slice: u32, repo: &Path) -> Pathspec {
-        let canon = repo.canonicalize().unwrap_or_else(|_| repo.to_path_buf());
-        let protected = protected_files(board);
-        let mut spec = Pathspec::default();
-        for raw in written_paths(summary) {
-            let Some(rel) = relativize(repo, &canon, raw) else {
-                push_once(&mut spec.outside, raw.to_string());
-                continue;
-            };
-            if protected.contains(&rel) {
-                push_once(&mut spec.protected, rel);
-            } else {
-                push_once(&mut spec.paths, rel);
-            }
-        }
+        let mut spec = Pathspec::from_stream(summary, board, repo);
         if let Some(p) = slice_path(board, slice) {
             push_once(&mut spec.paths, p);
         }
@@ -103,6 +96,23 @@ impl Pathspec {
                 push_once(&mut spec.paths, rel);
             }
         }
+        // A heredoc into /dev/null or /tmp is not a file of the repo's, nor
+        // worth reporting as one written outside it.
+        for raw in heredoc_paths(summary) {
+            match relativize(repo, &canon, &raw) {
+                Some(rel) if protected.contains(&rel) => push_once(&mut spec.protected, rel),
+                Some(rel) => push_once(&mut spec.paths, rel),
+                None => {}
+            }
+        }
+        for raw in added_paths(summary) {
+            match relativize(repo, &canon, &raw) {
+                Some(rel) if repo.join(&rel).is_dir() => push_once(&mut spec.dirs, rel),
+                Some(rel) if protected.contains(&rel) => push_once(&mut spec.protected, rel),
+                Some(rel) => push_once(&mut spec.paths, rel),
+                None => {}
+            }
+        }
         spec
     }
 }
@@ -121,6 +131,95 @@ pub fn written_paths(summary: &Summary) -> impl Iterator<Item = &str> {
             };
             t.input.get(key).and_then(|v| v.as_str())
         })
+}
+
+/// The files the stream's `Bash` calls typed out in full: the targets of
+/// `cat > f <<EOF` and `tee f <<EOF`, fed by a here-document or here-string.
+/// The worker wrote those as surely as with `Write`; left unnamed, a
+/// builder's new source files stayed out of its commit (the A/B run of
+/// 2026-10-11 lost eleven that way). A call with a `cd` or `pushd` anywhere,
+/// or a target spelled by an expansion or a glob, names nothing: where it
+/// landed cannot be told. A relative target is read from the repo root,
+/// where workers start; one that landed elsewhere names a path that does not
+/// exist, which [`commit`] drops.
+pub fn heredoc_paths(summary: &Summary) -> Vec<String> {
+    let mut out = Vec::new();
+    for sc in rooted_scripts(summary) {
+        for c in sc.commands.iter().filter(|c| !c.stdin.is_empty()) {
+            let targets: Vec<&String> = match program(c) {
+                Some("cat") if c.words[1..].iter().all(|a| a == "-") => c.writes.iter().collect(),
+                Some("tee") => c.words[1..]
+                    .iter()
+                    .filter(|a| !a.starts_with('-'))
+                    .chain(&c.writes)
+                    .collect(),
+                _ => continue,
+            };
+            for p in targets.into_iter().filter(|p| literal(p)) {
+                push_once(&mut out, p.clone());
+            }
+        }
+    }
+    out
+}
+
+/// The paths the stream's `git add` calls name one by one: the worker's
+/// claim on a file it made with a command (a generator, a script), which
+/// the driver cannot otherwise tell from a scratch file or a secret.
+/// `git add -A`, `git add .`, a glob and pathspec magic (`:/`) name nothing
+/// in particular, so they claim nothing; nor does `git add -n`, nor a
+/// `git -C dir add`, which adds elsewhere.
+pub fn added_paths(summary: &Summary) -> Vec<String> {
+    let mut out = Vec::new();
+    for sc in rooted_scripts(summary) {
+        for c in &sc.commands {
+            if program(c) != Some("git") || c.words.get(1).map(String::as_str) != Some("add") {
+                continue;
+            }
+            let args = &c.words[2..];
+            let end = args.iter().position(|a| a == "--").unwrap_or(args.len());
+            if args[..end].iter().any(|a| a == "-n" || a == "--dry-run") {
+                continue;
+            }
+            let named = args[..end]
+                .iter()
+                .filter(|a| !a.starts_with('-'))
+                .chain(args.get(end + 1..).unwrap_or_default());
+            let whole_tree = |p: &str| p.split('/').all(|s| s.is_empty() || s == ".");
+            for p in named.filter(|p| literal(p) && !p.starts_with(':') && !whole_tree(p)) {
+                push_once(&mut out, p.clone());
+            }
+        }
+    }
+    out
+}
+
+/// The stream's `Bash` calls, parsed, less those whose relative paths need
+/// not be read from the repo root: an unbalanced one, or one with a `cd` or
+/// `pushd` anywhere.
+fn rooted_scripts(summary: &Summary) -> impl Iterator<Item = shell::Script> + '_ {
+    summary
+        .tool_uses
+        .iter()
+        .filter(|t| t.name == "Bash")
+        .filter_map(|t| t.input.get("command").and_then(|v| v.as_str()))
+        .map(shell::script)
+        .filter(|sc| {
+            !sc.unbalanced
+                && !sc
+                    .commands
+                    .iter()
+                    .any(|c| matches!(program(c), Some("cd" | "pushd")))
+        })
+}
+
+fn program(c: &shell::Simple) -> Option<&str> {
+    c.words.first().map(|w| shell::program(w))
+}
+
+/// A path spelled out, not by an expansion or a glob.
+fn literal(p: &str) -> bool {
+    !p.is_empty() && !p.contains(['$', '`', '*', '?', '[', '~'])
 }
 
 fn push_once(v: &mut Vec<String>, s: String) {
@@ -163,7 +262,9 @@ pub fn relativize(repo: &Path, canon: &Path, raw: &str) -> Option<String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Changed {
     pub path: String,
-    /// Changed against HEAD, staged or not; `false` for an untracked file.
+    /// In HEAD and changed against it, staged or not; `false` for an
+    /// untracked file and for one only staged as new, since `git add -A`
+    /// stages every scratch file too ([`added_paths`] names a real claim).
     pub tracked: bool,
 }
 
@@ -182,7 +283,7 @@ pub fn changed(repo: &Path) -> Result<Vec<Changed>> {
             continue;
         }
         let (xy, path) = (&entry[..2], &entry[3..]);
-        let tracked = xy != "??";
+        let tracked = xy != "??" && !xy.starts_with('A');
         if xy == "!!" {
             continue;
         }
@@ -223,6 +324,27 @@ pub fn untracked(repo: &Path) -> Result<Vec<String>> {
 /// then not what HEAD holds.
 pub fn dirty_outside_docs(repo: &Path) -> Result<bool> {
     Ok(changed(repo)?.iter().any(|c| !c.path.starts_with("docs/")))
+}
+
+/// The blob id `git hash-object` gives each of `paths` as it stands in the
+/// tree, "" for one that is not there (a deletion).
+pub fn blobs(repo: &Path, paths: &[String]) -> Result<BTreeMap<String, String>> {
+    let mut out: BTreeMap<String, String> =
+        paths.iter().map(|p| (p.clone(), String::new())).collect();
+    let present: Vec<&str> = paths
+        .iter()
+        .filter(|p| repo.join(p).is_file())
+        .map(String::as_str)
+        .collect();
+    if present.is_empty() {
+        return Ok(out);
+    }
+    let mut args = vec!["hash-object", "--"];
+    args.extend(&present);
+    for (p, id) in present.iter().zip(git(repo, &args)?.lines()) {
+        out.insert(p.to_string(), id.trim().to_string());
+    }
+    Ok(out)
 }
 
 /// What a commit landed.
@@ -381,14 +503,44 @@ pub enum Fold {
 }
 
 /// `docs log merge <feature>` at a checkpoint (FR-5), before the checkpoint
-/// worker reads `agent-log.md`. A missing `agent-log.md` is created with its
-/// header first — the tool merges into an existing file only. The render
-/// and the commit are the checkpoint's, once the worker has written `CP-n`.
+/// worker reads `agent-log.md`. The render and the commit are the
+/// checkpoint's, once the worker has written `CP-n`.
 pub fn fold_logs(docs: &Docs, repo: &Path, board: &Status, feature: &str) -> Result<Fold> {
+    let names = ready_fragments(repo, board, feature)?;
+    if names.is_empty() {
+        return Ok(Fold::Nothing);
+    }
+    if let Some(detail) = refusal(docs.log_merge(feature)?) {
+        return Ok(Fold::Refused { detail });
+    }
+    Ok(Fold::Folded {
+        fragments: names.iter().map(|n| format!("{}/{n}", board.dir)).collect(),
+    })
+}
+
+/// What `docs log merge --dry` refuses, if anything: the checkpoint asks
+/// before it pays for the gate. Run B of the FR-11 A/B (2026-10-11) learned
+/// of a refusal after a 7-minute green, and paid for the gate again once
+/// the owner answered.
+pub fn check_logs(
+    docs: &Docs,
+    repo: &Path,
+    board: &Status,
+    feature: &str,
+) -> Result<Option<String>> {
+    if ready_fragments(repo, board, feature)?.is_empty() {
+        return Ok(None);
+    }
+    Ok(refusal(docs.log_merge_dry(feature)?))
+}
+
+/// The feature's fragments, made fit to merge: `agent-log.md` exists (the
+/// tool merges into an existing file only) and no fragment has a title.
+fn ready_fragments(repo: &Path, board: &Status, feature: &str) -> Result<Vec<String>> {
     let dir = repo.join(&board.dir);
     let names = fragments_in(&dir)?;
     if names.is_empty() {
-        return Ok(Fold::Nothing);
+        return Ok(names);
     }
     let log = dir.join("agent-log.md");
     // A second check: `docs new` creates agent-log.md now (AD-503), but a
@@ -397,20 +549,57 @@ pub fn fold_logs(docs: &Docs, repo: &Path, board: &Status, feature: &str) -> Res
         fs::write(&log, format!("# Agent log — PRD-{feature}\n"))
             .map_err(io(format!("write {}", log.display())))?;
     }
-    let out = docs.log_merge(feature)?;
-    if out.code != 0 {
-        let detail = if out.stderr.trim().is_empty() {
-            out.stdout
-        } else {
-            out.stderr
-        };
-        return Ok(Fold::Refused {
-            detail: detail.trim().to_string(),
-        });
+    for name in &names {
+        let path = dir.join(name);
+        let text = fs::read_to_string(&path).map_err(io(format!("read {}", path.display())))?;
+        if let Some(body) = untitled(&text) {
+            fs::write(&path, body).map_err(io(format!("write {}", path.display())))?;
+        }
     }
-    Ok(Fold::Folded {
-        fragments: names.iter().map(|n| format!("{}/{n}", board.dir)).collect(),
-    })
+    Ok(names)
+}
+
+/// A refused merge's message; `None` when it exited 0.
+fn refusal(out: crate::docs::ToolOutput) -> Option<String> {
+    if out.code == 0 {
+        return None;
+    }
+    let detail = if out.stderr.trim().is_empty() {
+        out.stdout
+    } else {
+        out.stderr
+    };
+    Some(detail.trim().to_string())
+}
+
+/// A commit subject scoped to the feature, as `/deliver`'s builders write
+/// theirs: `feat(018): slice-02 Harness`. The A/B of 2026-10-11 found the
+/// driver's bare `feat: {title}` gave no feature and no slice to search by.
+pub fn subject(board: &Status, kind: &str, text: &str) -> String {
+    format!("{kind}({:03}): {text}", board.number)
+}
+
+/// A fragment without the title (`# ...`) lines above its first `## `
+/// heading, or `None` when there is none to drop. `docs log merge` refuses
+/// any line up there, and run B of the FR-11 A/B (2026-10-11) parked on a
+/// `# Log fragment — slice 03` the merge would have thrown away anyway.
+/// Prose up there is left alone: losing it is the merge's call to refuse.
+fn untitled(text: &str) -> Option<String> {
+    let mut titled = false;
+    let mut offset = 0;
+    for line in text.split_inclusive('\n') {
+        let bare = line.trim_end();
+        if bare.starts_with("## ") {
+            break;
+        }
+        if bare.starts_with("# ") {
+            titled = true;
+        } else if !bare.trim().is_empty() {
+            return None;
+        }
+        offset += line.len();
+    }
+    titled.then(|| text[offset..].to_string())
 }
 
 /// `log-slice-NN.md` and `log-fix-N.md` in the feature folder, by name.
@@ -559,6 +748,38 @@ mod tests {
             ["docs/features/001-fixture/prd.md", "docs/index.md"]
         );
         assert_eq!(spec.outside, ["/tmp/elsewhere.txt"]);
+    }
+
+    #[test]
+    fn a_git_add_claims_only_the_paths_it_spells_out() {
+        let added = |cmds: &[&str]| {
+            let mut summary = Summary::dead();
+            summary.tool_uses = cmds
+                .iter()
+                .map(|c| ToolUse {
+                    input: json!({ "command": c }),
+                    ..tool("Bash", "")
+                })
+                .collect();
+            added_paths(&summary)
+        };
+        assert_eq!(added(&["git add src/a.rs gen"]), ["src/a.rs", "gen"]);
+        assert_eq!(added(&["git add -f -- -odd.rs"]), ["-odd.rs"]);
+        assert_eq!(added(&["make gen && git add gen/out.rs"]), ["gen/out.rs"]);
+        for none in [
+            "git add -A",
+            "git add .",
+            "git add ./",
+            "git add --all",
+            "git add src/*.rs",
+            "git add :/",
+            "git add -n src/a.rs",
+            "git -C sub add a.rs",
+            "cd sub && git add a.rs",
+            "git status",
+        ] {
+            assert!(added(&[none]).is_empty(), "{none}");
+        }
     }
 
     #[test]
@@ -718,5 +939,17 @@ mod tests {
             git(r, &["status", "--porcelain"]).unwrap(),
             "A  owner.txt\n"
         );
+    }
+
+    #[test]
+    fn a_title_above_the_first_section_is_dropped_and_prose_is_not() {
+        let titled = "# Log fragment — slice 03\n\n## Decisions\n\n### AD-301 — q\n";
+        assert_eq!(
+            untitled(titled).as_deref(),
+            Some("## Decisions\n\n### AD-301 — q\n")
+        );
+        assert_eq!(untitled("## Decisions\n\n- a\n"), None);
+        assert_eq!(untitled("# Title\nSome prose.\n\n## Decisions\n"), None);
+        assert_eq!(untitled("# Title only\n").as_deref(), Some(""));
     }
 }

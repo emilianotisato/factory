@@ -13,7 +13,7 @@ Do:
   2. the PR body, at the path named under `# PR body`, in the shape given there. It is outside the repo: write it with the Write tool at that absolute path.
   3. `reviewed: {date}` in `{feature dir}/prd.md`'s frontmatter — the one line of `prd.md` the review is allowed to touch.
 - a decision the skill does not settle → an AD entry under `## Decisions` in `{feature dir}/agent-log.md`, shape `### AD-n — {question} · polish · {date}` with `**Chose:**`, `**Over:**`, `**Because:**`, `**Undo:**`, `**Review:** decide | fyi | no`. **Your AD numbers start at AD-{seed}** and count up.
-- do not commit: the driver commits what you wrote as `polish: review fixes` when you return, then ships, pushes and opens the draft PR itself. Never run `docs ship`, `git push` or `gh`; never merge or mark a PR ready.
+- do not commit: the driver commits what you wrote as `fix({NNN}): polish review fixes` when you return, then ships, pushes and opens the draft PR itself. A file you made with a command is yours only if you `git add` it by name or by its folder. Never run `docs ship`, `git push` or `gh`; never merge or mark a PR ready.
 
 Blocked → Autonomy § Blocker protocol steps 1-2, writing the `BLOCK-n` entry (lowest free number) under `## Blockers` in `{feature dir}/agent-log.md`, shape `### BLOCK-n — {what} · polish · open` with `**Happened:**`, `**Options:**`, `**Recommended:**`, and return. Do not push and do not notify.
 

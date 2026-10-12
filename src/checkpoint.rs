@@ -4,11 +4,11 @@
 //! `runs/<id>/gates/<n>-<attempt>.log`, a `gates` row per run (source
 //! `driver`) or per cache hit (`cached = 1`, `minutes = 0`). Red spawns a
 //! fix worker with the failing output, commits its files by pathspec as
-//! `fix: gate red at checkpoint n` and reruns; three reds in a row block the
+//! `fix(NNN): gate red at checkpoint n` and reruns; three reds in a row block the
 //! run on a `BLOCK-n` in `agent-log.md` (phase `checkpoint`). Green folds
 //! the slice logs into `agent-log.md` (FR-5), then a checkpoint worker reads
 //! the transcript, drives the covered Prove rows and writes `CP-n`; the
-//! driver renders and commits `docs: checkpoint n`. A worker that dies gets
+//! driver renders and commits `docs(NNN): checkpoint n`. A worker that dies gets
 //! one more spawn, then the block; a worker that blocks parks the run.
 //!
 //! Every step is re-entrant from the board and the run dir alone: a resume
@@ -125,6 +125,16 @@ pub fn run(
             if resumed { "resumed" } else { "started" }
         ),
     )?;
+
+    // A merge that will refuse blocks now, not after the gate is paid for.
+    if let Some(detail) = commit::check_logs(docs, &repo, board, &feature)? {
+        let (id, title) = block_on_refusal(run, &feature_dir, &feature, detail, out)?;
+        return Ok(Outcome::Parked {
+            what: park_line(&id, &title),
+            id,
+            fresh: true,
+        });
+    }
 
     // The gate, until green or three reds. A cached red is reused only
     // between fix workers of this entry: an owner's answer or a resume runs
@@ -486,7 +496,8 @@ fn gate_once(
     let key = gatecache::tree_key(repo, &index, gate)?;
     let mut cache = GateCache::load(run.dir())?;
     let at = clock::now_rfc3339();
-    if let Some(hit) = cache.get(&key).cloned().filter(|h| !h.red || trust_red) {
+    let fits = |h: &Entry| (!h.red || trust_red) && h.checkpoint.is_none_or(|c| c == n);
+    if let Some(hit) = cache.get(&key).filter(|h| fits(h)).cloned() {
         run.db().insert_gate(&GateInsert {
             run_id: run.id().as_str(),
             source: "driver",
@@ -565,18 +576,20 @@ fn gate_once(
         attempt: Some(attempt),
     })?;
     // A green run on a tree with changes outside `docs/` tested what HEAD
-    // does not hold: it is not remembered.
-    if red || !commit::dirty_outside_docs(repo)? {
-        cache.put(
-            &key,
-            Entry {
-                red,
-                minutes,
-                at: at.clone(),
-                log: rel.clone(),
-            },
-        )?;
-    }
+    // does not hold: it holds for this checkpoint only (Xb7), where a rerun
+    // would test the same tree. Run B of the FR-11 A/B (2026-10-11) reran a
+    // 7-minute green after the owner's answer for want of it.
+    let dirty = !red && commit::dirty_outside_docs(repo)?;
+    cache.put(
+        &key,
+        Entry {
+            red,
+            minutes,
+            at: at.clone(),
+            log: rel.clone(),
+            checkpoint: dirty.then_some(n),
+        },
+    )?;
     run.emit(EventKind::GateRun {
         n,
         attempt,
@@ -700,7 +713,7 @@ fn fix_once(
 /// A fix worker's commit: the paths its stream named (less the protected
 /// files) and the tracked files it changed unnamed — nothing else is live at
 /// a checkpoint (AD-20007); its new unnamed files are listed, not committed.
-/// `fix: gate red at checkpoint n`. A worker that changed nothing says so
+/// `fix(NNN): gate red at checkpoint n`. A worker that changed nothing says so
 /// only when `say_nothing`. The scheduler settles a dead driver's fix worker
 /// through here too.
 #[allow(clippy::too_many_arguments)]
@@ -727,11 +740,15 @@ pub fn commit_fix(
         )?;
     }
     let skip: HashSet<String> = spec.paths.iter().chain(&spec.protected).cloned().collect();
-    let found = scheduler::unnamed(run, board, before, &skip, true)?;
+    let found = scheduler::unnamed(run, board, before, &skip, &spec.dirs, true)?;
     note_leftovers(run, n, "fix", &found, out)?;
     let mut paths = spec.paths.clone();
     paths.extend(found.sweep);
-    match commit::commit(&repo, &paths, &format!("fix: gate red at checkpoint {n}"))? {
+    match commit::commit(
+        &repo,
+        &paths,
+        &commit::subject(board, "fix", &format!("gate red at checkpoint {n}")),
+    )? {
         Some(c) => {
             run.db().set_worker_commit(row_id, &c.sha)?;
             say(
@@ -783,6 +800,7 @@ fn note_leftovers(
             n,
             role: role.to_string(),
             files: found.listed.clone(),
+            blobs: found.blobs.clone(),
         })?;
         say(
             out,
@@ -815,10 +833,14 @@ pub fn commit_checkpoint(
     want.extend(spec.paths.iter().cloned());
     let mut files = commit::expand(&repo, &want)?;
     let skip: HashSet<String> = files.iter().chain(&spec.protected).cloned().collect();
-    let found = scheduler::unnamed(run, board, before, &skip, true)?;
+    let found = scheduler::unnamed(run, board, before, &skip, &spec.dirs, true)?;
     note_leftovers(run, n, "checkpoint", &found, out)?;
     files.extend(found.sweep);
-    match commit::commit(&repo, &files, &format!("docs: checkpoint {n}"))? {
+    match commit::commit(
+        &repo,
+        &files,
+        &commit::subject(board, "docs", &format!("checkpoint {n}")),
+    )? {
         Some(c) => {
             run.db().set_worker_commit(row_id, &c.sha)?;
             say(
@@ -868,8 +890,8 @@ fn block_on_refusal(
     let title = answers::block_title(&format!("{MERGE_REFUSED}: {question}"));
     let entry = format!(
         "### {id} — {title} · checkpoint · open\n\n\
-         **Happened:** the gate is green and the lanes are drained; \
-         `docs log merge {feature}` merged nothing:\n{quoted}\
+         **Happened:** the lanes are drained; `docs log merge {feature}` \
+         merged nothing:\n{quoted}\
          **Options:**\n\
          1. renumber the clashing entry in the later fragment into its slice's range (`NN01`, `NN02`, …)\n\
          2. drop the later entry if it only repeats the earlier one\n\
