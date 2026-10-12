@@ -44,10 +44,13 @@ const KEYS: [&str; 23] = [
     "pack_doc_read_chars",
 ];
 
-const EXTRA_KEYS: [&str; 5] = [
+const EXTRA_KEYS: [&str; 8] = [
     "worker_gate_runs",
     "worker_gate_red",
     "cockpit_peak_context",
+    "cockpit_out_tokens",
+    "cockpit_cache_read_tokens",
+    "cockpit_start_context",
     "lookup_share_chars",
     "followup_reads_by_role",
 ];
@@ -278,8 +281,8 @@ fn report_prints_the_retro_keys_then_the_run_keys() {
     let lines: Vec<&str> = text.lines().collect();
     let keys: Vec<&str> = lines.iter().map(|l| key(l)).collect();
     assert_eq!(&keys[..23], &KEYS);
-    assert_eq!(&keys[23..28], &EXTRA_KEYS);
-    assert_eq!(&keys[28..], &THRESHOLDS);
+    assert_eq!(&keys[23..31], &EXTRA_KEYS);
+    assert_eq!(&keys[31..], &THRESHOLDS);
     assert_eq!(lines[0], "score: ");
     assert_eq!(value(&lines, "slices"), "3");
     assert_eq!(value(&lines, "checkpoints"), "1");
@@ -418,7 +421,7 @@ fn report_json_round_trips_and_cockpit_measures_the_transcript() {
     assert!(v.get("per_worker").is_none(), "only with --per-worker");
 
     // The fixture transcript, pinned against `measure.py --retro`
-    // (src/measure.rs): out 2524, cache read 181841, peak 58351; with input
+    // (src/measure.rs): out 2524, cache read 181841, start 45507, peak 58351; with input
     // 98 and cache write 32926 the weighted figure is 63828. Two paths add.
     let cockpit = cockpit_fixture();
     let cp = cockpit.to_str().unwrap();
@@ -433,10 +436,15 @@ fn report_json_round_trips_and_cockpit_measures_the_transcript() {
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(value(&lines, "cockpit_tokens"), "63828");
     assert_eq!(value(&lines, "cockpit_peak_context"), "58351");
+    assert_eq!(value(&lines, "cockpit_out_tokens"), "2524");
+    assert_eq!(value(&lines, "cockpit_cache_read_tokens"), "181841");
+    assert_eq!(value(&lines, "cockpit_start_context"), "45507");
     let out = factory(&fx, &["report", &id, "--json", "--cockpit", cp, cp]);
     let v: Value = serde_json::from_str(&stdout(&out)).unwrap();
     assert_eq!(v["cockpit_tokens"], 63828 * 2);
     assert_eq!(v["cockpit_peak_context"], 58351);
+    assert_eq!(v["cockpit_out_tokens"], 2524 * 2);
+    assert_eq!(v["cockpit_cache_read_tokens"], 181841 * 2);
 
     // An unknown run or a missing transcript is an error, not a zero report.
     let out = factory(&fx, &["report", "001-nope"]);

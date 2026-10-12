@@ -74,11 +74,16 @@ pub const KEYS: [&str; 23] = [
 ];
 
 /// The keys after [`KEYS`]: what the slices' task texts name beyond §10's
-/// list (AD-802; `lookup_share_chars`, slice 13).
-pub const EXTRA_KEYS: [&str; 5] = [
+/// list (AD-802; `lookup_share_chars`, slice 13). The three `cockpit_*`
+/// figures after `cockpit_peak_context` let the FR-8 cross-check compare all
+/// four of the QA guide's figures with `measure.py`, not just the peak.
+pub const EXTRA_KEYS: [&str; 8] = [
     "worker_gate_runs",
     "worker_gate_red",
     "cockpit_peak_context",
+    "cockpit_out_tokens",
+    "cockpit_cache_read_tokens",
+    "cockpit_start_context",
     "lookup_share_chars",
     "followup_reads_by_role",
 ];
@@ -351,6 +356,9 @@ pub struct Report {
     pub worker_gate_runs: u64,
     pub worker_gate_red: u64,
     pub cockpit_peak_context: Option<u64>,
+    pub cockpit_out_tokens: Option<u64>,
+    pub cockpit_cache_read_tokens: Option<u64>,
+    pub cockpit_start_context: Option<u64>,
     /// Lookup bytes among all result bytes: slice 08's `ctx_share`.
     pub lookup_share_chars: f64,
     /// Roles with no `ctx` call are left out.
@@ -455,6 +463,9 @@ pub fn compute(db: &Db, run_id: &str, cockpit: Option<&Measure>) -> Result<Repor
         worker_gate_runs: worker_gates.len() as u64,
         worker_gate_red: worker_gates.iter().filter(|g| g.red).count() as u64,
         cockpit_peak_context: cockpit.map(|m| m.peak_context),
+        cockpit_out_tokens: cockpit.map(|m| m.out_tokens),
+        cockpit_cache_read_tokens: cockpit.map(|m| m.cache_read_tokens),
+        cockpit_start_context: cockpit.map(|m| m.start_context),
         lookup_share_chars: ratio(lookup_chars, all_chars),
         followup_reads_by_role: followups_by_role(&workers, &calls),
         per_worker: None,
@@ -493,6 +504,12 @@ impl Report {
             format!("worker_gate_runs: {}", self.worker_gate_runs),
             format!("worker_gate_red: {}", self.worker_gate_red),
             format!("cockpit_peak_context: {}", opt(self.cockpit_peak_context)),
+            format!("cockpit_out_tokens: {}", opt(self.cockpit_out_tokens)),
+            format!(
+                "cockpit_cache_read_tokens: {}",
+                opt(self.cockpit_cache_read_tokens)
+            ),
+            format!("cockpit_start_context: {}", opt(self.cockpit_start_context)),
             format!("lookup_share_chars: {:.3}", self.lookup_share_chars),
             format!(
                 "followup_reads_by_role: {}",
