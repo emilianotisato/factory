@@ -210,10 +210,11 @@ fn assert_slice_commit(fx: &Fixture, dir: &Path, n: u8, title: &str, code: &[&st
 fn each_done_slice_is_committed_by_pathspec_and_the_logs_merge_at_the_end() {
     let fx = Fixture::with_index("commits-chain", &[("checkpoint_every", "10")]);
     fx.chain();
-    // Slice 01 also leaves a file no tool call names (a heredoc, a generator):
-    // it is listed in the fragment and never committed (FR-5).
+    // Slice 01 also leaves a file no tool call names (a generator, a script):
+    // it is listed in the fragment and never committed (FR-5). The file its
+    // `Bash` heredoc typed out is named like a `Write`, and committed.
     fx.write_plan(&[
-        json!({"outcome": "done", "touch": ["src/lib.txt"], "stray": ["notes.txt"]}),
+        json!({"outcome": "done", "touch": ["src/lib.txt"], "stray": ["notes.txt"], "heredoc": ["src/gen/new.rs"]}),
         json!({"outcome": "done"}),
         json!({"outcome": "done"}),
         json!({"outcome": "checkpoint"}),
@@ -234,7 +235,7 @@ fn each_done_slice_is_committed_by_pathspec_and_the_logs_merge_at_the_end() {
             "docs: ship PRD-001",
         ]
     );
-    assert_slice_commit(&fx, &dir, 1, "A", &["src/lib.txt"]);
+    assert_slice_commit(&fx, &dir, 1, "A", &["src/gen/new.rs", "src/lib.txt"]);
     assert_slice_commit(&fx, &dir, 2, "B", &["src/lib.txt"]);
     assert_slice_commit(&fx, &dir, 3, "C", &["src/lib.txt"]);
 
@@ -256,6 +257,8 @@ fn each_done_slice_is_committed_by_pathspec_and_the_logs_merge_at_the_end() {
     assert_eq!(leftovers.len(), 1, "{leftovers:?}");
     assert_eq!(leftovers[0]["slice"], 1);
     assert_eq!(leftovers[0]["files"], json!(["notes.txt"]));
+    let blob = leftovers[0]["blobs"]["notes.txt"].as_str().unwrap();
+    assert_eq!(blob, fx.git(&["hash-object", "notes.txt"]).trim());
     for n in 1..=3 {
         assert!(
             !fx.path().join(fragment(n)).exists(),
@@ -635,6 +638,26 @@ fn a_lone_workers_unnamed_tracked_change_goes_in_its_slice_commit() {
         "{}",
         driver_log(&dir)
     );
+}
+
+#[test]
+fn a_listed_file_committed_since_and_changed_again_goes_in_the_next_commit() {
+    let fx = Fixture::with_index("commits-relisted", &[("checkpoint_every", "10")]);
+    fx.chain();
+    // Run B of 2026-10-11: slice 02 left files, the owner committed them,
+    // and polish's later edits to them went in no commit and on no list.
+    fx.write_plan(&[
+        json!({"outcome": "done", "stray": ["notes.txt"]}),
+        json!({"outcome": "done", "commit": ["notes.txt"]}),
+        json!({"outcome": "done", "stray": ["notes.txt"]}),
+        json!({"outcome": "checkpoint"}),
+    ]);
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "finished", 40);
+
+    assert_eq!(count(&kinds(&dir), "untracked_leftovers"), 1);
+    assert_slice_commit(&fx, &dir, 3, "C", &["notes.txt", "src/lib.txt"]);
+    assert_eq!(fx.git(&["status", "--porcelain"]), "");
 }
 
 #[test]

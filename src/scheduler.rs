@@ -40,7 +40,7 @@
 //! the fix workers, the log merge, the checkpoint worker and the checkpoint
 //! commit — and reads the board again when it is done. The end of the run
 //! is the last checkpoint: `all_done` with nothing unverified finishes.
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -979,7 +979,11 @@ fn commit_slice(
             &format!("slice {slice:02} wrote {path}, outside the repo — left out of the commit"),
         )?;
     }
-    let Unnamed { sweep, listed } = leftovers(run, board, slice, &spec, baseline, live)?;
+    let Unnamed {
+        sweep,
+        listed,
+        blobs,
+    } = leftovers(run, board, slice, &spec, baseline, live)?;
     if !listed.is_empty() {
         let fragment = repo.join(commit::fragment_path(board, slice));
         let body: String = listed.iter().map(|p| format!("- {p}\n")).collect();
@@ -987,6 +991,7 @@ fn commit_slice(
         run.emit(EventKind::UntrackedLeftovers {
             slice,
             files: listed.clone(),
+            blobs,
         })?;
         say(
             out,
@@ -1048,11 +1053,18 @@ pub struct Unnamed {
     /// The rest — new untracked files, tracked changes while another worker
     /// was live, the protected files: listed, left in the tree for the owner.
     pub listed: Vec<String>,
+    /// The blob id of each `listed` file, for its leftovers event.
+    pub blobs: BTreeMap<String, String>,
 }
 
 /// The tree's changes now that were not changed at the worker's spawn
-/// (`baseline`), that `skip` does not hold and that no earlier
-/// `untracked_leftovers` already listed.
+/// (`baseline`), that `skip` does not hold and that no earlier leftovers
+/// event listed with the content they have now. A listed file is listed
+/// once; changed again since, it is judged afresh, swept when alone. Run B
+/// of 2026-10-11 skipped every listed path for good, and polish's edits to
+/// four files that slice 02 had left and the owner had committed since went
+/// in no commit and on no list. An event from a driver that kept no blob
+/// ids skips its file while it is still untracked.
 pub fn unnamed(
     run: &Run,
     board: &Status,
@@ -1062,18 +1074,37 @@ pub fn unnamed(
 ) -> Result<Unnamed> {
     let repo = run.state().repo.clone();
     let protected = commit::protected_files(board);
-    let mut listed_before: HashSet<String> = HashSet::new();
+    // The last listing of each path wins; `None`, a listing with no blob.
+    let mut listed_before: HashMap<String, Option<String>> = HashMap::new();
     for e in run.events()? {
-        if let EventKind::UntrackedLeftovers { files, .. }
-        | EventKind::CheckpointLeftovers { files, .. }
-        | EventKind::CloseoutLeftovers { files, .. } = e.kind
+        if let EventKind::UntrackedLeftovers { files, blobs, .. }
+        | EventKind::CheckpointLeftovers { files, blobs, .. }
+        | EventKind::CloseoutLeftovers { files, blobs, .. } = e.kind
         {
-            listed_before.extend(files);
+            for f in files {
+                let blob = blobs.get(&f).cloned();
+                listed_before.insert(f, blob);
+            }
         }
     }
+    let changed: Vec<commit::Changed> = commit::changed(&repo)?
+        .into_iter()
+        .filter(|c| !baseline.contains(&c.path) && !skip.contains(&c.path))
+        .collect();
+    let relisted: Vec<String> = changed
+        .iter()
+        .filter(|c| listed_before.contains_key(&c.path))
+        .map(|c| c.path.clone())
+        .collect();
+    let now = commit::blobs(&repo, &relisted)?;
     let mut found = Unnamed::default();
-    for c in commit::changed(&repo)? {
-        if baseline.contains(&c.path) || skip.contains(&c.path) || listed_before.contains(&c.path) {
+    for c in changed {
+        let same = match listed_before.get(&c.path) {
+            None => false,
+            Some(Some(blob)) => now.get(&c.path) == Some(blob),
+            Some(None) => !c.tracked,
+        };
+        if same {
             continue;
         }
         if c.tracked && alone && !protected.contains(&c.path) {
@@ -1082,6 +1113,7 @@ pub fn unnamed(
             found.listed.push(c.path);
         }
     }
+    found.blobs = commit::blobs(&repo, &found.listed)?;
     Ok(found)
 }
 
@@ -1097,7 +1129,6 @@ fn leftovers(
     live: &HashSet<String>,
 ) -> Result<Unnamed> {
     let repo = run.state().repo.clone();
-    let canon = repo.canonicalize().unwrap_or_else(|_| repo.clone());
     let mut skip: HashSet<String> = HashSet::new();
     skip.extend(spec.paths.iter().cloned());
     skip.extend(spec.protected.iter().cloned());
@@ -1109,9 +1140,7 @@ fn leftovers(
     }
     for sid in live {
         let other = worker::summary_from_disk(run.dir(), sid);
-        skip.extend(
-            commit::written_paths(&other).filter_map(|raw| commit::relativize(&repo, &canon, raw)),
-        );
+        skip.extend(commit::Pathspec::from_stream(&other, board, &repo).paths);
     }
     unnamed(run, board, baseline, &skip, live.is_empty())
 }

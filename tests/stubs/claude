@@ -39,6 +39,10 @@
 // `gh_config_dir`, so a test can see what the driver scrubs from a worker.
 // AD-10001 records `git_config`: the worker's `GIT_CONFIG_COUNT`,
 // `GIT_CONFIG_KEY_<i>` and `GIT_CONFIG_VALUE_<i>`, values included.
+// The A/B fixes add, on a `done` build, `heredoc: [...]` (files written by a
+// `Bash cat > f <<'EOF'` call the stream carries, which the driver names) and
+// `commit: [...]` (files the worker commits itself before anything else, as
+// an owner committing a listed leftover would).
 const fs = require('node:fs')
 const path = require('node:path')
 const crypto = require('node:crypto')
@@ -414,7 +418,17 @@ for (const f of touched) {
   fs.mkdirSync(path.dirname(f), { recursive: true })
   fs.appendFileSync(f, `touched by spawn ${n}\n`)
 }
+for (const f of step.commit ?? []) {
+  const git = (...args) => require('node:child_process').execFileSync('git', args, { cwd })
+  git('add', '--', f)
+  git('commit', '-q', '-m', `chore: commit ${f}`, '--', f)
+}
 writeStray(step)
+for (const f of step.heredoc ?? []) {
+  const abs = path.resolve(cwd, f)
+  fs.mkdirSync(path.dirname(abs), { recursive: true })
+  fs.writeFileSync(abs, `heredoc from spawn ${n}\n`)
+}
 // `step.stray`: files written with no tool call naming them. The polish and
 // fix workers take it too (AD-50002).
 function writeStray(step) {
@@ -439,6 +453,9 @@ if (step.ctx) {
   tool('Bash', { command: 'factory ctx outline src', description: 'ctx outline' }, { text: '== src/other.rs ==\n1  fn  fn other() {\n' })
 }
 for (const f of touched) tool('Write', { file_path: f, content: `touched by spawn ${n}\n` })
+for (const f of step.heredoc ?? []) {
+  tool('Bash', { command: `mkdir -p ${path.dirname(f)} && cat > ${f} <<'EOF'\nheredoc from spawn ${n}\nEOF`, description: 'write' })
+}
 tool('Write', { file_path: fragment, content: fs.readFileSync(fragment, 'utf8') })
 innerRun(step)
 tool('Edit', { file_path: slicePath, old_string: 'status: building', new_string: 'status: done' })

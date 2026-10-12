@@ -3,14 +3,15 @@
 //! every `NotebookEdit` call in the worker's stream (§4 FR-2: the stream is the record) plus the slice file
 //! and its log fragment; the message is `feat: <slice title>`, no body, no
 //! trailers, the repo's own `user.*`. Never `git add -A`: another lane may be
-//! mid-write in the same tree, and only named paths move. What the worker
-//! wrote without naming it (a `Bash` heredoc, a generator) is listed in the
+//! mid-write in the same tree, and only named paths move. A `Bash` call that
+//! types a file out in full (`cat > f <<EOF`) names it too ([`heredoc_paths`]).
+//! What the worker wrote without naming it (a generator, a script) is listed in the
 //! fragment under `## Untracked leftovers` and stays in the tree for the
 //! owner. At a checkpoint (FR-4) the same path commits a fix worker's files
 //! (`fix: gate red at checkpoint n`, [`Pathspec::from_stream`]) and, after
 //! [`fold_logs`] merged the fragments into `agent-log.md`, the feature folder
 //! and the checkpoint worker's files as `docs: checkpoint n`.
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output};
@@ -18,6 +19,7 @@ use std::sync::Mutex;
 
 use crate::docs::{Docs, Status};
 use crate::error::io;
+use crate::shell;
 use crate::stream::Summary;
 use crate::{Error, Result};
 
@@ -63,20 +65,7 @@ pub struct Pathspec {
 impl Pathspec {
     /// The slice's pathspec from its worker's stream and the board.
     pub fn from(summary: &Summary, board: &Status, slice: u32, repo: &Path) -> Pathspec {
-        let canon = repo.canonicalize().unwrap_or_else(|_| repo.to_path_buf());
-        let protected = protected_files(board);
-        let mut spec = Pathspec::default();
-        for raw in written_paths(summary) {
-            let Some(rel) = relativize(repo, &canon, raw) else {
-                push_once(&mut spec.outside, raw.to_string());
-                continue;
-            };
-            if protected.contains(&rel) {
-                push_once(&mut spec.protected, rel);
-            } else {
-                push_once(&mut spec.paths, rel);
-            }
-        }
+        let mut spec = Pathspec::from_stream(summary, board, repo);
         if let Some(p) = slice_path(board, slice) {
             push_once(&mut spec.paths, p);
         }
@@ -103,6 +92,15 @@ impl Pathspec {
                 push_once(&mut spec.paths, rel);
             }
         }
+        // A heredoc into /dev/null or /tmp is not a file of the repo's, nor
+        // worth reporting as one written outside it.
+        for raw in heredoc_paths(summary) {
+            match relativize(repo, &canon, &raw) {
+                Some(rel) if protected.contains(&rel) => push_once(&mut spec.protected, rel),
+                Some(rel) => push_once(&mut spec.paths, rel),
+                None => {}
+            }
+        }
         spec
     }
 }
@@ -121,6 +119,51 @@ pub fn written_paths(summary: &Summary) -> impl Iterator<Item = &str> {
             };
             t.input.get(key).and_then(|v| v.as_str())
         })
+}
+
+/// The files the stream's `Bash` calls typed out in full: the targets of
+/// `cat > f <<EOF` and `tee f <<EOF`, fed by a here-document or here-string.
+/// The worker wrote those as surely as with `Write`; left unnamed, a
+/// builder's new source files stayed out of its commit (the A/B run of
+/// 2026-10-11 lost eleven that way). A call with a `cd` or `pushd` anywhere,
+/// or a target spelled by an expansion or a glob, names nothing: where it
+/// landed cannot be told. A relative target is read from the repo root,
+/// where workers start; one that landed elsewhere names a path that does not
+/// exist, which [`commit`] drops.
+pub fn heredoc_paths(summary: &Summary) -> Vec<String> {
+    let mut out = Vec::new();
+    for t in summary.tool_uses.iter().filter(|t| t.name == "Bash") {
+        let Some(cmd) = t.input.get("command").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let sc = shell::script(cmd);
+        let program = |c: &shell::Simple| c.words.first().map(|w| shell::program(w).to_string());
+        if sc.unbalanced
+            || sc
+                .commands
+                .iter()
+                .any(|c| matches!(program(c).as_deref(), Some("cd" | "pushd")))
+        {
+            continue;
+        }
+        for c in sc.commands.iter().filter(|c| !c.stdin.is_empty()) {
+            let targets: Vec<&String> = match program(c).as_deref() {
+                Some("cat") if c.words[1..].iter().all(|a| a == "-") => c.writes.iter().collect(),
+                Some("tee") => c.words[1..]
+                    .iter()
+                    .filter(|a| !a.starts_with('-'))
+                    .chain(&c.writes)
+                    .collect(),
+                _ => continue,
+            };
+            for p in targets {
+                if !p.is_empty() && !p.contains(['$', '`', '*', '?', '[', '~']) {
+                    push_once(&mut out, p.clone());
+                }
+            }
+        }
+    }
+    out
 }
 
 fn push_once(v: &mut Vec<String>, s: String) {
@@ -223,6 +266,27 @@ pub fn untracked(repo: &Path) -> Result<Vec<String>> {
 /// then not what HEAD holds.
 pub fn dirty_outside_docs(repo: &Path) -> Result<bool> {
     Ok(changed(repo)?.iter().any(|c| !c.path.starts_with("docs/")))
+}
+
+/// The blob id `git hash-object` gives each of `paths` as it stands in the
+/// tree, "" for one that is not there (a deletion).
+pub fn blobs(repo: &Path, paths: &[String]) -> Result<BTreeMap<String, String>> {
+    let mut out: BTreeMap<String, String> =
+        paths.iter().map(|p| (p.clone(), String::new())).collect();
+    let present: Vec<&str> = paths
+        .iter()
+        .filter(|p| repo.join(p).is_file())
+        .map(String::as_str)
+        .collect();
+    if present.is_empty() {
+        return Ok(out);
+    }
+    let mut args = vec!["hash-object", "--"];
+    args.extend(&present);
+    for (p, id) in present.iter().zip(git(repo, &args)?.lines()) {
+        out.insert(p.to_string(), id.trim().to_string());
+    }
+    Ok(out)
 }
 
 /// What a commit landed.

@@ -783,6 +783,7 @@ fn note_leftovers(
             n,
             role: role.to_string(),
             files: found.listed.clone(),
+            blobs: found.blobs.clone(),
         })?;
         say(
             out,

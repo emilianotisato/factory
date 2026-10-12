@@ -1843,6 +1843,7 @@ fn note_leftovers(
         run.emit(EventKind::CloseoutLeftovers {
             role: role.to_string(),
             files: found.listed.clone(),
+            blobs: found.blobs.clone(),
         })?;
         say(
             out,
