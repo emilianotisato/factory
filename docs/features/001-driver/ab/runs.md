@@ -35,14 +35,16 @@ Answered by the owner 2026-10-11 at 16:04, before seeing any token or cost numbe
 
 | # | question | run A | run B |
 |---|---|---|---|
-| 1 | Does the result do what the PRD asked? | yes | |
-| 2 | Merge after normal review, at most small fixes? | yes | |
-| 3 | Decisions you would overturn | 2–3 | |
-| 4 | Code quality against the project's standard (1–5) | 5 | |
-| 5 | Tests prove the FRs, or only pass? | prove | |
-| 6 | Built but not asked for | none | |
-| 7 | Asked for but missing | none | |
-| 8 | Overall | ship after minor fixes | |
+| 1 | Does the result do what the PRD asked? | yes | yes |
+| 2 | Merge after normal review, at most small fixes? | yes | yes |
+| 3 | Decisions you would overturn | 2–3 | 0 |
+| 4 | Code quality against the project's standard (1–5) | 5 | 5 |
+| 5 | Tests prove the FRs, or only pass? | prove | prove |
+| 6 | Built but not asked for | none | none |
+| 7 | Asked for but missing | none | none |
+| 8 | Overall | ship after minor fixes | ship as is |
+
+Run B answered by the owner 2026-10-11 at 19:31, through two question rounds, before seeing any token or cost number for run B. The cockpit's decision review had come first: 8 kept, 0 changed (`806992c`).
 
 Run B passes the questionnaire if it scores yes on 1 and 2, lists nothing on 6 and 7, scores at least 4 on question 4, and is "ship after fixes" or better on 8.
 
@@ -97,3 +99,6 @@ Gate cost of the format slip: two extra full-gate runs, about 14 minutes of wall
 Factory finding, major: the leftover rule turns one missed commit into a permanent blind spot. Every later worker's changes to those paths are dropped, with no record.
 
 **Run B finished at 19:14 (3h 08m), CI green on the first run (7m53s), PR #25 still a draft.** That green covers the branch without the four polish files. The cockpit found the gap on its own after `run_finished` and, at 19:15, was testing the four files and committing them before the decision review.
+
+
+**Run B's questionnaire: pass.** Yes on 1 and 2, nothing on 6 and 7, 5 on question 4, "ship as is" on 8. Run B matches or beats run A on every question: 0 decisions to overturn against 2–3, and "ship as is" against "ship after minor fixes". One caveat stays with the grade: the shipped branch is what the cockpit's three repair commits made it (`37c30c0`, `6d0f223`, `615fda5`), not what the driver committed alone.
