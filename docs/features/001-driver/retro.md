@@ -156,8 +156,8 @@ All fixes are on `fix/001-ab-findings`: 268 tests before the claim change, 272 a
 ### Next
 
 - **arca-api round:** the repo is `~/Projects/Prokey/arca-api` (`~/Projects/ICG/arca-api` is a copy with no git). Branch from `main`, since its PR #63 is open. It has no draft PRD: the owner writes PRD-023 with `/prd` in a fresh arca-api session, then runs A (`/deliver`) and B (`/factory-deliver`). Run B uses the binary from `fix/001-ab-findings`, so the round also tests these fixes on a real project.
-- **Per-role split, decided 2026-10-12, not built yet.** Build it on `fix/001-ab-findings` before arca-api: `factory report` shows `followup_reads` for builders and polish separately. Builders made 2 follow-ups on 7 `ctx` calls (29%), the polish worker 5 on 14; each was a 25–80 line read of a neighbouring method or a callee. Also seen: the polish worker ran `factory ctx --help` twice.
-- **Branches (pushed 2026-10-12):** `fix/001-ab-findings` holds the six fixes above (`ea6866f`…`c911674`), gate green at 272 tests, and is the build installed at `~/.cargo/bin/factory`. Its PR is #3, waiting on CI; the merge is the owner's. `qa/001-ab` is pushed as a backup, with no PR.
+- **Per-role split, decided 2026-10-12, not built yet.** Build it on a fresh branch from `main` before arca-api: `factory report` shows `followup_reads` for builders and polish separately. Builders made 2 follow-ups on 7 `ctx` calls (29%), the polish worker 5 on 14; each was a 25–80 line read of a neighbouring method or a callee. Also seen: the polish worker ran `factory ctx --help` twice.
+- **Branches (pushed 2026-10-12):** `fix/001-ab-findings` holds the six fixes above (`ea6866f`…`c911674`), gate green at 272 tests, Its PR #3 merged into `main` as `81ba7ee` (2026-10-12), and the installed binary is built from that `main`. `qa/001-ab` is pushed as a backup, with no PR.
 - **PR pick for icg-cloud, owner's call (2026-10-12): #24.** Add its badge fix (`secondary` → `warning`), then port B's small conveniences; the merge stays the owner's. #24 won the blind review, and its polish caught the leak #25 still has.
 
 ## FR-7 — Cockpit from the phone
