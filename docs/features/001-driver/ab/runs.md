@@ -102,3 +102,20 @@ Factory finding, major: the leftover rule turns one missed commit into a permane
 
 
 **Run B's questionnaire: pass.** Yes on 1 and 2, nothing on 6 and 7, 5 on question 4, "ship as is" on 8. Run B matches or beats run A on every question: 0 decisions to overturn against 2–3, and "ship as is" against "ship after minor fixes". One caveat stays with the grade: the shipped branch is what the cockpit's three repair commits made it (`37c30c0`, `6d0f223`, `615fda5`), not what the driver committed alone.
+
+### Slice-13 ranged-read check (AD-1304), run B
+
+From the six build-worker streams in `runs/018-20261011-6490/workers/`, mapped by `slice_spawned`:
+
+| builder | slice | first write to its slice file |
+|---|---|---|
+| `85baace8` | 01 | `Edit`, straight from the pack, landed |
+| `19e9f0f6` | 02 | a `python3` heredoc in `Bash`, no `Read` or `Edit` |
+| `82eb969d` | 03 | `Edit` after one ranged `Read`, landed |
+| `45b98923` | 04 | `Edit`, straight from the pack, landed |
+| `78bfbab6` | 05 | a `python3` heredoc in `Bash`, no `Read` or `Edit` |
+| `1e7c80a9` | 06 | a `python3` heredoc in `Bash`, no `Read` or `Edit` |
+
+**Pass on the guide's terms:** no "file has not been read" error and no loop of retried whole reads in any stream. Three of six builders never tried `Read` or `Edit` on the slice file, so the deny was not what pushed them to Bash; nothing in their streams shows a denial. Bash writes are the same habit that left slice 02's code uncommitted.
+
+Where the title line came from: builder 06 read `log-slice-05.md`, which already had `# Log fragment — slice 05`, before writing its own fragment. Builders copy a sibling fragment's shape, so one slip spreads to every later slice.
