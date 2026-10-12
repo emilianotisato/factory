@@ -177,3 +177,20 @@ Run A launched as in the icg round: `claude --model opus --effort high --dangero
 
 - 9 slices, 5 checkpoints (after 02, 04, 06, 08, 09), no BLOCK and no owner question during the build. Draft PR #64 at 16:33, the session reporting 3 h 56 min. CI running at open.
 - CI green first time, 4 of 4 checks (Tests & CRAP the longest, 9m44s). Run A marked the PR ready at 16:45 and opened the owner review: 3 decisions, 17 notes, 6 proposed rubric lines.
+- Review interview: the owner chose "only the 3 decisions" (AD-506, AD-901, AD-10001), all settled by 17:12. The 17 notes and 6 rubric proposals stay open. Run A parked one related gap in `ideas.md` (a padrón hit with no single condición fiscal still shows "Responsable inscripto").
+- QA stack: run A's harness stack had stopped after the build; restarted for the owner's QA (doctor clean, `arca_harness`, ARCA stub).
+
+### Questionnaire, run A
+
+Answered by the owner 2026-10-12 at 17:18, before seeing any token or cost number, after manual QA in `wt-a` against the QA guide.
+
+| # | question | run A | run B |
+|---|---|---|---|
+| 1 | Does the result do what the PRD asked? | yes | |
+| 2 | Merge after normal review, at most small fixes? | yes | |
+| 3 | Decisions you would overturn | 1 | |
+| 4 | Code quality against the project's standard (1–5) | 5 | |
+| 5 | Tests prove the FRs, or only pass? | prove | |
+| 6 | Built but not asked for | none | |
+| 7 | Asked for but missing | none | |
+| 8 | Overall | ship as is | |
