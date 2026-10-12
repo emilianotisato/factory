@@ -723,7 +723,7 @@ fn red_red_green_runs_two_fix_workers_and_three_gates_before_the_cp() {
         FAIL_LINE,
         "# Contract",
         "You are fixing a red gate at checkpoint 1 of PRD-001",
-        "`fix: gate red at checkpoint 1`",
+        "`fix(001): gate red at checkpoint 1`",
         "start at AD-9101",
         "# Autonomy",
         "# Inner loop",

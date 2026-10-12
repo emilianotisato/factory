@@ -11,7 +11,7 @@ Do:
 - Do not run the full gate: the driver reruns it when you return, against the tree you leave.
 - touch nothing the failure does not name. Slice files, log fragments, `prd.md`, `agent-log.md` and `docs/index.md` are off limits; a fix that wants one of them is a block, not an edit.
 - anything the failure did not settle → an AD entry under `## Decisions` in the feature folder's `log-fix-{n}.md`, your own file. Shape: `### AD-n — {question} · checkpoint · {date}` with `**Chose:**`, `**Over:**`, `**Because:**`, `**Undo:**`, `**Review:** decide | fyi | no`. **Your AD numbers start at AD-{seed}** and count up; never touch agent-log.md, and never use a number outside your range.
-- do not commit: the driver commits the files you wrote as `fix: gate red at checkpoint {n}` when you return. Leave the working tree as the commit should be.
+- do not commit: the driver commits the files you wrote as `fix({NNN}): gate red at checkpoint {n}` when you return. Leave the working tree as the commit should be.
 
 Blocked → Autonomy § Blocker protocol steps 1-2, writing the `BLOCK-{seed}` entry into `log-fix-{n}.md` (shape `### BLOCK-n — {what} · checkpoint · open` with `**Happened:**`, `**Options:**`, `**Recommended:**`), and return. Do not push and do not notify.
 
