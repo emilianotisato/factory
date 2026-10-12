@@ -176,3 +176,4 @@ Run A launched as in the icg round: `claude --model opus --effort high --dangero
 ### Run A outcome
 
 - 9 slices, 5 checkpoints (after 02, 04, 06, 08, 09), no BLOCK and no owner question during the build. Draft PR #64 at 16:33, the session reporting 3 h 56 min. CI running at open.
+- CI green first time, 4 of 4 checks (Tests & CRAP the longest, 9m44s). Run A marked the PR ready at 16:45 and opened the owner review: 3 decisions, 17 notes, 6 proposed rubric lines.
