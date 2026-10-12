@@ -138,3 +138,20 @@ Measured 2026-10-11 after the questionnaire: `factory report 018-20261011-6490 -
 - Cockpit context: started at 49,700, peak 101,336.
 
 **FR-8 cross-check: pass on what the report exposes.** `measure.py --retro` on the cockpit session gives `out_tokens` 17,844, `cache_read_tokens` 4,553,507, `start_context` 49,700, `peak_context` 101,336, cache write 74,504. Weighted, that is 619,075 against the report's 619,229 (−0.025%; `measure.py` does not count input tokens). Peak context matches exactly. Gap: `factory report` prints only `cockpit_tokens` and `cockpit_peak_context`, so the cockpit's own output, cache-read and start-context figures cannot be compared one by one as the guide asks.
+
+### Blind PR review, both runs
+
+At the owner's request, after both grades: a workflow of 8 reviewers, one per dimension, read PR #24 and PR #25 side by side. A skeptic then tried to refute each high or medium defect, and a judge wrote the verdict. 29 agents, 2.07M subagent tokens, 10.7 min. The blinding leaked: the workflow harness put the owner's request, with "B > A", into every agent's prompt. The verdict still went the other way.
+
+**Verdict: PR #24 (run A), 32 to 25 over 8 dimensions.** PR #25 won only frontend and UX. Defects in PR #25 that the review confirmed and this log re-checked:
+
+- **Failed-job rows quote the innermost exception's first line, uncapped, with its file path** (`app/Core/Inbox/Sources/FailedJobsSource.php:88-91`). That bypasses the redacting wrappers. Run A's polish caught this (AD-10001, AD-10002), and the owner then wrote the PRD correction. Run B was built from the uncorrected PRD, which said "first line", so it followed its spec. Its polish did not catch the leak.
+- **Two browser tests run B broke**, run 2026-10-11 in `wt-base`. Both pass on run A's head `6dae3d0` and on the base `cde31ac`:
+  - `Fr33TestImportTest` fails at `:144` ("1 is identical to 0"), on a whole-table count after seeding.
+  - `Fr46TokenRenewalTest` errors at `:56` on `mercado_pago_accounts_company_id_unique`: the seeded inbox fixture already gives company 2 an account.
+
+  AD-101's fixture deletes missed both tests. CI runs no browser suite, and both browser checks above covered other files, so neither caught it.
+
+The review also confirmed, without a re-check here: a stuck Mercado Pago order's time resets every 5 minutes in PR #25 (run A fixed it, AD-10003), and about seven extra company queries on every admin page. PR #24's one confirmed defect is the "En espera" badge, `secondary` where the rubric says `warning`.
+
+The owner's grades stand as given. These are code findings the questionnaire did not surface.
