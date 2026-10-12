@@ -251,6 +251,48 @@ fn deliver(
     Ok(())
 }
 
+/// Whether a try that failed later already logged this ask's answer: an
+/// `### AD-n` heading ending in `title`, then its `**Chose:**` line.
+fn preflight_logged(log: &str, title: &str, text: &str) -> bool {
+    let chose = format!("**Chose:** {text}");
+    let mut lines = log.lines();
+    while let Some(l) = lines.next() {
+        if l.starts_with("### AD-") && l.ends_with(title) {
+            return lines
+                .take_while(|l| !l.starts_with('#'))
+                .any(|l| l == chose);
+        }
+    }
+    false
+}
+
+/// The AD number a preflight answer takes: the next one after the highest
+/// below 100. Slicing owns `AD-1`–`AD-99` and is done before preflight; the
+/// build's ranges start at `AD-101`. `None` once 99 is taken. Fenced
+/// lines are skipped, as `docs.mjs` does: the template's example is no entry.
+fn next_preflight_ad(log: &str) -> Option<u32> {
+    let mut fenced = false;
+    let top = log
+        .lines()
+        .filter(|l| {
+            if l.trim_start().starts_with("```") {
+                fenced = !fenced;
+            }
+            !fenced
+        })
+        .filter_map(|l| l.strip_prefix("### AD-"))
+        .filter_map(|r| {
+            r.split(|c: char| !c.is_ascii_digit())
+                .next()?
+                .parse::<u32>()
+                .ok()
+        })
+        .filter(|n| *n < 100)
+        .max()
+        .unwrap_or(0);
+    (top < 99).then_some(top + 1)
+}
+
 fn answer_ask(
     repo: &Path,
     data_dir: &Path,
@@ -309,24 +351,33 @@ fn answer_ask(
     let date = now[..10].to_string();
     let feature = run.state().feature.clone();
     let log = agent_log(repo, &feature)?;
-    // The `DEC` line and `ask_answered` before the answer file: the file is
+    // The AD entry and `ask_answered` before the answer file: the file is
     // what the driver starts on and what takes the ask off the list, so a
     // retry after a failure here still finds the ask open. Each step is
     // skipped when a failed try already did it.
-    let dec = format!("- **DEC ({date})**: preflight ask \"{item}\" answered: {text}");
-    let logged = match fs::read_to_string(&log) {
-        Ok(t) => t.lines().any(|l| l == dec),
+    let title = format!(" — Preflight {id}: {item} · preflight · {date}");
+    let log_text = match fs::read_to_string(&log) {
+        Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             // A second check: `docs new` creates agent-log.md now (AD-503), but a
             // feature made by a vendored docs.mjs older than that fix has none.
-            fs::write(&log, format!("# Agent log — PRD-{feature}\n"))
-                .map_err(io(format!("write {}", log.display())))?;
-            false
+            let t = format!("# Agent log — PRD-{feature}\n");
+            fs::write(&log, &t).map_err(io(format!("write {}", log.display())))?;
+            t
         }
         Err(e) => return Err(io(format!("read {}", log.display()))(e)),
     };
-    if !logged {
-        scheduler::append_under(&log, "## Decisions", &dec)?;
+    if !preflight_logged(&log_text, &title, text) {
+        let n = next_preflight_ad(&log_text).ok_or_else(|| {
+            Error::Msg(format!(
+                "{}: AD-1 to AD-99 are all taken; record {id}'s answer by hand",
+                log.display()
+            ))
+        })?;
+        let entry = format!(
+            "### AD-{n}{title}\n\n**Chose:** {text}\n**Because:** the owner's answer to a preflight ask, before any slice started.\n**Review:** no"
+        );
+        scheduler::append_under(&log, "## Decisions", &entry)?;
     }
     let emitted = run.events()?.into_iter().any(
         |e| matches!(&e.kind, EventKind::AskAnswered { id: i, text: t } if i == id && t == text),
@@ -471,4 +522,32 @@ fn rel(repo: &Path, path: &Path) -> String {
         .unwrap_or(path)
         .to_string_lossy()
         .into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_preflight_answer_takes_the_next_ad_below_100() {
+        assert_eq!(next_preflight_ad("# Agent log\n"), Some(1));
+        let log = "### AD-3 — q · slicing · d\n### AD-101 — q · slice-01 · d\n### AD-9901 — q · polish · d\n";
+        assert_eq!(next_preflight_ad(log), Some(4));
+        assert_eq!(next_preflight_ad("### AD-99 — q · slicing · d\n"), None);
+        assert_eq!(next_preflight_ad("```\n### AD-1 — example\n```\n"), Some(1));
+    }
+
+    #[test]
+    fn a_logged_answer_is_found_by_its_title_and_choice() {
+        let title = " — Preflight ASK-1: lanes · preflight · 2026-10-12";
+        let log =
+            format!("## Decisions\n\n### AD-4{title}\n\n**Chose:** proceed\n**Review:** no\n");
+        assert!(preflight_logged(&log, title, "proceed"));
+        assert!(!preflight_logged(&log, title, "fix it"));
+        assert!(!preflight_logged(
+            &log,
+            " — Preflight ASK-2: x · preflight · 2026-10-12",
+            "proceed"
+        ));
+    }
 }

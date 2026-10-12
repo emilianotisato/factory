@@ -651,13 +651,20 @@ fn answering_every_ask_starts_the_parked_run() {
         }
     }
     let log = fx.read(AGENT_LOG);
-    assert_eq!(log.matches("- **DEC (").count(), asks.len(), "{log}");
+    // One AD entry per ask, numbered below the build's ranges.
+    assert_eq!(log.matches(" · preflight · ").count(), asks.len(), "{log}");
     assert_eq!(
-        log.matches("answered: proceed").count(),
+        log.matches("**Chose:** proceed").count(),
         asks.len(),
         "{log}"
     );
-    assert!(log.contains("preflight ask \""), "{log}");
+    for (i, ask) in asks.iter().enumerate() {
+        assert!(
+            log.contains(&format!("### AD-{} — Preflight {ask}: ", i + 1)),
+            "{log}"
+        );
+    }
+    assert!(!log.contains("**DEC ("), "{log}");
     assert!(log.contains("## Decisions\n"), "{log}");
 
     // The driver takes the run through branch and board, then builds.
@@ -1011,7 +1018,7 @@ fn an_ask_answer_that_failed_on_the_log_is_retried_whole() {
         "{text}"
     );
     assert!(run.dir().join("answers/ASK-1.json").is_file());
-    assert_eq!(fx.read(AGENT_LOG).matches("- **DEC (").count(), 1);
+    assert_eq!(fx.read(AGENT_LOG).matches(" · preflight · ").count(), 1);
     assert_eq!(count(&kinds(run.dir()), "ask_answered"), 1);
 }
 
