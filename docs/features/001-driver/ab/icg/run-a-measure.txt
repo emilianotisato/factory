@@ -1,0 +1,24 @@
+session 480153fa-444d-439a-936f-8dfbccc268ac: 220 min wall · build 115 · polish None · 21 subagents, 187 agent-min
+tokens: out 671k · cache write 3.8M · cache read 90M · 921 calls
+context: orchestrator started at 58k · peak 167k
+    23 min  out     79k  cr   9.9M  peak  166k  Build slice-01 of PRD-018
+     8 min  out     35k  cr   3.1M  peak  139k  Build slice-02 of PRD-018
+    20 min  out     25k  cr   5.0M  peak  147k  Run checkpoint 1 of PRD-018
+     9 min  out     36k  cr   4.1M  peak  156k  Build slice-03 of PRD-018
+     5 min  out     23k  cr   2.6M  peak  119k  Build slice-04 of PRD-018
+    31 min  out     44k  cr   6.2M  peak  167k  Run checkpoint 2 of PRD-018
+     5 min  out     23k  cr   1.9M  peak  120k  Build slice-05 of PRD-018
+    12 min  out     44k  cr   5.2M  peak  165k  Build slice-06 of PRD-018
+    15 min  out     28k  cr   3.0M  peak  158k  Run checkpoint 3 of PRD-018
+     7 min  out     20k  cr   3.4M  peak  132k  Local code review of PRD-018
+     5 min  out     27k  cr   3.9M  peak  141k  agent-adce07d1a8fb22
+     3 min  out     14k  cr   1.6M  peak  109k  Security review of PRD-018
+     7 min  out     37k  cr   4.3M  peak  164k  UX review of PRD-018
+     4 min  out     23k  cr   3.2M  peak  128k  Second-opinion adversarial review
+     3 min  out     16k  cr   2.3M  peak  101k  Verify polish findings at file:line
+     7 min  out     41k  cr   4.4M  peak  160k  Polish fixer 1: server fixes
+     6 min  out     28k  cr   6.0M  peak  145k  Polish fixer 2: UI fixes
+     3 min  out     14k  cr   1.5M  peak  130k  Test-cleanup pr mode for 018
+     2 min  out     12k  cr   1.3M  peak  104k  Closeout and retro for 018
+    11 min  out     12k  cr   1.2M  peak   79k  Apply owner change to AD-601
+     1 min  out      7k  cr   1.1M  peak   58k  Label inbox count on mobile

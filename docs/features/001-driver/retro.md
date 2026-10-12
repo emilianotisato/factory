@@ -65,3 +65,101 @@ Gate numbers come from the `CP-1`..`CP-7` entries in `agent-log.md` (17 runs, 5 
 4. The run built 13 slices and got through polish with one owner answer. The review layers caught about 100 real findings that seven green checkpoints had not, including a worker sandbox hole. Lost: about 45 min of Cursor timeouts, and a model pin that burned the wrong quota.
 
 **Owner review (2026-10-11):** 73 kept, 5 changed (AD-401, AD-503, AD-904, AD-10001, AD-40008). DEC candidates: 3 of 4 recorded, as DEC-1 to DEC-3.
+
+## FR-11 — A/B, icg-cloud PRD-018 · 2026-10-11
+
+Run A was `/deliver 018`, PR [#24](https://github.com/ICG-Argentina/icg-cloud/pull/24). Run B was `/factory-deliver 018`, run `018-20261011-6490`, PR [#25](https://github.com/ICG-Argentina/icg-cloud/pull/25). Both started from base `cde31ac` on Opus 5.5. The setup, the owner's answers and the timeline are in [`ab/runs.md`](ab/runs.md). This section holds the results the QA guide asks for. arca-api, the second project, has not run yet.
+
+### The sixteen answers
+
+The owner answered before seeing any number: run A at 16:04, run B at 19:31.
+
+| # | question | run A | run B |
+|---|---|---|---|
+| 1 | Does the result do what the PRD asked? | yes | yes |
+| 2 | Merge after normal review, at most small fixes? | yes | yes |
+| 3 | Decisions you would overturn | 2–3 | 0 |
+| 4 | Code quality against the project's standard (1–5) | 5 | 5 |
+| 5 | Tests prove the FRs, or only pass? | prove | prove |
+| 6 | Built but not asked for | none | none |
+| 7 | Asked for but missing | none | none |
+| 8 | Overall | ship after minor fixes | ship as is |
+
+After the questionnaire, the owner's hands-on QA rated B slightly better: it "added some small conveniences that A missed". A blind review of both PRs then went the other way, 32 to 25 for A over 8 dimensions (details in `ab/runs.md` § Blind PR review). B won only frontend and UX. B's confirmed defects:
+
+- It quotes an uncapped exception line with its file path on failed-job rows. B followed its uncorrected PRD; A's polish caught the same leak.
+- AD-101's fixture deletes broke two browser tests that CI does not run.
+
+The owner's grades stand as given.
+
+### Numbers
+
+Weighted as `quota.rs` does: input + cache write + 0.1 × cache read + 5 × output. Run A comes from `measure.py` over 22 transcripts. Run B comes from `factory report --cockpit`.
+
+| | run A | run B |
+|---|---|---|
+| input | 1,888 | 684 (workers) |
+| cache write | 3,759,673 | 1,313,783 + cockpit 74,504 |
+| cache read | 90,308,357 | 32,168,158 + cockpit 4,553,507 |
+| output | 671,386 | 309,481 + cockpit 17,844 |
+| **weighted** | **16,149,327** | **6,697,917** (workers 6,078,688, cockpit 619,229) |
+| orchestrator or cockpit | 2,178,976 (13%) | 619,229 (9.2%) |
+| launch to draft PR | 3h 07m (12:09–15:16) | 3h 01m (16:06–19:07) |
+| full-gate runs, red, minutes | 6, 0, 42 | 6, 0, 42.7 (3 of them repeats; see below) |
+| inner-loop runs, red | not counted | 11, 0 |
+| CI cycles | 0 | 0, but its first green was on an incomplete branch |
+| owner interrupts after launch | BLOCK-101, plus one unprompted steer | BLOCK-1 and BLOCK-2, plus two calls on the leftovers. The cockpit answered BLOCK-3 itself. |
+| `ctx_share` · `repeat_rate` · `followup_reads` | n/a | 0.073 · 0.003 · 7 of 21 (33%) |
+
+Each tool reports build minutes on its own ruler: 115 for A from `measure.py`, 44.4 worker-minutes for B from `factory report`. They are not comparable, so the table uses launch to draft PR instead.
+
+### Pass criteria (QA guide step 7)
+
+| criterion | result |
+|---|---|
+| `weighted_tokens(B) ≤ 0.6 × weighted_tokens(A)` | **pass**: 41.5%, 2.99M under the 9,689,596 bar |
+| `cockpit_tokens(B) ≤ 5%` of `weighted_tokens(B)` | **fail**: 10.2% of the workers' figure, 9.2% of the total |
+| run B's draft PR has CI green | **pass**, twice. The first green (7m53s) covered a branch missing four polish files; the second, on `806992c` after the cockpit's repair, covered all of it. |
+| questionnaire (step 5) | **pass**: B matches or beats A on every question |
+
+**The cockpit share fails, so this project is a `BLOCK` for the owner to judge** (step 7: "not a reason to rerun quietly"). My read: most of the cockpit's work was repair the driver should not have needed. It found the uncommitted leftovers twice, made three repair commits, and relayed three blocks, all caused by the fragment-title slip. Those causes are fixed below. My recommendation: record icg-cloud as a fail on this criterion and re-measure on arca-api with the fixed binary. Do not change the 5% bar. **Owner's call (2026-10-11): accepted.** icg-cloud is recorded as a fail on the cockpit share; arca-api re-measures it with the fixed binary, under the same 5% bar.
+
+**The shipped branch is not the driver's alone.** Three repair commits made PR #25 whole: `37c30c0` and `6d0f223` by the cockpit, and `615fda5` by the cockpit after `run_finished`. Without the first, the branch would not have built. The first CI green came before the third, so it covered a branch without two review fixes its PR body claimed.
+
+### Side checks
+
+- **FR-8 cross-check: pass.** `measure.py` on the cockpit session gives 619,075 weighted against the report's 619,229, a gap of 0.025%, and the peak context matches exactly. One gap: `factory report` prints only `cockpit_tokens` and `cockpit_peak_context`, so the four figures the guide names cannot be compared one by one.
+- **Slice-13 ranged-read check (AD-1304): pass.** No "file has not been read" error and no retry loop. Three of six builders wrote their slice file through a `python3` heredoc and never tried `Read`. That habit is the same one that lost slice 02's files.
+- **FR-12 reversal rule: both triggers fired, on one project and 21 `ctx` calls.** `followup_reads` is 33%, over 30%, so the rule says to widen the answers "before anything else". `ctx_share` is 7.3%, under 10%, which would shrink `ctx` to `outline`. `repeat_rate` fell from 26.7% to 0.3%, so that trigger did not fire. Following the rule's own order, the first step is widening. The shrink waits for arca-api's numbers, because 21 calls are too few to cut a verb on. **Owner's call (2026-10-11): accepted.** Widen first; the shrink is decided on arca-api's numbers. **Reversed (2026-10-12):** no widening. The 7 follow-ups were reads of neighbouring methods and callees, which wider answers would not save. `factory report` splits `followup_reads` by worker role instead, and arca-api decides on the builders' number.
+
+### What the round found in factory
+
+All fixes are on `fix/001-ab-findings`: 268 tests before the claim change, 272 after. Gate green, binary reinstalled, not pushed. The PRD's FR-4 and FR-5 carry dated correction notes.
+
+| finding (`ab/runs.md`) | severity | fix |
+|---|---|---|
+| A `Bash` heredoc (`cat > f <<'EOF'`) wrote 11 of slice 02's files, and no tool call named them, so they were never committed. CI on the pushed branch would have failed on missing classes. | major | `ea6866f`: a heredoc into `cat` or `tee` names its target like a `Write`. |
+| A file listed once was never committed again, even after it was tracked and changed. Slice 06's and polish's edits to those files vanished silently. | major | `ea6866f`: a listed file stays skipped only while its blob is unchanged. |
+| Four of six workers wrote a `# Log fragment` title. `docs log merge` refused it, the driver parked, and the owner was asked three times. Builders copied the title from a sibling's fragment. | major | `e75076b`: the driver drops a title above the first `## `, and the slice contract says so. |
+| The refusal came after a 7-minute green gate, and each resume reran that gate on an unchanged tree. That cost 3 extra runs, 2 at CP-2 and 1 at CP-3, about 21 minutes. | medium | `afe8904`: `docs log merge --dry` runs before the gate. A green on a dirty tree is kept for its own checkpoint. |
+| Commit subjects carried no feature scope (`feat: Core sync kinds`, `docs: checkpoint 1`). | minor | `b713aa8`, `b395562`: `feat(018): slice-02 …`, `docs(018): checkpoint 1`, and the same in the worker contracts. |
+| The owner asked why a worker cannot claim a file it generated. | design | `c911674`: `git add <file>` claims it. `git add <dir>` claims new files under it while no other worker is live. `git add -A` and `.` claim nothing. A staged-new file no longer counts as tracked, so a lone worker's `git add -A` cannot sweep a secret into its commit. |
+
+**Still open, minor:**
+
+- `factory answer` notes the preflight ask as `- **DEC (date)**`, which is neither an `AD-n` nor a `DEC-n`.
+- The cockpit's BLOCK-1 question named one of the two fragments, and its options were written for an AD clash, not a format slip.
+- `factory report` lacks the cockpit's own output, cache-read and start-context figures.
+
+**Not factory's, carried to the project:** icg-cloud's CI runs no browser suite, so the two browser tests B broke reached a green PR. That is a `/guardrails` question for icg-cloud.
+
+### Next
+
+- **arca-api round:** the repo is `~/Projects/Prokey/arca-api` (`~/Projects/ICG/arca-api` is a copy with no git). Branch from `main`, since its PR #63 is open. It has no draft PRD: the owner writes PRD-023 with `/prd` in a fresh arca-api session, then runs A (`/deliver`) and B (`/factory-deliver`). Run B uses the binary from `fix/001-ab-findings`, so the round also tests these fixes on a real project.
+- **Per-role split, decided 2026-10-12, built 2026-10-12** on `feat/report-role-split` (`d414119`, gate green at 273 tests, not pushed): a new key, `followup_reads_by_role`, in text and JSON. On run `018-20261011-6490` it prints `build 2 of 7 (29%), polish 5 of 14 (36%)`. Merge it and reinstall the binary before arca-api's run B. Builders made 2 follow-ups on 7 `ctx` calls (29%), the polish worker 5 on 14; each was a 25–80 line read of a neighbouring method or a callee. Also seen: the polish worker ran `factory ctx --help` twice.
+- **Branches (pushed 2026-10-12):** `fix/001-ab-findings` holds the six fixes above (`ea6866f`…`c911674`), gate green at 272 tests. Its PR #3 merged into `main` as `81ba7ee` (2026-10-12), and the installed binary is built from that `main`. `qa/001-ab` is pushed as a backup, with no PR.
+- **PR pick for icg-cloud, owner's call (2026-10-12): #24.** Done as [#26](https://github.com/ICG-Argentina/icg-cloud/pull/26) (2026-10-12): #24's head plus the badge fix and B's extras (the inbox link above the company search, the count beside the subject, year-first times, the failing source named in the log, and its isolation tests), without B's defects. Close #24 and #25 when it merges; the merge stays the owner's. #24 won the blind review, and its polish caught the leak #25 still has.
+
+## FR-7 — Cockpit from the phone
+
+Not run yet. The guide's steps (start on the laptop, answer a block from the phone, `factory wait --timeout 7200` in a background Bash) are still open.
