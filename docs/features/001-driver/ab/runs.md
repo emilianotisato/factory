@@ -103,6 +103,8 @@ Factory finding, major: the leftover rule turns one missed commit into a permane
 
 **Run B's questionnaire: pass.** Yes on 1 and 2, nothing on 6 and 7, 5 on question 4, "ship as is" on 8. Run B matches or beats run A on every question: 0 decisions to overturn against 2–3, and "ship as is" against "ship after minor fixes". One caveat stays with the grade: the shipped branch is what the cockpit's three repair commits made it (`37c30c0`, `6d0f223`, `615fda5`), not what the driver committed alone.
 
+**Owner's hands-on QA of run B (2026-10-11, after the questionnaire): B slightly better than A.** In the owner's words, it "added some small conveniences that A missed".
+
 ### Slice-13 ranged-read check (AD-1304), run B
 
 From the six build-worker streams in `runs/018-20261011-6490/workers/`, mapped by `slice_spawned`:
