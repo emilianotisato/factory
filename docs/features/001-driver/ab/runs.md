@@ -155,3 +155,18 @@ At the owner's request, after both grades: a workflow of 8 reviewers, one per di
 The review also confirmed, without a re-check here: a stuck Mercado Pago order's time resets every 5 minutes in PR #25 (run A fixed it, AD-10003), and about seven extra company queries on every admin page. PR #24's one confirmed defect is the "En espera" badge, `secondary` where the rubric says `warning`.
 
 The owner's grades stand as given. These are code findings the questionnaire did not surface.
+
+## arca-api: PRD-024 admin inspection papercuts
+
+Base `91b4c59` on `docs/prd-024`: `origin/main` `80edc46` (PRD-022, #63 merged) plus the PRD and its 9 slices (`3955bf9`, `91b4c59`). The PRD is `status: draft`; preflight flips it to `ready` when it passes. Repo `~/Projects/Prokey/arca-api` (Go, gate `make verify`, inner `make lint && make test`, harness `.claude/skills/verify-arca/`).
+
+Worktrees made by `worktrees.sh` on 2026-10-12: `../wt-a` on `feat/024-admin-inspection-ux`, `../wt-b` on `feat/admin-inspection-ux`. Both also got `.claude/settings.local.json` and the gitignored `docs/test_certs/` by hand, the same files in each. `.auth/` (a live admin session cookie) was not copied; `verify-arca` makes it. Base gate green in `wt-a`: `make verify` exit 0 in 52 s, 62 packages `ok`, mutation tier skipped (no Go changes vs `origin/main`). The 52 s leans on Go's shared test cache, so it is not a cold-gate figure.
+
+Preflight in the repo (read-only, 2026-10-12): one blocker, the branch, which the worktrees clear; one ask, `lanes: 1` with up to 4 slices runnable at once. **Answer for both runs, word for word: "proceed as-is, serial (1 lane)"**, as in the icg round. Two judge items: `verify-arca` exists (8 features mapped), `gate_parallel` not measured.
+
+Both runs: Opus 5.5, effort high, bypass permissions, `autoCompactWindow` 200000. Sequential: A first, B after A finishes. Run B uses `~/.cargo/bin/factory` built from `main` at `67137fb` (the three minor A/B fixes and the per-role split). The rules from the icg round hold: every answer one run gets, the other gets word for word; run B gets no unprompted messages; the questionnaire is answered before any number is seen.
+
+| run | tool | worktree / branch | started | session | PR |
+|---|---|---|---|---|---|
+| A | `/deliver 024` | `wt-a` · `feat/024-admin-inspection-ux` | | | |
+| B | `/factory-deliver 024` | `wt-b` · `feat/admin-inspection-ux` | | | |
