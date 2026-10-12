@@ -12,6 +12,10 @@
 //! `lookup_share_chars`), prints the three lines the reversal rule reads
 //! after the keys, and `--per-worker` adds `ctx_share` and `repeat_rate` for
 //! each worker.
+//!
+//! `followup_reads_by_role` splits `followup_reads` by worker role: the
+//! icg-cloud A/B mixed a polish worker's follow-ups with the builders', and
+//! the reversal rule is read on the builders' share (retro FR-11, 2026-10-12).
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::PathBuf;
@@ -71,11 +75,12 @@ pub const KEYS: [&str; 23] = [
 
 /// The keys after [`KEYS`]: what the slices' task texts name beyond §10's
 /// list (AD-802; `lookup_share_chars`, slice 13).
-pub const EXTRA_KEYS: [&str; 4] = [
+pub const EXTRA_KEYS: [&str; 5] = [
     "worker_gate_runs",
     "worker_gate_red",
     "cockpit_peak_context",
     "lookup_share_chars",
+    "followup_reads_by_role",
 ];
 
 // The reversal rule's constants, PRD §14 FR-12 decision 4: "`followup_reads`
@@ -100,6 +105,20 @@ pub struct Followups {
 }
 
 impl Followups {
+    /// The `ctx` calls among `calls` and how many a read followed.
+    fn of<'a>(calls: impl Iterator<Item = &'a ToolCallRow>) -> Self {
+        let (mut count, mut ctx_calls) = (0, 0);
+        for c in calls.filter(|c| CTX_KINDS.contains(&c.kind.as_str())) {
+            ctx_calls += 1;
+            count += u64::from(c.label_followup == Some(true));
+        }
+        Followups {
+            count,
+            ctx_calls,
+            share: ratio(count, ctx_calls),
+        }
+    }
+
     /// `1 of 2 ctx calls (50%)`.
     fn text(&self) -> String {
         format!(
@@ -224,6 +243,51 @@ pub fn per_worker(workers: &[WorkerRow], calls: &[ToolCallRow]) -> Vec<PerWorker
         .collect()
 }
 
+/// `followup_reads` of each role that made a `ctx` call.
+pub fn followups_by_role(
+    workers: &[WorkerRow],
+    calls: &[ToolCallRow],
+) -> BTreeMap<String, Followups> {
+    let role: BTreeMap<i64, &str> = workers.iter().map(|w| (w.id, w.role.as_str())).collect();
+    let mut roles: Vec<&str> = role.values().copied().collect();
+    roles.sort_unstable();
+    roles.dedup();
+    roles
+        .into_iter()
+        .map(|r| {
+            let mine = calls
+                .iter()
+                .filter(|c| role.get(&c.worker_id).copied() == Some(r));
+            (r.to_string(), Followups::of(mine))
+        })
+        .filter(|(_, f)| f.ctx_calls > 0)
+        .collect()
+}
+
+/// `build 1 of 2 (50%), polish 5 of 14 (36%)`, roles in [`ROLE_ORDER`].
+fn by_role_text(by_role: &BTreeMap<String, Followups>) -> String {
+    let known = ROLE_ORDER.iter().filter_map(|r| by_role.get_key_value(*r));
+    let other = by_role
+        .iter()
+        .filter(|(r, _)| !ROLE_ORDER.contains(&r.as_str()));
+    let parts: Vec<String> = known
+        .chain(other)
+        .map(|(r, f)| {
+            format!(
+                "{r} {} of {} ({}%)",
+                f.count,
+                f.ctx_calls,
+                (f.share * 100.0).round()
+            )
+        })
+        .collect();
+    if parts.is_empty() {
+        "none".to_string()
+    } else {
+        parts.join(", ")
+    }
+}
+
 /// Worker rows by role.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Workers {
@@ -289,6 +353,8 @@ pub struct Report {
     pub cockpit_peak_context: Option<u64>,
     /// Lookup bytes among all result bytes: slice 08's `ctx_share`.
     pub lookup_share_chars: f64,
+    /// Roles with no `ctx` call are left out.
+    pub followup_reads_by_role: BTreeMap<String, Followups>,
     pub thresholds: Thresholds,
     /// With `--per-worker` only.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -338,15 +404,7 @@ pub fn compute(db: &Db, run_id: &str, cockpit: Option<&Measure>) -> Result<Repor
     let lookup_chars: u64 = lookup.iter().map(|c| n(c.result_chars)).sum();
     let all_chars: u64 = calls.iter().map(|c| n(c.result_chars)).sum();
     let (lookups, ctx_calls, repeats) = lookup_counts(calls.iter());
-    let followed = calls
-        .iter()
-        .filter(|c| CTX_KINDS.contains(&c.kind.as_str()) && c.label_followup == Some(true))
-        .count() as u64;
-    let followup_reads = Followups {
-        count: followed,
-        ctx_calls,
-        share: ratio(followed, ctx_calls),
-    };
+    let followup_reads = Followups::of(calls.iter());
     let ctx_share = ratio(ctx_calls, lookups);
     let repeat_rate = ratio(repeats, lookups);
 
@@ -398,6 +456,7 @@ pub fn compute(db: &Db, run_id: &str, cockpit: Option<&Measure>) -> Result<Repor
         worker_gate_red: worker_gates.iter().filter(|g| g.red).count() as u64,
         cockpit_peak_context: cockpit.map(|m| m.peak_context),
         lookup_share_chars: ratio(lookup_chars, all_chars),
+        followup_reads_by_role: followups_by_role(&workers, &calls),
         per_worker: None,
     })
 }
@@ -435,6 +494,10 @@ impl Report {
             format!("worker_gate_red: {}", self.worker_gate_red),
             format!("cockpit_peak_context: {}", opt(self.cockpit_peak_context)),
             format!("lookup_share_chars: {:.3}", self.lookup_share_chars),
+            format!(
+                "followup_reads_by_role: {}",
+                by_role_text(&self.followup_reads_by_role)
+            ),
         ]
     }
 }
@@ -523,6 +586,20 @@ mod tests {
             share: ratio(1, 3),
         };
         assert_eq!(f.text(), "1 of 3 ctx calls (33%)");
+    }
+
+    #[test]
+    fn followups_by_role_text_lists_roles_in_the_table_order() {
+        let f = |count, ctx_calls| Followups {
+            count,
+            ctx_calls,
+            share: ratio(count, ctx_calls),
+        };
+        let mut m = BTreeMap::new();
+        assert_eq!(by_role_text(&m), "none");
+        m.insert("polish".to_string(), f(5, 14));
+        m.insert("build".to_string(), f(2, 7));
+        assert_eq!(by_role_text(&m), "build 2 of 7 (29%), polish 5 of 14 (36%)");
     }
 
     #[test]

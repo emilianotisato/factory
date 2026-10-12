@@ -44,11 +44,12 @@ const KEYS: [&str; 23] = [
     "pack_doc_read_chars",
 ];
 
-const EXTRA_KEYS: [&str; 4] = [
+const EXTRA_KEYS: [&str; 5] = [
     "worker_gate_runs",
     "worker_gate_red",
     "cockpit_peak_context",
     "lookup_share_chars",
+    "followup_reads_by_role",
 ];
 
 const THRESHOLDS: [&str; 3] = [
@@ -277,8 +278,8 @@ fn report_prints_the_retro_keys_then_the_run_keys() {
     let lines: Vec<&str> = text.lines().collect();
     let keys: Vec<&str> = lines.iter().map(|l| key(l)).collect();
     assert_eq!(&keys[..23], &KEYS);
-    assert_eq!(&keys[23..27], &EXTRA_KEYS);
-    assert_eq!(&keys[27..], &THRESHOLDS);
+    assert_eq!(&keys[23..28], &EXTRA_KEYS);
+    assert_eq!(&keys[28..], &THRESHOLDS);
     assert_eq!(lines[0], "score: ");
     assert_eq!(value(&lines, "slices"), "3");
     assert_eq!(value(&lines, "checkpoints"), "1");
@@ -368,6 +369,7 @@ fn report_prints_the_retro_keys_then_the_run_keys() {
     assert_eq!(value(&lines, "ctx_share"), "0.000");
     assert_eq!(value(&lines, "repeat_rate"), "0.000");
     assert_eq!(value(&lines, "followup_reads"), "0 of 0 ctx calls (0%)");
+    assert_eq!(value(&lines, "followup_reads_by_role"), "none");
     // Every read was of a held file.
     assert_eq!(
         value(&lines, "pack_doc_read_chars").parse::<u64>().unwrap(),
@@ -508,6 +510,11 @@ fn ctx_calls_are_labelled_and_the_report_reads_the_reversal_rule() {
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(value(&lines, "followup_reads"), "1 of 2 ctx calls (50%)");
     assert_eq!(value(&lines, "followup threshold 30%"), "over");
+    // Only the builder called ctx; the polish worker's role is left out.
+    assert_eq!(
+        value(&lines, "followup_reads_by_role"),
+        "build 1 of 2 (50%)"
+    );
     // Lookups: two reads per build, the extra read and the two ctx calls,
     // the polish worker's read of prd.md: 2 of 10.
     assert_eq!(value(&lines, "ctx_share"), "0.200");
@@ -557,6 +564,9 @@ fn ctx_calls_are_labelled_and_the_report_reads_the_reversal_rule() {
     assert_eq!(v["followup_reads"]["count"], 1);
     assert_eq!(v["followup_reads"]["ctx_calls"], 2);
     assert_eq!(v["followup_reads"]["share"], 0.5);
+    assert_eq!(v["followup_reads_by_role"]["build"]["count"], 1);
+    assert_eq!(v["followup_reads_by_role"]["build"]["ctx_calls"], 2);
+    assert!(v["followup_reads_by_role"]["polish"].is_null());
     assert_eq!(v["pack_doc_read_chars"], held);
     assert!(v["lookup_share_chars"].is_number());
     assert_eq!(v["thresholds"]["followup"], "over");
