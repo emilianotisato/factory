@@ -131,7 +131,7 @@ Measured 2026-10-11 after the questionnaire: `factory report 018-20261011-6490 -
 - **Workers: 6,078,688 weighted** (10 workers: 6 build, 3 checkpoint, 1 polish). **Cockpit: 619,229.** **Run B total: 6,697,917**, 41.5% of run A's 16,149,327. **Pass**, 2.99M under the 9,689,596 bar.
 - **Cockpit share: fail.** 619,229 is 10.2% of the workers' `weighted_tokens` the report prints, or 9.2% of the run's total; the bar is 5%. It is still 3.5 times smaller than run A's orchestrator (2,178,976). The cockpit did more than relay: three BLOCK relays, finding the leftovers twice, three repair commits, the decision review and the CI watch, most of it caused by the driver's commit bug.
 - Gates: 6 driver gate runs, 0 red, 42.7 min; 11 worker inner-loop runs, 0 red. Polish 58.0 min. 3h 08m wall to `run_finished`.
-- CI: green on the first run, but on a branch missing polish's fixes. The cockpit's repair push started a second run, still pending at measurement. `ci_cycles: 0`, since the report counts only `ci_fix_committed`.
+- CI: green on the first run, but on a branch missing polish's fixes. The cockpit's repair push started a second run, green at 19:37 on `806992c` (8m43s). So run B's CI was green twice, the second time on the complete branch. PR #25 is still a draft. `ci_cycles: 0`, since the report counts only `ci_fix_committed`.
 - Lookups: `ctx_share` 0.073 (under the 10% threshold), `repeat_rate` 0.003, `followup_reads` 7 of 21 (33%, over the 30% threshold).
 - Cockpit context: started at 49,700, peak 101,336.
 
