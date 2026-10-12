@@ -9,7 +9,7 @@ use std::path::Path;
 use crate::error::io;
 use crate::events::{Event, EventKind};
 use crate::run::{self, Run, RunState};
-use crate::{Result, clock};
+use crate::{Result, checkpoint, clock};
 
 /// `runs/<id>/cockpit.cursor`: the last `seq` the cockpit was shown.
 pub const CURSOR_FILE: &str = "cockpit.cursor";
@@ -66,9 +66,11 @@ pub fn line(ev: &Event, feature: &str) -> Option<String> {
             block_id,
             question,
         } => block_line(block_id, &format!("checkpoint {n}"), question),
-        EventKind::MergeRefused { block_id, detail } => {
-            block_line(block_id, "log merge refused", detail)
-        }
+        EventKind::MergeRefused { block_id, detail } => block_line(
+            block_id,
+            "log merge refused",
+            &checkpoint::refusal_summary(detail),
+        ),
         EventKind::CloseoutBlocked {
             phase,
             block_id,
@@ -394,6 +396,17 @@ mod tests {
             }),
             Some(
                 "BLOCK-7 log merge refused: AD-301 twice (answer: factory answer BLOCK-7 \"...\")"
+                    .into()
+            )
+        );
+        // Every refusal reaches the owner, not the first line's alone.
+        assert_eq!(
+            l(EventKind::MergeRefused {
+                block_id: "BLOCK-1".into(),
+                detail: "refusing to merge:\n  ✗ log-slice-03.md has content above\n  ✗ log-slice-04.md has content above\n".into(),
+            }),
+            Some(
+                "BLOCK-1 log merge refused: log-slice-03.md has content above; log-slice-04.md has content above (answer: factory answer BLOCK-1 \"...\")"
                     .into()
             )
         );

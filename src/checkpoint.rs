@@ -860,8 +860,36 @@ pub fn commit_checkpoint(
     }
 }
 
-/// A refused `docs log merge` (an AD clash the driver never fixes by
-/// renumbering): a `BLOCK-n` in `agent-log.md`, phase `checkpoint`.
+/// What a refused `docs log merge` says, on one line: every `✗` refusal
+/// joined with `; `, else the first non-empty line. The cockpit's line uses
+/// it too, so a refusal naming two fragments never reaches the owner as one.
+pub fn refusal_summary(detail: &str) -> String {
+    let refusals: Vec<&str> = detail
+        .lines()
+        .map(str::trim)
+        .filter_map(|l| l.strip_prefix("✗ "))
+        .collect();
+    if refusals.is_empty() {
+        detail
+            .lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty())
+            .unwrap_or("docs log merge failed")
+            .to_string()
+    } else {
+        refusals.join("; ")
+    }
+}
+
+/// `docs log merge`'s refusal for prose above a fragment's first `## `
+/// heading (`docs.mjs` `logMerge`).
+const ABOVE_FIRST_HEADING: &str = "has content above its first";
+
+/// A refused `docs log merge`: a `BLOCK-n` in `agent-log.md`, phase
+/// `checkpoint`. The driver edits no fragment (FR-5), so the fix is the
+/// owner's either way; the options fit the refusal. A format slip (prose
+/// above the first `## `, which the driver's title strip did not cover) gets
+/// format options, an AD clash or anything else the renumber ones.
 fn block_on_refusal(
     run: &mut Run,
     feature_dir: &Path,
@@ -871,32 +899,28 @@ fn block_on_refusal(
 ) -> Result<(String, String)> {
     let agent_log = feature_dir.join("agent-log.md");
     let id = format!("BLOCK-{}", lowest_free_block(feature_dir)?);
-    let clashes: Vec<&str> = detail
-        .lines()
-        .map(str::trim)
-        .filter_map(|l| l.strip_prefix("✗ "))
-        .collect();
-    let question = if clashes.is_empty() {
-        detail
-            .lines()
-            .map(str::trim)
-            .find(|l| !l.is_empty())
-            .unwrap_or("docs log merge failed")
-            .to_string()
-    } else {
-        clashes.join("; ")
-    };
+    let question = refusal_summary(&detail);
+    let format_slip = question
+        .split("; ")
+        .all(|r| r.contains(ABOVE_FIRST_HEADING));
     let quoted: String = detail.lines().map(|l| format!("  {l}\n")).collect();
     let title = answers::block_title(&format!("{MERGE_REFUSED}: {question}"));
+    let options = if format_slip {
+        "1. in each fragment named above, delete a title line above the first `## ` heading and move any other line under the section it belongs in\n\
+         2. stop the run (`factory stop`) and look at the fragments by hand\n\
+         **Recommended:** 1 — a format slip, not a decision: nothing in the entries changes."
+    } else {
+        "1. renumber the clashing entry in the later fragment into its slice's range (`NN01`, `NN02`, …)\n\
+         2. drop the later entry if it only repeats the earlier one\n\
+         **Recommended:** 1 — each builder's seed is its slice's range."
+    };
     let entry = format!(
         "### {id} — {title} · checkpoint · open\n\n\
          **Happened:** the lanes are drained; `docs log merge {feature}` \
          merged nothing:\n{quoted}\
-         **Options:**\n\
-         1. renumber the clashing entry in the later fragment into its slice's range (`NN01`, `NN02`, …)\n\
-         2. drop the later entry if it only repeats the earlier one\n\
-         **Recommended:** 1 — the driver never renumbers (FR-5); each builder's seed is its slice's range. \
-         Answer this block once the fragment is fixed and the merge runs again.\n"
+         **Options:**\n{options} \
+         The driver edits no fragment (FR-5): make the fix in the files, then \
+         answer this block and the merge runs again.\n"
     );
     append_under(&agent_log, "## Blockers", &entry)?;
     run.emit(EventKind::MergeRefused {

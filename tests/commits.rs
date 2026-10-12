@@ -388,6 +388,40 @@ fn two_lanes_commit_out_of_order_and_each_commit_takes_only_its_own_files() {
     assert_eq!(k.last().map(String::as_str), Some("run_finished"));
 }
 
+/// The A/B's BLOCK-1 (retro FR-11): two fragments slip the same way. The
+/// block offers format options, not the AD-clash ones, and the cockpit's
+/// line names both fragments, not the first refusal alone.
+#[test]
+fn a_format_slip_blocks_with_format_options_naming_every_fragment() {
+    let fx = Fixture::with_index("commits-prose", &[("checkpoint_every", "10")]);
+    fx.write_plan(&[
+        json!({"outcome": "done", "prose": "Notes from this slice."}),
+        json!({"outcome": "done", "prose": "Notes from this slice."}),
+        json!({"outcome": "done"}),
+        json!({"outcome": "checkpoint"}),
+    ]);
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "waiting-owner", 40);
+
+    let log = fx.read(AGENT_LOG);
+    assert!(log.contains("### BLOCK-1 — log merge refused: "), "{log}");
+    assert!(
+        log.contains("delete a title line above the first `## ` heading"),
+        "{log}"
+    );
+    assert!(!log.contains("renumber the clashing entry"), "{log}");
+    assert!(log.contains("The driver edits no fragment (FR-5)"), "{log}");
+
+    let out = factory(&fx, &["wait", &run_id(&dir), "--replay"]);
+    let text = stdout(&out);
+    let line = text
+        .lines()
+        .find(|l| l.starts_with("BLOCK-1 log merge refused: "))
+        .unwrap_or_else(|| panic!("{text}"));
+    assert!(line.contains("log-slice-01.md"), "{line}");
+    assert!(line.contains("log-slice-02.md"), "{line}");
+}
+
 // ── task 4: a refused merge parks the run on a BLOCK in agent-log.md ────────
 
 #[test]
