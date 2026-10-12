@@ -155,7 +155,9 @@ All fixes are on `fix/001-ab-findings`: 268 tests before the claim change, 272 a
 
 ### Next
 
-- **arca-api round:** branch from `main`, since its PR #63 is open. Run B uses the binary from `fix/001-ab-findings`, so the round also tests these fixes on a real project.
+- **arca-api round:** the repo is `~/Projects/Prokey/arca-api` (`~/Projects/ICG/arca-api` is a copy with no git). Branch from `main`, since its PR #63 is open. It has no draft PRD: the owner writes PRD-023 with `/prd` in a fresh arca-api session, then runs A (`/deliver`) and B (`/factory-deliver`). Run B uses the binary from `fix/001-ab-findings`, so the round also tests these fixes on a real project.
+- **Open question for the owner (2026-10-11): drop the widening?** A closer look at the 7 follow-ups: builders made 2 of them on 7 `ctx` calls (29%), the polish worker 5 on 14. Each was a 25–80 line read of a neighbouring method or a callee, not a re-read of what `ctx` showed. Wider answers would not have saved them. My recommendation: leave `ctx` as is, and split `followup_reads` by worker role in `factory report`, so arca-api shows whether builders alone cross 30%. Also seen: the polish worker ran `factory ctx --help` twice.
+- **Branches:** `fix/001-ab-findings` holds the six fixes above (`ea6866f`…`c911674`), gate green at 272 tests, and is the build installed at `~/.cargo/bin/factory`. It and `qa/001-ab` are local only; pushing waits for the owner.
 - **PR pick for icg-cloud is the owner's call.** My recommendation: #24, plus its badge fix (`secondary` → `warning`), then port B's small conveniences. #24 won the blind review, and its polish caught the leak #25 still has.
 
 ## FR-7 — Cockpit from the phone
