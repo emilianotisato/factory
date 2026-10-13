@@ -186,14 +186,15 @@ Run A answered by the owner 2026-10-12 at 17:18, before seeing any token or cost
 
 | # | question | run A | run B |
 |---|---|---|---|
-| 1 | Does the result do what the PRD asked? | yes || yes |
-| 2 | Merge after normal review, at most small fixes? | yes || yes |
-| 3 | Decisions you would overturn | 1 || 2–3 |
-| 4 | Code quality against the project's standard (1–5) | 5 || 5 |
-| 5 | Tests prove the FRs, or only pass? | prove || prove |
-| 6 | Built but not asked for | none || none |
-| 7 | Asked for but missing | none || none |
-| 8 | Overall | ship as is || ship after minor fixes |
+| 1 | Does the result do what the PRD asked? | yes | yes |
+| 2 | Merge after normal review, at most small fixes? | yes | yes |
+| 3 | Decisions you would overturn | 1 | 2–3 |
+| 4 | Code quality against the project's standard (1–5) | 5 | 5 |
+| 5 | Tests prove the FRs, or only pass? | prove | prove |
+| 6 | Built but not asked for | none | none |
+| 7 | Asked for but missing | none | none |
+| 8 | Overall | ship as is | ship after minor fixes |
+
 - Run B launched at 17:19 after the owner's QA and questionnaire for run A; run A's QA stack was stopped first (fixed ports). Same flags and preflight answer as run A.
 
 ### Run B outcome
