@@ -9,7 +9,7 @@ You are the cockpit of one `factory` run, not its builder. Never read the board,
 
 ## 1. Start
 
-1. `factory run NNN` (add `--budget <weighted tokens>` only when the owner gave one). It prints the run id; tell the owner the id — it is the handle for `factory wait <id>`, `factory status <id>` and `factory stop <id>`.
+1. `factory run NNN` (add `--budget <weighted tokens>` or `--hypothesis "<one line>"` only when the owner gave one). It prints the run id; tell the owner the id — it is the handle for `factory wait <id>`, `factory status <id>` and `factory stop <id>`.
 2. If it reports a live or resumed run, that run id is the one to drive.
 
 ## 2. Loop until the run ends

@@ -1,7 +1,8 @@
 ---
 slice: 04
-status: pending
+status: done
 depends_on: []
+lane: 3
 ---
 
 # Slice 04 — Knobs (FR-23)
@@ -9,7 +10,28 @@ depends_on: []
 **Source**: [`prd.md`](prd.md) → §5 FR-23, four decisions ("A project scope: `docs/project.toml`", "The run row records what it resolved", "`factory run NNN --hypothesis`", "`workers.model_id`"); §11 Sequencing risk (PRD-002 owns `docs/project.toml` later). **Depends on**: — (independent of 01, 02, 03 and 05; it appends tuples to the shared migration list and one column to the per-worker line slice 02 extends, a few-line merge either way).
 **Created**: 2026-10-13 · **Status**: pending
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**: 2026-10-12, built tasks 1-6. Task 7 (Prove) waits for CP-2.
+- **Built**:
+  - `config::load_with_project(config_dir, repo)` overlays `docs/project.toml` (`[run] budget`, `[workers.<role>] model | effort`) key by key on the user file. `Loaded.sources` records `default | user | project | flag` per knob. Unknown project keys warn, naming the file. `config::knobs()` builds the `runs.knobs` JSON. `effort_source` is written only when it differs from the model's scope (AD-401).
+  - `factory run` and `factory daemon` both load the project file of the run's repo. A `--budget` records source `flag`. Right after each `Run::create`, `record_start` writes `runs.knobs`: lanes from the board, `CARGO_PKG_VERSION`, and the trimmed `claude --version`, or `null` plus one stderr line. It also writes `runs.hypothesis`.
+  - A `--hypothesis` on an existing live or resumable run prints `hypothesis ignored: run <id> already exists`.
+  - `Summary.model_id` is set from the first assistant line with no `parent_tool_use_id`. It is stored as `workers.model_id`.
+  - The migrations add `runs.knobs`, `runs.hypothesis` and `workers.model_id`.
+  - `report` has two keys after `blocks`: `knobs` (text or the stored object) and `hypothesis`. The per-worker line ends with `model_id`.
+  - The stub answers a bare `--version` with `2.1.296 (Claude Code)` and records no call. Each of its assistant lines now carries `init.model`.
+  - The `/factory-deliver` skill names `--hypothesis`.
+- **Tests**:
+  - `config` unit tests: the key-by-key override with sources, the unknown project table warning once, and no project file being the same as `load`.
+  - `stream::tests::model_id_is_the_first_own_assistant_lines_model`.
+  - `report::tests::knobs_text_names_each_roles_scope`, plus the key-order test extended.
+  - `tests/knobs.rs`: the fixture with `[workers.polish] model = "sonnet"` covers the stub log (sonnet on polish only), the knobs sources, lanes and versions, every worker's `model_id`, and the hypothesis on the row, in the report text and in `--json`. A second test covers the once-only hypothesis and the `flag` budget.
+- **Inner loop**: 9 runs (6 full `cargo test`, 3 on `--test knobs`), 7 red, about 20 min. What the red runs caught:
+  - Runs 1-2 were red on siblings' in-flight edits: `pack_by_role` appended mid-run, then a missing `Part` type.
+  - Run 3 was red on this slice's harness test, which wrongly asserted no `effort_source` for polish. It then hung for 10 minutes in the hypothesis test, which resumed a block-parked run with `--foreground` (AD-402).
+  - The targeted runs caught `lanes == 2`, the harness default.
+  - Run 8 caught `tests/metrics.rs` missing slice 03's `pack_by_role` (AD-403).
+  - Run 9 was green in 1m02s: 137 lib tests and every test binary.
+- **Deviations**: the knobs text shows a split scope as `project/default` (AD-401). The hypothesis test resumes a parked run, not a live one (AD-402).
 
 **Slice**: After this slice a project can set model, effort and budget per role in `docs/project.toml`, every run row says which scope each knob came from and which model actually answered, and a run can carry the one-line hypothesis it tests. It turns no knob itself (prd §1) and leaves the retro's knobs block to slice 06.
 

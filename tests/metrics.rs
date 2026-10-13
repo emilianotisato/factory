@@ -44,7 +44,7 @@ const KEYS: [&str; 23] = [
     "pack_doc_read_chars",
 ];
 
-const EXTRA_KEYS: [&str; 16] = [
+const EXTRA_KEYS: [&str; 19] = [
     "worker_gate_runs",
     "worker_gate_red",
     "cockpit_peak_context",
@@ -61,6 +61,9 @@ const EXTRA_KEYS: [&str; 16] = [
     "decisions",
     "decide",
     "blocks",
+    "knobs",
+    "hypothesis",
+    "pack_by_role",
 ];
 
 const FINDINGS: &str = "high=1 medium=2 low=3 fixed=4 parked=2";
