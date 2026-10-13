@@ -2,6 +2,7 @@
 framework: 2
 gate: cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 inner: cargo test
+lanes: 4
 ---
 
 # Docs Index — Product Map & Lifecycle
