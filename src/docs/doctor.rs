@@ -5,7 +5,7 @@ use std::fs;
 use std::path::Path;
 
 use super::{check, frontmatter, project};
-use crate::Result;
+use crate::{Result, skills};
 
 /// What `docs.mjs check` returned in a v2 or v1 repo.
 #[derive(Debug, Clone)]
@@ -68,6 +68,9 @@ pub fn run(root: &Path, legacy_check: impl FnOnce() -> Result<ToolOutput>) -> St
                 .and_then(|p| p.gate)
                 .unwrap_or_else(|| "none declared".into());
             out.push(line("gate", gate));
+            for l in skills::verdict(root).lines() {
+                out.push(line("skills", l));
+            }
             let r = check::run(root);
             if r.is_clean() {
                 out.push(line("drift", "clean"));

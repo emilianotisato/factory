@@ -146,7 +146,10 @@ fn a_project_file_sets_the_polish_model_and_the_row_says_so() {
         "{knobs_line}"
     );
     assert!(
-        knobs_line.ends_with("lanes 1 · factory 0.1.0 · claude 2.1.296"),
+        knobs_line.ends_with(&format!(
+            "lanes 1 · factory {} · claude 2.1.296",
+            env!("CARGO_PKG_VERSION")
+        )),
         "{knobs_line}"
     );
     assert_eq!(line("hypothesis"), format!("hypothesis: {HYPOTHESIS}"));

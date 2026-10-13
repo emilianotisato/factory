@@ -26,7 +26,7 @@ pub struct DocsCli {
 
 #[derive(Subcommand)]
 enum Verb {
-    /// Scaffold docs/project.toml, docs/index.md, features/, ideas/, archive/
+    /// Scaffold the docs layout, the skill family and the convention block (`factory init`)
     Init,
     /// Allocate the next PRD number and scaffold the feature
     New {

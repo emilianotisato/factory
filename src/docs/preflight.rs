@@ -10,8 +10,8 @@ use std::process::{Command, Stdio};
 
 use super::board::{self, Feature};
 use super::{Branch, FeatureRef, Preflight, Slice, check, gate, log, project};
-use crate::Result;
 use crate::error::{io, json};
+use crate::{Result, skills};
 
 /// `git <args>` in `root`, stdout untrimmed; `None` on any failure.
 pub fn git(root: &Path, args: &[&str]) -> Option<String> {
@@ -120,6 +120,10 @@ pub fn run(root: &Path, reference: &str) -> Result<(Preflight, i32)> {
                     codes.join(", ")
                 ));
             }
+            // FR-3: a stale skill is the owner's to judge, never a refusal.
+            let v = skills::verdict(root);
+            let into = if v.is_ok() { &mut ok } else { &mut judge };
+            into.extend(v.lines().into_iter().map(|l| format!("skills {l}")));
         }
         _ => refuse.push(
             "not on the framework: docs/project.toml has no [docs] framework = 3 — `factory docs doctor`".into(),
@@ -298,8 +302,7 @@ fn feature(
     let g = gate::status(root, p.and_then(|p| p.gate.as_deref()));
     match g.status.as_str() {
         "none" => refuse.push(
-            "no verify gate declared — /gate builds one (an interview, never unattended)"
-                .into(),
+            "no verify gate declared — /gate builds one (an interview, never unattended)".into(),
         ),
         "missing" => refuse.push(format!("gate {}", gate::line(&g))),
         _ => ok.push(format!("gate {}", gate::line(&g))),

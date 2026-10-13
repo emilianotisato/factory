@@ -1,0 +1,2 @@
+$ grep -nE 'grok-|gpt-|gemini-|local/bin|```bash' skills/_shared/models.md
+exit=1 (1 = no match)

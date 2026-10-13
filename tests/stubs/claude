@@ -289,7 +289,9 @@ if (role === 'checkpoint') {
 // `reviewed` in state.toml, write the PR body; `step.slices` (`{"02":
 // "building"}`) forces slice statuses first, so a test can make `docs ship`
 // refuse; `step.skip` (`["retro"]`, `["body"]` or both) leaves those files
-// unwritten, a worker that skipped its last turn (AD-904). `blocked`: a
+// unwritten, a worker that skipped its last turn (AD-904); `step.friction`
+// (a string) is the retro's `## Framework friction → skills repo` section,
+// before `## Score` (PRD-004 FR-7). `blocked`: a
 // `block` entry with `phase: polish`.
 if (role === 'polish') {
   const runDir = pack.match(/^<!-- run dir: (.+?) -->$/m)?.[1]
@@ -337,7 +339,8 @@ if (role === 'polish') {
   const tplM = pack.match(/^# Retro\n[\s\S]*?\n````markdown\n([\s\S]*?)\n````/m)
   if (!tplM) fail(65, 'the polish pack has no ````markdown retro template under # Retro')
   if (!tplM[1].startsWith('# Retro — PRD-')) fail(65, 'the retro template in the pack does not open with its # Retro heading')
-  const retroText = `# Retro — PRD-${dirM[1].match(/(\d{3})-/)[1]}\n\n## Cost vs catch\n\nStub retro (spawn ${n}).\n\n## Score\n\nThe owner's.\n`
+  const friction = typeof step.friction === 'string' ? `## Framework friction → skills repo\n\n${step.friction}\n\n` : ''
+  const retroText = `# Retro — PRD-${dirM[1].match(/(\d{3})-/)[1]}\n\n## Cost vs catch\n\nStub retro (spawn ${n}).\n\n${friction}## Score\n\nThe owner's.\n`
   if (!skip.has('retro')) writeAtomic(retro, retroText)
   const reviewed = ['set', feature, `reviewed=${today}`]
   docs(reviewed)

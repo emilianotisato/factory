@@ -1,0 +1,2 @@
+$ factory docs doctor | grep skills   (this repo, debug build of the branch)
+skills         source checkout

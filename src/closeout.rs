@@ -30,9 +30,10 @@ use crate::ci::{self, CheckRow, Checks, CiRun, Verdict};
 use crate::cli::report::{self, Report};
 use crate::cli::run::load_preflight;
 use crate::commit::{self, Pathspec};
-use crate::config::Config;
+use crate::config::{self, Config};
 use crate::db::RetroRow;
-use crate::docs::{Docs, Ship, Status};
+use crate::docs::ideas::{self, Idea};
+use crate::docs::{Docs, Ship, Status, scaffold};
 use crate::error::io;
 use crate::events::EventKind;
 use crate::pack::Pack;
@@ -41,7 +42,7 @@ use crate::run::{Phase, Run, WorkerOutcome, WorkerRef};
 use crate::scheduler::{self, DEATH_CAP, say, short};
 use crate::stream::{Findings, Summary};
 use crate::worker::{self, Exit, Job, Worker};
-use crate::{Result, clock, metrics, retro};
+use crate::{Result, clock, metrics, paths, retro};
 
 /// The phases a closeout block names in its heading (autonomy § Blocker
 /// protocol step 2).
@@ -328,8 +329,62 @@ fn polish(
             sha: committed.as_ref().map(|c| c.sha.clone()),
             files: committed.map(|c| c.files).unwrap_or_default(),
         })?;
+        file_friction(run, board, cfg, out);
         return Ok(None);
     }
+}
+
+/// PRD-004 FR-7: the retro's friction section, filed as an idea in the
+/// `[source]` checkout and never committed. Returns nothing on purpose: no
+/// source, a placeholder-only section or a failed write files nothing, and
+/// the closeout goes on.
+fn file_friction(run: &Run, board: &Status, cfg: &Config, out: &mut dyn Write) {
+    let Some(source) = cfg.source.as_ref().map(|s| &s.path) else {
+        return;
+    };
+    if !source.join(ideas::DIR).is_dir() {
+        return;
+    }
+    let repo = &run.state().repo;
+    let retro = repo.join(&board.dir).join("retro.md");
+    let Ok(text) = fs::read_to_string(&retro) else {
+        return;
+    };
+    let section = friction(&text);
+    if section.is_empty() || section == friction(&retro_template()) {
+        return;
+    }
+    let name = repo
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let prd = format!("{name} PRD-{}", run.state().feature);
+    let idea = Idea {
+        title: format!("friction: {prd}"),
+        state: "open".into(),
+        added: scaffold::today(),
+        origin: Some(format!("{prd} run {}", run.id())),
+        body: format!("{section}\n\nFrom {}\n", retro.display()),
+        ..Idea::default()
+    };
+    if let Ok(id) = ideas::add(source, &idea) {
+        let path = source.join(ideas::DIR).join(format!("{id}.md"));
+        let _ = say(out, &format!("friction: filed {}", path.display()));
+    }
+}
+
+/// The text under `## Framework friction…` up to the next `## ` heading,
+/// trimmed; empty when the retro has no such section.
+fn friction(retro: &str) -> String {
+    retro
+        .lines()
+        .skip_while(|l| !l.starts_with("## Framework friction"))
+        .skip(1)
+        .take_while(|l| !l.starts_with("## "))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
 }
 
 /// `fix(NNN): polish review fixes`: the paths the stream named plus
@@ -1800,6 +1855,13 @@ pub fn settle_orphan(
             sha: committed.as_ref().map(|c| c.sha.clone()),
             files: committed.map(|c| c.files).unwrap_or_default(),
         })?;
+        // As the live path, after the event (AD-1): the next pass sees polish
+        // done and never files. The scheduler hands orphans no config, so it
+        // is read here; an unreadable one files nothing (AD-30001).
+        let repo = run.state().repo.clone();
+        if let Ok(loaded) = config::load_with_project(&paths::config_dir(), &repo) {
+            file_friction(run, board, &loaded.config, out);
+        }
         return Ok(());
     }
     let events = run.events()?;
@@ -2280,6 +2342,21 @@ mod tests {
         assert!(shipped_in(state));
         assert!(!shipped_in("status = \"in-progress\"\n"));
         assert!(!shipped_in("# no state\nstatus = shipped\n"));
+    }
+
+    #[test]
+    fn the_friction_section_is_read_to_the_next_heading_or_the_end() {
+        let template = retro_template();
+        assert_eq!(
+            friction(&template),
+            "A step, rule or template in the framework itself. Name the skill and the section."
+        );
+        let two =
+            "# Retro\n\n## Framework friction → skills repo\n\n- one\n- two\n\n## Score\n\nx\n";
+        assert_eq!(friction(two), "- one\n- two");
+        let last = "# Retro\n\n## Framework friction → skills repo\n- tail\n### sub\nmore\n";
+        assert_eq!(friction(last), "- tail\n### sub\nmore");
+        assert_eq!(friction("# Retro\n\n## Score\n"), "");
     }
 
     #[test]

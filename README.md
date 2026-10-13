@@ -33,7 +33,7 @@ The inversion is the whole idea. **The binary orchestrates; the model only build
 
 **The docs framework.** `docs/project.toml` holds the project's knobs: the gate, the inner loop, lane count, model and effort per role, a per-run token budget. Each feature folder has `prd.md`, its slices, a `state.toml` written only by the binary under a lock, an append-only `log.jsonl` of decisions, blocks and notes, and a `retro.md`. `factory docs check` validates the board and runs as a pre-commit hook. `factory docs migrate` moves a repo from the previous format in one reviewable diff.
 
-**The skills.** The judgment calls stay in Claude Code as thin skills, shipped from this repo and installed by `factory` into each project: `/prd`, `/slice`, `/deliver` (the cockpit), `/polish`, `/gate`, `/harness`, `/prune`, `/ux`, `/lanes`. Project skills are rendered from a profile plus overlays, never copied, and drift is detected by hash. Three scopes with promotion: project, user, base.
+**The skills.** The judgment calls stay in Claude Code as thin skills, shipped from this repo and installed by `factory` into each project: `/prd`, `/slice`, `/deliver` (the cockpit), `/polish`, `/gate`, `/harness`, `/prune`, `/ux`, and `/lanes` (planned). They live in `skills/` and ship inside the binary. `factory init` writes byte-identical copies into each repo's `.claude/skills/`, with a manifest of their hashes, so `factory docs doctor` says when a repo's copy is behind, ahead or hand-edited.
 
 **The gate.** `/gate` interviews a project into one command that proves a change is done: tiered checks for lint, types, coverage floors, complexity, mutation, size budgets and architecture rules, measured against reality and proven to fail before they are declared. Every slice's Verify task, every checkpoint and the polish pass run that one command. A fast subset is the inner loop.
 
@@ -57,18 +57,29 @@ The inversion is the whole idea. **The binary orchestrates; the model only build
 
 ## Where it stands
 
-Early and green. The driver (PRD-001), the metrics store (PRD-003) and the docs port (PRD-002) are built and merged, and the binary has delivered three features in this repo and two in production Laravel repos. Workers are Claude Code only. Lanes share a working tree today; isolated lanes are the next driver PRD. The skills still live outside this repo; moving them in with an installer is PRD-004. The learn loop, stack plugins and a bug inbox fed by production errors are ideas with a shape, not code.
+Early and green. The driver (PRD-001), the metrics store (PRD-003) and the docs port (PRD-002) are built and merged, and the binary has delivered three features in this repo and two in production Laravel repos. Workers are Claude Code only. Lanes share a working tree today; isolated lanes are the next driver PRD. The skills now live in `skills/` and ship inside the binary; the installer that writes them into a repo is PRD-004. The learn loop, stack plugins and a bug inbox fed by production errors are ideas with a shape, not code.
 
 It is built for one developer so far. What a team repo commits, and what stays on the machine that ran it, is an open decision.
 
 ## Trying it
 
-You need Rust, the `claude` CLI logged in, and `gh` authenticated.
+You need the `claude` CLI logged in and `gh` authenticated. On Linux or macOS:
+
+```
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/emilianotisato/factory/releases/latest/download/factory-installer.sh | sh
+```
+
+or, from a checkout, with Rust:
 
 ```
 cargo install --path .
+```
+
+`factory upgrade` updates an installed binary to the latest release.
+
+```
 factory --help
-factory docs init        # in a project: project.toml, index.md, features/, ideas/, archive/
+factory init             # in a project: the docs layout, the skills in .claude/skills/, the convention block
 factory docs gate set "<the command that proves a change is done>"
 ```
 

@@ -31,6 +31,11 @@ enum Command {
     Report(cli::report::ReportArgs),
     /// Write a run's numbers into its feature's retro.md
     Retro(cli::retro::RetroArgs),
+    /// Ask a reviewer from another vendor
+    Review {
+        #[command(subcommand)]
+        verb: cli::review::ReviewVerb,
+    },
     /// Code lookups for workers: definitions, references, outlines
     Ctx {
         #[command(subcommand)]
@@ -38,6 +43,15 @@ enum Command {
     },
     /// The PreToolUse hook the driver injects into every worker
     Hook,
+    /// Set a repo up: the docs layout, the skill family, the convention block
+    Init,
+    /// Bring this repo's skills to the binary's bundle
+    Skills {
+        #[command(subcommand)]
+        verb: cli::skills::SkillsVerb,
+    },
+    /// Replace this binary with the latest release
+    Upgrade(cli::upgrade::UpgradeArgs),
     /// The feature-docs board: native on v3, `docs.mjs` on a v2 repo
     #[command(disable_help_flag = true)]
     Docs {
@@ -60,8 +74,13 @@ fn main() -> ExitCode {
         Command::Retro(a) => cli::retro::retro(&a, &mut stdout()),
         Command::Wait(a) => cli::wait::wait(&a, &mut stdout(), &mut stderr()),
         Command::Status(a) => cli::status::status(&a, &mut stdout(), &mut stderr()),
+        Command::Review { verb } => cli::review::review(&verb, &mut stdout(), &mut stderr()),
         Command::Ctx { verb } => ctx::run(&verb, Path::new("."), &mut stdout(), &mut stderr()),
         Command::Hook => cli::hook::hook(&mut stdin(), &mut stdout(), &mut stderr()),
+        // One code path: `factory init` routes exactly as `factory docs init`.
+        Command::Init => cli::docs::docs(&["init".to_string()], &mut stdout(), &mut stderr()),
+        Command::Skills { verb } => cli::skills::skills(&verb, &mut stdout()),
+        Command::Upgrade(a) => cli::upgrade::upgrade(&a, &mut stdout()),
         Command::Docs { args } => cli::docs::docs(&args, &mut stdout(), &mut stderr()),
     };
     match result {

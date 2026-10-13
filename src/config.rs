@@ -22,6 +22,30 @@ pub const DEFAULT_EFFORT: &str = "high";
 pub struct Config {
     pub budget_weighted_tokens: u64,
     pub workers: Workers,
+    /// `[source]`: the skills checkout friction ideas land in (PRD-004 FR-7).
+    pub source: Option<SourceRepo>,
+    /// `[review]`: the cross-vendor second opinion (PRD-004 FR-6).
+    pub review: Review,
+}
+
+/// `[source] path`: a checkout of the factory repo. `Source` is taken: it
+/// names the scope a knob came from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceRepo {
+    pub path: PathBuf,
+}
+
+/// `[review]`: who `factory review second` runs and how. The owner's own
+/// facts (a renamed binary, a rate-limited model) live in this file, never
+/// in the skills.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Review {
+    /// A name on PATH or a path.
+    pub agent: String,
+    pub model: String,
+    pub timeout_secs: u64,
+    pub pass_lines: u64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,6 +69,19 @@ impl Default for Config {
         Config {
             budget_weighted_tokens: DEFAULT_BUDGET,
             workers: Workers::default(),
+            source: None,
+            review: Review::default(),
+        }
+    }
+}
+
+impl Default for Review {
+    fn default() -> Self {
+        Review {
+            agent: "cursor-agent".into(),
+            model: "grok-4.7-high".into(),
+            timeout_secs: 900,
+            pass_lines: 600,
         }
     }
 }
@@ -100,11 +137,13 @@ pub struct WorkerSources {
     pub effort: Source,
 }
 
-const TOP_KEYS: [&str; 2] = ["budget_weighted_tokens", "workers"];
+const TOP_KEYS: [&str; 4] = ["budget_weighted_tokens", "workers", "source", "review"];
 const PROJECT_TOP_KEYS: [&str; 3] = ["docs", "run", "workers"];
 const RUN_KEYS: [&str; 1] = ["budget"];
 const ROLE_KEYS: [&str; 4] = ["build", "fix", "checkpoint", "polish"];
 const WORKER_KEYS: [&str; 2] = ["model", "effort"];
+const SOURCE_KEYS: [&str; 1] = ["path"];
+const REVIEW_KEYS: [&str; 4] = ["agent", "model", "timeout_secs", "pass_lines"];
 
 /// The project scope, relative to the repo the run targets (PRD-003 FR-23).
 pub const PROJECT_FILE: &str = "docs/project.toml";
@@ -118,10 +157,16 @@ pub fn load(config_dir: &Path) -> Result<Loaded> {
         warnings: Vec::new(),
         sources: Sources::default(),
     };
-    let Some(table) = read_table(&path)? else {
+    let Some(mut table) = read_table(&path)? else {
         return Ok(loaded);
     };
     loaded.warnings = warn(&path, unknown_keys(&table, &TOP_KEYS));
+    if drop_pathless_source(&mut table) {
+        loaded.warnings.push(format!(
+            "{}: `[source]` has no `path` string, ignored",
+            path.display()
+        ));
+    }
     loaded.sources.budget = scope(&table, &["budget_weighted_tokens"], Source::User);
     for (role, s) in loaded.sources.workers.each_mut() {
         s.model = scope(&table, &["workers", role, "model"], Source::User);
@@ -133,7 +178,18 @@ pub fn load(config_dir: &Path) -> Result<Loaded> {
             what: format!("read {}", path.display()),
             source,
         })?;
+    if let Some(s) = &mut loaded.config.source {
+        s.path = expand_home(&s.path);
+    }
     Ok(loaded)
+}
+
+/// A leading `~/` against `$HOME`; any other path as written.
+fn expand_home(path: &Path) -> PathBuf {
+    match path.strip_prefix("~") {
+        Ok(rest) => crate::paths::home().join(rest),
+        Err(_) => path.to_path_buf(),
+    }
 }
 
 /// The user file, then `<repo>/docs/project.toml` when present, its
@@ -273,6 +329,19 @@ fn scope(table: &toml::Table, at: &[&str], scope: Source) -> Source {
     if v.is_some() { scope } else { Source::Default }
 }
 
+/// A `[source]` with no string `path` (`[source] dir = …`) is taken out
+/// before the typed read, so it loads as no `[source]` and warns instead of
+/// failing every command that reads the config. `true` when it was.
+fn drop_pathless_source(table: &mut toml::Table) -> bool {
+    let pathless = table
+        .get("source")
+        .is_some_and(|s| !s.get("path").is_some_and(toml::Value::is_str));
+    if pathless {
+        table.remove("source");
+    }
+    pathless
+}
+
 fn warn(path: &Path, keys: Vec<String>) -> Vec<String> {
     keys.into_iter()
         .map(|k| format!("{}: unknown key `{k}` ignored", path.display()))
@@ -291,6 +360,17 @@ fn unknown_keys(table: &toml::Table, top: &[&str]) -> Vec<String> {
                 .filter(|k| !RUN_KEYS.contains(&k.as_str()))
                 .map(|k| format!("run.{k}")),
         );
+    }
+    // A misspelled `[review]` or `[source]` key (`timeout` for
+    // `timeout_secs`) would otherwise fall back to the default unsaid.
+    for (name, keys) in [("source", &SOURCE_KEYS[..]), ("review", &REVIEW_KEYS[..])] {
+        if let (true, Some(toml::Value::Table(t))) = (top.contains(&name), table.get(name)) {
+            out.extend(
+                t.keys()
+                    .filter(|k| !keys.contains(&k.as_str()))
+                    .map(|k| format!("{name}.{k}")),
+            );
+        }
     }
     if let Some(toml::Value::Table(workers)) = table.get("workers") {
         for (role, v) in workers {
@@ -383,5 +463,95 @@ mod tests {
         assert_eq!(a.sources.workers.fix.effort, Source::Default);
         let k = knobs(&a, None, None);
         assert!(k["lanes"].is_null() && k["claude_version"].is_null());
+    }
+
+    #[test]
+    fn the_source_path_is_read_and_its_tilde_expanded() {
+        let (cfg, _) = dirs(None, None);
+        assert_eq!(load(cfg.path()).unwrap().config.source, None);
+        for (written, want) in [
+            ("/x", PathBuf::from("/x")),
+            ("~/p", crate::paths::home().join("p")),
+        ] {
+            let (cfg, _) = dirs(Some(&format!("[source]\npath = \"{written}\"\n")), None);
+            let l = load(cfg.path()).unwrap();
+            assert_eq!(l.config.source.map(|s| s.path), Some(want));
+            assert!(l.warnings.is_empty(), "{:?}", l.warnings);
+        }
+    }
+
+    #[test]
+    fn a_source_without_a_path_warns_and_loads_as_none() {
+        for written in [
+            "[source]\ndir = \"/x\"\n",
+            "[source]\npath = 1\n",
+            "source = \"/x\"\n",
+        ] {
+            let (cfg, _) = dirs(Some(written), None);
+            let l = load(cfg.path()).unwrap();
+            assert_eq!(l.config.source, None, "{written}");
+            assert!(
+                l.warnings
+                    .iter()
+                    .any(|w| w.contains("`[source]` has no `path`")),
+                "{written}: {:?}",
+                l.warnings
+            );
+        }
+        let (cfg, _) = dirs(Some("[source]\ndir = \"/x\"\n"), None);
+        let l = load(cfg.path()).unwrap();
+        assert!(
+            l.warnings.iter().any(|w| w.contains("`source.dir`")),
+            "{:?}",
+            l.warnings
+        );
+    }
+
+    #[test]
+    fn an_unknown_key_in_review_or_source_warns_and_the_default_stands() {
+        let (cfg, _) = dirs(
+            Some("[review]\ntimeout = 60\n\n[source]\npath = \"/x\"\nbranch = \"main\"\n"),
+            None,
+        );
+        let l = load(cfg.path()).unwrap();
+        assert_eq!(l.config.review, Review::default());
+        assert_eq!(l.config.source.map(|s| s.path), Some(PathBuf::from("/x")));
+        assert_eq!(l.warnings.len(), 2, "{:?}", l.warnings);
+        assert!(
+            l.warnings[0].contains("unknown key `source.branch`"),
+            "{:?}",
+            l.warnings
+        );
+        assert!(
+            l.warnings[1].contains("unknown key `review.timeout`"),
+            "{:?}",
+            l.warnings
+        );
+    }
+
+    #[test]
+    fn review_defaults_fill_every_key_the_file_leaves_out() {
+        let (cfg, _) = dirs(None, None);
+        assert_eq!(load(cfg.path()).unwrap().config.review, Review::default());
+        let d = Review::default();
+        assert_eq!(
+            (
+                d.agent.as_str(),
+                d.model.as_str(),
+                d.timeout_secs,
+                d.pass_lines
+            ),
+            ("cursor-agent", "grok-4.7-high", 900, 600)
+        );
+        let (cfg, _) = dirs(Some("[review]\ntimeout_secs = 2\n"), None);
+        let l = load(cfg.path()).unwrap();
+        assert_eq!(
+            l.config.review,
+            Review {
+                timeout_secs: 2,
+                ..Review::default()
+            }
+        );
+        assert!(l.warnings.is_empty(), "{:?}", l.warnings);
     }
 }

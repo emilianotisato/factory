@@ -11,6 +11,7 @@ use super::project;
 use super::state;
 use crate::config::PROJECT_FILE;
 use crate::error::io;
+use crate::skills;
 use crate::{Error, Result, clock};
 
 pub const INDEX: &str = include_str!("../../assets/docs/index.md");
@@ -18,6 +19,10 @@ pub const PRD: &str = include_str!("../../assets/docs/prd.scaffold.md");
 pub const SLICE: &str = include_str!("../../assets/docs/slice.scaffold.md");
 /// `docs/ideas/README.md`: the inbox rules for one file per idea (FR-20).
 pub const IDEAS_README: &str = include_str!("../../assets/docs/ideas-README.md");
+/// The block `init` appends to `CLAUDE.md` and `AGENTS.md` (PRD-004 FR-2).
+/// No backtick span in it may hold the word "verify": `docs gate` scans these
+/// two files for gate hints that way.
+pub const CONVENTION: &str = include_str!("../../assets/docs/convention.md");
 
 /// `docs/.gitignore`: the feature locks never show in `git status`, so
 /// preflight's clean-tree check and the driver's folder commits ignore them.
@@ -43,8 +48,19 @@ fn write_new(path: &Path, text: &str) -> Result<()> {
     fs::write(path, text).map_err(io(format!("write {}", path.display())))
 }
 
-/// `docs init`: whatever of the v3 layout is missing, never overwriting.
+/// `factory init` and its alias `docs init`: whatever of the v3 layout is
+/// missing, never overwriting; the skill family when no manifest records one;
+/// the convention block where its heading is absent. Commits nothing: it
+/// prints the line that would.
 pub fn init(root: &Path, out: &mut dyn Write) -> Result<()> {
+    // With a manifest the skills are `factory skills update`'s; a source
+    // checkout reads `skills/` live (PRD-004 FR-2). First, so a layout
+    // `render` refuses leaves the repo untouched.
+    let rendered = if root.join(skills::MANIFEST).exists() || skills::source_checkout(root) {
+        None
+    } else {
+        Some(skills::render(root)?)
+    };
     let docs = root.join("docs");
     let mut made: Vec<String> = Vec::new();
     let toml = root.join(PROJECT_FILE);
@@ -84,14 +100,120 @@ pub fn init(root: &Path, out: &mut dyn Write) -> Result<()> {
             .map_err(io(format!("write {}", ignore.display())))?;
         made.push("docs/.gitignore".into());
     }
-    if made.is_empty() {
+    let (convention, skipped) = convention(root)?;
+    let say_skipped = |out: &mut dyn Write| -> Result<()> {
+        for (name, why) in &skipped {
+            say(out, &format!("convention block: skipped {name} ({why})"))?;
+        }
+        Ok(())
+    };
+    if made.is_empty() && rendered.is_none() && convention.is_empty() {
+        say_skipped(out)?;
         return say(out, "already initialised");
     }
-    say(out, &format!("created {}", made.join(", ")))?;
+    let version = env!("CARGO_PKG_VERSION");
+    let mut paths: Vec<String> = Vec::new();
+    if !made.is_empty() {
+        say(out, &format!("created {}", made.join(", ")))?;
+        paths.push("docs".into());
+    }
+    if let Some(r) = &rendered {
+        say(out, &r.summary())?;
+        paths.extend(r.dirs().into_iter().map(String::from));
+    }
+    if !convention.is_empty() {
+        say(out, &format!("convention block: {}", convention.join(", ")))?;
+        paths.extend(convention);
+    }
+    say_skipped(out)?;
+    let subject = match rendered {
+        Some(_) => format!("chore: factory init (skills {version})"),
+        None => "chore: factory init".to_string(),
+    };
     say(
         out,
-        "next: declare the verify gate under [docs] in docs/project.toml (`gate = \"<cmd>\"`), or run /gate",
+        &format!(
+            "commit: git add {} && git commit -m \"{subject}\"",
+            paths.join(" ")
+        ),
+    )?;
+    say(
+        out,
+        "next, in order: the gate (factory docs gate set \"<cmd>\", or /gate), the harness (/harness), the UX rubric (/ux rubric)",
     )
+}
+
+/// A convention file left alone, and why.
+type Skipped = (&'static str, &'static str);
+
+/// Appends [`CONVENTION`] to `CLAUDE.md` and `AGENTS.md`, each created when
+/// absent and skipped when it already holds the heading. Each file is re-read
+/// just before its turn, so when `CLAUDE.md` is a link to `AGENTS.md` the
+/// append through the first name shows up in the second and the block lands
+/// once. Returns the repo-relative files written, a link's target in place of
+/// the link so `git add` picks the changed file, and the names skipped with
+/// why: a link resolving outside the repo, or nowhere, is never appended to.
+fn convention(root: &Path) -> Result<(Vec<String>, Vec<Skipped>)> {
+    let heading = CONVENTION.lines().next().unwrap_or_default();
+    let canon_root = fs::canonicalize(root).map_err(io(format!("resolve {}", root.display())))?;
+    let has_heading = |text: &str| text.lines().any(|l| l.trim_end() == heading);
+    let mut written: Vec<String> = Vec::new();
+    let mut skipped = Vec::new();
+    for name in ["CLAUDE.md", "AGENTS.md"] {
+        let path = root.join(name);
+        if fs::symlink_metadata(&path).is_ok() {
+            match fs::canonicalize(&path) {
+                Ok(p) if p.starts_with(&canon_root) => {}
+                Ok(_) => {
+                    skipped.push((name, "links outside the repo"));
+                    continue;
+                }
+                Err(_) => {
+                    skipped.push((name, "a dangling link"));
+                    continue;
+                }
+            }
+        }
+        let text = match fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => return Err(io(format!("read {}", path.display()))(e)),
+        };
+        if has_heading(&text) {
+            continue;
+        }
+        let sep = match text.as_str() {
+            "" => "",
+            t if t.ends_with('\n') => "\n",
+            _ => "\n\n",
+        };
+        let mut f = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(io(format!("open {}", path.display())))?;
+        f.write_all(format!("{sep}{CONVENTION}").as_bytes())
+            .map_err(io(format!("write {}", path.display())))?;
+        let shown = fs::canonicalize(&path)
+            .ok()
+            .and_then(|p| {
+                p.strip_prefix(&canon_root)
+                    .ok()
+                    .map(|r| r.to_string_lossy().into_owned())
+            })
+            .unwrap_or_else(|| name.to_string());
+        if !written.contains(&shown) {
+            written.push(shown);
+        }
+    }
+    // `CLAUDE.md -> AGENTS.md` with no `AGENTS.md` dangles on its turn and
+    // resolves once `AGENTS.md` is written: the block reached it, no skip.
+    skipped.retain(|(name, _)| {
+        !fs::canonicalize(root.join(name)).is_ok_and(|p| {
+            p.starts_with(&canon_root) && fs::read_to_string(&p).is_ok_and(|t| has_heading(&t))
+        })
+    });
+    Ok((written, skipped))
 }
 
 /// `allocateNumber` (`docs.mjs:1251`): the scan of `features/` and
