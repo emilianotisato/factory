@@ -235,3 +235,5 @@ Measured 2026-10-12 after both questionnaires and the blind review (`arca/run-a-
 - **Time:** run B reached its draft PR in 178 min (17:19 → 20:17), run A in 236 min. Build 88 min against 169; polish 33 against 62.
 - **Quality:** the owner's verdict put A one notch higher (ship as is against ship after minor fixes); the blind review put B two points higher (32 to 30). Both PRs are mergeable.
 - PR #65 stayed a draft after CI went green (4 of 4): by design, FR-6 says the driver never marks a PR ready without the owner. Run A's `/deliver` marked #64 ready itself.
+
+- **Correction (2026-10-12):** `factory report` omits subagents spawned by the polish worker (`ddbb0927`: UX review, security review, test classification), 2,294,981 weighted. Run B's corrected total is 19,439,039, 86.4% of run A. The icg run B misses 2,052,906 the same way (corrected 54.2%). See retro § Correction.

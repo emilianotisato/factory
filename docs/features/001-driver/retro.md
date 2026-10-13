@@ -187,14 +187,14 @@ Weighted as in the icg round. Run A from its 25 transcripts, run B from `factory
 | fixes | inside the above | 0.34M | — |
 | polish and closeout | 6.36M | 1.95M | 6.13M → 1.19M |
 | orchestrator or cockpit | 2.13M | 0.97M | 2.18M → 0.62M |
-| **total** | **22,488,877** | **17,144,058** (76.2%) | 41.5% |
+| **total** | **22,488,877** | **17,144,058** (76.2%); corrected 19,439,039 (86.4%), see below | 41.5%; corrected 54.2% |
 | launch to draft PR | 3h 56m | 2h 58m | 3h 07m → 3h 01m |
 
 ### Pass criteria (QA guide step 7)
 
 | criterion | result |
 |---|---|
-| `weighted_tokens(B) ≤ 0.6 × weighted_tokens(A)` | **fail**: 76.2%, 3.65M over the 13,493,326 bar |
+| `weighted_tokens(B) ≤ 0.6 × weighted_tokens(A)` | **fail**: 76.2% as reported, 86.4% corrected; 5.95M over the 13,493,326 bar |
 | `cockpit_tokens(B) ≤ 5%` of `weighted_tokens(B)` | **fail, narrowly**: 6.0% of the workers' figure, 5.7% of the total. It includes the 18-decision review and three hours of 25-minute check-ins. |
 | run B's draft PR has CI green | **pass**: 4 of 4 first time, then again after the review commit. The PR stays a draft by design (FR-6). |
 | questionnaire (step 5) | **pass** on the guide's rule (yes on 1–2, none on 6–7, 5 on 4, "after fixes" on 8), though one notch under A on 3 and 8 |
@@ -211,6 +211,19 @@ Weighted as in the icg round. Run A from its 25 transcripts, run B from `factory
 
 **FR-12's reversal rule:** builders' `followup_reads` is 1 of 11 (9%), under 30%, so no widening. `ctx_share` is under 10% on both projects now (7.3%, 2.5%), so the shrink trigger has fired twice. Owner's call.
 
+### Correction: `factory report` misses the polish worker's subagents
+
+Found 2026-10-12 while comparing models. The polish worker spawns its own subagents (UX review, security review, test classification), and their tokens never reach the worker's stream totals: `factory report` counts only the worker's own session. Weighed from the transcripts:
+
+| run | report | polish subagents missed | corrected total | ratio to A |
+|---|---|---|---|---|
+| icg B | 6,697,917 | 2,052,906 | 8,750,823 | 54.2% (still passes 0.6×) |
+| arca B | 17,144,058 | 2,294,981 | 19,439,039 | **86.4%** |
+
+So run B's polish really cost 4.24M on arca-api, against run A's 6.36M, and the driver's fixed saving is smaller than stated above: about 3.3M per project (polish −2.1M, orchestration −1.2M) rather than 5.5M. No other worker spawned subagents. This is an FR-8 defect: the metrics store must add a worker's subagent transcripts (`<session>/subagents/*.jsonl`) to its totals.
+
+**Models and effort were not a variable.** Every run B worker and the cockpit ran `opus` at `high`. Run A's orchestrator ran at `high`, and its subagents inherited it: 22 on Opus 5.5 by explicit `model: opus`, one on Sonnet 5.5 (a one-minute "Run padrón drive spec once"). The icg round had the same split.
+
 ### What the round found in factory
 
 No repair commits this time: no BLOCK, no leftovers, no owner question during the build. The icg fixes held on a real Go project. Two red gates (CP-4, CP-5) were fixed by the driver's own fix workers.
@@ -220,6 +233,7 @@ No repair commits this time: no BLOCK, no leftovers, no owner question during th
 
 ### Next
 
+- **Fix FR-8 first:** count a worker's subagent transcripts in its totals, then re-run `factory report` on both rounds.
 - **Owner's calls:** the two failed criteria (BLOCK under step 7), and the FR-12 shrink.
 - **The lever is builder turns and starting context, not lookups.** Options to weigh, cheapest first: a smaller fixed context per worker (trim the pack, check what Claude Code's own system prompt costs under `-p`); fewer turns per slice (batch edits, run the inner gate less often); a cheaper builder model or an advisor arm (`docs/ideas.md`). Measure each on one PRD before the next A/B.
 - **Merge picks for arca-api** are the owner's: #64 (A) or #65 (B) plus B's two minor fixes, or a mix as icg did with #26.
