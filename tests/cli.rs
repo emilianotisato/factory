@@ -9,8 +9,9 @@ use std::process::{Command, Stdio};
 use serde_json::{Value, json};
 
 const BIN: &str = env!("CARGO_BIN_EXE_factory");
-const SUBCOMMANDS: [&str; 11] = [
+const SUBCOMMANDS: [&str; 12] = [
     "run", "wait", "answer", "status", "stop", "report", "retro", "review", "ctx", "hook", "init",
+    "skills",
 ];
 
 #[test]

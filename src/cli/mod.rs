@@ -8,6 +8,7 @@ pub mod report;
 pub mod retro;
 pub mod review;
 pub mod run;
+pub mod skills;
 pub mod status;
 pub mod stop;
 pub mod wait;

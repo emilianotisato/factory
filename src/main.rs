@@ -45,6 +45,11 @@ enum Command {
     Hook,
     /// Set a repo up: the docs layout, the skill family, the convention block
     Init,
+    /// Bring this repo's skills to the binary's bundle
+    Skills {
+        #[command(subcommand)]
+        verb: cli::skills::SkillsVerb,
+    },
     /// The feature-docs board: native on v3, `docs.mjs` on a v2 repo
     #[command(disable_help_flag = true)]
     Docs {
@@ -72,6 +77,7 @@ fn main() -> ExitCode {
         Command::Hook => cli::hook::hook(&mut stdin(), &mut stdout(), &mut stderr()),
         // One code path: `factory init` routes exactly as `factory docs init`.
         Command::Init => cli::docs::docs(&["init".to_string()], &mut stdout(), &mut stderr()),
+        Command::Skills { verb } => cli::skills::skills(&verb, &mut stdout()),
         Command::Docs { args } => cli::docs::docs(&args, &mut stdout(), &mut stderr()),
     };
     match result {
