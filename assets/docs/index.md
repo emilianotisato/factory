@@ -46,7 +46,7 @@ _(none yet)_
 1. If it's a loose idea, put it in `ideas/` first.
 2. When it earns real work: `/prd` → `factory docs new <slug> --title "…"` → `features/{NNN}-{slug}/prd.md` and `state.toml` (`draft`).
 3. Agreed? `factory docs set NNN status=ready`.
-4. Big PRD? `/prd-to-tasks` → `factory docs slice NNN <subject> [--depends a,b]` per slice. Small PRD? No slices — build straight from `prd.md`.
+4. Big PRD? `/slice` → `factory docs slice NNN <subject> [--depends a,b]` per slice. Small PRD? No slices — build straight from `prd.md`.
 5. Slice numbering is **per-feature and local** (`slice-01`…).
 
 ### While building

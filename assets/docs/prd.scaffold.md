@@ -45,7 +45,7 @@ _(Every FR gets a row. "Human?" is yes only for a judgment a machine cannot make
 
 ## 6. Slices
 
-_(Not sliced yet. Run `/prd-to-tasks`, or write "No slices — build straight from this document" if it is small.)_
+_(Not sliced yet. Run `/slice`, or write "No slices — build straight from this document" if it is small.)_
 
 ## 7. Non-goals
 

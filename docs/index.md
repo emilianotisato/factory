@@ -49,7 +49,7 @@ _(none yet)_
 1. If it's a loose idea, add a one-liner to [`ideas.md`](ideas/README.md) first.
 2. When it earns real work: `/prd` → `features/{NNN}-{slug}/prd.md` (next free `{NNN}`).
 3. Add a row to **Live features** above with status `draft`/`ready`.
-4. Big PRD? `/prd-to-tasks` → `slice-01-{subject}.md`, `slice-02-…` in the same folder. Small PRD? No slices — build straight from `prd.md`.
+4. Big PRD? `/slice` → `slice-01-{subject}.md`, `slice-02-…` in the same folder. Small PRD? No slices — build straight from `prd.md`.
 5. Slice numbering is **per-feature and local** (`slice-01`…).
 
 ### While building
