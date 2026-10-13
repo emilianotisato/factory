@@ -842,7 +842,11 @@ fn knobs_text(k: Option<&Value>) -> String {
         // `2.1.296 (Claude Code)` reads `2.1.296`.
         format!(
             "claude {}",
-            or_dash(k["claude_version"].as_str().and_then(|v| v.split_whitespace().next()))
+            or_dash(
+                k["claude_version"]
+                    .as_str()
+                    .and_then(|v| v.split_whitespace().next())
+            )
         ),
     ]);
     parts.join(" · ")

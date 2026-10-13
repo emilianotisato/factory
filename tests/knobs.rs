@@ -96,7 +96,10 @@ fn a_project_file_sets_the_polish_model_and_the_row_says_so() {
     // The model came from the project file, the effort from the default.
     assert_eq!(knobs["workers"]["polish"]["effort_source"], "default");
     assert!(knobs["workers"]["build"].get("effort_source").is_none());
-    assert_eq!(knobs["budget"], json!({"value": 30_000_000, "source": "default"}));
+    assert_eq!(
+        knobs["budget"],
+        json!({"value": 30_000_000, "source": "default"})
+    );
     assert_eq!(knobs["lanes"], 1);
     assert!(!knobs["factory_version"].as_str().unwrap().is_empty());
     assert_eq!(knobs["claude_version"], "2.1.296 (Claude Code)");
@@ -107,7 +110,13 @@ fn a_project_file_sets_the_polish_model_and_the_row_says_so() {
     assert_eq!(workers.len(), 5);
     for w in &workers {
         let want = if w.role == "polish" { "sonnet" } else { "opus" };
-        assert_eq!(w.model_id.as_deref(), Some(want), "{} {:?}", w.role, w.slice);
+        assert_eq!(
+            w.model_id.as_deref(),
+            Some(want),
+            "{} {:?}",
+            w.role,
+            w.slice
+        );
         assert_eq!(w.model.as_deref(), Some(want));
     }
 
@@ -122,9 +131,18 @@ fn a_project_file_sets_the_polish_model_and_the_row_says_so() {
             .to_string()
     };
     let knobs_line = line("knobs");
-    assert!(knobs_line.contains("build opus/high default"), "{knobs_line}");
-    assert!(knobs_line.contains("polish sonnet/high project/default"), "{knobs_line}");
-    assert!(knobs_line.ends_with("lanes 1 · factory 0.1.0 · claude 2.1.296"), "{knobs_line}");
+    assert!(
+        knobs_line.contains("build opus/high default"),
+        "{knobs_line}"
+    );
+    assert!(
+        knobs_line.contains("polish sonnet/high project/default"),
+        "{knobs_line}"
+    );
+    assert!(
+        knobs_line.ends_with("lanes 1 · factory 0.1.0 · claude 2.1.296"),
+        "{knobs_line}"
+    );
     assert_eq!(line("hypothesis"), format!("hypothesis: {HYPOTHESIS}"));
     assert!(
         report
@@ -146,7 +164,14 @@ fn a_hypothesis_is_written_once_at_creation() {
     let fx = Fixture::with_index("knobs-hypothesis", &[("lanes", "1")]);
     let out = factory(
         &fx,
-        &["run", "001", "--budget", "5000000", "--hypothesis", HYPOTHESIS],
+        &[
+            "run",
+            "001",
+            "--budget",
+            "5000000",
+            "--hypothesis",
+            HYPOTHESIS,
+        ],
     );
     assert_eq!(out.status.code(), Some(0), "{}", text(&out.stdout));
     let id = only_run_id(&fx);
@@ -155,7 +180,10 @@ fn a_hypothesis_is_written_once_at_creation() {
     assert_eq!(row.phase, "waiting-owner");
     assert_eq!(row.hypothesis.as_deref(), Some(HYPOTHESIS));
     let knobs: Value = serde_json::from_str(row.knobs.as_deref().unwrap()).unwrap();
-    assert_eq!(knobs["budget"], json!({"value": 5_000_000, "source": "flag"}));
+    assert_eq!(
+        knobs["budget"],
+        json!({"value": 5_000_000, "source": "flag"})
+    );
 
     // The same run again: the new text is refused with one line.
     let out = factory(&fx, &["run", "001", "--hypothesis", "other"]);
