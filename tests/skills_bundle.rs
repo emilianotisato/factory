@@ -1,10 +1,14 @@
 //! PRD-004 slice 01: the embedded bundle matches `skills/` on disk, and this
-//! repo's `.claude/skills/` link into the live source.
+//! repo's `.claude/skills/` link into the live source. Slice 07: the bundle
+//! lock matches `Cargo.toml` and the bundle.
 
-use factory::skills::{FILES, NAMES};
+use factory::skills::{self, FILES, LOCK, Lock, Manifest, NAMES, bundle_hash, check_lock, relock};
 use std::collections::BTreeSet;
 use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::OnceLock;
 
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -91,4 +95,54 @@ fn models_md_holds_no_invocation_and_the_skills_call_review_second() {
         let text = fs::read_to_string(skills.join(&f)).unwrap_or_default();
         assert!(!text.contains("\"A diff\" invocation"), "{f}");
     }
+}
+
+/// The lock this run checks against. With `FACTORY_BUNDLE_WRITE` set, the
+/// first caller rewrites it (FR-5's refusal applies) and every test in this
+/// binary sees the same result, so no reader races the write.
+fn lock() -> &'static Result<Lock, String> {
+    static LOCKED: OnceLock<Result<Lock, String>> = OnceLock::new();
+    LOCKED.get_or_init(|| {
+        let path = root().join(LOCK);
+        let old = match fs::read_to_string(&path) {
+            Ok(text) => Some(Lock::parse(&text)?),
+            Err(e) if e.kind() == ErrorKind::NotFound => None,
+            Err(e) => return Err(format!("read {LOCK}: {e}")),
+        };
+        let (version, hash) = (env!("CARGO_PKG_VERSION"), bundle_hash());
+        if std::env::var_os("FACTORY_BUNDLE_WRITE").is_some() {
+            let new = relock(old.as_ref(), version, &hash)?;
+            fs::write(&path, new.text()).map_err(|e| format!("write {LOCK}: {e}"))?;
+            return Ok(new);
+        }
+        let old = old.ok_or(format!("no {LOCK}: run FACTORY_BUNDLE_WRITE=1 cargo test"))?;
+        check_lock(&old, version, &hash)?;
+        Ok(old)
+    })
+}
+
+/// PRD-004 FR-5: a skill edit cannot ship under the old version.
+#[test]
+fn bundle_lock_matches() {
+    if let Err(e) = lock() {
+        panic!("{e}");
+    }
+}
+
+/// PRD-004 FR-5: the lock records what `init` writes into a manifest.
+#[test]
+fn the_lock_records_what_a_manifest_carries() {
+    let lock = lock().as_ref().unwrap_or_else(|e| panic!("{e}"));
+    let repo = tempfile::tempdir().unwrap();
+    let ok = Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(repo.path())
+        .status()
+        .unwrap();
+    assert!(ok.success());
+    skills::render(repo.path()).unwrap();
+    let text = fs::read_to_string(repo.path().join(skills::MANIFEST)).unwrap();
+    let manifest: Manifest = toml::from_str(&text).unwrap();
+    assert_eq!(manifest.bundle, lock.sha256);
+    assert_eq!(manifest.version, lock.version);
 }

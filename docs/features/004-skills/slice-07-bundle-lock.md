@@ -3,7 +3,13 @@
 **Source**: [`prd.md`](prd.md) → §7 FR-5 (every decision and the acceptance), §10 FR-8's human row ("the owner tags `v0.2.0` … installs `0.2.0`"), which needs the crate at `0.2.0` before the tag. **Depends on**: 02 (the acceptance compares the lock with the `bundle` value `skills::render` writes into a manifest), 04 (it is the last slice that edits `skills/`; locking before it would cost a second bump inside this PRD).
 **Created**: 2026-10-13
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**: built 2026-10-13.
+
+- **Built**: `src/skills.rs` gains `LOCK`, `Lock` (`parse`, `text`), `version_parts` (the one integer parser; slice 03's `verdict_for` calls it too, AD-6), `check_lock` and `relock`, with six unit tests covering every case task 1 lists. `tests/skills_bundle.rs` gains `bundle_lock_matches` and `the_lock_records_what_a_manifest_carries`, both reading one `OnceLock` result so a write run never races a reader (AD-7). `Cargo.toml` and `Cargo.lock` move to `0.2.0`; `skills/bundle.lock` is written at `0.2.0`, sha256 `8845b9b6…2619`. `tests/knobs.rs` builds its expected tail from `CARGO_PKG_VERSION`.
+- **Lock written**: `cargo test --test skills_bundle` with no lock went red twice with `no skills/bundle.lock: run FACTORY_BUNDLE_WRITE=1 cargo test`. The write run passed 5 of 5, and the plain run after it passed 5 of 5.
+- **Inner loop**: 2 runs, 1 red, 1.2 min. The red run was `cargo fmt --check` on the new code. The green run took 71 s.
+- **Commit**: `Cargo.toml`, `Cargo.lock`, `skills/bundle.lock`, `tests/skills_bundle.rs` and `tests/knobs.rs` are staged by name. `src/skills.rs` also holds slice 03's uncommitted hunks (AD-6).
+- **Prove**: the FR-5 row (the four worktree transcripts) is left for the checkpoint.
 
 **Slice**: After this slice a skill edit cannot ship under an old version number. `skills/bundle.lock` records the crate version and the bundle hash, and a gate test fails whenever either one disagrees with `Cargo.toml` and the embedded bundle, naming the lock and the two lines that fix it. `FACTORY_BUNDLE_WRITE=1 cargo test` rewrites the lock, but refuses when the bundle changed and the version did not go up. The crate moves to `0.2.0`, the first version that carries the family, and the lock is written at it. Tagging `v0.2.0` is the owner's, after the merge (qa-guide).
 

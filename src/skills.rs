@@ -118,6 +118,83 @@ pub fn bundle_hash() -> String {
     hash_of(FILES)
 }
 
+/// The bundle lock (FR-5), relative to the source repo's root.
+pub const LOCK: &str = "skills/bundle.lock";
+
+/// `skills/bundle.lock`: the crate version the bundle last shipped under and
+/// its [`bundle_hash`]. A skill edit cannot ship under an old version.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Lock {
+    pub version: String,
+    pub sha256: String,
+}
+
+impl Lock {
+    pub fn parse(text: &str) -> std::result::Result<Lock, String> {
+        toml::from_str(text).map_err(|e| format!("unreadable {LOCK}: {e}"))
+    }
+
+    pub fn text(&self) -> String {
+        format!(
+            "# Written by FACTORY_BUNDLE_WRITE=1 cargo test. Do not edit by hand.\n{}",
+            toml::to_string(self).expect("two strings serialize")
+        )
+    }
+}
+
+/// `major.minor.patch` as three integers: `0.10.0` is above `0.9.0`, which
+/// a string comparison gets wrong.
+pub fn version_parts(v: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = v.split('.').map(|p| p.parse::<u64>().ok());
+    let triple = (parts.next()??, parts.next()??, parts.next()??);
+    parts.next().is_none().then_some(triple)
+}
+
+/// `Ok` only when the lock matches both the crate version and the bundle.
+/// The error names the lock, each side that differs, and the two lines that
+/// fix it.
+pub fn check_lock(lock: &Lock, version: &str, hash: &str) -> std::result::Result<(), String> {
+    let mut why = Vec::new();
+    if lock.sha256 != hash {
+        why.push(format!("  bundle changed: {} → {hash}", lock.sha256));
+    }
+    if lock.version != version {
+        why.push(format!(
+            "  version: lock {}, Cargo.toml {version}",
+            lock.version
+        ));
+    }
+    if why.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "{LOCK} is stale:\n{}\nfix:\n  bump version in Cargo.toml\n  FACTORY_BUNDLE_WRITE=1 cargo test",
+        why.join("\n")
+    ))
+}
+
+/// The lock `FACTORY_BUNDLE_WRITE=1` writes. Refuses when the bundle changed
+/// and `version` is not above the old lock's: a skill edit needs a bump. A
+/// bump over an unchanged bundle (a binary-only release) re-locks freely.
+pub fn relock(old: Option<&Lock>, version: &str, hash: &str) -> std::result::Result<Lock, String> {
+    let new = Lock {
+        version: version.to_string(),
+        sha256: hash.to_string(),
+    };
+    let Some(old) = old.filter(|o| o.sha256 != hash) else {
+        return Ok(new);
+    };
+    let parts = |v: &str| version_parts(v).ok_or(format!("version {v} is not three integers"));
+    if parts(version)? > parts(&old.version)? {
+        Ok(new)
+    } else {
+        Err(format!(
+            "skills changed since {0}: bump Cargo.toml past {0} first",
+            old.version
+        ))
+    }
+}
+
 /// `.claude/skills/factory.toml`. `files` keys are relative to
 /// `.claude/skills/`; `links` keys are repo-relative, valued with the target.
 /// BTreeMaps keep the file byte-stable across renders.
@@ -229,9 +306,357 @@ pub fn source_checkout(root: &Path) -> bool {
     prd.starts_with(src)
 }
 
+/// The manifest's version against the binary's.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Version {
+    Current(String),
+    Behind { repo: String, binary: String },
+    Ahead { repo: String, binary: String },
+    Differs(String),
+}
+
+/// What a repo's skills are against this binary's bundle (FR-3).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Verdict {
+    /// `.claude/skills/prd` resolves inside `<root>/skills/` (FR-2).
+    SourceCheckout,
+    /// No manifest.
+    None,
+    /// A manifest that does not parse, or whose version is not three integers.
+    Unreadable(String),
+    Checked {
+        version: Version,
+        /// Manifest files whose bytes differ, relative to `.claude/skills/`.
+        hand_edited: Vec<String>,
+        /// Manifest files absent on disk, relative to `.claude/skills/`.
+        missing: Vec<String>,
+    },
+}
+
+/// The manifest at `root`, `None` when there is none.
+pub fn read_manifest(root: &Path) -> std::result::Result<Option<Manifest>, String> {
+    let text = match fs::read_to_string(root.join(MANIFEST)) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.to_string()),
+    };
+    toml::from_str(&text)
+        .map(Some)
+        .map_err(|e| e.message().trim().to_string())
+}
+
+/// Compares the repo's skills with the binary's. Reads only.
+pub fn verdict(root: &Path) -> Verdict {
+    verdict_for(root, env!("CARGO_PKG_VERSION"))
+}
+
+/// [`verdict`] against a given binary version.
+fn verdict_for(root: &Path, binary: &str) -> Verdict {
+    if source_checkout(root) {
+        return Verdict::SourceCheckout;
+    }
+    let m = match read_manifest(root) {
+        Ok(Some(m)) => m,
+        Ok(None) => return Verdict::None,
+        Err(e) => return Verdict::Unreadable(e),
+    };
+    let binary = binary.to_string();
+    let (Some(repo_v), Some(bin_v)) = (version_parts(&m.version), version_parts(&binary)) else {
+        return Verdict::Unreadable(format!("version \"{}\" is not three integers", m.version));
+    };
+    let version = match repo_v.cmp(&bin_v) {
+        std::cmp::Ordering::Less => Version::Behind {
+            repo: m.version,
+            binary,
+        },
+        std::cmp::Ordering::Greater => Version::Ahead {
+            repo: m.version,
+            binary,
+        },
+        std::cmp::Ordering::Equal if m.bundle != bundle_hash() => Version::Differs(binary),
+        std::cmp::Ordering::Equal => Version::Current(binary),
+    };
+    let skills = root.join(SKILLS_DIR);
+    let (mut hand_edited, mut missing) = (Vec::new(), Vec::new());
+    for (rel, hash) in &m.files {
+        match fs::read(skills.join(rel)) {
+            Ok(bytes) if sha256_hex(&bytes) == *hash => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => missing.push(rel.clone()),
+            _ => hand_edited.push(rel.clone()),
+        }
+    }
+    Verdict::Checked {
+        version,
+        hand_edited,
+        missing,
+    }
+}
+
+impl Verdict {
+    /// Doctor's `skills` lines: the version line unless current, then the
+    /// hand-edit and missing lines; `current (<v>)` only when none applies.
+    pub fn lines(&self) -> Vec<String> {
+        let (version, hand_edited, missing) = match self {
+            Verdict::SourceCheckout => return vec!["source checkout".into()],
+            Verdict::None => return vec!["none → factory init".into()],
+            Verdict::Unreadable(e) => return vec![format!("unreadable {MANIFEST}: {e}")],
+            Verdict::Checked {
+                version,
+                hand_edited,
+                missing,
+            } => (version, hand_edited, missing),
+        };
+        let mut out = Vec::new();
+        match version {
+            Version::Current(_) => {}
+            Version::Behind { repo, binary } => out.push(format!(
+                "behind (repo {repo}, binary {binary}) → factory skills update"
+            )),
+            Version::Ahead { repo, binary } => out.push(format!(
+                "ahead (repo {repo}, binary {binary}) → factory upgrade"
+            )),
+            Version::Differs(v) => out.push(format!(
+                "differs ({v} both, bundle differs: a dev build) → factory skills update"
+            )),
+        }
+        if !hand_edited.is_empty() {
+            out.push(format!("hand-edited: {}", hand_edited.join(", ")));
+        }
+        if !missing.is_empty() {
+            out.push(format!("missing: {}", missing.join(", ")));
+        }
+        if let (true, Version::Current(v)) = (out.is_empty(), version) {
+            out.push(format!("current ({v})"));
+        }
+        out
+    }
+
+    /// Preflight's `ok` side: `current` and `source checkout`. Every other
+    /// verdict is a judge line.
+    pub fn is_ok(&self) -> bool {
+        match self {
+            Verdict::SourceCheckout => true,
+            Verdict::Checked {
+                version: Version::Current(_),
+                hand_edited,
+                missing,
+            } => hand_edited.is_empty() && missing.is_empty(),
+            _ => false,
+        }
+    }
+}
+
+/// A manifest key that stays under the dir it is joined to: plain names
+/// only, no `..`, no root. A hand-written manifest must not reach out of it.
+fn plain(rel: &str) -> bool {
+    !rel.is_empty()
+        && Path::new(rel)
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)))
+}
+
+/// After a [`render`]: removes what `old` lists and `new` lacks, files under
+/// `.claude/skills/` and links under `.agents/skills/`, then the directories
+/// under `.claude/skills/` the removals left empty. Returns the repo-relative
+/// paths removed.
+pub fn remove_dropped(root: &Path, old: &Manifest, new: &Manifest) -> Result<Vec<String>> {
+    let skills = root.join(SKILLS_DIR);
+    let mut removed = Vec::new();
+    for rel in old.files.keys().filter(|r| !new.files.contains_key(*r)) {
+        let path = skills.join(rel);
+        if !plain(rel) || fs::symlink_metadata(&path).is_err() {
+            continue;
+        }
+        clear(&path)?;
+        removed.push(format!("{SKILLS_DIR}/{rel}"));
+        let mut dir = path.parent();
+        while let Some(d) = dir.filter(|d| *d != skills && d.starts_with(&skills)) {
+            if fs::remove_dir(d).is_err() {
+                break;
+            }
+            dir = d.parent();
+        }
+    }
+    let prefix = format!("{LINKS_DIR}/");
+    for rel in old.links.keys().filter(|r| !new.links.contains_key(*r)) {
+        let Some(name) = rel.strip_prefix(&prefix) else {
+            continue;
+        };
+        let path = root.join(LINKS_DIR).join(name);
+        if !plain(name) || fs::symlink_metadata(&path).is_err() {
+            continue;
+        }
+        clear(&path)?;
+        removed.push(rel.clone());
+    }
+    Ok(removed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const V: &str = env!("CARGO_PKG_VERSION");
+
+    fn rendered() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        render(dir.path()).unwrap();
+        dir
+    }
+
+    fn edit_manifest(root: &Path, f: impl FnOnce(&mut Manifest)) {
+        let mut m = read_manifest(root).unwrap().unwrap();
+        f(&mut m);
+        fs::write(root.join(MANIFEST), toml::to_string(&m).unwrap()).unwrap();
+    }
+
+    fn append(root: &Path, rel: &str) {
+        let path = root.join(SKILLS_DIR).join(rel);
+        let text = fs::read_to_string(&path).unwrap();
+        fs::write(&path, format!("{text}x")).unwrap();
+    }
+
+    #[test]
+    fn a_fresh_render_is_current() {
+        let dir = rendered();
+        let v = verdict(dir.path());
+        assert_eq!(v.lines(), [format!("current ({V})")]);
+        assert!(v.is_ok());
+    }
+
+    #[test]
+    fn no_manifest_is_none() {
+        let dir = rendered();
+        fs::remove_file(dir.path().join(MANIFEST)).unwrap();
+        let v = verdict(dir.path());
+        assert_eq!(v.lines(), ["none → factory init"]);
+        assert!(!v.is_ok());
+    }
+
+    #[test]
+    fn behind_with_a_hand_edit_prints_both_version_first() {
+        let dir = rendered();
+        edit_manifest(dir.path(), |m| m.version = "0.0.0".into());
+        append(dir.path(), "polish/SKILL.md");
+        assert_eq!(
+            verdict(dir.path()).lines(),
+            [
+                format!("behind (repo 0.0.0, binary {V}) → factory skills update"),
+                "hand-edited: polish/SKILL.md".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_newer_manifest_is_ahead() {
+        let dir = rendered();
+        edit_manifest(dir.path(), |m| m.version = "999.0.0".into());
+        assert_eq!(
+            verdict(dir.path()).lines(),
+            [format!(
+                "ahead (repo 999.0.0, binary {V}) → factory upgrade"
+            )]
+        );
+    }
+
+    #[test]
+    fn versions_compare_as_integers_not_text() {
+        let dir = rendered();
+        edit_manifest(dir.path(), |m| m.version = "0.10.0".into());
+        assert_eq!(
+            verdict_for(dir.path(), "0.9.0").lines(),
+            ["ahead (repo 0.10.0, binary 0.9.0) → factory upgrade"]
+        );
+    }
+
+    #[test]
+    fn same_version_other_bundle_differs() {
+        let dir = rendered();
+        edit_manifest(dir.path(), |m| m.bundle = "0".repeat(64));
+        let v = verdict(dir.path());
+        assert_eq!(
+            v.lines(),
+            [format!(
+                "differs ({V} both, bundle differs: a dev build) → factory skills update"
+            )]
+        );
+        assert!(!v.is_ok());
+    }
+
+    #[test]
+    fn an_edited_file_alone_prints_hand_edited_alone() {
+        let dir = rendered();
+        append(dir.path(), "polish/SKILL.md");
+        append(dir.path(), "gate/SKILL.md");
+        let v = verdict(dir.path());
+        assert_eq!(v.lines(), ["hand-edited: gate/SKILL.md, polish/SKILL.md"]);
+        assert!(!v.is_ok());
+    }
+
+    #[test]
+    fn a_deleted_file_is_missing() {
+        let dir = rendered();
+        fs::remove_file(dir.path().join(SKILLS_DIR).join("ux/SKILL.md")).unwrap();
+        assert_eq!(verdict(dir.path()).lines(), ["missing: ux/SKILL.md"]);
+    }
+
+    #[test]
+    fn a_link_into_skills_is_a_source_checkout() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("skills/prd")).unwrap();
+        fs::create_dir_all(dir.path().join(SKILLS_DIR)).unwrap();
+        symlink("../../skills/prd", dir.path().join(SKILLS_DIR).join("prd")).unwrap();
+        let v = verdict(dir.path());
+        assert_eq!(v.lines(), ["source checkout"]);
+        assert!(v.is_ok());
+    }
+
+    #[test]
+    fn a_bad_manifest_is_unreadable_not_guessed() {
+        let dir = rendered();
+        edit_manifest(dir.path(), |m| m.version = "0.2".into());
+        assert_eq!(
+            verdict(dir.path()).lines(),
+            [format!(
+                "unreadable {MANIFEST}: version \"0.2\" is not three integers"
+            )]
+        );
+        fs::write(dir.path().join(MANIFEST), "version = 3\n").unwrap();
+        let lines = verdict(dir.path()).lines();
+        assert!(
+            lines.len() == 1 && lines[0].starts_with(&format!("unreadable {MANIFEST}: ")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn remove_dropped_takes_files_links_and_empty_dirs_only() {
+        let dir = rendered();
+        let root = dir.path();
+        let new = read_manifest(root).unwrap().unwrap();
+        let mut old = new.clone();
+        fs::create_dir_all(root.join(SKILLS_DIR).join("old/references")).unwrap();
+        fs::write(root.join(SKILLS_DIR).join("old/references/a.md"), "a").unwrap();
+        old.files
+            .insert("old/references/a.md".into(), file_hash("a"));
+        old.files.insert("../outside.md".into(), file_hash("o"));
+        fs::write(root.join("outside.md"), "o").unwrap();
+        symlink(link_target("old"), root.join(LINKS_DIR).join("old")).unwrap();
+        old.links
+            .insert(format!("{LINKS_DIR}/old"), link_target("old"));
+        let removed = remove_dropped(root, &old, &new).unwrap();
+        assert_eq!(
+            removed,
+            [
+                format!("{SKILLS_DIR}/old/references/a.md"),
+                format!("{LINKS_DIR}/old")
+            ]
+        );
+        assert!(fs::symlink_metadata(root.join(SKILLS_DIR).join("old")).is_err());
+        assert!(fs::symlink_metadata(root.join(LINKS_DIR).join("old")).is_err());
+        assert!(root.join("outside.md").is_file());
+        assert!(root.join(SKILLS_DIR).join("prd/SKILL.md").is_file());
+    }
 
     #[test]
     fn one_changed_byte_changes_the_hash() {
@@ -258,6 +683,71 @@ mod tests {
         for pair in FILES.windows(2) {
             assert!(pair[0].0 < pair[1].0, "{} then {}", pair[0].0, pair[1].0);
         }
+    }
+
+    fn lock(version: &str, sha256: &str) -> Lock {
+        Lock {
+            version: version.to_string(),
+            sha256: sha256.to_string(),
+        }
+    }
+
+    #[test]
+    fn a_lock_matching_both_sides_passes() {
+        assert_eq!(check_lock(&lock("0.2.0", "aa"), "0.2.0", "aa"), Ok(()));
+    }
+
+    #[test]
+    fn a_skill_edit_without_a_bump_fails_and_cannot_relock() {
+        let old = lock("0.2.0", "aa");
+        let err = check_lock(&old, "0.2.0", "bb").unwrap_err();
+        assert!(err.starts_with("skills/bundle.lock is stale:"), "{err}");
+        assert!(err.contains("bundle changed: aa → bb"), "{err}");
+        assert!(!err.contains("version: lock"), "{err}");
+        assert!(
+            err.ends_with("bump version in Cargo.toml\n  FACTORY_BUNDLE_WRITE=1 cargo test"),
+            "{err}"
+        );
+        assert_eq!(
+            relock(Some(&old), "0.2.0", "bb"),
+            Err("skills changed since 0.2.0: bump Cargo.toml past 0.2.0 first".to_string())
+        );
+        assert!(relock(Some(&old), "0.1.9", "bb").is_err());
+    }
+
+    #[test]
+    fn a_skill_edit_with_a_bump_relocks() {
+        let old = lock("0.2.0", "aa");
+        assert_eq!(relock(Some(&old), "0.2.1", "bb"), Ok(lock("0.2.1", "bb")));
+        assert_eq!(relock(None, "0.2.0", "aa"), Ok(lock("0.2.0", "aa")));
+    }
+
+    #[test]
+    fn a_binary_only_bump_fails_the_check_and_relocks_freely() {
+        let old = lock("0.2.0", "aa");
+        let err = check_lock(&old, "0.2.1", "aa").unwrap_err();
+        assert!(
+            err.contains("version: lock 0.2.0, Cargo.toml 0.2.1"),
+            "{err}"
+        );
+        assert!(!err.contains("bundle changed"), "{err}");
+        assert_eq!(relock(Some(&old), "0.2.1", "aa"), Ok(lock("0.2.1", "aa")));
+    }
+
+    #[test]
+    fn versions_compare_as_integers() {
+        assert_eq!(version_parts("0.10.0"), Some((0, 10, 0)));
+        assert!(version_parts("0.10.0") > version_parts("0.9.0"));
+        assert!(relock(Some(&lock("0.9.0", "aa")), "0.10.0", "bb").is_ok());
+        for bad in ["0.2", "0.2.0.1", "0.2.x", "", "0.2.0-rc1"] {
+            assert_eq!(version_parts(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_lock_round_trips_through_its_text() {
+        let l = lock("0.2.0", "aa");
+        assert_eq!(Lock::parse(&l.text()), Ok(l));
     }
 
     #[test]
