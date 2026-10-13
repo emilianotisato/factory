@@ -2,8 +2,8 @@
 //! FR-8). When the board says a checkpoint is due the driver drains the
 //! lanes, runs the gate itself (one `gates` row per run, cached on the code
 //! tree), spawns a fix worker on every red and commits its files, blocks
-//! after three reds, folds the slice logs, hands the green transcript to a
-//! checkpoint worker that writes `CP-n`, and commits the checkpoint. A run
+//! after three reds, hands the green transcript to a checkpoint worker that
+//! logs `CP-n` in `log.jsonl`, and commits the checkpoint. A run
 //! killed mid-checkpoint resumes at the checkpoint; the end of a run is its
 //! last checkpoint.
 #[path = "harness/mod.rs"]
@@ -22,7 +22,9 @@ use serde_json::{Value, json};
 
 const BIN: &str = env!("CARGO_BIN_EXE_factory");
 const FEATURE_DIR: &str = "docs/features/001-fixture";
-const AGENT_LOG: &str = "docs/features/001-fixture/agent-log.md";
+/// The feature's append-only log (PRD-002 FR-14): blocks, answers, notes,
+/// decisions and the `CP-n` entries, one JSON line each.
+const LOG: &str = "docs/features/001-fixture/log.jsonl";
 const BUILD: &str =
     "Build slice {NN} of PRD-001 as the appended system prompt says. Return the STATUS block.";
 const FIX: &str = "Fix the red gate at checkpoint {n} of PRD-001 as the appended system prompt says. Return the STATUS block.";
@@ -135,12 +137,12 @@ fn wait_until(fx: &Fixture, dir: &Path, what: &str, secs: u64, mut ok: impl FnMu
                 .map(|n| format!("{n:02}={}", fx.slice_status(n)))
                 .collect();
             panic!(
-                "timed out after {secs}s waiting for {what}\n--- state.json\n{}\n--- events\n{:?}\n--- slices {statuses:?}\n--- git log\n{}\n--- driver.log\n{}\n--- agent-log.md\n{}",
+                "timed out after {secs}s waiting for {what}\n--- state.json\n{}\n--- events\n{:?}\n--- slices {statuses:?}\n--- git log\n{}\n--- driver.log\n{}\n--- log.jsonl\n{}",
                 state(dir),
                 kinds(dir),
                 fx.git(&["log", "--format=%h %s"]),
                 driver_log(dir),
-                fs::read_to_string(fx.path().join(AGENT_LOG)).unwrap_or_default()
+                log_lines(fx).join("\n")
             );
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -194,8 +196,90 @@ fn files_of(fx: &Fixture, sha: &str) -> Vec<String> {
     v
 }
 
-fn fragment(n: u8) -> String {
-    format!("{FEATURE_DIR}/log-slice-{n:02}.md")
+/// The raw lines of the feature's `log.jsonl`; none when it has no file yet.
+fn log_lines(fx: &Fixture) -> Vec<String> {
+    fs::read_to_string(fx.path().join(LOG))
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+/// The log's entries of `kind`, read from the file itself: a poll that
+/// lands on a line still being written skips it.
+fn logged(fx: &Fixture, kind: &str) -> Vec<Value> {
+    log_lines(fx)
+        .iter()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|e| e["kind"] == kind)
+        .collect()
+}
+
+/// The one raw line of the entry `id`.
+fn raw_line(fx: &Fixture, id: &str) -> String {
+    let needle = format!("\"id\":\"{id}\"");
+    let hits: Vec<String> = log_lines(fx)
+        .into_iter()
+        .filter(|l| l.contains(&needle))
+        .collect();
+    assert_eq!(hits.len(), 1, "{id} lines: {hits:?}");
+    hits[0].clone()
+}
+
+/// The `answer` entries whose `ref` is `id`.
+fn answers_to(fx: &Fixture, id: &str) -> Vec<Value> {
+    fx.log_of("answer")
+        .into_iter()
+        .filter(|e| e["ref"] == id)
+        .collect()
+}
+
+/// The one `block` entry `id`, from `log show --json`.
+fn block(fx: &Fixture, id: &str) -> Value {
+    let hits: Vec<Value> = fx
+        .log_of("block")
+        .into_iter()
+        .filter(|e| e["id"] == id)
+        .collect();
+    assert_eq!(hits.len(), 1, "{id}: {hits:?}");
+    hits[0].clone()
+}
+
+fn body(e: &Value) -> &str {
+    e["body"].as_str().unwrap_or_else(|| panic!("no body: {e}"))
+}
+
+/// The `note` bodies with `title`.
+fn notes(fx: &Fixture, title: &str) -> Vec<String> {
+    fx.log_of("note")
+        .iter()
+        .filter(|e| e["title"] == title)
+        .map(|e| body(e).to_string())
+        .collect()
+}
+
+/// `(id, slice)` of every `decision` entry, in log order.
+fn decisions(fx: &Fixture) -> Vec<(String, u64)> {
+    fx.log_of("decision")
+        .iter()
+        .map(|e| {
+            (
+                e["id"].as_str().unwrap().to_string(),
+                e["slice"].as_u64().unwrap(),
+            )
+        })
+        .collect()
+}
+
+/// No v2 log file is left in the feature folder: no `agent-log.md`, no
+/// `log-slice-*.md` fragment.
+fn assert_no_v2_logs(fx: &Fixture) {
+    let left: Vec<String> = fs::read_dir(fx.path().join(FEATURE_DIR))
+        .unwrap()
+        .filter_map(|e| e.ok()?.file_name().into_string().ok())
+        .filter(|f| f == "agent-log.md" || (f.starts_with("log-") && f.ends_with(".md")))
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
 }
 
 fn done() -> Value {
@@ -276,20 +360,26 @@ fn gate_shape(rows: &[GateRow], n: u32) -> Vec<(bool, bool, u32)> {
         .collect()
 }
 
-/// The log's own entries, without the template's fenced examples: `docs new`
-/// creates agent-log.md from a template whose examples include a `### CP-1`.
-fn entries(log: &str) -> &str {
-    log.find("\n```markdown").map_or(log, |i| &log[..i])
-}
-
-fn assert_cp(log: &str, n: u32, after: u8, covers: &str) {
-    let heading = format!("### CP-{n} — after slice-{after:02} · ");
-    let log = entries(log);
-    let i = log
-        .find(&heading)
-        .unwrap_or_else(|| panic!("{heading} missing from\n{log}"));
-    let entry = &log[i..];
-    let entry = &entry[..entry[4..].find("\n### ").map_or(entry.len(), |j| j + 4)];
+/// `CP-n` is one `checkpoint` entry with `slice` = the last covered slice.
+fn assert_cp(fx: &Fixture, n: u32, after: u8, covers: &str) {
+    let id = format!("CP-{n}");
+    let cps: Vec<Value> = fx
+        .log_of("checkpoint")
+        .into_iter()
+        .filter(|e| e["id"] == id)
+        .collect();
+    assert_eq!(cps.len(), 1, "{id}: {:?}", fx.log_entries());
+    let cp = &cps[0];
+    assert_eq!(cp["slice"], after, "{cp}");
+    assert_eq!(cp["phase"], "checkpoint", "{cp}");
+    assert!(
+        cp["title"]
+            .as_str()
+            .unwrap()
+            .starts_with(&format!("after slice-{after:02} · ")),
+        "{cp}"
+    );
+    let entry = body(cp);
     assert!(
         entry.contains(&format!("**Covers:** slices {covers}")),
         "{entry}"
@@ -304,21 +394,14 @@ fn assert_two_checkpoints(fx: &Fixture, dir: &Path) {
     for n in 1..=3 {
         assert_eq!(fx.slice_status(n), "done", "slice {n:02}");
     }
-    let log = fx.read(AGENT_LOG);
-    assert_cp(&log, 1, 2, "01, 02");
-    assert_cp(&log, 2, 3, "03");
-    for ad in ["AD-101", "AD-201", "AD-301"] {
-        assert!(
-            log.contains(&format!("### {ad} —")),
-            "{ad} missing from\n{log}"
-        );
-    }
-    for n in 1..=3 {
-        assert!(
-            !fx.path().join(fragment(n)).exists(),
-            "fragment {n} survived"
-        );
-    }
+    assert_cp(fx, 1, 2, "01, 02");
+    assert_cp(fx, 2, 3, "03");
+    // One decision per slice, numbered by the tool in commit order.
+    assert_eq!(
+        decisions(fx),
+        [("AD-1".into(), 1), ("AD-2".into(), 2), ("AD-3".into(), 3)]
+    );
+    assert_no_v2_logs(fx);
     let board = fx.docs_json("status");
     assert_eq!(board["unverified"], json!([]), "{board}");
     assert_eq!(board["checkpointDue"], false, "{board}");
@@ -327,15 +410,26 @@ fn assert_two_checkpoints(fx: &Fixture, dir: &Path) {
         Some(2),
         "{board}"
     );
-    let prd = fx.read(&format!("{FEATURE_DIR}/prd.md"));
-    assert_eq!(prd.matches("| ✅ done |").count(), 3, "{prd}");
+    let done: Vec<&str> = board["slices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["status"].as_str().unwrap())
+        .collect();
+    assert_eq!(done, ["done", "done", "done"], "{board}");
     for n in 1..=2u32 {
         let sha = sha_of(fx, &format!("docs(001): checkpoint {n}"));
         let files = files_of(fx, &sha);
-        assert!(files.contains(&AGENT_LOG.to_string()), "CP-{n}: {files:?}");
+        assert!(files.contains(&LOG.to_string()), "CP-{n}: {files:?}");
         assert!(
             files.iter().all(|f| f.starts_with("docs/")),
             "CP-{n} commit holds code: {files:?}"
+        );
+        // The commit carries the CP entry itself.
+        let committed = fx.git(&["show", &format!("{sha}:{LOG}")]);
+        assert!(
+            committed.contains(&format!("\"id\":\"CP-{n}\"")),
+            "{committed}"
         );
         let ev = of_kind(dir, "checkpoint_done")
             .into_iter()
@@ -356,10 +450,10 @@ fn assert_two_checkpoints(fx: &Fixture, dir: &Path) {
     }
     let f1 = files_of(fx, &sha_of(fx, "docs(001): checkpoint 1"));
     assert!(
-        f1.contains(&fragment(1)) && f1.contains(&fragment(2)),
+        !f1.iter()
+            .any(|f| f == "docs/index.md" || f.contains("/log-slice-")),
         "{f1:?}"
     );
-    assert!(f1.contains(&format!("{FEATURE_DIR}/prd.md")), "{f1:?}");
     assert_eq!(fx.git(&["status", "--porcelain"]), "");
     fx.git(&["fsck", "--strict"]);
     assert_eq!(state(dir)["phase"], "finished");
@@ -471,8 +565,7 @@ fn the_driver_runs_the_gate_at_each_checkpoint_and_commits_the_cp_entries() {
         "# Contract",
         "You are running checkpoint 1 of PRD-001",
         "slices 01, 02: each one's Prove task",
-        "`### CP-1 — after slice-02 · {date}`",
-        "`docs/features/001-fixture/agent-log.md`",
+        "--kind checkpoint --phase checkpoint --slice 02 --title \"after slice-02\"",
         "# Autonomy",
     ] {
         assert!(
@@ -487,10 +580,8 @@ fn the_driver_runs_the_gate_at_each_checkpoint_and_commits_the_cp_entries() {
     assert_eq!(name, "checkpoint-2-5.md");
     assert!(pack.contains("## slice-03 — C"), "{pack}");
     assert!(!pack.contains("## slice-01"), "{pack}");
-    assert!(
-        pack.contains("`### CP-2 — after slice-03 · {date}`"),
-        "{pack}"
-    );
+    assert!(pack.contains("--title \"after slice-03\""), "{pack}");
+    harness::assert_v3_contract(&pack);
     let w = &state(&dir)["workers"][2];
     assert_eq!(w["role"], "checkpoint");
     assert_eq!(w["checkpoint"], 1);
@@ -505,11 +596,8 @@ fn the_driver_runs_the_gate_at_each_checkpoint_and_commits_the_cp_entries() {
     assert_eq!(spawned.len(), 2);
     assert_eq!(spawned[0]["attempt"], 1);
     assert_eq!(spawned[0]["session_id"], calls[2]["session_id"]);
-    let merged = of_kind(&dir, "log_merged");
-    assert_eq!(merged.len(), 2);
-    assert_eq!(merged[0]["fragments"], json!([fragment(1), fragment(2)]));
-    assert_eq!(merged[1]["fragments"], json!([fragment(3)]));
-    assert!(merged[0].get("sha").is_none(), "{}", merged[0]);
+    // No merge step: the slices' entries are in log.jsonl as they land.
+    assert_eq!(count(&kinds(&dir), "log_merged"), 0);
 
     assert_eq!(
         kinds_from(&dir, "slice_spawned"),
@@ -522,7 +610,6 @@ fn the_driver_runs_the_gate_at_each_checkpoint_and_commits_the_cp_entries() {
             "slice_committed",
             "checkpoint_started",
             "gate_run",
-            "log_merged",
             "checkpoint_spawned",
             "checkpoint_done",
             "slice_spawned",
@@ -530,7 +617,6 @@ fn the_driver_runs_the_gate_at_each_checkpoint_and_commits_the_cp_entries() {
             "slice_committed",
             "checkpoint_started",
             "gate_run",
-            "log_merged",
             "checkpoint_spawned",
             "checkpoint_done",
             "polish_spawned",
@@ -728,7 +814,7 @@ fn red_red_green_runs_two_fix_workers_and_three_gates_before_the_cp() {
         "# Contract",
         "You are fixing a red gate at checkpoint 1 of PRD-001",
         "`fix(001): gate red at checkpoint 1`",
-        "start at AD-9101",
+        "--kind block --phase checkpoint",
         "# Autonomy",
         "# Inner loop",
     ] {
@@ -738,6 +824,7 @@ fn red_red_green_runs_two_fix_workers_and_three_gates_before_the_cp() {
         );
     }
     assert!(!pack.contains("# Slice"), "{pack}");
+    harness::assert_v3_contract(&pack);
     let (name, pack) = pack_of(&calls[3]);
     assert_eq!(name, "fix-1-4.md");
     assert!(
@@ -761,7 +848,6 @@ fn red_red_green_runs_two_fix_workers_and_three_gates_before_the_cp() {
             "fix_spawned",
             "fix_committed",
             "gate_run",
-            "log_merged",
             "checkpoint_spawned",
             "checkpoint_done",
             "slice_spawned",
@@ -769,7 +855,6 @@ fn red_red_green_runs_two_fix_workers_and_three_gates_before_the_cp() {
             "slice_committed",
             "checkpoint_started",
             "gate_run",
-            "log_merged",
             "checkpoint_spawned",
             "checkpoint_done",
             "polish_spawned",
@@ -819,22 +904,31 @@ fn three_reds_block_the_run_and_the_answer_reruns_the_gate() {
             "fix(001): gate red at checkpoint 1",
         ]
     );
-    for n in 1..=2 {
-        assert!(
-            fx.path().join(fragment(n)).exists(),
-            "fragment {n} merged before green"
-        );
-    }
-    let log = fx.read(AGENT_LOG);
-    assert!(log.starts_with("# Agent log — PRD-001\n"), "{log}");
+    // Nothing of the checkpoint lands before green: the slices' decisions
+    // are in the log, no `CP-1`.
+    assert_eq!(decisions(&fx), [("AD-1".into(), 1), ("AD-2".into(), 2)]);
+    assert!(fx.log_of("checkpoint").is_empty(), "{:?}", fx.log_entries());
+    assert_no_v2_logs(&fx);
+    // Slice 09 task 3: exactly one `block` line, phase `checkpoint`, open.
     let title = format!("gate red three times at checkpoint 1: {FAIL_LINE}");
-    assert!(
-        log.contains(&format!("### BLOCK-1 — {title} · checkpoint · open")),
-        "{log}"
+    let blocks = fx.log_of("block");
+    assert_eq!(blocks.len(), 1, "{blocks:?}");
+    let b = &blocks[0];
+    assert_eq!(b["id"], "BLOCK-1", "{b}");
+    assert_eq!(b["title"], title.as_str(), "{b}");
+    assert_eq!(b["phase"], "checkpoint", "{b}");
+    assert!(b.get("slice").is_none_or(Value::is_null), "{b}");
+    assert!(answers_to(&fx, "BLOCK-1").is_empty());
+    let text = body(b);
+    assert!(text.contains("**Happened:** the gate (`./gate.sh`) was red 3 times in a row at checkpoint 1; 2 fix worker(s) ran"), "{text}");
+    assert!(text.contains(&format!("  {FAIL_LINE}\n")), "{text}");
+    assert!(text.contains("**Recommended:** 1"), "{text}");
+    let feature_dir = fx.path().join(FEATURE_DIR);
+    assert_eq!(
+        factory::checkpoint::open_checkpoint_blocks(&feature_dir).unwrap(),
+        [("BLOCK-1".to_string(), title.clone())]
     );
-    assert!(log.contains("**Happened:** the gate (`./gate.sh`) was red 3 times in a row at checkpoint 1; 2 fix worker(s) ran"), "{log}");
-    assert!(log.contains(&format!("  {FAIL_LINE}\n")), "{log}");
-    assert!(log.contains("**Recommended:** 1"), "{log}");
+    let block_line = raw_line(&fx, "BLOCK-1");
     let blocked = of_kind(&dir, "checkpoint_blocked");
     assert_eq!(blocked.len(), 1, "{blocked:?}");
     assert_eq!(blocked[0]["n"], 1);
@@ -860,7 +954,7 @@ fn three_reds_block_the_run_and_the_answer_reruns_the_gate() {
     let text = driver_log(&dir);
     assert!(
         text.contains(&format!(
-            "parked (waiting-owner): checkpoint blocked — {title}: BLOCK-1 in agent-log.md waits for the owner: `factory answer BLOCK-1 \"<text>\"`"
+            "parked (waiting-owner): checkpoint blocked — {title}: BLOCK-1 in log.jsonl waits for the owner: `factory answer BLOCK-1 \"<text>\"`"
         )),
         "{text}"
     );
@@ -875,6 +969,16 @@ fn three_reds_block_the_run_and_the_answer_reruns_the_gate() {
     let text = stdout(&out);
     assert_eq!(out.status.code(), Some(0), "{text}");
     assert!(text.starts_with("BLOCK-1 resolved ("), "{text}");
+    // Slice 09 task 3: one `answer` line with `ref: BLOCK-1`, the block line
+    // byte-identical, no open checkpoint block left.
+    let answers = answers_to(&fx, "BLOCK-1");
+    assert_eq!(answers.len(), 1, "{answers:?}");
+    assert_eq!(body(&answers[0]), "fixed the runner by hand");
+    assert_eq!(raw_line(&fx, "BLOCK-1"), block_line);
+    assert_eq!(
+        factory::checkpoint::open_checkpoint_blocks(&feature_dir).unwrap(),
+        []
+    );
     wait_phase(&fx, &dir, "finished", 90);
 
     let rows = gates(&fx, &dir);
@@ -902,7 +1006,6 @@ fn three_reds_block_the_run_and_the_answer_reruns_the_gate() {
         [
             "checkpoint_resumed",
             "gate_run",
-            "log_merged",
             "checkpoint_spawned",
             "checkpoint_done",
             "slice_spawned",
@@ -910,7 +1013,6 @@ fn three_reds_block_the_run_and_the_answer_reruns_the_gate() {
             "slice_committed",
             "checkpoint_started",
             "gate_run",
-            "log_merged",
             "checkpoint_spawned",
             "checkpoint_done",
             "polish_spawned",
@@ -938,12 +1040,11 @@ fn three_reds_block_the_run_and_the_answer_reruns_the_gate() {
             polish()
         ]
     );
-    let log = fx.read(AGENT_LOG);
-    assert!(
-        log.contains(&format!("### BLOCK-1 — {title} · checkpoint · resolved")),
-        "{log}"
-    );
-    assert!(log.contains("**Resolution ("), "{log}");
+    // Resolved by its one answer; the run wrote no other block or answer.
+    assert_eq!(fx.log_of("block").len(), 1);
+    assert_eq!(raw_line(&fx, "BLOCK-1"), block_line);
+    assert_eq!(answers_to(&fx, "BLOCK-1").len(), 1);
+    assert_eq!(fx.docs_json("status")["openBlocks"], json!([]));
     assert_two_checkpoints(&fx, &dir);
 }
 
@@ -1009,7 +1110,7 @@ fn a_run_killed_during_the_checkpoint_worker_resumes_at_the_checkpoint() {
     }
     assert_eq!(state(&dir)["phase"], "checkpoint");
     assert_eq!(state(&dir)["workers"][2]["outcome"], Value::Null);
-    assert!(!entries(&fx.read(AGENT_LOG)).contains("### CP-1"));
+    assert!(logged(&fx, "checkpoint").is_empty());
 
     // Resume: the orphan is settled, the gate is a cache hit, a fresh
     // checkpoint worker writes CP-1, and the run goes on to the end.
@@ -1036,7 +1137,6 @@ fn a_run_killed_during_the_checkpoint_worker_resumes_at_the_checkpoint() {
             "slice_committed",
             "checkpoint_started",
             "gate_cached",
-            "log_merged",
             "checkpoint_spawned",
             "checkpoint_done",
             "polish_spawned",
@@ -1084,13 +1184,12 @@ fn a_run_killed_during_the_checkpoint_worker_resumes_at_the_checkpoint() {
     assert_eq!(workers[2].outcome.as_deref(), Some("dead"));
     assert_eq!(workers[2].checkpoint, Some(1));
     assert_eq!(workers[3].outcome.as_deref(), Some("done"));
-    let log = fx.read(AGENT_LOG);
+    let dead_notes = notes(&fx, "Dead checkpoint worker");
     assert!(
-        log.contains("- **Dead checkpoint worker (")
-            && log.contains(&format!(
-                "checkpoint 1, session {sid0} exited (code unknown) with no result."
-            )),
-        "{log}"
+        dead_notes.iter().any(|n| n.contains(&format!(
+            "checkpoint 1, session {sid0} exited (code unknown) with no result."
+        ))),
+        "{dead_notes:?}"
     );
     let text = driver_log(&dir);
     assert!(
@@ -1127,7 +1226,6 @@ fn two_dead_checkpoint_workers_block_the_run_and_the_answer_spawns_a_third() {
         [
             "checkpoint_started",
             "gate_run",
-            "log_merged",
             "checkpoint_spawned",
             "worker_dead",
             "checkpoint_spawned",
@@ -1141,21 +1239,14 @@ fn two_dead_checkpoint_workers_block_the_run_and_the_answer_spawns_a_third() {
     assert_eq!(spawned[1]["attempt"], 2);
     let dead = of_kind(&dir, "worker_dead");
     assert_eq!(dead[0]["exit_code"], 137);
-    let log = fx.read(AGENT_LOG);
     let title = "Two checkpoint workers died at checkpoint 1";
-    assert!(
-        log.contains(&format!("### BLOCK-1 — {title} · checkpoint · open")),
-        "{log}"
-    );
-    assert_eq!(
-        log.matches("- **Dead checkpoint worker (").count(),
-        2,
-        "{log}"
-    );
-    assert!(
-        log.contains("### AD-101 —") && log.contains("### AD-201 —"),
-        "{log}"
-    );
+    let b = block(&fx, "BLOCK-1");
+    assert_eq!(b["title"], title, "{b}");
+    assert_eq!(b["phase"], "checkpoint", "{b}");
+    assert!(answers_to(&fx, "BLOCK-1").is_empty(), "open");
+    let dead_notes = notes(&fx, "Dead checkpoint worker");
+    assert_eq!(dead_notes.len(), 2, "{dead_notes:?}");
+    assert_eq!(decisions(&fx), [("AD-1".into(), 1), ("AD-2".into(), 2)]);
     let blocked = of_kind(&dir, "checkpoint_blocked");
     assert_eq!(blocked[0]["block_id"], "BLOCK-1");
     assert_eq!(blocked[0]["question"], title);
@@ -1190,7 +1281,6 @@ fn two_dead_checkpoint_workers_block_the_run_and_the_answer_spawns_a_third() {
             "slice_committed",
             "checkpoint_started",
             "gate_run",
-            "log_merged",
             "checkpoint_spawned",
             "checkpoint_done",
             "polish_spawned",
@@ -1221,11 +1311,10 @@ fn two_dead_checkpoint_workers_block_the_run_and_the_answer_spawns_a_third() {
             polish()
         ]
     );
-    let log = fx.read(AGENT_LOG);
-    assert!(
-        log.contains(&format!("### BLOCK-1 — {title} · checkpoint · resolved")),
-        "{log}"
-    );
+    assert_eq!(block(&fx, "BLOCK-1")["title"], title);
+    let answers = answers_to(&fx, "BLOCK-1");
+    assert_eq!(answers.len(), 1, "resolved: {answers:?}");
+    assert_eq!(body(&answers[0]), "logged in again");
     assert_two_checkpoints(&fx, &dir);
 }
 
@@ -1326,7 +1415,7 @@ fn a_checkpoint_worker_that_outlives_its_driver_gets_its_checkpoint_committed() 
     assert_eq!(unsafe { libc::kill(driver as i32, libc::SIGKILL) }, 0);
     wait_until(&fx, &dir, "the driver to die", 5, || !pid_alive(driver));
     wait_until(&fx, &dir, "the orphan to write CP-1", 20, || {
-        entries(&fx.read(AGENT_LOG)).contains("### CP-1")
+        logged(&fx, "checkpoint").iter().any(|e| e["id"] == "CP-1")
     });
     assert!(!subjects(&fx).iter().any(|s| s == "docs(001): checkpoint 1"));
 
@@ -1362,7 +1451,7 @@ fn a_checkpoint_worker_that_outlives_its_driver_gets_its_checkpoint_committed() 
     );
     let sha = sha_of(&fx, "docs(001): checkpoint 1");
     assert!(
-        files_of(&fx, &sha).contains(&AGENT_LOG.to_string()),
+        files_of(&fx, &sha).contains(&LOG.to_string()),
         "{:?}",
         files_of(&fx, &sha)
     );
@@ -1451,7 +1540,10 @@ fn a_resumed_checkpoint_counts_the_reds_its_dead_driver_saw() {
     );
     let rows = gates(&fx, &dir);
     assert_eq!(gate_shape(&rows, 1).len(), 3, "{rows:?}");
-    let log = fx.read(AGENT_LOG);
+    let blocks = fx.log_of("block");
+    assert_eq!(blocks.len(), 1, "{blocks:?}");
+    assert_eq!(blocks[0]["phase"], "checkpoint");
+    let log = body(&blocks[0]);
     assert!(
         log.contains("was red 3 times in a row at checkpoint 1; 2 fix worker(s) ran"),
         "{log}"

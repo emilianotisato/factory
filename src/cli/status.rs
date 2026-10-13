@@ -63,7 +63,7 @@ pub fn board(run: &Run) -> Result<Vec<String>> {
         elapsed(end.saturating_sub(started))
     ));
 
-    match Docs::locate(&s.repo).and_then(|d| d.status(&s.feature)) {
+    match Docs::open(&s.repo).and_then(|d| d.status(&s.feature)) {
         Ok(b) => {
             lines.push(slices_line(&b));
             lines.push(lanes_line(&b));

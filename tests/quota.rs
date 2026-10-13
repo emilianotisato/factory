@@ -22,7 +22,6 @@ use harness::Fixture;
 use serde_json::{Value, json};
 
 const BIN: &str = env!("CARGO_BIN_EXE_factory");
-const FEATURE_DIR: &str = "docs/features/001-fixture";
 const BUILD: &str =
     "Build slice {NN} of PRD-001 as the appended system prompt says. Return the STATUS block.";
 const FIX: &str = "Fix the red gate at checkpoint {n} of PRD-001 as the appended system prompt says. Return the STATUS block.";
@@ -231,18 +230,22 @@ fn gate_shape(rows: &[GateRow], n: u32) -> Vec<(bool, bool, u32)> {
         .collect()
 }
 
-fn slice_lane(fx: &Fixture, n: u8) -> Option<u32> {
-    let text = fs::read_to_string(fx.slice_path(n)).unwrap();
-    let end = text[4..].find("\n---").unwrap() + 4;
-    text[..end]
-        .lines()
-        .find_map(|l| l.strip_prefix("lane:"))
-        .map(|v| v.trim().parse().unwrap())
+/// Slice `n`'s entries of `log.jsonl`, of `kind` (any kind when `None`).
+fn slice_log(fx: &Fixture, n: u8, kind: Option<&str>) -> Vec<Value> {
+    fx.log_entries()
+        .into_iter()
+        .filter(|e| e["slice"] == json!(n))
+        .filter(|e| kind.is_none_or(|k| e["kind"] == k))
+        .collect()
 }
 
-fn fragment(fx: &Fixture, n: u8) -> String {
-    fs::read_to_string(fx.path().join(format!("{FEATURE_DIR}/log-slice-{n:02}.md")))
-        .unwrap_or_default()
+/// No `Dead worker` note on slice `n`.
+fn assert_no_dead_note(fx: &Fixture, n: u8) {
+    let notes: Vec<Value> = slice_log(fx, n, Some("note"))
+        .into_iter()
+        .filter(|e| e["title"] == "Dead worker")
+        .collect();
+    assert!(notes.is_empty(), "{notes:?}");
 }
 
 fn assert_all_done(fx: &Fixture) {
@@ -296,7 +299,7 @@ fn a_rate_limited_worker_pauses_the_run_until_the_reset() {
     wait_phase(&fx, &dir, "paused", 10);
     assert_eq!(state(&dir)["paused_until"], json!(resets_at));
     assert_eq!(fx.slice_status(1), "pending");
-    assert_eq!(slice_lane(&fx, 1), None);
+    assert_eq!(fx.slice_lane(1), None);
     assert_eq!(fx.calls().len(), 1);
     assert_eq!(outcomes(&fx, &dir, "build"), ["rate_limited"]);
 
@@ -343,11 +346,7 @@ fn a_rate_limited_worker_pauses_the_run_until_the_reset() {
     // Four build calls, the closing checkpoint's worker and the polish worker.
     assert_eq!(fx.calls().len(), 6);
     assert_eq!(outcomes(&fx, &dir, "checkpoint"), ["done"]);
-    assert!(
-        !fragment(&fx, 1).contains("Dead worker"),
-        "{}",
-        fragment(&fx, 1)
-    );
+    assert_no_dead_note(&fx, 1);
 }
 
 #[test]
@@ -413,9 +412,9 @@ fn two_pauses_on_one_slice_count_toward_no_cap() {
         .filter(|w| matches!(w["outcome"].as_str(), Some("dead" | "failed")))
         .count();
     assert_eq!(deaths, 0, "{st}");
-    let frag = fragment(&fx, 1);
-    assert!(!frag.contains("Dead worker"), "{frag}");
-    assert!(!frag.contains("BLOCK-102"), "{frag}");
+    assert_no_dead_note(&fx, 1);
+    let blocks = slice_log(&fx, 1, Some("block"));
+    assert!(blocks.is_empty(), "{blocks:?}");
     // Each re-limited retry announced its own pause, in order.
     let seq: Vec<String> = kinds_from(&dir, "run_paused")
         .into_iter()

@@ -919,8 +919,7 @@ mod tests {
 
     #[test]
     fn the_recorded_stream_yields_one_row_per_tool_use_with_its_result_chars() {
-        let text =
-            include_str!("../docs/features/001-driver/recordings/claude-p-oneshot-2.1.280.jsonl");
+        let text = include_str!("../tests/fixture/recordings/claude-p-oneshot-2.1.280.jsonl");
         let (events, summary) = stream::parse(text);
         let tool_uses = events
             .iter()

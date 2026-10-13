@@ -18,8 +18,8 @@ use harness::Fixture;
 use serde_json::{Value, json};
 
 const BIN: &str = env!("CARGO_BIN_EXE_factory");
-const FRAGMENT: &str = "docs/features/001-fixture/log-slice-01.md";
-const AGENT_LOG: &str = "docs/features/001-fixture/agent-log.md";
+/// The fixture feature's log: blocks, answers, asks and decisions.
+const LOG: &str = "docs/features/001-fixture/log.jsonl";
 const QUESTION: &str = "Which storage backs the fixture?";
 const ANSWER: &str = "Pick the Recommended option";
 
@@ -142,14 +142,29 @@ fn lane_env(call: &Value) -> Option<&str> {
     call["env"]["FACTORY_LANE"].as_str()
 }
 
-/// `lane:` in the slice's frontmatter.
+/// `slices.N.lane` in the feature's `state.toml`.
 fn slice_lane(fx: &Fixture, n: u8) -> Option<u32> {
-    let text = fs::read_to_string(fx.slice_path(n)).unwrap();
-    let end = text[4..].find("\n---").unwrap() + 4;
-    text[..end]
+    fx.slice_lane(n)
+}
+
+/// The raw `log.jsonl` line of the entry `id`.
+fn block_line(log: &str, id: &str) -> String {
+    log.lines()
+        .find(|l| {
+            serde_json::from_str::<Value>(l).is_ok_and(|e| e["id"] == id && e["kind"] == "block")
+        })
+        .unwrap_or_else(|| panic!("no {id} in {log}"))
+        .to_string()
+}
+
+/// The `answer` entries of the feature dir's `log.jsonl` whose `ref` is `id`.
+fn answers_to(feature_dir: &Path, id: &str) -> Vec<Value> {
+    fs::read_to_string(feature_dir.join("log.jsonl"))
+        .unwrap_or_default()
         .lines()
-        .find_map(|l| l.strip_prefix("lane:"))
-        .map(|v| v.trim().parse().unwrap())
+        .map(|l| serde_json::from_str::<Value>(l).expect(l))
+        .filter(|e| e["kind"] == "answer" && e["ref"] == id)
+        .collect()
 }
 
 /// `seq` of the first `kind` event on `slice`.
@@ -369,7 +384,7 @@ fn a_blocked_slice_parks_its_lane_and_the_answer_respawns_it() {
         .find(|e| e["kind"] == "slice_blocked")
         .unwrap();
     assert_eq!(blocked_ev["slice"], 1);
-    assert_eq!(blocked_ev["block_id"], "BLOCK-101");
+    assert_eq!(blocked_ev["block_id"], "BLOCK-1");
     assert_eq!(blocked_ev["question"], QUESTION);
     let waiting = events(&dir)
         .into_iter()
@@ -377,15 +392,17 @@ fn a_blocked_slice_parks_its_lane_and_the_answer_respawns_it() {
         .unwrap();
     assert_eq!(waiting["blocked"], json!([1]));
     assert_eq!(waiting["asks"], json!([]));
-    let frag = fx.read(FRAGMENT);
-    assert!(
-        frag.contains(&format!("### BLOCK-101 — {QUESTION} · slice-01 · open\n")),
-        "{frag}"
-    );
+    let blocks = fx.log_of("block");
+    assert_eq!(blocks.len(), 1, "{blocks:?}");
+    assert_eq!(blocks[0]["id"], "BLOCK-1");
+    assert_eq!(blocks[0]["slice"], 1);
+    assert_eq!(blocks[0]["title"], QUESTION);
+    assert!(fx.log_of("answer").is_empty(), "the block is open");
+    let block = block_line(&fx.read(LOG), "BLOCK-1");
     let log = driver_log(&dir);
     assert!(
         log.contains(&format!(
-            "slice 01 blocked by its worker (BLOCK-101: {QUESTION}) — lane 1 parked"
+            "slice 01 blocked by its worker (BLOCK-1: {QUESTION}) — lane 1 parked"
         )),
         "{log}"
     );
@@ -401,13 +418,14 @@ fn a_blocked_slice_parks_its_lane_and_the_answer_respawns_it() {
         "waiting-owner"
     );
 
-    // The owner answers: the entry is resolved in place, the slice is
-    // `building` again on its lane, the answer is on disk for the driver.
-    let out = factory(&fx, &["answer", "BLOCK-101", ANSWER]);
+    // The owner answers: an `answer` entry points at the block, whose line
+    // stays as written; the slice is `building` again on its lane, the
+    // answer is on disk for the driver.
+    let out = factory(&fx, &["answer", "BLOCK-1", ANSWER]);
     let text = stdout(&out);
     assert_eq!(out.status.code(), Some(0), "{text}");
     assert!(
-        text.contains(&format!("BLOCK-101 resolved ({FRAGMENT} line ")),
+        text.contains(&format!("BLOCK-1 resolved ({LOG} line ")),
         "{text}"
     );
     assert!(text.contains("slice 01 → building"), "{text}");
@@ -415,23 +433,21 @@ fn a_blocked_slice_parks_its_lane_and_the_answer_respawns_it() {
         text.contains(&format!("the driver (pid {driver}) picks it up within 5 s")),
         "{text}"
     );
-    let frag = fx.read(FRAGMENT);
-    assert!(
-        frag.contains(&format!(
-            "### BLOCK-101 — {QUESTION} · slice-01 · resolved\n"
-        )),
-        "{frag}"
+    let answers = answers_to(&fx.path().join(harness::FEATURE_DIR), "BLOCK-1");
+    assert_eq!(answers.len(), 1, "{answers:?}");
+    assert_eq!(answers[0]["body"], ANSWER);
+    assert_eq!(answers[0]["slice"], 1);
+    assert_eq!(
+        block_line(&fx.read(LOG), "BLOCK-1"),
+        block,
+        "the block line stays"
     );
-    assert!(
-        frag.contains("**Resolution (20") && frag.contains(&format!("):** {ANSWER}\n")),
-        "{frag}"
-    );
-    assert!(!frag.contains("· open"), "{frag}");
+    assert_eq!(fx.slice_status(1), "building");
     assert_eq!(slice_lane(&fx, 1), Some(1));
     let answer: Value =
-        serde_json::from_str(&fs::read_to_string(dir.join("answers/BLOCK-101.json")).unwrap())
+        serde_json::from_str(&fs::read_to_string(dir.join("answers/BLOCK-1.json")).unwrap())
             .unwrap();
-    assert_eq!(answer["id"], "BLOCK-101");
+    assert_eq!(answer["id"], "BLOCK-1");
     assert_eq!(answer["slice"], 1);
     assert_eq!(answer["text"], ANSWER);
     assert!(
@@ -442,7 +458,7 @@ fn a_blocked_slice_parks_its_lane_and_the_answer_respawns_it() {
         .into_iter()
         .find(|e| e["kind"] == "block_answered")
         .unwrap();
-    assert_eq!(answered["id"], "BLOCK-101");
+    assert_eq!(answered["id"], "BLOCK-1");
     assert_eq!(answered["slice"], 1);
     assert_eq!(answered["text"], ANSWER);
 
@@ -465,11 +481,11 @@ fn a_blocked_slice_parks_its_lane_and_the_answer_respawns_it() {
     assert!(i_slice < i_block && i_block < i_prd, "{pack}");
     let section = &pack[i_block..i_prd];
     assert!(
-        section.contains(&format!("<!-- {FRAGMENT}: BLOCK-101 -->")),
+        section.contains(&format!("<!-- {LOG}: BLOCK-1 -->")),
         "{section}"
     );
     assert!(
-        section.contains(&format!("### BLOCK-101 — {QUESTION} · slice-01 · resolved")),
+        section.contains(&format!("### BLOCK-1 — {QUESTION} · slice-01 · resolved")),
         "{section}"
     );
     assert!(section.contains("**Happened:**"), "{section}");
@@ -519,18 +535,18 @@ fn a_blocked_slice_parks_its_lane_and_the_answer_respawns_it() {
     assert_eq!(db(&fx).run_row(&id).unwrap().unwrap().phase, "finished");
     let log = driver_log(&dir);
     assert!(log.contains("lane 1, answered, pack"), "{log}");
-    // The run reached the checkpoint: the fragment is merged (slice 05).
-    let frag = fx.read(AGENT_LOG);
+    // The run reached the checkpoint: the done workers' ADs are in the log.
     assert!(
-        frag.contains("## Decisions\n"),
-        "the done worker's AD lands too: {frag}"
+        !fx.log_of("decision").is_empty(),
+        "the done worker's AD lands too: {:?}",
+        fx.log_entries()
     );
 
     // Answering a resolved block is refused.
-    let out = factory(&fx, &["answer", "BLOCK-101", "again"]);
+    let out = factory(&fx, &["answer", "BLOCK-1", "again"]);
     assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
     assert!(
-        stdout(&out).contains("BLOCK-101 is already resolved"),
+        stdout(&out).contains("BLOCK-1 is already resolved"),
         "{}",
         stdout(&out)
     );
@@ -556,7 +572,7 @@ fn a_torn_answer_file_is_said_and_skipped_and_the_run_goes_on() {
     fs::create_dir_all(dir.join("answers")).unwrap();
     fs::write(dir.join("answers/ASK-7.json"), "{\"id\": \"ASK-7\", \"te").unwrap();
 
-    let out = factory(&fx, &["answer", "BLOCK-101", ANSWER]);
+    let out = factory(&fx, &["answer", "BLOCK-1", ANSWER]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     wait_until(&fx, &dir, "the run to end", 60, || {
         state(&dir)["phase"] == "finished" || state(&dir)["phase"] == "failed"
@@ -577,7 +593,7 @@ fn a_torn_answer_file_is_said_and_skipped_and_the_run_goes_on() {
         log.contains("is not an answer (") && log.contains(") — skipped"),
         "{log}"
     );
-    assert!(!dir.join("answers/.BLOCK-101.json.tmp").exists());
+    assert!(!dir.join("answers/.BLOCK-1.json.tmp").exists());
 }
 
 // ── task 4: `factory answer ASK-n` ───────────────────────────────────────────
@@ -585,14 +601,14 @@ fn a_torn_answer_file_is_said_and_skipped_and_the_run_goes_on() {
 #[test]
 fn answering_every_ask_starts_the_parked_run() {
     let fx = Fixture::with_index("lanes-ask", &[("checkpoint_every", "10")]);
-    // No `inner:` in the index: preflight asks about the missing inner loop
+    // No `inner` in `[docs]`: preflight asks about the missing inner loop
     // before the run starts.
-    let index = fx.path().join("docs/index.md");
+    let index = fx.path().join("docs/project.toml");
     let text = fs::read_to_string(&index).unwrap();
-    assert!(text.contains("\ninner: "), "{text}");
+    assert!(text.contains("\ninner = "), "{text}");
     let without: String = text
         .lines()
-        .filter(|l| !l.starts_with("inner:"))
+        .filter(|l| !l.starts_with("inner ="))
         .map(|l| format!("{l}\n"))
         .collect();
     fs::write(&index, without).unwrap();
@@ -635,7 +651,7 @@ fn answering_every_ask_starts_the_parked_run() {
         let text = stdout(&out);
         assert_eq!(out.status.code(), Some(0), "{text}");
         assert!(
-            text.contains(&format!("{ask} answered: proceed — noted in {AGENT_LOG}")),
+            text.contains(&format!("{ask} answered: proceed — noted in {LOG}")),
             "{text}"
         );
         assert!(dir.join("answers").join(format!("{ask}.json")).is_file());
@@ -650,22 +666,26 @@ fn answering_every_ask_starts_the_parked_run() {
             assert!(text.contains("driver pid "), "{text}");
         }
     }
-    let log = fx.read(AGENT_LOG);
-    // One AD entry per ask, numbered below the build's ranges.
-    assert_eq!(log.matches(" · preflight · ").count(), asks.len(), "{log}");
-    assert_eq!(
-        log.matches("**Chose:** proceed").count(),
-        asks.len(),
-        "{log}"
-    );
-    for (i, ask) in asks.iter().enumerate() {
+    // One `ask` entry per ask, phase `preflight`, on the AD sequence ahead
+    // of any build's decision.
+    let logged = fx.log_of("ask");
+    assert_eq!(logged.len(), asks.len(), "{logged:?}");
+    for (i, (ask, e)) in asks.iter().zip(&logged).enumerate() {
+        assert_eq!(e["id"], format!("AD-{}", i + 1), "{e}");
+        assert_eq!(e["phase"], "preflight", "{e}");
         assert!(
-            log.contains(&format!("### AD-{} — Preflight {ask}: ", i + 1)),
-            "{log}"
+            e["title"]
+                .as_str()
+                .is_some_and(|t| t.starts_with(&format!("Preflight {ask}: "))),
+            "{e}"
+        );
+        assert!(
+            e["body"]
+                .as_str()
+                .is_some_and(|b| b.lines().any(|l| l == "**Chose:** proceed")),
+            "{e}"
         );
     }
-    assert!(!log.contains("**DEC ("), "{log}");
-    assert!(log.contains("## Decisions\n"), "{log}");
 
     // The driver takes the run through branch and board, then builds.
     wait_until(&fx, &dir, "the run to finish", 60, || {
@@ -720,9 +740,26 @@ fn answering_every_ask_starts_the_parked_run() {
 
 // ── polish: which block `factory answer BLOCK-n` resolves ────────────────────
 
-/// `### BLOCK-101 — … · slice-01 · {state}` under `## Blockers`.
-fn block_fragment(state: &str) -> String {
-    format!("## Blockers\n\n### BLOCK-101 — Which store? · slice-01 · {state}\n\n**Happened:** x\n")
+/// A `block` entry titled "Which store?" on `slice` in the feature dir's
+/// `log.jsonl`, as a blocked worker writes it; its id.
+fn seed_block(feature_dir: &Path, slice: u32) -> String {
+    use factory::docs::log::{Entry, Kind, add};
+    let mut e = Entry::new(Kind::Block, "Which store?", "**Happened:** x\n");
+    e.slice = Some(slice);
+    add(feature_dir, e).unwrap().unwrap()
+}
+
+/// An `answer` entry pointing at `id`, as `factory answer` writes it.
+fn seed_answer(feature_dir: &Path, id: &str, slice: u32) {
+    use factory::docs::log::{Entry, Kind, add};
+    let mut e = Entry::new(Kind::Answer, "", "use postgres");
+    e.slice = Some(slice);
+    e.reference = Some(id.to_string());
+    add(feature_dir, e).unwrap();
+}
+
+fn log_text(feature_dir: &Path) -> String {
+    fs::read_to_string(feature_dir.join("log.jsonl")).unwrap()
 }
 
 /// A run of feature 001 parked in `waiting-owner`, its pid this test's.
@@ -743,88 +780,106 @@ fn parked_run(fx: &Fixture) -> factory::run::Run {
 fn answer_takes_the_open_block_and_prefers_the_parked_feature() {
     let fx = Fixture::new("answer-pick");
     let one = fx.path().join(harness::FEATURE_DIR);
+    // A second feature with its own slice 01: block ids restart per feature,
+    // so both can hold a BLOCK-1.
+    fx.docs(&["new", "other", "--title", "Other"]);
+    fx.docs(&["slice", "002", "x"]);
     let two = fx.path().join("docs/features/002-other");
-    fs::create_dir_all(&two).unwrap();
-    fs::write(
-        two.join("slice-01-x.md"),
-        "---\nstatus: blocked\nlane: 1\n---\n# Slice 01\n",
-    )
-    .unwrap();
+    fx.docs(&["set", "002", "slices.1.status=blocked"]);
     let status_two = || {
-        let t = fs::read_to_string(two.join("slice-01-x.md")).unwrap();
-        t.lines()
-            .find_map(|l| l.strip_prefix("status: "))
-            .unwrap()
-            .to_string()
+        factory::docs::state::read(&two).unwrap().unwrap().slices[&1]
+            .status
+            .clone()
+    };
+    let reseed = |open_in_one: bool| {
+        for d in [&one, &two] {
+            let _ = fs::remove_file(d.join("log.jsonl"));
+            assert_eq!(seed_block(d, 1), "BLOCK-1");
+        }
+        if !open_in_one {
+            seed_answer(&one, "BLOCK-1", 1);
+        }
     };
 
-    // 001's BLOCK-101 is resolved, 002's is open: the open one is answered,
+    // 001's BLOCK-1 is resolved, 002's is open: the open one is answered,
     // not refused as "already resolved" on the first folder's match.
-    fs::write(one.join("log-slice-01.md"), block_fragment("resolved")).unwrap();
-    fs::write(two.join("log-slice-01.md"), block_fragment("open")).unwrap();
-    let out = factory(&fx, &["answer", "BLOCK-101", "use sqlite"]);
+    reseed(false);
+    let one_before = log_text(&one);
+    let two_before = log_text(&two);
+    let out = factory(&fx, &["answer", "BLOCK-1", "use sqlite"]);
     let text = stdout(&out);
     assert_eq!(out.status.code(), Some(0), "{text}");
     assert!(
-        text.contains("BLOCK-101 resolved (docs/features/002-other/log-slice-01.md line 3)"),
+        text.contains("BLOCK-1 resolved (docs/features/002-other/log.jsonl line 1)"),
         "{text}"
     );
     assert!(text.contains("no open run for PRD-002"), "{text}");
+    let answered = answers_to(&two, "BLOCK-1");
+    assert_eq!(answered.len(), 1, "{answered:?}");
+    assert_eq!(answered[0]["body"], "use sqlite");
     assert!(
-        fs::read_to_string(two.join("log-slice-01.md"))
-            .unwrap()
-            .contains("· slice-01 · resolved\n"),
+        log_text(&two).starts_with(&two_before),
+        "the block line stays"
     );
     assert_eq!(
-        fs::read_to_string(one.join("log-slice-01.md")).unwrap(),
-        block_fragment("resolved"),
+        log_text(&one),
+        one_before,
         "the resolved block is untouched"
     );
     assert_eq!(status_two(), "building");
 
-    // Two open BLOCK-101s and no parked run: refused with both named,
+    // Two open BLOCK-1s and no parked run: refused with both named,
     // nothing resolved.
-    fs::write(one.join("log-slice-01.md"), block_fragment("open")).unwrap();
-    fs::write(two.join("log-slice-01.md"), block_fragment("open")).unwrap();
-    let out = factory(&fx, &["answer", "BLOCK-101", "use sqlite"]);
+    reseed(true);
+    let one_before = log_text(&one);
+    let two_before = log_text(&two);
+    let out = factory(&fx, &["answer", "BLOCK-1", "use sqlite"]);
     let text = stdout(&out);
     assert_eq!(out.status.code(), Some(1), "{text}");
-    assert!(text.contains("BLOCK-101 is open in 2 places"), "{text}");
+    assert!(text.contains("BLOCK-1 is open in 2 places"), "{text}");
     assert!(
-        text.contains("docs/features/001-fixture/log-slice-01.md line 3 — Which store?"),
+        text.contains("docs/features/001-fixture/log.jsonl line 1 — Which store?"),
         "{text}"
     );
     assert!(
-        text.contains("docs/features/002-other/log-slice-01.md line 3 — Which store?"),
+        text.contains("docs/features/002-other/log.jsonl line 1 — Which store?"),
         "{text}"
     );
-    for dir in [&one, &two] {
-        assert_eq!(
-            fs::read_to_string(dir.join("log-slice-01.md")).unwrap(),
-            block_fragment("open")
-        );
-    }
+    assert_eq!(log_text(&one), one_before);
+    assert_eq!(log_text(&two), two_before);
+    assert!(text.contains("--feature NNN"), "{text}");
 
-    // 001's run is parked: its block is the one the owner means.
-    factory::scheduler::set_slice_status(&fx.slice_path(1), "blocked").unwrap();
-    let run = parked_run(&fx);
-    let out = factory(&fx, &["answer", "BLOCK-101", "use sqlite"]);
+    // `--feature` picks one of the two: 002's is answered, 001's untouched.
+    let out = factory(&fx, &["answer", "--feature", "2", "BLOCK-1", "use sqlite"]);
     let text = stdout(&out);
     assert_eq!(out.status.code(), Some(0), "{text}");
     assert!(
-        text.contains("BLOCK-101 resolved (docs/features/001-fixture/log-slice-01.md line 3)"),
+        text.contains("BLOCK-1 resolved (docs/features/002-other/log.jsonl line 1)"),
         "{text}"
     );
+    assert_eq!(log_text(&one), one_before);
+    reseed(true);
+
+    // 001's run is parked: its block is the one the owner means. The answer's
+    // `ref` lands in 001's log and not in 002's.
+    fx.set_slice_status(1, "blocked");
+    let run = parked_run(&fx);
+    let out = factory(&fx, &["answer", "BLOCK-1", "use sqlite"]);
+    let text = stdout(&out);
+    assert_eq!(out.status.code(), Some(0), "{text}");
     assert!(
-        fx.read(&format!("{}/log-slice-01.md", harness::FEATURE_DIR))
-            .contains("· slice-01 · resolved\n")
+        text.contains("BLOCK-1 resolved (docs/features/001-fixture/log.jsonl line 1)"),
+        "{text}"
     );
-    assert_eq!(
-        fs::read_to_string(two.join("log-slice-01.md")).unwrap(),
-        block_fragment("open")
+    assert_eq!(answers_to(&one, "BLOCK-1").len(), 1);
+    assert!(
+        log_text(&one).starts_with(&one_before),
+        "the block line stays"
     );
+    assert!(answers_to(&two, "BLOCK-1").is_empty());
+    assert_eq!(log_text(&two), two_before);
     assert_eq!(fx.slice_status(1), "building");
-    assert!(run.dir().join("answers/BLOCK-101.json").is_file());
+    assert!(run.dir().join("answers/BLOCK-1.json").is_file());
     assert_eq!(count(&kinds(run.dir()), "block_answered"), 1);
 }
 
@@ -832,22 +887,20 @@ fn answer_takes_the_open_block_and_prefers_the_parked_feature() {
 fn block_answered_is_logged_before_the_slice_flips() {
     // The flip is what a live driver acts on; an event logged after it can
     // land behind the `slice_spawned` it caused. A read-only feature dir
-    // makes the flip fail — it lands by a rename from a temp beside the
-    // slice (DEC-3) — while the fragment is still edited in place: whatever
-    // was logged before the flip shows.
+    // makes the flip fail — `state.toml` lands by a rename from a temp
+    // beside it (DEC-3) — while the `answer` entry is still appended to
+    // `log.jsonl` in place: whatever was logged before the flip shows.
     let fx = Fixture::new("answer-order");
     let feature_dir = fx.path().join(harness::FEATURE_DIR);
-    let frag = feature_dir.join("log-slice-01.md");
-    fs::write(&frag, block_fragment("open")).unwrap();
-    let slice = fx.slice_path(1);
-    factory::scheduler::set_slice_status(&slice, "blocked").unwrap();
+    assert_eq!(seed_block(&feature_dir, 1), "BLOCK-1");
+    fx.set_slice_status(1, "blocked");
     let run = parked_run(&fx);
     let mode = |m: u32| {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&feature_dir, fs::Permissions::from_mode(m)).unwrap();
     };
     mode(0o555);
-    let out = factory(&fx, &["answer", "BLOCK-101", "use sqlite"]);
+    let out = factory(&fx, &["answer", "BLOCK-1", "use sqlite"]);
     mode(0o755);
     assert_ne!(out.status.code(), Some(0), "{}", stdout(&out));
     let answered: Vec<Value> = events(run.dir())
@@ -855,9 +908,9 @@ fn block_answered_is_logged_before_the_slice_flips() {
         .filter(|e| e["kind"] == "block_answered")
         .collect();
     assert_eq!(answered.len(), 1, "{:?}", kinds(run.dir()));
-    assert_eq!(answered[0]["id"], "BLOCK-101");
+    assert_eq!(answered[0]["id"], "BLOCK-1");
     assert_eq!(answered[0]["slice"], 1);
-    assert!(run.dir().join("answers/BLOCK-101.json").is_file());
+    assert!(run.dir().join("answers/BLOCK-1.json").is_file());
     assert_eq!(fx.slice_status(1), "blocked");
 }
 
@@ -865,45 +918,44 @@ fn block_answered_is_logged_before_the_slice_flips() {
 fn an_answer_that_stopped_before_the_flip_is_finished_by_a_retry() {
     let fx = Fixture::new("answer-retry");
     let feature_dir = fx.path().join(harness::FEATURE_DIR);
-    let frag = feature_dir.join("log-slice-01.md");
-    fs::write(&frag, block_fragment("open")).unwrap();
-    let slice = fx.slice_path(1);
-    factory::scheduler::set_slice_status(&slice, "blocked").unwrap();
+    assert_eq!(seed_block(&feature_dir, 1), "BLOCK-1");
+    let block = block_line(&log_text(&feature_dir), "BLOCK-1");
+    fx.set_slice_status(1, "blocked");
     let run = parked_run(&fx);
-    // A read-only feature dir fails the flip (a rename, DEC-3), not the
-    // fragment's in-place edit.
+    // A read-only feature dir fails the flip (`state.toml`'s rename,
+    // DEC-3), not the `answer` entry's in-place append.
     let mode = |m: u32| {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&feature_dir, fs::Permissions::from_mode(m)).unwrap();
     };
     mode(0o555);
-    let out = factory(&fx, &["answer", "BLOCK-101", "use sqlite"]);
+    let out = factory(&fx, &["answer", "BLOCK-1", "use sqlite"]);
     mode(0o755);
     assert_ne!(out.status.code(), Some(0), "{}", stdout(&out));
-    assert!(fs::read_to_string(&frag).unwrap().contains("· resolved\n"));
+    assert_eq!(answers_to(&feature_dir, "BLOCK-1").len(), 1);
+    assert_eq!(fx.slice_status(1), "blocked");
 
-    // The retry finds the heading resolved and the answer on file: it
+    // The retry finds the block answered and the answer on file: it
     // finishes the flip instead of refusing an "already resolved" block.
-    let out = factory(&fx, &["answer", "BLOCK-101", "use sqlite"]);
+    let out = factory(&fx, &["answer", "BLOCK-1", "use sqlite"]);
     let text = stdout(&out);
     assert_eq!(out.status.code(), Some(0), "{text}");
     assert!(text.contains("holds its answer — finishing it"), "{text}");
     assert!(text.contains("slice 01 → building"), "{text}");
     assert_eq!(fx.slice_status(1), "building");
     assert_eq!(
-        fs::read_to_string(&frag)
-            .unwrap()
-            .matches("**Resolution (")
-            .count(),
-        1
+        answers_to(&feature_dir, "BLOCK-1").len(),
+        1,
+        "one answer entry"
     );
-    assert!(run.dir().join("answers/BLOCK-101.json").is_file());
+    assert_eq!(block_line(&log_text(&feature_dir), "BLOCK-1"), block);
+    assert!(run.dir().join("answers/BLOCK-1.json").is_file());
 
     // Once delivered, the block is refused as before.
-    let out = factory(&fx, &["answer", "BLOCK-101", "use sqlite"]);
+    let out = factory(&fx, &["answer", "BLOCK-1", "use sqlite"]);
     assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
     assert!(
-        stdout(&out).contains("BLOCK-101 is already resolved"),
+        stdout(&out).contains("BLOCK-1 is already resolved"),
         "{}",
         stdout(&out)
     );
@@ -912,31 +964,34 @@ fn an_answer_that_stopped_before_the_flip_is_finished_by_a_retry() {
 #[test]
 fn a_block_on_a_missing_slice_file_writes_nothing() {
     let fx = Fixture::new("answer-no-slice");
-    let frag = fx.path().join(harness::FEATURE_DIR).join("log-slice-04.md");
-    let block = "## Blockers\n\n### BLOCK-401 — Which store? · slice-04 · open\n";
-    fs::write(&frag, block).unwrap();
+    let feature_dir = fx.path().join(harness::FEATURE_DIR);
+    // A block naming slice 04, which the fixture has no file for.
+    assert_eq!(seed_block(&feature_dir, 4), "BLOCK-1");
+    let before = log_text(&feature_dir);
     let run = parked_run(&fx);
-    let out = factory(&fx, &["answer", "BLOCK-401", "use sqlite"]);
+    let out = factory(&fx, &["answer", "BLOCK-1", "use sqlite"]);
     assert_ne!(out.status.code(), Some(0), "{}", stdout(&out));
-    assert_eq!(fs::read_to_string(&frag).unwrap(), block);
-    assert!(!run.dir().join("answers/BLOCK-401.json").exists());
+    assert_eq!(log_text(&feature_dir), before);
+    assert!(!run.dir().join("answers/BLOCK-1.json").exists());
     assert_eq!(count(&kinds(run.dir()), "block_answered"), 0);
 }
 
 #[test]
 fn an_answer_flips_only_a_blocked_slice() {
     let fx = Fixture::new("answer-done-slice");
-    let frag = fx.path().join(harness::FEATURE_DIR).join("log-slice-01.md");
-    fs::write(&frag, block_fragment("open")).unwrap();
-    factory::scheduler::set_slice_status(&fx.slice_path(1), "done").unwrap();
+    let feature_dir = fx.path().join(harness::FEATURE_DIR);
+    assert_eq!(seed_block(&feature_dir, 1), "BLOCK-1");
+    let block = block_line(&log_text(&feature_dir), "BLOCK-1");
+    fx.set_slice_status(1, "done");
     let run = parked_run(&fx);
-    let out = factory(&fx, &["answer", "BLOCK-101", "use sqlite"]);
+    let out = factory(&fx, &["answer", "BLOCK-1", "use sqlite"]);
     let text = stdout(&out);
     assert_eq!(out.status.code(), Some(0), "{text}");
     assert!(text.contains("slice 01 is done: left as is"), "{text}");
     assert_eq!(fx.slice_status(1), "done");
-    assert!(fs::read_to_string(&frag).unwrap().contains("· resolved\n"));
-    assert!(run.dir().join("answers/BLOCK-101.json").is_file());
+    assert_eq!(answers_to(&feature_dir, "BLOCK-1").len(), 1);
+    assert_eq!(block_line(&log_text(&feature_dir), "BLOCK-1"), block);
+    assert!(run.dir().join("answers/BLOCK-1.json").is_file());
 }
 
 /// A run of `feature` parked on `ASK-1`, its pid this test's.
@@ -997,8 +1052,13 @@ fn an_ask_two_runs_wait_on_is_refused_by_name_and_run_picks_one() {
 fn an_ask_answer_that_failed_on_the_log_is_retried_whole() {
     let fx = Fixture::new("ask-retry");
     let run = parked_on_ask(&fx, "001");
-    let log = fx.path().join(AGENT_LOG);
-    fs::write(&log, "# Agent log — PRD-001\n").unwrap();
+    // A read-only `log.jsonl` fails the `ask` entry's append.
+    let log = fx.path().join(LOG);
+    fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log)
+        .unwrap();
     let mode = |m: u32| {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&log, fs::Permissions::from_mode(m)).unwrap();
@@ -1018,7 +1078,9 @@ fn an_ask_answer_that_failed_on_the_log_is_retried_whole() {
         "{text}"
     );
     assert!(run.dir().join("answers/ASK-1.json").is_file());
-    assert_eq!(fx.read(AGENT_LOG).matches(" · preflight · ").count(), 1);
+    let asks = fx.log_of("ask");
+    assert_eq!(asks.len(), 1, "{asks:?}");
+    assert_eq!(asks[0]["phase"], "preflight");
     assert_eq!(count(&kinds(run.dir()), "ask_answered"), 1);
 }
 
@@ -1033,9 +1095,11 @@ fn dead_pid() -> u32 {
 #[test]
 fn an_answer_to_a_run_parked_on_its_budget_says_so_and_starts_no_driver() {
     let fx = Fixture::new("answer-budget");
-    let frag = fx.path().join(harness::FEATURE_DIR).join("log-slice-01.md");
-    fs::write(&frag, block_fragment("open")).unwrap();
-    factory::scheduler::set_slice_status(&fx.slice_path(1), "blocked").unwrap();
+    assert_eq!(
+        seed_block(&fx.path().join(harness::FEATURE_DIR), 1),
+        "BLOCK-1"
+    );
+    fx.set_slice_status(1, "blocked");
     // Budget 0 and a worker that spent 10 weighted tokens; no live driver.
     let run = parked_run(&fx);
     run.db()
@@ -1049,7 +1113,7 @@ fn an_answer_to_a_run_parked_on_its_budget_says_so_and_starts_no_driver() {
         serde_json::from_str(&fs::read_to_string(run.dir().join("state.json")).unwrap()).unwrap();
     s["pid"] = json!(dead_pid());
     fs::write(run.dir().join("state.json"), s.to_string()).unwrap();
-    let out = factory(&fx, &["answer", "BLOCK-101", "use sqlite"]);
+    let out = factory(&fx, &["answer", "BLOCK-1", "use sqlite"]);
     let text = stdout(&out);
     assert_eq!(out.status.code(), Some(0), "{text}");
     assert!(
@@ -1091,8 +1155,15 @@ fn a_resumed_run_does_not_run_a_lanes_setup_again() {
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     let dir = only_run_dir(&fx);
     let driver = state(&dir)["pid"].as_u64().unwrap() as u32;
+    // The stub logs its call as it starts, before the driver records the
+    // worker in state.json: a kill in between leaves an orphan the resumed
+    // driver cannot see, and it builds slice 01 a second time.
     wait_until(&fx, &dir, "slice 01's worker", 20, || {
-        fx.calls().len() == 1 && fx.slice_status(1) == "building"
+        fx.calls().len() == 1
+            && state(&dir)["workers"]
+                .as_array()
+                .is_some_and(|w| w.len() == 1)
+            && fx.slice_status(1) == "building"
     });
     assert_eq!(fx.read("scenario/lane-setup.log"), "setup 1\n");
     assert_eq!(state(&dir)["lanes_set_up"], json!([1]));
@@ -1130,13 +1201,18 @@ fn a_failing_driver_kills_and_settles_its_live_worker() {
             && state(&dir)["workers"]
                 .as_array()
                 .is_some_and(|w| w.len() == 1)
+            && fx.slice_status(1) == "building"
     });
     let worker = state(&dir)["workers"][0]["pid"].as_u64().unwrap() as u32;
     assert!(pid_alive(worker));
 
-    // The board can no longer be read: the driver's next tick fails the run.
-    let docs = fx.path().join(".docs/bin/docs.mjs");
-    fs::rename(&docs, docs.with_extension("mjs.away")).unwrap();
+    // The board can no longer be read — `state.toml` no longer parses: the
+    // driver's next tick fails the run.
+    fs::write(
+        fx.path().join(harness::FEATURE_DIR).join("state.toml"),
+        "status = [ not toml\n",
+    )
+    .unwrap();
     let started = Instant::now();
     wait_until(&fx, &dir, "the run to fail", 15, || {
         state(&dir)["phase"] == "failed"
@@ -1151,4 +1227,45 @@ fn a_failing_driver_kills_and_settles_its_live_worker() {
     assert!(rows[0].ended_at.is_some(), "{:?}", rows[0]);
     let log = driver_log(&dir);
     assert!(log.contains("slice 01: worker"), "{log}");
+}
+
+#[test]
+fn a_rate_limited_slice_goes_back_to_pending_with_no_lane_and_its_file_untouched() {
+    // Slice 09 task 2 of PRD-002: the reset is a `state.toml` write alone —
+    // `status = "pending"`, the `lane` key gone — and the slice file is
+    // never written.
+    let fx = Fixture::with_index("lanes-rate-limited", &[("checkpoint_every", "10")]);
+    fx.chain();
+    let slice_file = fx.slice_path(1);
+    let before = fs::read(&slice_file).unwrap();
+    fx.write_plan(&[json!({"outcome": "rate_limited", "reset_s": 600})]);
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let dir = only_run_dir(&fx);
+    wait_until(&fx, &dir, "the run to pause", 30, || {
+        state(&dir)["phase"] == "paused"
+    });
+    assert_eq!(fx.calls().len(), 1);
+    let raw = fx.read(&format!("{}/state.toml", harness::FEATURE_DIR));
+    let table: toml::Table = toml::from_str(&raw).unwrap();
+    let one = table["slices"]["1"].as_table().unwrap();
+    assert_eq!(one["status"].as_str(), Some("pending"), "{raw}");
+    assert!(!one.contains_key("lane"), "{raw}");
+    assert_eq!(
+        fs::read(&slice_file).unwrap(),
+        before,
+        "the slice file is untouched"
+    );
+
+    let out = factory(&fx, &["stop", &run_id(&dir)]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    wait_until(&fx, &dir, "the run to stop", 30, || {
+        state(&dir)["phase"] == "finished"
+    });
+    assert_eq!(
+        fs::read(&slice_file).unwrap(),
+        before,
+        "the slice file is untouched"
+    );
+    assert_eq!(fx.slice_status(1), "pending");
 }

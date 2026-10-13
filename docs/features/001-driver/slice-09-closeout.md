@@ -1,10 +1,3 @@
----
-slice: 09
-status: done
-lane: 1
-depends_on: [8]
----
-
 # Slice 09 — Closeout: polish worker, ship, retro keys, PR, CI (FR-6)
 
 **Source**: [`prd.md`](prd.md) → §8 FR-6 (all four decisions and acceptance); §4 FR-2 bullet 6 (slash commands inside `-p` verified at slice entry); §10 FR-8 (the retro keys come from the store). **Depends on**: 08 (the retro's numeric keys are `factory report`'s keys; `ci_cycles` and `polish_minutes` are rows this slice writes).

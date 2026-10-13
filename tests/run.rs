@@ -279,6 +279,7 @@ fn opening_the_store_twice_applies_the_schema_once() {
         [
             "events",
             "gates",
+            "retros",
             "runs",
             "schema_version",
             "tool_calls",
@@ -302,6 +303,23 @@ fn run_refuses_a_dirty_tree_with_no_run_dir_and_no_spawn() {
     );
     assert!(text.contains("refused: 1 blocker(s)"), "{text}");
     assert!(run_dirs(&fx).is_empty());
+    assert!(fx.calls().is_empty());
+    assert_eq!(head(&fx), "main");
+}
+
+/// PRD-002 slice 09 task 8: the driver reads v3 only. A v2 repo is refused
+/// up front with the migrate hint: exit 2, no run dir, no worker.
+#[test]
+fn run_refuses_a_v2_repo_with_the_migrate_hint_and_no_run_dir() {
+    let fx = Fixture::v2("run-v2");
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(2), "{}", stdout(&out));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("docs are v2: run `factory docs migrate --dry`"),
+        "{err}"
+    );
+    assert!(run_dirs(&fx).is_empty(), "{:?}", run_dirs(&fx));
     assert!(fx.calls().is_empty());
     assert_eq!(head(&fx), "main");
 }
@@ -376,7 +394,7 @@ fn run_on_the_clean_fixture_starts_notes_the_judge_lines_then_resumes() {
             && fx.calls().len() == 3
     });
     let k = kinds(dir);
-    assert_eq!(k.len(), 15, "{k:?}");
+    assert_eq!(k.len(), 14, "{k:?}");
     assert!(k[5..7].iter().all(|k| k == "slice_spawned"), "{k:?}");
     // Each reap commits the slice right after `slice_done` (slice 05).
     assert_eq!(
@@ -391,12 +409,7 @@ fn run_on_the_clean_fixture_starts_notes_the_judge_lines_then_resumes() {
     );
     assert_eq!(
         k[11..],
-        [
-            "checkpoint_started",
-            "gate_run",
-            "log_merged",
-            "checkpoint_spawned"
-        ],
+        ["checkpoint_started", "gate_run", "checkpoint_spawned"],
         "{k:?}"
     );
     assert_eq!(fx.slice_status(1), "done");
@@ -412,7 +425,7 @@ fn run_on_the_clean_fixture_starts_notes_the_judge_lines_then_resumes() {
     let row = db.run_row(&id).unwrap().unwrap();
     assert_eq!(row.phase, "checkpoint");
     assert_eq!(row.branch.as_deref(), Some("feat/fixture"));
-    assert_eq!(db.events(&id).unwrap().len(), 15);
+    assert_eq!(db.events(&id).unwrap().len(), 14);
 
     // A live driver: refused, naming the run and `factory stop`.
     let driver = state(dir)["pid"].as_u64().unwrap() as u32;
@@ -455,9 +468,9 @@ fn run_on_the_clean_fixture_starts_notes_the_judge_lines_then_resumes() {
         state(dir)["phase"] == "finished"
     });
     let k = kinds(dir);
-    assert_eq!(k[15], "run_resumed", "{k:?}");
+    assert_eq!(k[14], "run_resumed", "{k:?}");
     assert_eq!(
-        k[16..],
+        k[15..],
         [
             "worker_dead",
             "checkpoint_resumed",
@@ -469,7 +482,6 @@ fn run_on_the_clean_fixture_starts_notes_the_judge_lines_then_resumes() {
             "slice_committed",
             "checkpoint_started",
             "gate_run",
-            "log_merged",
             "checkpoint_spawned",
             "checkpoint_done",
             "polish_spawned",
@@ -495,7 +507,7 @@ fn run_on_the_clean_fixture_starts_notes_the_judge_lines_then_resumes() {
 
 #[test]
 fn run_parks_on_an_ask_line_and_creates_no_branch() {
-    // `lanes: 1` with two slices runnable at once is what preflight asks about.
+    // `lanes = 1` with two slices runnable at once is what preflight asks about.
     let fx = Fixture::with_index("run-ask", &[("lanes", "1")]);
     let out = factory(&fx, &["run", "001"]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
@@ -518,7 +530,7 @@ fn run_parks_on_an_ask_line_and_creates_no_branch() {
     }
     assert!(
         evs.iter()
-            .any(|e| e["text"].as_str().unwrap().contains("`lanes: 1`")),
+            .any(|e| e["text"].as_str().unwrap().contains("`lanes = 1`")),
         "{evs:?}"
     );
     assert!(text.contains("ASK-1: "), "{text}");
@@ -540,7 +552,7 @@ fn run_parks_on_an_ask_line_and_creates_no_branch() {
 #[test]
 fn pass_path_creates_the_branch_and_starts_the_run() {
     let fx = Fixture::new("run-pass");
-    let docs = Docs::locate(fx.path()).unwrap();
+    let docs = Docs::open(fx.path()).unwrap();
     // Preflight's `pass` shape on the fixture, fed in directly so each branch
     // rule is exercised on its own.
     let fresh = Branch {

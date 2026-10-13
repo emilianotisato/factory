@@ -1,10 +1,3 @@
----
-slice: 04
-status: done
-depends_on: []
-lane: 3
----
-
 # Slice 04 — Knobs (FR-23)
 
 **Source**: [`prd.md`](prd.md) → §5 FR-23, four decisions ("A project scope: `docs/project.toml`", "The run row records what it resolved", "`factory run NNN --hypothesis`", "`workers.model_id`"); §11 Sequencing risk (PRD-002 owns `docs/project.toml` later). **Depends on**: — (independent of 01, 02, 03 and 05; it appends tuples to the shared migration list and one column to the per-worker line slice 02 extends, a few-line merge either way).

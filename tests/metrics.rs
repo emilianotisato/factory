@@ -148,12 +148,13 @@ fn every_tool_call_is_a_row_with_its_kind_and_repeat_flags() {
     let builds: Vec<&WorkerRow> = workers.iter().filter(|w| w.role == "build").collect();
     assert_eq!(builds.len(), 3);
 
-    // Each build: Read prd, Read slice, Write code, Write fragment, Bash inner, Edit slice.
+    // Each build: Read prd, Read slice, Write code, Bash `factory docs log
+    // add` (its AD), Bash inner, Bash `factory docs set` (the slice's status).
     for b in &builds {
         let mine: Vec<&ToolCallRow> = rows.iter().filter(|r| r.worker_id == b.id).collect();
         assert_eq!(
             mine.iter().map(|r| r.kind.as_str()).collect::<Vec<_>>(),
-            ["read", "read", "edit", "edit", "run-gate", "edit"],
+            ["read", "read", "edit", "run", "run-gate", "run"],
             "worker {}",
             b.id
         );
@@ -166,19 +167,20 @@ fn every_tool_call_is_a_row_with_its_kind_and_repeat_flags() {
             assert_eq!(r.target_hash.len(), 64);
             assert!(r.ts.is_some());
         }
-        // Read slice then Edit slice: the same file, so the Edit repeats.
-        assert!(
-            !mine[1].repeat_in_worker && mine[5].repeat_in_worker,
-            "{mine:?}"
-        );
+        // No build touches one target twice: the slice file is read once
+        // and never edited (its status goes through `factory docs set`), and
+        // the two `factory docs` calls differ. A repeat inside one worker is
+        // covered by src/metrics.rs `repeat_flags_are_per_worker_and_per_run`.
+        assert!(mine.iter().all(|r| !r.repeat_in_worker), "{mine:?}");
     }
-    // The checkpoint worker writes agent-log.md: one row of its own.
+    // The checkpoint worker logs its CP entry (`factory docs log add`): one
+    // row of its own.
     let cp = workers.iter().find(|w| w.role == "checkpoint").unwrap();
     let cp_rows: Vec<&ToolCallRow> = rows.iter().filter(|r| r.worker_id == cp.id).collect();
     assert_eq!(cp_rows.len(), 1);
-    assert_eq!(cp_rows[0].kind, "edit");
+    assert_eq!(cp_rows[0].kind, "run");
     // The polish worker (slice 09): Read prd, Write code, Bash inner, Write
-    // retro, Edit prd, Write the PR body.
+    // retro, Bash `factory docs set 001 reviewed=…`, Write the PR body.
     let polish = workers.iter().find(|w| w.role == "polish").unwrap();
     let polish_rows: Vec<&ToolCallRow> = rows.iter().filter(|r| r.worker_id == polish.id).collect();
     assert_eq!(
@@ -186,7 +188,7 @@ fn every_tool_call_is_a_row_with_its_kind_and_repeat_flags() {
             .iter()
             .map(|r| r.kind.as_str())
             .collect::<Vec<_>>(),
-        ["read", "edit", "run-gate", "edit", "edit", "edit"]
+        ["read", "edit", "run-gate", "edit", "run", "edit"]
     );
     assert_eq!(rows.len(), 3 * 6 + 1 + 6);
 
@@ -526,9 +528,9 @@ fn ctx_calls_are_labelled_and_the_report_reads_the_reversal_rule() {
             "read",
             "ctx-outline",
             "edit",
-            "edit",
+            "run",
             "run-gate",
-            "edit"
+            "run"
         ]
     );
     let labels: Vec<(Option<bool>, Option<bool>, bool)> = mine
@@ -1119,4 +1121,79 @@ fn every_worker_row_records_what_its_pack_was_made_of() {
     assert!(line.starts_with("pack_by_role: build slice "), "{line}");
     assert!(line.contains(" · checkpoint gate_transcript "), "{line}");
     assert!(line.contains(" · polish branch "), "{line}");
+}
+
+/// PRD-002 FR-19: a store the PRD-003 binary made (version 2, no `retros`)
+/// gains the table on its first open, and `factory report` on an old run
+/// prints what it printed before. "Before" is read from a copy made while the
+/// store was still at version 2, so the compare is not v3 against itself.
+#[test]
+fn a_version_2_store_gains_retros_and_reports_the_same() {
+    let (fx, id) = finished_run();
+    let data = data_dir(&fx);
+    let path = data.join("factory.db");
+    // Back to the shape PRD-003 left: no `retros`, version rows 1 and 2.
+    db(&fx)
+        .conn()
+        .execute_batch(
+            "DROP TABLE retros;
+             DELETE FROM schema_version;
+             INSERT INTO schema_version (version, applied_at) VALUES (1, 'then'), (2, 'later');",
+        )
+        .unwrap();
+    let raw_shape = || {
+        let c = rusqlite::Connection::open(&path).unwrap();
+        let retros: i64 = c
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE name = 'retros'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let version: i64 = c
+            .query_row("SELECT max(version) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        (retros, version)
+    };
+    assert_eq!(raw_shape(), (0, 2));
+
+    let copy = tempfile::tempdir().unwrap();
+    let cp = std::process::Command::new("cp")
+        .arg("-a")
+        .arg(data.join("."))
+        .arg(copy.path())
+        .status()
+        .unwrap();
+    assert!(cp.success());
+    let report = |dir: &Path, json: bool| {
+        let mut args = vec!["report", id.as_str()];
+        if json {
+            args.push("--json");
+        }
+        let out = fx
+            .command(BIN)
+            .env("FACTORY_DATA_DIR", dir)
+            .args(&args)
+            .output()
+            .unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out.stdout
+    };
+    let before = (report(copy.path(), false), report(copy.path(), true));
+    assert_eq!(raw_shape(), (0, 2), "the original is untouched so far");
+
+    let after = (report(&data, false), report(&data, true));
+    let db = db(&fx);
+    assert!(db.tables().unwrap().contains(&"retros".to_string()));
+    assert_eq!(db.schema_version().unwrap(), 3);
+    assert_eq!(
+        String::from_utf8_lossy(&after.0),
+        String::from_utf8_lossy(&before.0)
+    );
+    assert_eq!(after.1, before.1);
 }

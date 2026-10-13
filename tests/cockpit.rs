@@ -20,7 +20,8 @@ const BIN: &str = env!("CARGO_BIN_EXE_factory");
 const QUESTION: &str = "Which storage backs the fixture?";
 const ANSWER: &str = "Pick the Recommended option";
 const PR_URL: &str = "https://example.invalid/pr/1";
-const BLOCK_LINE: &str = "BLOCK-101 slice 01: Which storage backs the fixture? (answer: factory answer BLOCK-101 \"...\")";
+const BLOCK_LINE: &str =
+    "BLOCK-1 slice 01: Which storage backs the fixture? (answer: factory answer BLOCK-1 \"...\")";
 
 fn factory(fx: &Fixture, args: &[&str]) -> Output {
     let out = fx.command(BIN).args(args).output().unwrap();
@@ -183,7 +184,7 @@ fn wait_relays_the_block_the_still_running_line_the_dead_driver_and_the_end() {
         "blocked: 01",
         "lanes: 2 (1 parked) — 1: slice 01 blocked · 2: free",
         "checkpoints: 0 done",
-        "open: BLOCK-101 (slice 01)",
+        "open: BLOCK-1 (slice 01)",
         "quota: not paused",
         "PR: no PR yet",
         "last: ",
@@ -229,7 +230,7 @@ fn wait_relays_the_block_the_still_running_line_the_dead_driver_and_the_end() {
     // The owner answers: a driver is started for the parked run, the slice
     // respawns, the checkpoint and the closeout run; `wait` returns on
     // `run_finished` with the PR URL.
-    let out = factory(&fx, &["answer", "BLOCK-101", ANSWER]);
+    let out = factory(&fx, &["answer", "BLOCK-1", ANSWER]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     let out = factory(&fx, &["wait", &id, "--timeout", "120"]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
@@ -328,7 +329,7 @@ fn an_unreadable_event_line_is_skipped_and_said_and_the_run_goes_on() {
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     let text = stdout(&out);
     assert!(text.lines().count() <= 10, "{text}");
-    assert!(text.contains("open: BLOCK-101 (slice 01)"), "{text}");
+    assert!(text.contains("open: BLOCK-1 (slice 01)"), "{text}");
     assert!(
         !text.contains("unknown"),
         "an unknown kind is passed over: {text}"
@@ -342,7 +343,7 @@ fn an_unreadable_event_line_is_skipped_and_said_and_the_run_goes_on() {
 
     // The answer's event goes on the line after the torn one, with the
     // next `seq` after the last line that parses; the run finishes.
-    let out = factory(&fx, &["answer", "BLOCK-101", ANSWER]);
+    let out = factory(&fx, &["answer", "BLOCK-1", ANSWER]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     let after = readable(&dir);
     let answered = after
@@ -560,8 +561,9 @@ fn the_cockpit_skill_is_under_sixty_lines_and_names_the_five_commands() {
         // The `/deliver` §8 round shape.
         "Review all n now (Recommended) / Only the d decide ones / Later",
         "four questions",
-        "`**Review:** decide` lines first",
-        "**Owner ({date}):**",
+        // PRD-002 FR-18: §3 reads and writes the log through the tool.
+        "factory docs log show NNN --decide",
+        "--kind review --ref AD-{n} --verdict kept",
         // The slice-entry answer about background Bash: the 25-minute poll.
         "--timeout 1500",
         // A dead cockpit reattaches.

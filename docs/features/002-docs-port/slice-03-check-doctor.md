@@ -1,15 +1,21 @@
----
-slice: 03
-status: pending
-depends_on: [2]
----
-
 # Slice 03 — check and doctor (FR-15 part)
 
 **Source**: [`prd.md`](prd.md) → §5 FR-15 (the `check` and `doctor` bullets, the exit codes), §4 FR-14 (the "`check` on the log" bullet). **Depends on**: 02 (the log rules read `log::entries`, and the lifecycle warnings read the open blocks and checkpoints slice 02 computes).
-**Created**: 2026-10-13 · **Status**: pending
+**Created**: 2026-10-13 · **Status**: done
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+- **Built** (2026-10-13):
+  - `src/docs/check.rs`: `Report` with the v2 print shape, and `run`. It covers the parse and key rules over `project.toml`, every `state.toml` and every PRD frontmatter, slice ↔ `[slices.N]`, deps and `find_cycle`, and `W-SIZE` minus the Progress region. It also covers `W-NO-QA-PLAN`, links, the frozen archive (untrimmed porcelain), second boards (pointing at `docs/ideas/`) and legacy dirs. Then come the FR-14 log rules, `W-SUMMARY-EMPTY`, and the lifecycle warnings on `state.toml` plus `log.jsonl`. Findings are collected per file, so one bad file never hides another.
+  - `src/docs/doctor.rs`: `Framework`, `detect` and `run`, which never write.
+  - `src/cli/docs.rs`: the `check` verb (exits 1 on errors) and the native `doctor` verb. `fn node(tool)` is shared by the exec path and doctor's captured `docs.mjs check`.
+  - Tests: 13 unit tests in `check.rs` and 2 in `doctor.rs`. `tests/docs_check.rs` has 4: doctor on v3/v2/v1/none with exit 0 and an unchanged porcelain; check clean 0, warning-only 0, broken link 1, `--fix` and `--strict` 2; v2 `check` goes to the stub (exit 3) while `doctor` stays native; one `Command::new("node")` per module.
+- **Inner loop** (`cargo test`): 3 runs, 1 red, about 3 min. The red run caught a unit test that guessed the moved folder's number; the allocator skips past the archive's 005.
+- **Deviations**:
+  - `check` scans `features/` and `archive/` through `board::scan_folder` instead of `board::scan` (AD-302).
+  - A missing `prd.md` keeps `E-NO-PRD`, and a missing `state.toml` is `E-STATE-INVALID` (AD-301).
+  - A v3 `project.toml` that does not parse still routes to `docs.mjs` (AD-303).
+  - HEAD needs slice 01's uncommitted files to build (AD-305, decide).
+- **Prove**: the FR-15 `check` and `doctor` rows of the verb → exit table are left for the checkpoint.
 
 **Slice**: After this slice `factory docs check` validates a v3 repo natively: the parse and key rules over `project.toml`, every `state.toml` and every PRD frontmatter, the slice-file ↔ `[slices.N]` correspondence, deps and cycles, links, the frozen archive, legacy dirs and second boards, size ceilings, `W-NO-QA-PLAN`, the FR-14 log rules and the empty-summary warning on a `ready` feature. It exits 1 on errors. `factory docs doctor` says which framework version a repo is on (`v3`, `v2 (run factory docs migrate --dry)`, `v1`, `not on the framework`) and what `check` would say, in a v3 and a v2 repo alike, and never writes. Ideas checks are slice 05. `W-GATE-UNRESOLVED` is slice 04, which owns gate resolution. The pre-commit hook that calls `check` is slice 11.
 

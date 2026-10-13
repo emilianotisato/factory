@@ -20,13 +20,14 @@ use serde_json::{Value, json};
 
 const BIN: &str = env!("CARGO_BIN_EXE_factory");
 const FEATURE_DIR: &str = "docs/features/001-fixture";
-const AGENT_LOG: &str = "docs/features/001-fixture/agent-log.md";
-const PRD: &str = "docs/features/001-fixture/prd.md";
+const LOG: &str = "docs/features/001-fixture/log.jsonl";
+const STATE: &str = "docs/features/001-fixture/state.toml";
 const RETRO: &str = "docs/features/001-fixture/retro.md";
 const PR_URL: &str = "https://example.invalid/pr/1";
 const RUN_FIELDS: &str = "databaseId,name,workflowName,conclusion,headSha,status,attempt";
 const CI_FIX: &str = "Fix the red CI check `test` on the PR of PRD-001 as the appended system prompt says. Return the STATUS block.";
-const RETRO_KEYS: [&str; 12] = [
+/// The run row's twelve numbers the `retros` row copies at ship (FR-19).
+const RETRO_NUMBERS: [&str; 12] = [
     "gate_runs",
     "gate_red",
     "gate_minutes",
@@ -116,13 +117,13 @@ fn wait_until(fx: &Fixture, dir: &Path, what: &str, secs: u64, mut ok: impl FnMu
     while !ok() {
         if Instant::now() >= deadline {
             panic!(
-                "timed out after {secs}s waiting for {what}\n--- state.json\n{}\n--- events\n{:?}\n--- git log\n{}\n--- gh.log\n{:?}\n--- driver.log\n{}\n--- agent-log.md\n{}",
+                "timed out after {secs}s waiting for {what}\n--- state.json\n{}\n--- events\n{:?}\n--- git log\n{}\n--- gh.log\n{:?}\n--- driver.log\n{}\n--- log.jsonl\n{}",
                 state(dir),
                 kinds(dir),
                 fx.git(&["log", "--format=%h %s"]),
                 fx.gh_log(),
                 driver_log(dir),
-                fs::read_to_string(fx.path().join(AGENT_LOG)).unwrap_or_default()
+                fs::read_to_string(fx.path().join(LOG)).unwrap_or_default()
             );
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -249,25 +250,10 @@ fn gh_calls(fx: &Fixture, verb: &str) -> Vec<String> {
 }
 
 /// The frontmatter of a fixture file as `(key, value)` pairs.
-fn frontmatter(fx: &Fixture, rel: &str) -> Vec<(String, String)> {
-    let text = fx.read(rel);
-    let body = text.strip_prefix("---\n").expect(rel);
-    let end = body.find("\n---").expect(rel);
-    body[..end]
-        .lines()
-        .map(|l| {
-            let (k, v) = l.split_once(':').unwrap_or((l, ""));
-            (k.trim().to_string(), v.trim().to_string())
-        })
-        .collect()
-}
-
-fn fm_value(fx: &Fixture, rel: &str, key: &str) -> String {
-    frontmatter(fx, rel)
-        .into_iter()
-        .find(|(k, _)| k == key)
-        .map(|(_, v)| v)
-        .unwrap_or_else(|| panic!("no `{key}:` in {rel}"))
+/// `factory report <run> --json`, parsed.
+fn report_json(fx: &Fixture, dir: &Path) -> Value {
+    let out = factory(fx, &["report", &run_id(dir), "--json"]);
+    serde_json::from_str(&stdout(&out)).expect("one JSON object")
 }
 
 fn origin_head(fx: &Fixture, branch: &str) -> Option<String> {
@@ -293,18 +279,37 @@ fn head(fx: &Fixture) -> String {
     fx.git(&["rev-parse", "HEAD"]).trim().to_string()
 }
 
-fn block_heading(fx: &Fixture, id: &str, phase: &str) -> String {
-    let log = fx.read(AGENT_LOG);
-    let needle = format!("### {id} — ");
-    let i = log
-        .find(&needle)
-        .unwrap_or_else(|| panic!("{needle} missing from\n{log}"));
-    let line = log[i..].lines().next().unwrap().to_string();
+/// The `block` entry `id` of the feature's log: its `phase` is `phase` and
+/// no `answer` refers to it yet (open).
+fn block_entry(fx: &Fixture, id: &str, phase: &str) -> Value {
+    let all = fx.log_entries();
+    let entry = all
+        .iter()
+        .find(|e| e["kind"] == "block" && e["id"] == id)
+        .unwrap_or_else(|| panic!("{id} missing from {all:#?}"))
+        .clone();
+    assert_eq!(entry["phase"], phase, "{entry}");
     assert!(
-        line.ends_with(&format!(" · {phase} · open")),
-        "{line} is not an open {phase} block"
+        !answered_in_log(fx, id),
+        "{id} is not an open {phase} block: {all:#?}"
     );
-    line
+    entry
+}
+
+/// The body of the `block` entry `id`.
+fn block_body(fx: &Fixture, id: &str) -> String {
+    fx.log_of("block")
+        .into_iter()
+        .find(|e| e["id"] == id)
+        .unwrap_or_else(|| panic!("no block {id} in {:#?}", fx.log_entries()))["body"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// An `answer` entry refers to `id`: the block is resolved.
+fn answered_in_log(fx: &Fixture, id: &str) -> bool {
+    fx.log_of("answer").iter().any(|e| e["ref"] == id)
 }
 
 /// Each line fails the first `gh` call whose argv starts with it, once.
@@ -407,16 +412,15 @@ fn a_finished_board_polishes_ships_pushes_and_opens_the_draft_pr() {
         " docs(001): checkpoint 2\n",
         "# Retro",
         &format!("<!-- {FEATURE_DIR}/retro.md -->"),
-        "````markdown\n---\nscore:\ngate_runs:\n",
-        "# Retro — PRD-001",
+        "````markdown\n# Retro — PRD-001\n",
         "# PR body",
         &format!("<!-- write: {} -->", dir.join("pr-body.md").display()),
         "## PRD-{NNN} — {title}",
         "# Contract",
         "You are the polish worker of PRD-001",
         "run `/polish` **Unattended**",
-        "**Your AD numbers start at AD-9901**",
-        "`### BLOCK-n — {what} · polish · open`",
+        "docs retro 001 --set score=4`",
+        "--kind block --phase polish",
         "# Autonomy",
     ] {
         assert!(
@@ -425,6 +429,24 @@ fn a_finished_board_polishes_ships_pushes_and_opens_the_draft_pr() {
         );
     }
     assert!(!pack.contains("# Gate transcript"), "{pack}");
+    assert!(!pack.contains("\nscore:"), "{pack}");
+    harness::assert_v3_contract(&pack);
+    // FR-18: the slice and checkpoint packs of the same run call the tool too.
+    for i in [0, 1, 2, 3, 4] {
+        harness::assert_v3_contract(&pack_of(&fx.calls()[i]).1);
+    }
+    // The `# Log` section is `log show 001`, byte for byte: the polish worker
+    // writes no entry, so the log at the end is the log it was handed.
+    let from = pack
+        .find("# Log\n\n<!-- factory docs log show 001 -->\n\n")
+        .expect("# Log");
+    let body = &pack[from + "# Log\n\n<!-- factory docs log show 001 -->\n\n".len()..];
+    let shown = fx.docs(&["log", "show", "001"]);
+    assert!(shown.contains("## Decisions"), "{shown}");
+    assert_eq!(
+        &body[..body.find("\n\n# Retro\n").unwrap()],
+        shown.trim_end()
+    );
 
     // Its commit, then the ship commit: HEAD is `docs: ship PRD-001`.
     assert_eq!(
@@ -447,39 +469,93 @@ fn a_finished_board_polishes_ships_pushes_and_opens_the_draft_pr() {
     assert_eq!(
         files_of(&fx, &polish_sha),
         [
-            PRD.to_string(),
             RETRO.to_string(),
+            STATE.to_string(),
             "src/lib.txt".to_string()
         ]
     );
     assert!(fx.read("src/lib.txt").contains("polished by spawn 6\n"));
+    // The ship commit stages the feature dir: the shipped state and the
+    // filled retro; no index render, no agent log.
     let ship_files = files_of(&fx, &sha_of(&fx, "docs(001): ship PRD-001"));
-    for f in ["docs/index.md", PRD, RETRO] {
+    for f in [STATE, RETRO] {
         assert!(
             ship_files.contains(&f.to_string()),
             "{f} not in {ship_files:?}"
         );
     }
+    for f in [
+        "docs/index.md".to_string(),
+        format!("{FEATURE_DIR}/agent-log.md"),
+    ] {
+        assert!(!ship_files.contains(&f), "{f} in {ship_files:?}");
+    }
     assert_eq!(fx.git(&["status", "--porcelain"]).trim(), "", "tree dirty");
 
     // The PRD is shipped and reviewed; the retro has its twelve numbers.
-    assert_eq!(fm_value(&fx, PRD, "status"), "shipped");
-    assert!(fm_value(&fx, PRD, "reviewed").starts_with("20"), "reviewed");
-    let retro = frontmatter(&fx, RETRO);
-    assert_eq!(retro[0], ("score".to_string(), String::new()), "{retro:?}");
-    for key in RETRO_KEYS {
-        let v = &retro
-            .iter()
-            .find(|(k, _)| k == key)
-            .unwrap_or_else(|| panic!("{key}"))
-            .1;
-        assert!(v.parse::<f64>().is_ok(), "{key}: {v:?} is not a number");
+    let board = fx.state();
+    assert_eq!(board.status, "shipped");
+    assert!(
+        board
+            .shipped
+            .as_deref()
+            .is_some_and(|d| d.starts_with("20")),
+        "shipped: {:?}",
+        board.shipped
+    );
+    assert!(
+        board
+            .reviewed
+            .as_deref()
+            .is_some_and(|d| d.starts_with("20")),
+        "reviewed: {:?}",
+        board.reviewed
+    );
+    // FR-19: the numbers are the store's `retros` row, not frontmatter.
+    assert!(!fx.read(RETRO).starts_with("---"), "{}", fx.read(RETRO));
+    let id = run_id(&dir);
+    let repo = db(&fx).run_row(&id).unwrap().unwrap().repo;
+    let rr = db(&fx).retro(&repo, 1).unwrap().expect("a retros row");
+    assert_eq!(rr.run_id.as_deref(), Some(id.as_str()));
+    assert_eq!((rr.slug.as_str(), rr.score), ("fixture", None));
+    assert!(
+        rr.shipped_at
+            .as_deref()
+            .is_some_and(|d| d.starts_with("20"))
+    );
+    assert_eq!(
+        (
+            rr.slices,
+            rr.checkpoints,
+            rr.gate_runs,
+            rr.gate_red,
+            rr.ci_cycles
+        ),
+        (Some(3), Some(2), Some(2), Some(0), Some(0))
+    );
+    let rep = report_json(&fx, &dir);
+    let row_numbers = [
+        rr.gate_runs.map(|v| v as f64),
+        rr.gate_red.map(|v| v as f64),
+        rr.gate_minutes,
+        rr.ci_cycles.map(|v| v as f64),
+        rr.slices.map(|v| v as f64),
+        rr.checkpoints.map(|v| v as f64),
+        rr.build_minutes,
+        rr.polish_minutes,
+        rr.out_tokens.map(|v| v as f64),
+        rr.cache_read_tokens.map(|v| v as f64),
+        rr.start_context.map(|v| v as f64),
+        rr.peak_context.map(|v| v as f64),
+    ];
+    for (key, got) in RETRO_NUMBERS.iter().zip(row_numbers) {
+        let want = rep[key].as_f64().unwrap_or_else(|| panic!("{key}: {rep}"));
+        let got = got.unwrap_or_else(|| panic!("{key} is null in the row"));
+        assert!(
+            (got - want).abs() < 0.005,
+            "{key}: row {got}, report {want}"
+        );
     }
-    assert_eq!(fm_value(&fx, RETRO, "slices"), "3");
-    assert_eq!(fm_value(&fx, RETRO, "checkpoints"), "2");
-    assert_eq!(fm_value(&fx, RETRO, "gate_runs"), "2");
-    assert_eq!(fm_value(&fx, RETRO, "gate_red"), "0");
-    assert_eq!(fm_value(&fx, RETRO, "ci_cycles"), "0");
     assert!(
         fx.read(RETRO).contains("## Cost vs catch"),
         "the worker's prose"
@@ -519,9 +595,19 @@ fn a_finished_board_polishes_ships_pushes_and_opens_the_draft_pr() {
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     assert_eq!(
         stdout(&out),
-        format!("retro: {} unchanged\n", fx.path().join(RETRO).display())
+        format!(
+            "retro: {} unchanged\nscore: none\n",
+            fx.path().join(RETRO).display()
+        )
     );
     assert_eq!(fs::read(fx.path().join(RETRO)).unwrap(), before);
+    fx.docs(&["retro", "001", "--set", "score=4"]);
+    let out = factory(&fx, &["retro", &run_id(&dir)]);
+    assert!(
+        stdout(&out).ends_with(" unchanged\nscore: 4\n"),
+        "{}",
+        stdout(&out)
+    );
     let body = fs::read_to_string(dir.join("pr-body.md")).unwrap();
     assert!(body.starts_with("## PRD-001 — Fixture\n"), "{body}");
 
@@ -670,7 +756,11 @@ fn a_second_run_of_the_repo_compares_with_the_first() {
 
     let out = factory(&fx, &["retro", &first]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
-    assert!(stdout(&out).ends_with(" updated\n"), "{}", stdout(&out));
+    assert!(
+        stdout(&out).ends_with(" updated\nscore: none\n"),
+        "{}",
+        stdout(&out)
+    );
     let text = fx.read(RETRO);
     let numbers = section(&text);
     assert!(
@@ -760,7 +850,11 @@ fn a_retro_the_polish_worker_left_out_is_a_flagged_stand_in() {
     let polish_sha = sha_of(&fx, "fix(001): polish review fixes");
     assert!(files_of(&fx, &polish_sha).contains(&RETRO.to_string()));
     assert!(!fx.read(RETRO).contains("Stub retro"), "{}", fx.read(RETRO));
-    assert_eq!(fm_value(&fx, RETRO, "slices"), "3");
+    assert!(
+        fx.read(RETRO).starts_with("# Retro — PRD-001\n"),
+        "{}",
+        fx.read(RETRO)
+    );
     // One event, naming the retro; the body is the worker's, flagged first.
     let stood = of_kind(&dir, "template_stand_in");
     assert_eq!(stood.len(), 1, "{stood:?}");
@@ -850,11 +944,14 @@ fn a_slice_not_done_at_ship_blocks_the_closeout_in_phase_polish() {
         q.starts_with("docs ship PRD-001 refused: refusing: 1 slice(s) not done"),
         "{q}"
     );
-    let heading = block_heading(&fx, "BLOCK-1", "polish");
-    assert_eq!(heading, format!("### BLOCK-1 — {q} · polish · open"));
-    let log = fx.read(AGENT_LOG);
+    // One `block` entry in phase polish, its body quoting the refusal.
+    let blocks = fx.log_of("block");
+    assert_eq!(blocks.len(), 1, "{blocks:#?}");
+    let entry = block_entry(&fx, "BLOCK-1", "polish");
+    assert_eq!(entry["title"], q);
+    let log = entry["body"].as_str().unwrap();
     assert!(
-        log.contains("**Happened:** the polish commit is in and `docs ship 001` refused (exit "),
+        log.contains("**Happened:** the polish commit is in and `docs ship 001` refused"),
         "{log}"
     );
     assert!(
@@ -874,7 +971,7 @@ fn a_slice_not_done_at_ship_blocks_the_closeout_in_phase_polish() {
     );
     assert!(subjects(&fx).contains(&"fix(001): polish review fixes".to_string()));
     assert!(!subjects(&fx).contains(&"docs(001): ship PRD-001".to_string()));
-    assert_eq!(fm_value(&fx, PRD, "status"), "ready");
+    assert_eq!(fx.state().status, "ready");
     assert!(gh_calls(&fx, "pr create").is_empty(), "{:?}", fx.gh_log());
     assert_eq!(origin_head(&fx, "feat/fixture"), None, "nothing pushed");
     stop(&fx, &dir);
@@ -908,7 +1005,7 @@ fn a_red_check_gets_one_fix_round_then_green() {
         "FAIL test: expected 2 got 3",
         "# Contract",
         "fix round 1, unattended",
-        "**Your AD numbers start at AD-8101**",
+        "--kind block --phase ci",
         "# Autonomy",
         "# Inner loop",
     ] {
@@ -917,8 +1014,9 @@ fn a_red_check_gets_one_fix_round_then_green() {
             "{want:?} missing from the CI fix pack:\n{pack}"
         );
     }
+    harness::assert_v3_contract(&pack);
 
-    // Its commit is `fix(001): CI test`, pushed; the retro counts the cycle.
+    // Its commit is `fix(001): CI test`, pushed; the report counts the cycle.
     assert_eq!(
         subjects(&fx)[7..],
         [
@@ -928,13 +1026,15 @@ fn a_red_check_gets_one_fix_round_then_green() {
         ]
     );
     let fix_sha = sha_of(&fx, "fix(001): CI test");
-    assert_eq!(
-        files_of(&fx, &fix_sha),
-        [RETRO.to_string(), "src/lib.txt".to_string()]
-    );
+    assert_eq!(files_of(&fx, &fix_sha), ["src/lib.txt".to_string()]);
     assert!(fx.read("src/lib.txt").contains("fixed by spawn 7\n"));
-    assert_eq!(fm_value(&fx, RETRO, "ci_cycles"), "1");
-    assert_eq!(fm_value(&fx, PRD, "status"), "shipped");
+    // FR-19: the CI round leaves the retro as ship wrote it.
+    let ship_sha = sha_of(&fx, "docs(001): ship PRD-001");
+    assert_eq!(
+        fx.git(&["show", &format!("{ship_sha}:{RETRO}")]),
+        fx.read(RETRO)
+    );
+    assert_eq!(fx.state().status, "shipped");
     assert_eq!(origin_head(&fx, "feat/fixture"), Some(head(&fx)));
     // FR-24: one red round, no rerun, one fix cycle.
     let out = factory(&fx, &["report", &run_id(&dir), "--json"]);
@@ -1008,7 +1108,7 @@ fn a_flaky_check_is_rerun_once_then_green() {
     assert_eq!(gh_calls(&fx, "run rerun"), ["run rerun 1000 --failed"]);
     assert_eq!(gh_calls(&fx, "pr checks").len(), 2);
     assert!(!subjects(&fx).iter().any(|s| s.starts_with("fix(001): CI")));
-    assert_eq!(fm_value(&fx, RETRO, "ci_cycles"), "0");
+    assert_eq!(report_json(&fx, &dir)["ci_cycles"], 0);
     assert_eq!(
         kinds_from(&dir, "pr_opened"),
         [
@@ -1039,7 +1139,7 @@ fn a_flaky_check_red_after_its_rerun_blocks_and_the_answer_resumes_at_the_pr() {
         blocked["question"],
         "flaky check test red again after its rerun"
     );
-    block_heading(&fx, "BLOCK-1", "ci");
+    block_entry(&fx, "BLOCK-1", "ci");
     wait_phase(&fx, &dir, "waiting-owner", 30);
     assert_eq!(gh_calls(&fx, "run rerun").len(), 1);
     assert_eq!(gh_calls(&fx, "pr checks").len(), 2);
@@ -1082,11 +1182,16 @@ fn a_flaky_check_red_after_its_rerun_blocks_and_the_answer_resumes_at_the_pr() {
             "run_finished"
         ]
     );
-    let log = fx.read(AGENT_LOG);
-    assert!(
-        log.contains("### BLOCK-1 — flaky check test red again after its rerun · ci · resolved"),
-        "{log}"
+    // The block entry stands as written; an `answer` entry resolves it.
+    let blocks = fx.log_of("block");
+    assert_eq!(blocks.len(), 1, "{blocks:#?}");
+    assert_eq!(blocks[0]["id"], "BLOCK-1");
+    assert_eq!(blocks[0]["phase"], "ci");
+    assert_eq!(
+        blocks[0]["title"],
+        "flaky check test red again after its rerun"
     );
+    assert!(answered_in_log(&fx, "BLOCK-1"), "{:#?}", fx.log_entries());
     assert_eq!(events(&dir).pop().unwrap()["pr_url"], PR_URL);
 }
 
@@ -1100,7 +1205,7 @@ fn three_fix_rounds_on_a_red_check_block_the_closeout() {
     let blocked = wait_block(&fx, &dir, 150);
     assert_eq!(blocked["phase"], "ci");
     assert_eq!(blocked["question"], "CI red after 3 fix rounds: test");
-    block_heading(&fx, "BLOCK-1", "ci");
+    block_entry(&fx, "BLOCK-1", "ci");
 
     assert_eq!(roles(&fx, &dir)[5..], ["polish", "fix", "fix", "fix"]);
     assert_eq!(
@@ -1112,7 +1217,7 @@ fn three_fix_rounds_on_a_red_check_block_the_closeout() {
             "fix(001): CI test"
         ]
     );
-    assert_eq!(fm_value(&fx, RETRO, "ci_cycles"), "3");
+    assert_eq!(report_json(&fx, &dir)["ci_cycles"], 3);
     assert_eq!(gh_calls(&fx, "pr checks").len(), 4);
     assert_eq!(gh_calls(&fx, "pr create").len(), 1);
     assert!(gh_calls(&fx, "run rerun").is_empty());
@@ -1144,7 +1249,7 @@ fn a_red_check_at_a_foreign_head_blocks_without_a_fix_worker() {
         blocked["question"],
         "CI red at a head this branch does not have: test"
     );
-    block_heading(&fx, "BLOCK-1", "ci");
+    block_entry(&fx, "BLOCK-1", "ci");
     assert_eq!(prompts(&fx).len(), 6, "{:?}", prompts(&fx));
     assert!(gh_calls(&fx, "run rerun").is_empty());
     assert_eq!(
@@ -1244,8 +1349,8 @@ fn a_timeout_or_a_runner_that_never_started_blocks_at_once_and_proceed_ends_the_
         blocked["question"],
         "CI did not run to a verdict: test, build"
     );
-    block_heading(&fx, "BLOCK-1", "ci");
-    let log = fx.read(AGENT_LOG);
+    block_entry(&fx, "BLOCK-1", "ci");
+    let log = block_body(&fx, "BLOCK-1");
     for want in [
         "  test\tTIMED_OUT\thttps://example.invalid/actions/runs/1000/job/5000\n",
         "  build\tSTARTUP_FAILURE\thttps://example.invalid/actions/runs/1100/job/5001\n",
@@ -1300,7 +1405,7 @@ fn a_refused_run_list_blocks_instead_of_a_blind_fix_round() {
         blocked["question"],
         "gh run list refused: stub gh: scripted failure: run list"
     );
-    block_heading(&fx, "BLOCK-1", "ci");
+    block_entry(&fx, "BLOCK-1", "ci");
     assert_eq!(prompts(&fx).len(), 6, "no fix worker: {:?}", prompts(&fx));
     assert!(gh_calls(&fx, "run rerun").is_empty());
     assert!(!subjects(&fx).iter().any(|s| s.starts_with("fix(001): CI")));
@@ -1407,7 +1512,7 @@ fn a_refused_rerun_blocks_instead_of_a_fix_round() {
         blocked["question"],
         "gh run rerun 1000 refused: stub gh: scripted failure: run rerun"
     );
-    block_heading(&fx, "BLOCK-1", "ci");
+    block_entry(&fx, "BLOCK-1", "ci");
     assert_eq!(gh_calls(&fx, "run rerun"), ["run rerun 1000 --failed"]);
     assert!(of_kind(&dir, "ci_rerun").is_empty());
     assert_eq!(prompts(&fx).len(), 6, "no fix worker: {:?}", prompts(&fx));
@@ -1477,8 +1582,8 @@ fn a_check_pending_past_the_timeout_blocks_and_proceed_ends_the_watch() {
     let blocked = wait_block(&fx, &dir, 90);
     assert_eq!(blocked["phase"], "ci");
     assert_eq!(blocked["question"], "CI still pending after 3s");
-    block_heading(&fx, "BLOCK-1", "ci");
-    let log = fx.read(AGENT_LOG);
+    block_entry(&fx, "BLOCK-1", "ci");
+    let log = block_body(&fx, "BLOCK-1");
     assert!(log.contains(": `test` running. The last table:\n"), "{log}");
     wait_parked(&fx, &dir, 1, 30);
     let polls = gh_calls(&fx, "pr checks").len();
@@ -1594,7 +1699,7 @@ fn an_answer_to_the_cap_block_gives_three_fresh_fix_rounds() {
             "ci-fix-4-10.md"
         ]
     );
-    assert_eq!(fm_value(&fx, RETRO, "ci_cycles"), "4");
+    assert_eq!(report_json(&fx, &dir)["ci_cycles"], 4);
     assert_eq!(of_kind(&dir, "ci_green")[0]["head"], head(&fx));
     assert_eq!(origin_head(&fx, "feat/fixture"), Some(head(&fx)));
 }
@@ -1619,12 +1724,12 @@ fn the_push_refuses_a_head_off_the_feature_branch_and_the_pr_names_its_head() {
         second["question"],
         "push stopped: HEAD is on `stray`, not the feature branch `feat/fixture`"
     );
-    block_heading(&fx, "BLOCK-2", "pr");
+    block_entry(&fx, "BLOCK-2", "pr");
     assert!(
-        fx.read(AGENT_LOG)
+        block_body(&fx, "BLOCK-2")
             .contains("1. put HEAD back on the feature branch (`git switch feat/fixture`"),
         "{}",
-        fx.read(AGENT_LOG)
+        block_body(&fx, "BLOCK-2")
     );
     assert_eq!(origin_head(&fx, "stray"), None, "nothing pushed from stray");
     assert_eq!(gh_calls(&fx, "pr create").len(), 1);
@@ -1664,7 +1769,7 @@ fn a_head_off_the_feature_branch_blocks_the_polish_before_a_worker_runs() {
         second["question"],
         "polish stopped: HEAD is on `stray`, not the feature branch `feat/fixture`"
     );
-    block_heading(&fx, "BLOCK-2", "polish");
+    block_entry(&fx, "BLOCK-2", "polish");
     wait_parked(&fx, &dir, 2, 30);
     assert_eq!(
         roles(&fx, &dir)[5..],
@@ -1740,7 +1845,7 @@ fn a_shipped_board_without_its_ship_commit_ships_again() {
     // `docs ship` ran and its commit did not: what a driver killed between
     // the two leaves behind.
     fx.docs(&["ship", "001"]);
-    assert_eq!(fm_value(&fx, PRD, "status"), "shipped");
+    assert_eq!(fx.state().status, "shipped");
     assert_ne!(
         fx.git(&["status", "--porcelain"]).trim(),
         "",
@@ -1759,10 +1864,10 @@ fn a_shipped_board_without_its_ship_commit_ships_again() {
         "docs(001): ship PRD-001"
     );
     let ship = sha_of(&fx, "docs(001): ship PRD-001");
-    assert!(files_of(&fx, &ship).contains(&PRD.to_string()));
+    assert!(files_of(&fx, &ship).contains(&STATE.to_string()));
     assert!(
-        fx.git(&["show", &format!("HEAD:{PRD}")])
-            .contains("status: shipped"),
+        fx.git(&["show", &format!("HEAD:{STATE}")])
+            .contains("status = \"shipped\""),
         "HEAD holds the ship"
     );
     assert_eq!(fx.git(&["status", "--porcelain"]).trim(), "", "tree dirty");
@@ -1784,10 +1889,10 @@ fn proceed_to_the_dead_polish_block_ships_without_a_third_worker() {
     let blocked = wait_block(&fx, &dir, 90);
     assert_eq!(blocked["question"], "Two polish workers died");
     assert!(
-        fx.read(AGENT_LOG)
+        block_body(&fx, "BLOCK-1")
             .contains("commit, and answer this block with `proceed` — the driver ships from there"),
         "{}",
-        fx.read(AGENT_LOG)
+        block_body(&fx, "BLOCK-1")
     );
     wait_parked(&fx, &dir, 1, 30);
     answer(&fx, "BLOCK-1", "proceed");
@@ -1798,7 +1903,7 @@ fn proceed_to_the_dead_polish_block_ships_without_a_third_worker() {
         "no third polish"
     );
     assert_eq!(subjects(&fx)[7..], ["docs(001): ship PRD-001"]);
-    assert_eq!(fm_value(&fx, PRD, "status"), "shipped");
+    assert_eq!(fx.state().status, "shipped");
     assert_eq!(gh_calls(&fx, "pr create").len(), 1);
     assert_eq!(events(&dir).pop().unwrap()["kind"], "run_finished");
 }
@@ -1812,7 +1917,7 @@ fn two_dead_polish_workers_block_and_the_answer_spawns_a_third() {
     let blocked = wait_block(&fx, &dir, 90);
     assert_eq!(blocked["phase"], "polish");
     assert_eq!(blocked["question"], "Two polish workers died");
-    block_heading(&fx, "BLOCK-1", "polish");
+    block_entry(&fx, "BLOCK-1", "polish");
     wait_phase(&fx, &dir, "waiting-owner", 30);
     assert_eq!(roles(&fx, &dir)[5..], ["polish", "polish"]);
     assert_eq!(
@@ -1826,8 +1931,16 @@ fn two_dead_polish_workers_block_and_the_answer_spawns_a_third() {
             "run_waiting",
         ]
     );
-    let log = fx.read(AGENT_LOG);
-    assert_eq!(log.matches("- **Dead polish worker (").count(), 2, "{log}");
+    // Each death is a `note` entry (the old `## Traps` line).
+    let notes = fx.log_of("note");
+    assert_eq!(
+        notes
+            .iter()
+            .filter(|e| e["title"] == "Dead polish worker")
+            .count(),
+        2,
+        "{notes:#?}"
+    );
     assert!(!subjects(&fx).contains(&"fix(001): polish review fixes".to_string()));
     assert!(gh_calls(&fx, "pr create").is_empty());
 
@@ -1922,4 +2035,58 @@ fn the_driver_never_merges_or_readies_a_pr() {
         hits.is_empty(),
         "the driver asks GitHub to merge or ready a PR: {hits:?}"
     );
+}
+
+/// PRD-002 FR-18: every `{factory} docs …` line the slice contract names
+/// runs as written on the fixture, in the contract's order, and the log
+/// then holds what the worker wrote through it. The stub `claude` reads no
+/// contract, so only this catches a flag the tool does not take.
+#[test]
+fn the_slice_contracts_commands_run_on_the_fixture() {
+    let fx = Fixture::new("closeout-contract-commands");
+    let contract = factory::pack::CONTRACT;
+    let lines: Vec<String> = contract
+        .split('`')
+        .filter(|span| span.starts_with("{factory} docs "))
+        .map(|span| {
+            span.replace("{factory}", BIN)
+                .replace("{NNN}", "001")
+                .replace("{N}", "1")
+                .replace("decide|fyi", "decide")
+        })
+        .collect();
+    assert_eq!(lines.len(), 7, "{lines:?}");
+    for line in &lines {
+        let mut child = fx
+            .command("sh")
+            .args(["-c", line])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        use std::io::Write as _;
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"**Chose:** a\n**Over:** b\n**Because:** c\n**Undo:** d\n")
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{line}\n{}{}",
+            stdout(&out),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let kinds: Vec<String> = fx
+        .log_entries()
+        .iter()
+        .map(|e| e["kind"].as_str().unwrap_or("").to_string())
+        .collect();
+    assert_eq!(kinds, ["decision", "note", "block"], "{kinds:?}");
+    assert_eq!(fx.log_entries()[0]["flag"], "decide");
+    assert_eq!(fx.state().slices[&1].status, "blocked");
 }

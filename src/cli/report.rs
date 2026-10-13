@@ -907,7 +907,7 @@ pub fn recount(run: &Run, out: &mut dyn Write) -> Result<()> {
         ended.push((w, session, short, stream::parse(&text).1));
     }
     // The gate pair as the driver reads it, so an inner-loop run keeps its kind.
-    let gate = Docs::locate(&repo).ok().and_then(|d| {
+    let gate = Docs::open(&repo).ok().and_then(|d| {
         let gate = d.gate().ok()?;
         let inner = d.gate_inner().ok().filter(|s| !s.is_empty());
         Some(GateCmds { gate, inner })

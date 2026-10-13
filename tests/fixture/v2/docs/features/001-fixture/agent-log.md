@@ -1,4 +1,4 @@
-# Agent log — PRD-002
+# Agent log — PRD-001
 
 What an unattended run (`/deliver`) decided on its own, and where it stopped. **The owner reviews this in the pull request.** What earns an entry is defined in the feature-docs skill's `autonomy.md`.
 
@@ -12,19 +12,70 @@ What an unattended run (`/deliver`) decided on its own, and where it stopped. **
 
 What this repo does that cost a builder a run and will cost the next one too: a tool that takes no paths, a test that needs hidden setup, a formatter that rewrites files outside the slice. One line each, with what works instead. Every builder reads this first and adds what it learned.
 
-_(none)_
+- `gate.sh --inner` exits 0 without running anything: run `./gate.sh` to see a real failure.
 
 ## Blockers
 
-_(none)_
+### BLOCK-201 — Slice c needs a failing gate mode · slice-03 · resolved
+
+**Happened:** `gate.sh` has no way to fail, so slice c cannot prove its red path.
+**Options:**
+1. add a `--fail` flag — one line in `gate.sh`
+2. skip the red path — the slice's acceptance goes unproven
+**Recommended:** 1, because it is one line.
+
+**Resolution (2026-10-03):** add the flag, as recommended.
 
 ## Decisions
 
-_(none)_
+### AD-10001 — Re-run the gate at the checkpoint? · checkpoint · 2026-10-03
+
+**Chose:** one more full run.
+**Over:** trusting the slice runs.
+**Because:** two lanes merged into one tree.
+**Undo:** drop the run.
+**Review:** fyi — a reviewer reading the diff would miss the extra run
+
+### AD-201 — Name the scenario files by slice · slice-02 · 2026-10-02
+
+**Chose:** `scenario/slice-02.txt`.
+**Over:** one shared file.
+**Because:** two lanes write at once.
+**Undo:** rename the files.
+**Review:** fyi
+
+**Owner (2026-10-04):** changed — name them by step, `scenario/step-2.txt`.
+
+### AD-101 — Keep lib.txt plain text · slice-01 · 2026-10-01
+
+**Chose:** plain text.
+**Over:** JSON.
+**Because:** the gate greps it.
+**Undo:** convert it.
+**Review:** decide
+
+**Owner (2026-10-04):** kept
+
+### AD-1 — Preflight lanes: proceed as-is · preflight · 2026-09-30
+
+**Asked:** two lanes on a three-slice fixture.
+**Chose:** proceed as-is
+**Review:** no
+
+### AD-501 — Shorten the README · polish · 2026-10-05
+
+**Chose:** one paragraph.
+**Over:** the full walk-through.
+**Because:** the PRD holds the walk-through.
+**Undo:** restore it from git.
+**Review:** decide
 
 ## Checkpoints
 
-_(none)_
+### CP-1 — after slice-02 · 2026-10-03
+
+**Covers:** slice-01, slice-02.
+**Gate:** green, 2 runs.
 
 ---
 

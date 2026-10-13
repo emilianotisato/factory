@@ -1,10 +1,3 @@
----
-slice: 12
-status: done
-lane: 1
-depends_on: [11]
----
-
 # Slice 12 — ctx tags: tree-sitter, outline, kind filter, Vue shim (FR-12 slice 2)
 
 **Source**: [`prd.md`](prd.md) → §14 FR-12 decision 2 (tree-sitter half: definition-node confirmation, body as node range, comments and strings dropped, `outline` from `tags.scm`, the Vue shim), decision 5 ("(2) tree-sitter tags for the four grammars, `outline`, the kind filter, the Vue script shim"), and its acceptance. **Depends on**: 11 (same files: the regex hits are the candidates tree-sitter confirms; the printer and fixtures are reused).

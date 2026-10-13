@@ -2,17 +2,18 @@
 //! `workers`, `gates`, `events`, written as events happen. Migrations are
 //! idempotent: `CREATE TABLE IF NOT EXISTS` plus a `schema_version` row, and
 //! a guarded `ALTER TABLE` per column added after a table shipped.
-//! `tool_calls` landed in slice 08.
+//! `tool_calls` landed in slice 08. `retros` is version 3 (PRD-002 FR-19).
 use std::path::Path;
 use std::time::Duration;
 
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use serde::Serialize;
 
 use crate::run::RunState;
 use crate::stream::{Findings, Summary};
 use crate::{Result, clock};
 
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -91,7 +92,94 @@ CREATE TABLE IF NOT EXISTS tool_calls (
   label_expanded   INTEGER,
   pack_doc         INTEGER
 );
+CREATE TABLE IF NOT EXISTS retros (
+  repo              TEXT    NOT NULL,
+  feature           INTEGER NOT NULL,
+  slug              TEXT    NOT NULL,
+  shipped_at        TEXT,
+  run_id            TEXT    REFERENCES runs(id),
+  score             INTEGER,
+  gate_runs         INTEGER,
+  gate_red          INTEGER,
+  gate_minutes      REAL,
+  ci_cycles         INTEGER,
+  slices            INTEGER,
+  checkpoints       INTEGER,
+  build_minutes     REAL,
+  polish_minutes    REAL,
+  out_tokens        INTEGER,
+  cache_read_tokens INTEGER,
+  start_context     INTEGER,
+  peak_context      INTEGER,
+  written_at        TEXT    NOT NULL,
+  PRIMARY KEY (repo, feature)
+);
 ";
+
+/// Columns added after a table shipped: `ALTER TABLE` is not `IF NOT
+/// EXISTS`, so [`Db::migrate`] guards each by the live column list.
+const COLUMNS: [(&str, &str, &str); 29] = [
+    ("workers", "commit_sha", "TEXT"),
+    ("workers", "checkpoint", "INTEGER"),
+    ("gates", "cached", "INTEGER NOT NULL DEFAULT 0"),
+    ("gates", "checkpoint", "INTEGER"),
+    ("gates", "attempt", "INTEGER"),
+    ("workers", "start_context", "INTEGER"),
+    ("runs", "pr_url", "TEXT"),
+    ("workers", "pack_files", "TEXT"),
+    ("tool_calls", "pack_doc", "INTEGER"),
+    // v2 (PRD-003). Null `sub_*` means not read: an older row, or a
+    // transcript dir that could not be read; zero means none.
+    ("workers", "sub_input", "INTEGER"),
+    ("workers", "sub_cache_write", "INTEGER"),
+    ("workers", "sub_cache_read", "INTEGER"),
+    ("workers", "sub_output", "INTEGER"),
+    ("workers", "subagents", "INTEGER"),
+    ("tool_calls", "in_subagent", "INTEGER NOT NULL DEFAULT 0"),
+    // FR-22: the pack's sections and their chars, as JSON.
+    ("workers", "pack_parts", "TEXT"),
+    // FR-23: the knobs a run resolved, its hypothesis, and the model
+    // that answered a worker (its first own assistant message).
+    ("runs", "knobs", "TEXT"),
+    ("runs", "hypothesis", "TEXT"),
+    ("workers", "model_id", "TEXT"),
+    // FR-24: the polish `FINDINGS` line (null when it had none) and
+    // the agent log's counts at ship.
+    ("runs", "findings_high", "INTEGER"),
+    ("runs", "findings_medium", "INTEGER"),
+    ("runs", "findings_low", "INTEGER"),
+    ("runs", "findings_fixed", "INTEGER"),
+    ("runs", "findings_parked", "INTEGER"),
+    ("runs", "decisions", "INTEGER"),
+    ("runs", "decide", "INTEGER"),
+    ("runs", "blocks", "INTEGER"),
+    // FR-25: `git diff --shortstat <base>..HEAD` at ship.
+    ("runs", "lines_added", "INTEGER"),
+    ("runs", "lines_removed", "INTEGER"),
+];
+
+/// The `retros` columns in table order, `repo` to `written_at`.
+pub const RETRO_COLUMNS: [&str; 19] = [
+    "repo",
+    "feature",
+    "slug",
+    "shipped_at",
+    "run_id",
+    "score",
+    "gate_runs",
+    "gate_red",
+    "gate_minutes",
+    "ci_cycles",
+    "slices",
+    "checkpoints",
+    "build_minutes",
+    "polish_minutes",
+    "out_tokens",
+    "cache_read_tokens",
+    "start_context",
+    "peak_context",
+    "written_at",
+];
 
 pub struct Db {
     conn: Connection,
@@ -265,6 +353,34 @@ pub struct GateRow {
     pub attempt: Option<u32>,
 }
 
+/// One `retros` row (PRD-002 FR-19): a feature's score and its twelve retro
+/// numbers, keyed on `(repo, feature)`. `repo` is the canonical root, the
+/// string `runs.repo` holds.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RetroRow {
+    pub repo: String,
+    pub feature: u32,
+    pub slug: String,
+    pub shipped_at: Option<String>,
+    pub run_id: Option<String>,
+    pub score: Option<i64>,
+    pub gate_runs: Option<i64>,
+    pub gate_red: Option<i64>,
+    pub gate_minutes: Option<f64>,
+    pub ci_cycles: Option<i64>,
+    pub slices: Option<i64>,
+    pub checkpoints: Option<i64>,
+    pub build_minutes: Option<f64>,
+    pub polish_minutes: Option<f64>,
+    pub out_tokens: Option<i64>,
+    pub cache_read_tokens: Option<i64>,
+    pub start_context: Option<i64>,
+    pub peak_context: Option<i64>,
+    /// Set by [`Db::upsert_retro`] and [`Db::set_retro_score`], whatever the
+    /// caller passed.
+    pub written_at: String,
+}
+
 impl Db {
     /// Open (creating the parent directory) and migrate.
     pub fn open(path: &Path) -> Result<Db> {
@@ -285,47 +401,7 @@ impl Db {
     fn migrate(&self) -> Result<()> {
         let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         tx.execute_batch(SCHEMA)?;
-        // Columns added after a table shipped: `ALTER TABLE` is not
-        // `IF NOT EXISTS`, so each is guarded by the live column list.
-        for (table, column, decl) in [
-            ("workers", "commit_sha", "TEXT"),
-            ("workers", "checkpoint", "INTEGER"),
-            ("gates", "cached", "INTEGER NOT NULL DEFAULT 0"),
-            ("gates", "checkpoint", "INTEGER"),
-            ("gates", "attempt", "INTEGER"),
-            ("workers", "start_context", "INTEGER"),
-            ("runs", "pr_url", "TEXT"),
-            ("workers", "pack_files", "TEXT"),
-            ("tool_calls", "pack_doc", "INTEGER"),
-            // v2 (PRD-003). Null `sub_*` means not read: an older row, or a
-            // transcript dir that could not be read; zero means none.
-            ("workers", "sub_input", "INTEGER"),
-            ("workers", "sub_cache_write", "INTEGER"),
-            ("workers", "sub_cache_read", "INTEGER"),
-            ("workers", "sub_output", "INTEGER"),
-            ("workers", "subagents", "INTEGER"),
-            ("tool_calls", "in_subagent", "INTEGER NOT NULL DEFAULT 0"),
-            // FR-22: the pack's sections and their chars, as JSON.
-            ("workers", "pack_parts", "TEXT"),
-            // FR-23: the knobs a run resolved, its hypothesis, and the model
-            // that answered a worker (its first own assistant message).
-            ("runs", "knobs", "TEXT"),
-            ("runs", "hypothesis", "TEXT"),
-            ("workers", "model_id", "TEXT"),
-            // FR-24: the polish `FINDINGS` line (null when it had none) and
-            // the agent log's counts at ship.
-            ("runs", "findings_high", "INTEGER"),
-            ("runs", "findings_medium", "INTEGER"),
-            ("runs", "findings_low", "INTEGER"),
-            ("runs", "findings_fixed", "INTEGER"),
-            ("runs", "findings_parked", "INTEGER"),
-            ("runs", "decisions", "INTEGER"),
-            ("runs", "decide", "INTEGER"),
-            ("runs", "blocks", "INTEGER"),
-            // FR-25: `git diff --shortstat <base>..HEAD` at ship.
-            ("runs", "lines_added", "INTEGER"),
-            ("runs", "lines_removed", "INTEGER"),
-        ] {
+        for (table, column, decl) in COLUMNS {
             if !self.has_column(table, column)? {
                 tx.execute(
                     &format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"),
@@ -884,6 +960,97 @@ impl Db {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
+    /// Write a feature's `retros` row, `written_at` now. Not `INSERT OR
+    /// REPLACE`: that deletes the old row first, and closeout's write at ship
+    /// would erase the `score` the polish worker set minutes before. A row
+    /// with no score keeps the stored one.
+    pub fn upsert_retro(&self, row: &RetroRow) -> Result<()> {
+        let updates: Vec<String> = RETRO_COLUMNS[2..]
+            .iter()
+            .map(|c| match *c {
+                "score" => "score = COALESCE(excluded.score, retros.score)".to_string(),
+                c => format!("{c} = excluded.{c}"),
+            })
+            .collect();
+        let slots: Vec<String> = (1..=RETRO_COLUMNS.len()).map(|i| format!("?{i}")).collect();
+        self.conn.execute(
+            &format!(
+                "INSERT INTO retros ({}) VALUES ({}) ON CONFLICT(repo, feature) DO UPDATE SET {}",
+                RETRO_COLUMNS.join(", "),
+                slots.join(", "),
+                updates.join(", ")
+            ),
+            params![
+                row.repo,
+                row.feature,
+                row.slug,
+                row.shipped_at,
+                row.run_id,
+                row.score,
+                row.gate_runs,
+                row.gate_red,
+                row.gate_minutes,
+                row.ci_cycles,
+                row.slices,
+                row.checkpoints,
+                row.build_minutes,
+                row.polish_minutes,
+                row.out_tokens,
+                row.cache_read_tokens,
+                row.start_context,
+                row.peak_context,
+                clock::now_rfc3339(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// A feature's `retros` row; `repo` is the canonical root.
+    pub fn retro(&self, repo: &str, feature: u32) -> Result<Option<RetroRow>> {
+        let sql = format!(
+            "SELECT {} FROM retros WHERE repo = ?1 AND feature = ?2",
+            RETRO_COLUMNS.join(", ")
+        );
+        Ok(self
+            .conn
+            .query_row(&sql, params![repo, feature], |r| {
+                Ok(RetroRow {
+                    repo: r.get(0)?,
+                    feature: r.get(1)?,
+                    slug: r.get(2)?,
+                    shipped_at: r.get(3)?,
+                    run_id: r.get(4)?,
+                    score: r.get(5)?,
+                    gate_runs: r.get(6)?,
+                    gate_red: r.get(7)?,
+                    gate_minutes: r.get(8)?,
+                    ci_cycles: r.get(9)?,
+                    slices: r.get(10)?,
+                    checkpoints: r.get(11)?,
+                    build_minutes: r.get(12)?,
+                    polish_minutes: r.get(13)?,
+                    out_tokens: r.get(14)?,
+                    cache_read_tokens: r.get(15)?,
+                    start_context: r.get(16)?,
+                    peak_context: r.get(17)?,
+                    written_at: r.get(18)?,
+                })
+            })
+            .optional()?)
+    }
+
+    /// Set a feature's `score`. With no row yet (the polish worker scores
+    /// before closeout writes the numbers) it inserts one with every number
+    /// null; otherwise only `score` and `written_at` change.
+    pub fn set_retro_score(&self, repo: &str, feature: u32, slug: &str, score: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO retros (repo, feature, slug, score, written_at) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(repo, feature) DO UPDATE SET score = excluded.score, written_at = excluded.written_at",
+            params![repo, feature, slug, score, clock::now_rfc3339()],
+        )?;
+        Ok(())
+    }
+
     /// The user tables, for a schema check.
     pub fn tables(&self) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare(
@@ -981,7 +1148,7 @@ mod tests {
             .unwrap();
         }
         let db = Db::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), 2);
+        assert_eq!(db.schema_version().unwrap(), SCHEMA_VERSION);
         let w = &db.workers("r1").unwrap()[0];
         assert_eq!(w.output, Some(7));
         assert_eq!(
@@ -994,5 +1161,178 @@ mod tests {
             ),
             (None, None, None, None, None)
         );
+    }
+
+    /// The PRD-003 `SCHEMA` text: today's, before `retros`.
+    fn schema_v2() -> &'static str {
+        SCHEMA
+            .split("CREATE TABLE IF NOT EXISTS retros")
+            .next()
+            .unwrap()
+    }
+
+    fn runs_row(conn: &Connection) -> Vec<rusqlite::types::Value> {
+        let n = conn.prepare("SELECT * FROM runs").unwrap().column_count();
+        conn.query_row("SELECT * FROM runs WHERE id = 'r2'", [], |r| {
+            (0..n).map(|i| r.get(i)).collect()
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn a_version_2_store_gains_retros_and_keeps_its_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("factory.db");
+        let before = {
+            // The v2 store PRD-003 made: no `retros`, every guarded column.
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(schema_v2()).unwrap();
+            for (table, column, decl) in COLUMNS {
+                let has: i64 = conn
+                    .query_row(
+                        "SELECT count(*) FROM pragma_table_info(?1) WHERE name = ?2",
+                        [table, column],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                if has == 0 {
+                    conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"))
+                        .unwrap();
+                }
+            }
+            conn.execute_batch(
+                "INSERT INTO schema_version (version, applied_at) VALUES (1, 'then'), (2, 'later');
+                 INSERT INTO runs (id, repo, feature, branch, started_at, finished_at, phase,
+                                   budget_weighted_tokens, knobs, findings_high, lines_added)
+                   VALUES ('r2', '/repo', '001', 'feat/x', 'then', 'later', 'done', 9, '{}', 1, 40);",
+            )
+            .unwrap();
+            runs_row(&conn)
+        };
+        let db = Db::open(&path).unwrap();
+        assert_eq!(db.schema_version().unwrap(), 3);
+        assert!(db.tables().unwrap().contains(&"retros".to_string()));
+        assert_eq!(runs_row(db.conn()), before);
+        drop(db);
+        let db = Db::open(&path).unwrap();
+        let versions: i64 = db
+            .conn()
+            .query_row("SELECT count(*) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(versions, 3);
+    }
+
+    #[test]
+    fn the_prd_003_migrate_body_runs_on_a_version_3_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("factory.db");
+        drop(Db::open(&path).unwrap());
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(schema_v2()).unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (2, 'now')",
+            [],
+        )
+        .unwrap();
+    }
+
+    fn retro_row(score: Option<i64>, numbers: bool) -> RetroRow {
+        let n = |v: i64| numbers.then_some(v);
+        let m = |v: f64| numbers.then_some(v);
+        RetroRow {
+            repo: "/repo".into(),
+            feature: 1,
+            slug: "fixture".into(),
+            shipped_at: Some("2026-10-13T10:00:00Z".into()),
+            run_id: Some("r1".into()),
+            score,
+            gate_runs: n(3),
+            gate_red: n(1),
+            gate_minutes: m(2.23),
+            ci_cycles: n(1),
+            slices: n(3),
+            checkpoints: n(1),
+            build_minutes: m(16.0),
+            polish_minutes: m(4.5),
+            out_tokens: n(1200),
+            cache_read_tokens: n(90000),
+            start_context: n(30000),
+            peak_context: n(80000),
+            written_at: String::new(),
+        }
+    }
+
+    /// A store with run `r1`, which `retro_row` names: `run_id` is a foreign key.
+    fn store(dir: &tempfile::TempDir) -> Db {
+        let db = Db::open(&dir.path().join("factory.db")).unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO runs (id, repo, feature, started_at, phase, budget_weighted_tokens)
+                   VALUES ('r1', '/repo', '001', 'then', 'done', 0)",
+                [],
+            )
+            .unwrap();
+        db
+    }
+
+    fn retros(db: &Db) -> i64 {
+        db.conn()
+            .query_row("SELECT count(*) FROM retros", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn upserting_the_same_retro_twice_leaves_one_equal_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = store(&dir);
+        let row = retro_row(Some(4), true);
+        db.upsert_retro(&row).unwrap();
+        let first = db.retro("/repo", 1).unwrap().unwrap();
+        db.upsert_retro(&row).unwrap();
+        let second = db.retro("/repo", 1).unwrap().unwrap();
+        assert_eq!(retros(&db), 1);
+        assert!(!second.written_at.is_empty());
+        let blank = |r: RetroRow| RetroRow {
+            written_at: String::new(),
+            ..r
+        };
+        assert_eq!(blank(first), row);
+        assert_eq!(blank(second), row);
+        assert_eq!(db.retro("/repo", 2).unwrap(), None);
+    }
+
+    #[test]
+    fn a_score_set_first_survives_the_numbers_written_after() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = store(&dir);
+        db.set_retro_score("/repo", 1, "fixture", 4).unwrap();
+        let only = db.retro("/repo", 1).unwrap().unwrap();
+        assert_eq!(only.score, Some(4));
+        assert_eq!(
+            RetroRow {
+                written_at: String::new(),
+                ..only
+            },
+            RetroRow {
+                shipped_at: None,
+                run_id: None,
+                ..retro_row(Some(4), false)
+            }
+        );
+
+        db.upsert_retro(&retro_row(None, true)).unwrap();
+        let r = db.retro("/repo", 1).unwrap().unwrap();
+        assert_eq!(r.score, Some(4));
+        assert_eq!((r.gate_runs, r.peak_context), (Some(3), Some(80000)));
+        assert_eq!(r.gate_minutes, Some(2.23));
+        assert_eq!(r.build_minutes, Some(16.0));
+
+        db.upsert_retro(&retro_row(Some(3), true)).unwrap();
+        assert_eq!(db.retro("/repo", 1).unwrap().unwrap().score, Some(3));
+
+        db.set_retro_score("/repo", 1, "fixture", 5).unwrap();
+        let r = db.retro("/repo", 1).unwrap().unwrap();
+        assert_eq!((r.score, r.gate_runs), (Some(5), Some(3)));
+        assert_eq!(retros(&db), 1);
     }
 }

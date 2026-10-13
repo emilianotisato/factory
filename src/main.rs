@@ -38,6 +38,12 @@ enum Command {
     },
     /// The PreToolUse hook the driver injects into every worker
     Hook,
+    /// The feature-docs board: native on v3, `docs.mjs` on a v2 repo
+    #[command(disable_help_flag = true)]
+    Docs {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// The detached driver `factory run` starts; not for hands
     #[command(hide = true)]
     Daemon(cli::run::DaemonArgs),
@@ -56,6 +62,7 @@ fn main() -> ExitCode {
         Command::Status(a) => cli::status::status(&a, &mut stdout(), &mut stderr()),
         Command::Ctx { verb } => ctx::run(&verb, Path::new("."), &mut stdout(), &mut stderr()),
         Command::Hook => cli::hook::hook(&mut stdin(), &mut stdout(), &mut stderr()),
+        Command::Docs { args } => cli::docs::docs(&args, &mut stdout(), &mut stderr()),
     };
     match result {
         Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),

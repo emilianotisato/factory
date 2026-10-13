@@ -1,10 +1,3 @@
----
-slice: 05
-status: done
-lane: 1
-depends_on: [4]
----
-
 # Slice 05 — Commits by pathspec and log merge (FR-5)
 
 **Source**: [`prd.md`](prd.md) → §7 FR-5 (all bullets and acceptance); §4 FR-2 bullet 5 (the stream is the record; `tool_use` events carry the file paths). **Depends on**: 04 (two lanes must exist for the interleaving acceptance; and the commit path has to coexist with a parked lane's uncommitted log edit).

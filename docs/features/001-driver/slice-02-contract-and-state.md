@@ -1,10 +1,3 @@
----
-slice: 02
-status: done
-lane: 1
-depends_on: [1]
----
-
 # Slice 02 — Contract and state: docs.mjs wrapper, run dir, config, schema (FR-1, FR-8)
 
 **Source**: [`prd.md`](prd.md) → §3 FR-1 bullets 1, 2 and 4 (run state, preflight by code, `factory stop` from the first slice); §10 FR-8 bullet 1 (SQLite tables `runs`, `workers`, `gates`, `events`); §11 FR-9 bullet 2 (`~/.config/factory/config.toml`); §15 OPEN-12; §20 "`status --json` keys" and "`preflight --json` keys". **Depends on**: 01 (the fixture is the only thing the wrapper can be tested against).

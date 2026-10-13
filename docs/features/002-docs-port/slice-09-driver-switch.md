@@ -1,9 +1,3 @@
----
-slice: 09
-status: pending
-depends_on: [4]
----
-
 # Slice 09 — Driver switch (FR-18 core)
 
 **Source**: [`prd.md`](prd.md) → §8 FR-18 (the library decision, the workarounds decision, the harness decision, the Acceptance), §4 FR-14 (the "driver's own writes" bullet and the `phase` bullet), §3 FR-13 ("The driver calls the same function in process"). **Depends on**: 04 (the driver calls `gate`, `gate_inner`, `preflight` and `ship`; they must run natively on v3 before the subprocess goes. Slices 01-03 come with it: `state::set`, `log::add`/`log::entries`, `check`).
@@ -11,7 +5,27 @@ depends_on: [4]
 
 **Size, accepted at slicing**: about 35 files, likely over 90 minutes. It stays one slice: the driver switch and the harness switch must land together, so a split leaves a near-empty first half (prd §11, settled at slicing).
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+- **Built.**
+  - **Task 1.** `Docs::open` refuses v2 with `Error::NotV3(V2_HINT)`. `status`, `preflight`, `gate`, `gate_inner` and `ship` run in process, and `ship` returns `Ship::Done` or `Ship::Refused`. Added `set*`, `log_add` and `log_entries`. Deleted `locate`, `run`, `ToolOutput`, `log_merge*` and `render_write`.
+  - **Task 2.** Every slice status and lane write goes through `state::set`. The scheduler's frontmatter helpers are gone.
+  - **Task 3.** Blocks, notes, asks and answers are `log.jsonl` entries, and `answers.rs` reads the log. The parked-run-first rule holds across features that each have a `BLOCK-1`.
+  - **Task 4.** Fragments, fold, merge, the AD-503 workarounds and the render calls are deleted. Commits stage `state.toml` and `log.jsonl`.
+  - **Task 5.** The closeout matches `Ship::Refused` and blocks in phase `polish`. The ship commit stages the feature dir.
+  - **Task 6.** The harness builds the fixture with the binary. The stub `claude` writes through `$FACTORY_BIN docs set|log add`. `tests/fixture/.docs` is deleted.
+  - **Task 7.** The suites run on v3.
+  - **Task 8.** `factory run` on v2 exits 2 with the hint. The node scan test expects only `cli/docs.rs`.
+- **Inner loop.** 3 full `cargo test` runs, 1 red, about 4 min of runtime over 11 min.
+  - The red run had 87 failures in 14 suites, nearly all stale reads of fragments and `agent-log.md`.
+  - The rewrite caught two driver bugs. `pr_title` took the v3 frontmatter's `# type:` comment as the H1. The polish commit named `prd.md` where `reviewed` now lives in `state.toml`. Both are fixed in `src/closeout.rs`.
+  - The final run had 409 passed, 0 failed, and clippy was clean outside slice 07's `migrate.rs`.
+- **Deliberate deviations.** AD-901 to AD-909 in `log-slice-09.md`:
+  - `log_add` returns an `Option`.
+  - `tests/docs.rs` was rewritten as task 1's tests, not deleted.
+  - The markdown-parser and frontmatter unit tests went with their code.
+  - The metrics repeat test changed meaning.
+- **Tests deleted.** Besides the merge, clash and fragment tests task 4 names: AD-906 and AD-908.
+- **CP-2 Prove, FR-18** (`evidence/cp-2-fr18.txt`): `grep -rn 'Command::new("node")' src` gives `src/cli/docs.rs:316` only, the FR-17 shim. `factory run 001` on the v2 fixture prints ``factory: docs are v2: run `factory docs migrate --dry` `` and `[exit 2]`, data dir empty. `cargo test` (the checkpoint gate run, `gates/2-2.log`): 27 suites, 410 passed, 0 failed, 1 ignored.
 
 **Slice**: **Highest risk of the PRD.** After this slice the driver reads and writes docs in process through `crate::docs`, on v3 only. `Docs::open` refuses a v2 repo, so `factory run` exits 2 with the migrate hint before preflight. Every slice-status and lane write goes through `state::set`. Every BLOCK, ask, answer and leftover note the driver writes is a `log::add` entry. Fragments, the merge, the four `agent-log.md` workarounds and the pre-commit `render --write` calls are gone. The harness builds its fixture with the binary, the stub `claude` writes through `factory docs`, and `tests/fixture/.docs` is deleted. The suites that drive a run pass with their assertions unchanged in meaning. Left to slice 10: `fill_retro`, `RETRO_KEYS` and `retro_row` (FR-19), the `ci_cycles` bump, the worker contract prose, the pack's `log show` section, the hook exemption, `/factory-deliver`, `autonomy.md`, `pr-body.md` and the unused event variants. Task 5 names the closeout parts that cannot wait for 10.
 
@@ -137,3 +151,9 @@ Rewrite each assertion that reads a slice file's `status:`, `agent-log.md`, a `l
 Rows from [`prd.md`](prd.md) § QA plan: **FR-18**. Run `cargo test` on the v3 fixture. Run `grep -rn 'Command::new("node")' src` and get exactly the FR-17 shim. Run `factory run` on the v2 fixture and get exit 2 with the hint. Evidence: the grep output, the exit code and stderr, and the test count go in this slice's Progress.
 
 **Acceptance:** after the checkpoint, Progress holds the grep line, the `factory run` transcript with `exit 2`, and the `cargo test` summary line.
+
+**Code-review fixes (2026-10-13).**
+
+- `factory answer BLOCK-n` had no way out when the id was open in two features. With per-feature numbering that is the common case, and "resolve the one you mean by hand" meant hand-writing `log.jsonl`. Added `--feature NNN` (AD-9902); the refusal names it. Test: the two-open case in `tests/lanes.rs`.
+- `slice_status` in `src/cli/answer.rs` turned a `state.toml` parse error into "no status", so an answer left a blocked slice blocked and printed "left as is". It returns the error now. Test: `a_state_toml_that_does_not_parse_is_an_error_not_no_status`.
+- The feature code of slices 01, 03, 09, 10 and 11 was in the working tree but not in any commit: the driver's pathspec commits left it out, and the gate ran on the dirty tree. The polish commit carries it (AD-9901).

@@ -271,7 +271,7 @@ pub fn write(retro: &Path, section: &str) -> Result<bool> {
 /// The feature folder of a stored run: `docs status NNN`'s `dir` in the
 /// run's repo, else the one `docs/features/<NNN>-*` folder there.
 pub fn feature_dir(repo: &Path, feature: &str) -> Result<PathBuf> {
-    if let Some(dir) = Docs::locate(repo)
+    if let Some(dir) = Docs::open(repo)
         .ok()
         .and_then(|d| d.status(feature).ok())
         .map(|s| repo.join(s.dir))

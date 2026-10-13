@@ -1,0 +1,40 @@
+# CP-2 FR-18 — branch binary factory 0.1.0, 2026-10-13
+
+## node spawns in src
+$ grep -rn Command::new("node") src
+src/cli/docs.rs:316:    let mut c = Command::new("node");
+[exit 0]
+
+## factory run on the v2 fixture
+$ git status --porcelain
+[exit 0]
+
+$ /mnt/devcache/emiliano/cargo-target/debug/factory run 001
+factory: docs are v2: run `factory docs migrate --dry`
+[exit 2]
+
+$ ls $W/data18
+[exit 0]
+
+## contract asset grep (slice 10 task 9)
+$ grep -n agent-log\|log-\*\.md\|fragment\|ideas\.md\|render assets/autonomy.md assets/pr-body.md assets/contract-checkpoint.md assets/contract-ci-fix.md assets/contract-fix.md assets/contract-polish.md assets/contract-slice.md
+[exit 1]
+
+## cargo test on the v3 fixture: the checkpoint gate run (gates/2-2.log)
+$ grep 'test result' /home/emiliano/.local/share/factory/runs/002-20261013-e729/gates/2-2.log | awk '{p+=$4; f+=$6; i+=$8} END {...}'
+27 suites: 410 passed; 0 failed; 1 ignored
+
+$ grep -n 'contract' /home/emiliano/.local/share/factory/runs/002-20261013-e729/gates/2-2.log
+259:test the_slice_contracts_commands_run_on_the_fixture ... ok
+360:test list_is_the_scanner_contract ... ok
+470:test pack_is_the_slice_the_cited_sections_the_contract_and_the_inner_loop ... ok
+
+## the slice-contract command test on its own
+$ cargo test -q --test closeout the_slice_contracts_commands_run_on_the_fixture
+
+running 1 test
+.
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 32 filtered out; finished in 0.12s
+
+[exit 0]
+

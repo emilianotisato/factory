@@ -1,0 +1,185 @@
+# CP-2 FR-19 (closeout half) — branch binary factory 0.1.0, 2026-10-13
+
+v3 repo built like Fixture::new + chain(), stub claude and stub gh on PATH, plan: done, done, checkpoint, done, checkpoint, polish.
+
+$ /mnt/devcache/emiliano/cargo-target/debug/factory run 001
+  · unstruck OPEN-1 — a load-bearing one blocks delivery; a deliberately parked one may stay
+  · harness on disk: none · QA plan says: none — fixture, gate-only
+  · no docs/ux-rubric.md — a UI diff gets the mechanical UX checks only
+  · on main — create feat/fixture
+run 001-20261013-26cd started on feat/fixture
+01 001-fixture/slice-01-a.md
+driver pid 2207137 — log $W/data/runs/001-20261013-26cd/driver.log
+[exit 0]
+
+$ jq -r .phase $W/data/runs/001-20261013-26cd/state.json
+finished
+[exit 0]
+
+$ git log --format=%s
+docs(001): ship PRD-001
+fix(001): polish review fixes
+docs(001): checkpoint 2
+feat(001): slice-03 C
+docs(001): checkpoint 1
+feat(001): slice-02 B
+feat(001): slice-01 A
+chore: fixture repo
+[exit 0]
+
+$ /mnt/devcache/emiliano/cargo-target/debug/factory docs status 001
+PRD-001 fixture · shipped · reviewed 2026-10-13
+qa plan   yes · Harness: none — fixture, gate-only
+slices    01 done · 02 done · 03 done
+next      every slice done
+lanes     2 · free 1, 2 · spawnable now 0
+opens     OPEN-1
+branch    feat/fixture
+[exit 0]
+
+## retro.md has no frontmatter: its first lines
+$ head -3 docs/features/001-fixture/retro.md
+# Retro — PRD-001
+
+## Cost vs catch
+[exit 0]
+
+## the retros row
+$ sqlite3 -line $W/data/factory.db SELECT * FROM retros
+             repo: $W/fr19/repo
+          feature: 1
+             slug: fixture
+       shipped_at: 2026-10-13
+           run_id: 001-20261013-26cd
+            score: 
+        gate_runs: 2
+         gate_red: 0
+     gate_minutes: 0.0
+        ci_cycles: 0
+           slices: 3
+      checkpoints: 2
+    build_minutes: 0.19
+   polish_minutes: 0.06
+       out_tokens: 1092
+cache_read_tokens: 250044
+    start_context: 24215
+     peak_context: 24215
+       written_at: 2026-10-13T15:15:28Z
+[exit 0]
+
+run id of this run: 001-20261013-26cd
+
+## the ## Numbers section of the same run's retro.md
+$ sed -n /^## Numbers/,$p docs/features/001-fixture/retro.md
+## Numbers
+
+<!-- factory:numbers -->
+| role | workers | own | subagents | weighted | minutes | turns |
+|---|---:|---:|---:|---:|---:|---:|
+| build | 3 | 34827 | 0 | 34827 | 0 | 21 |
+| checkpoint | 2 | 23218 | 0 | 23218 | 0 | 4 |
+| polish | 1 | 11609 | 0 | 11609 | 0 | 7 |
+| total | 6 | 69656 | 0 | 69656 | 0 | 32 |
+
+Knobs: build opus/high default · fix opus/high default · checkpoint opus/high default · polish opus/high default · budget 30000000 default · lanes 2 · factory 0.1.0 · claude 2.1.296
+
+Hypothesis: none
+
+quality: gate_red 0 · worker_gate_red 0 · fix_commits 0 · ci_red_rounds 0 · ci_reruns 0 · findings high=1 medium=2 low=3 fixed=4 parked=2 · decisions 3 decide 0 blocks 0
+
+Pack (build): slice 1620 · prd_sections 89 · log 541 · outline 98 · lookup 986 · contract 3439 · autonomy 10833 · inner_loop 32 · total 17639 · start_context 24215
+
+Compared with: No earlier finished run in this repo.
+<!-- /factory:numbers -->
+[exit 0]
+
+## factory report for the same run (the row's source)
+$ /mnt/devcache/emiliano/cargo-target/debug/factory report 001-20261013-26cd
+score: 
+gate_runs: 2
+gate_red: 0
+gate_minutes: 0.00
+ci_cycles: 0
+slices: 3
+checkpoints: 2
+build_minutes: 0.19
+polish_minutes: 0.06
+out_tokens: 1092
+cache_read_tokens: 250044
+start_context: 24215
+peak_context: 24215
+input_tokens: 108
+cache_write_tokens: 39084
+weighted_tokens: 69656
+cockpit_tokens: 0 (no --cockpit)
+workers: 6 (build 3, checkpoint 2, polish 1)
+lookup_chars: 12341
+ctx_share: 0.000
+repeat_rate: 0.000
+followup_reads: 0 of 0 ctx calls (0%)
+pack_doc_read_chars: 12341
+worker_gate_runs: 4
+worker_gate_red: 0
+cockpit_peak_context: 0 (no --cockpit)
+cockpit_out_tokens: 0 (no --cockpit)
+cockpit_cache_read_tokens: 0 (no --cockpit)
+cockpit_start_context: 0 (no --cockpit)
+lookup_share_chars: 0.969
+followup_reads_by_role: none
+weighted_by_role: build 34828+0 · checkpoint 23219+0 · polish 11609+0
+fix_commits: 0
+ci_red_rounds: 0
+ci_reruns: 0
+findings: high=1 medium=2 low=3 fixed=4 parked=2
+decisions: 3
+decide: 0
+blocks: 0
+knobs: build opus/high default · fix opus/high default · checkpoint opus/high default · polish opus/high default · budget 30000000 default · lanes 2 · factory 0.1.0 · claude 2.1.296
+hypothesis: —
+pack_by_role: build slice 1620 prd_sections 89 log 541 outline 98 lookup 986 contract 3439 autonomy 10833 inner_loop 32 total 17639 start_context 24215 · checkpoint gate_transcript 121 covered_slices 1061 qa_rows 415 log 1152 contract 2993 autonomy 10832 total 16573 start_context 24215 · polish branch 290 log 1603 retro 1725 pr_body 2304 contract 3555 autonomy 10832 total 20309 start_context 24215
+quality: gate_red 0 · worker_gate_red 0 · fix_commits 0 · ci_red_rounds 0 · ci_reruns 0 · findings high=1 medium=2 low=3 fixed=4 parked=2 · decisions 3 decide 0 blocks 0
+followup threshold 30%: n/a
+ctx_share threshold 10%: under
+repeat_rate vs 26.7%: lower
+[exit 0]
+
+## factory retro before and after --set score=4
+$ /mnt/devcache/emiliano/cargo-target/debug/factory retro 001-20261013-26cd
+retro: $W/fr19/repo/docs/features/001-fixture/retro.md unchanged
+score: none
+[exit 0]
+
+$ /mnt/devcache/emiliano/cargo-target/debug/factory docs retro 001 --set score=4
+repo: $W/fr19/repo
+feature: 1
+slug: fixture
+shipped_at: 2026-10-13
+run_id: 001-20261013-26cd
+score: 4
+gate_runs: 2
+gate_red: 0
+gate_minutes: 0
+ci_cycles: 0
+slices: 3
+checkpoints: 2
+build_minutes: 0.19
+polish_minutes: 0.06
+out_tokens: 1092
+cache_read_tokens: 250044
+start_context: 24215
+peak_context: 24215
+written_at: 2026-10-13T15:15:28Z
+[exit 0]
+
+$ /mnt/devcache/emiliano/cargo-target/debug/factory retro 001-20261013-26cd
+retro: $W/fr19/repo/docs/features/001-fixture/retro.md unchanged
+score: 4
+[exit 0]
+
+$ sqlite3 $W/data/factory.db SELECT run_id, score FROM retros
+001-20261013-26cd|4
+[exit 0]
+
+$ git status --porcelain
+[exit 0]
+

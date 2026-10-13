@@ -1,10 +1,3 @@
----
-slice: 05
-status: done
-depends_on: []
-lane: 4
----
-
 # Slice 05 — Quality signals (FR-24)
 
 **Source**: [`prd.md`](prd.md) → §6 FR-24, two decisions ("A `FINDINGS` line in the polish return", "`report` gains a quality block"); §8 OPEN-1 and OPEN-5. **Depends on**: — (independent of 01-04: its own `runs` columns, its own event, its own report block; it appends tuples to the shared migration list and keys to the end of `EXTRA_KEYS`).

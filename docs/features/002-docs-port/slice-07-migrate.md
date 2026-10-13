@@ -1,15 +1,15 @@
----
-slice: 07
-status: pending
-depends_on: [3, 6]
----
-
 # Slice 07 — migrate (FR-16)
 
 **Source**: [`prd.md`](prd.md) → §6 FR-16 (all four decisions and the acceptance), §3 FR-13 (the target layout), §4 FR-14 (the entry fields), §9 FR-19 (`retros` rows, archive included), §7 FR-17 (`migrate` runs natively in v2), §12 QA plan (the FR-16 row), §14 (the owner migrates this repo, never the build). **Depends on**: 03 (the acceptance is "`factory docs check` is clean"), 06 (`Db::upsert_retro` writes the rows). It reads slice 01's `frontmatter.rs`, `project.rs`, `board.rs` and slice 02's `log::Entry`.
 **Created**: 2026-10-13 · **Status**: pending
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+- **Built**: `src/docs/migrate.rs` (the v2 log reader with bodies, Owner, Resolution and notes; `project_toml`, `index_md`, `prd_md`, `slice_state`; `blame_dates`; link `unlink`; `retro_rows`; `plan`, `clean`, `run`; 18 unit tests), the `migrate [--dry]` arm in `src/cli/docs.rs`, `Fixture::v2`, `Fixture::v2_with_docs` and `Fixture::data_dir` in `tests/harness/mod.rs`, the checked-in `tests/fixture/v2/` (built by node, then hand-edited as task 7 lists; its `README.md` says how), and `tests/migrate.rs` (task 7 steps 1-5, plus the `#[ignore]` PRD-001 copy proof).
+- **Plan order**: refusals first (no index, v3, v1, `[docs]` present, an unmerged fragment, a duplicate id, a non-date `reviewed`), then every rewrite, `docs/.gitignore`, the `retros` rows, and `project.toml` last. `run` opens the store before any write; `--dry` never opens it (the test checks the data dir stays empty).
+- **The PRD-001 copy** (`cargo test --test migrate -- --include-ignored`, on `git archive HEAD docs` with the building slices' fragments merged in the copy, AD-706): green. 001 has 145 decisions, 7 checkpoints, one resolved `BLOCK-201`, 13 `[slices.N]` all `done`; the 001 and 003 `retros` rows equal their frontmatter. `factory docs check` after it: `0 errors, 2 warnings`, `W-STATUS-BEHIND` (002 is `ready` while slices build, true of this repo's docs at HEAD) and `W-IDEAS-V2` (slice 08's).
+- **Inner loop** (`cargo test`): 3 foreground runs, 2 red, about 2.5 min (6 s, 82 s, 52 s). Both reds were slice 09's driver switch in flight in the shared worktree (`tests/checkpoints.rs`, `lanes.rs`, `run.rs` …, reading `agent-log.md` on the v3 fixture); the green run is 409 passed, 0 failed. Before it, 7 targeted runs on my targets (a private `CARGO_TARGET_DIR`, and a scratch copy for the lib tests while slice 09's `commit.rs` tests did not build), 3 red. They caught a double `&mut` borrow in `retro_rows`; the copy test meeting the building slices' unmerged fragments (AD-706); a fenced template `### BLOCK-1` counted as a heading; and three unit-test assumptions about this repo's HEAD (lifecycle prose saying "Next free number wins", 002's log no longer the bare template, `**Status**:` inside 002's body prose). `rustfmt` and `clippy` clean on my files.
+- **Deviations**: AD-701 (`type` takes the first word when it is one of the four, else `check` fails on every v2 PRD of this repo), AD-702 (flagged and decide ids come out ascending), AD-706 (the copy test merges fragments first).
+- **CP-2 Prove, FR-16** (`evidence/cp-2-fr16.txt`, driven by `evidence/cp-2-drive.sh`), on the v2 fixture and on `git archive HEAD docs` with the merged 002 folder laid over it: `migrate --dry` exit 0, then `git status --porcelain` empty; `migrate` exit 0; `check` exit 0 (fixture: `W-IDEAS-V2`; this repo: `W-STATUS-BEHIND`, `W-IDEAS-V2`). `status 001 --json`, node before vs binary after, differs only in `retro` (now `null`; its numbers are the `retros` row) and the order of `log.flagged`/`log.decide` (AD-702); the sorted diff is empty. `retro.md` untouched; `[run]` and `[workers.polish]` kept beside `[docs]`. The undo, then `node docs.mjs check` exit 0; the re-run's `diff -r` empty; the two `retros` reads differ only in `written_at`. `cargo test --test migrate -- --ignored`: 1 passed.
 
 **Slice**: After this slice `factory docs migrate --dry` prints, for any v2 repo, every file it would create, rewrite or delete and every `retros` row it would write, and writes nothing. `factory docs migrate` on a clean `docs/` turns that plan into one uncommitted diff: the v3 layout of FR-13, no `agent-log.md`, and one `retros` row per `retro.md`. `retro.md`, the archive and `docs/ideas.md` (slice 08) are left as they are. Undo is git; a re-run after the undo is byte-identical. It is proven on a v2 fixture checked in at `tests/fixture/v2/` and on a copy of this repo's `docs/`.
 
@@ -78,9 +78,9 @@ Per live feature with an `agent-log.md`: `pub fn blame_dates(root, path) -> Resu
 
 **Refuse** when a live feature holds a `log-*.md` fragment: it was never merged, and migration would drop it. Say "`log-slice-NN.md` is not merged: run `factory docs log merge NNN` first", which the shim routes to node in a v2 repo. A feature with no `agent-log.md` gets no `log.jsonl`; slice 02 creates it on first append.
 
-**Links**: in every `.md` under `docs/` outside `docs/archive/`, a markdown link whose target resolves to a deleted `agent-log.md` (with or without `#anchor`) is replaced by its link text alone, and each one is listed (`unlink docs/features/001-driver/prd.md:334 [the log](agent-log.md)`). prd §6 forbids rewriting prose, not links that would point at nothing. This is the smallest edit that keeps `check` clean.
+**Links**: in every `.md` under `docs/` outside `docs/archive/`, a markdown link whose target resolves to a deleted `agent-log.md` (with or without `#anchor`) is replaced by its link text alone, and each one is listed (`unlink docs/features/001-driver/prd.md:334 the log`). prd §6 forbids rewriting prose, not links that would point at nothing. This is the smallest edit that keeps `check` clean.
 
-**Acceptance:** unit test: a feature folder with `log-slice-02.md` refuses and the plan holds no rows. Over this repo's 001 log at HEAD, `parse_agent_log` gives 145 `decision`/`ask` entries, 7 `checkpoint`, 1 `block` and 1 `answer` with `ref BLOCK-201`, 78 `review` entries, and no id below `AD-101` except the preflight ones. `unlink` on `See [the log](agent-log.md#ad-3).` gives `See the log.`
+**Acceptance:** unit test: a feature folder with `log-slice-02.md` refuses and the plan holds no rows. Over this repo's 001 log at HEAD, `parse_agent_log` gives 145 `decision`/`ask` entries, 7 `checkpoint`, 1 `block` and 1 `answer` with `ref BLOCK-201`, 78 `review` entries, and no id below `AD-101` except the preflight ones. `unlink` on `See the log.` gives `See the log.`
 
 ### 5. `retros` rows from every `retro.md` — high — blocked by: —
 **Source**: §6 FR-16: "`retro.md` frontmatter → one `retros` row (FR-19), **and the retro file is left as it is**." "**Archive folders are read for `retros` rows and never written.**" §9 FR-19: "`migrate` inserts rows for every `retro.md` frontmatter it finds, archive included, with `run_id` NULL, and leaves the files alone". Acceptance: "the retro row matches the old frontmatter, `retro.md` is byte-identical… a second `migrate` reproduces… the same rows in every column but `written_at`."
@@ -133,3 +133,12 @@ The trap: `--dry` must never reach `Db::open`, which creates and migrates the st
 Rows from [`prd.md`](prd.md) § QA plan: the machine half of the **FR-16** row. Drive it with the branch binary in a temp copy of `tests/fixture/v2` and in a `git archive HEAD docs` copy: `migrate --dry`, `git status --porcelain`, `migrate`, `check`, `status 001 --json` before (node) and after with a `diff` of the key sets, the undo, the re-run with `diff -r` against the first result, and `sqlite3 factory.db 'SELECT * FROM retros'` twice. Also run the `--ignored` test. The human half is in [`qa-guide.md`](qa-guide.md).
 
 **Acceptance:** Progress holds each transcript with its exit code, the empty `git status` after `--dry`, the empty `diff -r` after the re-run, and the two `retros` reads differing only in `written_at`.
+
+**Code-review fixes (2026-10-13).**
+
+- A Review line with a reason after the flag lost the reason: `review_flag` kept only the word, which dropped text on 18 PRD-001 entries. It now stays in the body, and `log show` prints it once (AD-9903). Test: `a_review_line_keeps_its_reason`.
+- `cells` and `notes_cells` split an index row on every `|`, even inside a code span, which cut this repo's PRD-002 summary by about 2,600 characters. A `|` inside backticks is now literal. Test: `a_pipe_in_a_code_span_stays_in_its_cell`.
+- A heading split on ` · ` threw away the middle parts, so a title with a middle dot was cut short. Only the place, the date and a BLOCK's state come out now. Test: `a_middle_dot_in_a_title_stays_in_the_title`.
+- The relink rewrote `retro.md`, which FR-16 leaves as it is. It is skipped now, with a `warn` row per link (AD-9904). Test: `a_retro_keeps_its_links_byte_for_byte`.
+- `yaml()` wrapped a value holding `"` in double quotes without escaping it, so the frontmatter would not parse. Fix and test: AD-9905, `yaml_values_read_back_as_written`.
+- Test cleanup: the five tests that read this repo's docs at `HEAD` with exact counts now read a frozen copy (AD-9906).

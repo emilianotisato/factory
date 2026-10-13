@@ -1,21 +1,17 @@
 ---
 number: 002
 slug: docs-port
-status: ready
-owns_fr: [13-20]
-retired_fr: []
+title: "Docs port: docs.mjs into factory, v3 format"
+type: refactor
+created: 2026-10-11
+author: Emiliano Tisato (with Claude)
+summary: |
+  **Agreed 2026-10-11** (seven interview forks; Cursor `grok-4.7-high` adversarial pass, 22 findings corrected inline; the cut kept all eight extras). Ports `docs.mjs` into `factory docs` and moves the format to v3: `docs/project.toml` instead of index frontmatter; one `state.toml` per feature, written only by `factory docs set` under a per-feature lock; an append-only `log.jsonl` per feature with ids allocated at append, `log add | show`, no fragments and no `log merge`; a frontmatter-only PRD header whose `summary` replaces this Notes cell; feature-scoped FR ids (pre-v3 PRDs keep their numbers); retro numbers in a `retros` table of the metrics store. Verbs kept: `hook`, `lanes`, `renumber`; cut: `vendor`, `render`, `log merge`, `check --fix`. `factory docs migrate --dry` prints the plan, undo is git, the archive is grandfathered. Skills and the global hook call `factory docs`, which routes v2 repos to `docs.mjs`. The driver reads v3 only, in process; the stub harness moves to a v3 fixture built by the binary. **Revised 2026-10-13 after 003 shipped** (four forks, OPEN-10…13): the A/B dependency is gone (ended 2026-10-12); the framework keys go under a `[docs]` table in `project.toml`, beside 003's `[run]` and `[workers]`; `retros` lands at schema v3, thin (score, shipped_at, run_id, the twelve keys), since `runs` now holds the rest; v3 closeout writes the row and no retro frontmatter, FR-25's `## Numbers` section is the only table, and migration leaves old retro files alone; the 23 `docs.mjs` lines in nine skill files are edited by the last slice, which also runs `cargo install --path .` so the edits resolve machine-wide, the owner commits the skills repo. The skill family's move into this repo with an installer is PRD-004, after this one (`ideas.md`). This repo migrates by hand after the merge, owner repos on the owner's go. **Sliced 2026-10-13 into eleven**: 01 the v3 model and the `factory docs` entry (spine); 02 the log; 03 `check`/`doctor`; then 04 lifecycle verbs, 05 ideas, 06 `retros` in parallel; 07 `migrate`, 08 ideas migration; 09 the driver switch (highest risk); 10 closeout and worker contracts; 11 the `hook` verb, the skills edit and the install, last. Checkpoints after 02, 04, 06, 08, 10, 11. `qa-guide.md` holds the FR-16, FR-17 and FR-20 owner checks.
 ---
 
 # PRD-002 — Docs port: docs.mjs into factory, v3 format
 
-**Type**: Refactor — the docs tool moves from `docs.mjs` (node, 2110 lines) into the `factory` binary as `factory docs`, and the docs format moves from v2 to v3. Carries a one-shot docs migration per repo and a metrics-store schema bump (v2 → v3; *an earlier draft said v1 → v2, before PRD-003 took v2*). No public API; the contracts that move are the driver's own docs calls and the skills' `docs.mjs` calls.
-**Status**: **READY** — interviewed 2026-10-11 (seven forks settled, listed in §11). Adversarial pass done 2026-10-11 (Cursor `grok-4.7-high`: 6 breaks, 13 wrong details, 3 nits; every one corrected inline and dated, inventory in §16). The cut 2026-10-11 kept all eight extras it listed (§11 OPEN-8). FR-20 (ideas as files) added 2026-10-12 from the ideas-scanner brainstorm. **Revised 2026-10-13 after PRD-003 shipped** (four forks, §11 OPEN-10…13): the A/B dependency is gone, `project.toml` gains a `[docs]` table beside 003's `[run]` and `[workers]`, `retros` lands at schema v3 and thinner, v3 closeout stops writing retro frontmatter, and the skills' move into this repo is PRD-004, after this one. **Sliced 2026-10-13 into eleven** (§13).
-**Created**: 2026-10-11
-**Author**: Emiliano Tisato (with Claude)
-
-**Owns FR range**: **FR-13 … FR-20**. *(Numbers are never reused. This PRD is numbered on the v2 global FR axis because the repo is v2 while it is written; §3 explains why it keeps these numbers after migration.)*
-
-**Split from / Related**: the Graduated line "v3 docs format, at port time (PRD-002)" in [`ideas.md`](../../ideas.md), agreed 2026-10-09. PRD-001 [§19 Non-goals](../001-driver/prd.md) deferred the port here. The v3 list itself (`state.toml`, an append-only JSONL log replacing fragments and `log merge`, `project.toml` instead of index frontmatter, a frontmatter-only PRD header, feature-scoped FR ids, retro numbers in the metrics store) is agreed and **not reopened here**; this PRD settles its details.
+**Split from / Related**: the Graduated line "v3 docs format, at port time (PRD-002)" in [`ideas.md`](../../ideas/README.md), agreed 2026-10-09. PRD-001 [§19 Non-goals](../001-driver/prd.md) deferred the port here. The v3 list itself (`state.toml`, an append-only JSONL log replacing fragments and `log merge`, `project.toml` instead of index frontmatter, a frontmatter-only PRD header, feature-scoped FR ids, retro numbers in the metrics store) is agreed and **not reopened here**; this PRD settles its details.
 
 ---
 
@@ -219,17 +215,17 @@ Workflow: one branch, one PR, one commit per slice, the full gate and the Prove 
 <!-- docs:slices -->
 | Slice | Status | Depends on |
 |---|---|---|
-| [01 — v3 model and the factory docs entry (FR-13, FR-15 part, FR-17 routing)](slice-01-v3-model.md) | pending | — |
-| [02 — The log (FR-14)](slice-02-log.md) | pending | 01 |
-| [03 — check and doctor (FR-15 part)](slice-03-check-doctor.md) | pending | 02 |
-| [04 — gate, preflight, ship, archive, lanes, renumber (FR-15 rest)](slice-04-lifecycle-verbs.md) | pending | 03 |
-| [05 — Ideas, tool side (FR-20 part)](slice-05-ideas.md) | pending | 03 |
-| [06 — Retros store (FR-19 part)](slice-06-retros-store.md) | pending | 01 |
-| [07 — migrate (FR-16)](slice-07-migrate.md) | pending | 03, 06 |
-| [08 — Ideas migration (FR-20 rest)](slice-08-ideas-migration.md) | pending | 05, 07 |
-| [09 — Driver switch (FR-18 core)](slice-09-driver-switch.md) | pending | 04 |
-| [10 — Closeout and worker-facing rest (FR-18 rest, FR-19 write path)](slice-10-closeout-workers.md) | pending | 05, 06, 09 |
-| [11 — Skills edit, hook verb, install (FR-17 rest)](slice-11-skills-hook-install.md) | pending | 08, 10 |
+| [01 — v3 model and the factory docs entry (FR-13, FR-15 part, FR-17 routing)](slice-01-v3-model.md) | ✅ done | — |
+| [02 — The log (FR-14)](slice-02-log.md) | ✅ done | 01 |
+| [03 — check and doctor (FR-15 part)](slice-03-check-doctor.md) | ✅ done | 02 |
+| [04 — gate, preflight, ship, archive, lanes, renumber (FR-15 rest)](slice-04-lifecycle-verbs.md) | ✅ done | 03 |
+| [05 — Ideas, tool side (FR-20 part)](slice-05-ideas.md) | ✅ done | 03 |
+| [06 — Retros store (FR-19 part)](slice-06-retros-store.md) | ✅ done | 01 |
+| [07 — migrate (FR-16)](slice-07-migrate.md) | ✅ done | 03, 06 |
+| [08 — Ideas migration (FR-20 rest)](slice-08-ideas-migration.md) | ✅ done | 05, 07 |
+| [09 — Driver switch (FR-18 core)](slice-09-driver-switch.md) | ✅ done | 04 |
+| [10 — Closeout and worker-facing rest (FR-18 rest, FR-19 write path)](slice-10-closeout-workers.md) | ✅ done | 05, 06, 09 |
+| [11 — Skills edit, hook verb, install (FR-17 rest)](slice-11-skills-hook-install.md) | ✅ done | 08, 10 |
 <!-- /docs:slices -->
 
 ## 14. Sequencing risk
@@ -246,7 +242,7 @@ Workflow: one branch, one PR, one commit per slice, the full gate and the Prove 
 ## 15. Non-goals
 
 - **Editing `docs.mjs` or the owner's global hook** — `docs.mjs` stays as the v2 engine behind the shim; the hook body is the owner's paste. *(Revised 2026-10-13: the skill files' `docs.mjs` lines are in scope, FR-17.)*
-- **Not handled: the skill family inside this repo, with `factory skills install|update` for the user dir, a repo's `.claude/skills` and the Codex and Cursor dirs.** Decided 2026-10-13: **PRD-004, after this one.** Recon so far: nine family skills, about 530 KB, in a Dropbox checkout with no git remote that `~/.claude/skills` symlinks to; `skills/factory-deliver` already lives here and is symlinked out, the pattern to generalise. Parked in [`ideas.md`](../../ideas.md).
+- **Not handled: the skill family inside this repo, with `factory skills install|update` for the user dir, a repo's `.claude/skills` and the Codex and Cursor dirs.** Decided 2026-10-13: **PRD-004, after this one.** Recon so far: nine family skills, about 530 KB, in a Dropbox checkout with no git remote that `~/.claude/skills` symlinks to; `skills/factory-deliver` already lives here and is symlinked out, the pattern to generalise. Parked in [`ideas.md`](../../ideas/README.md).
 - **Not handled: a twelve-key `## Numbers` table written by this PRD.** Superseded 2026-10-13 by PRD-003 FR-25's section (§9).
 - **Not handled: an edit to `deliver/bin/measure.py`.** Retired by PRD-003 FR-25 before this PRD builds.
 - **Migrating any repo but a test fixture** — `factory docs migrate` is run by the owner, repo by repo, on their go (§6, §14).
@@ -263,7 +259,7 @@ Workflow: one branch, one PR, one commit per slice, the full gate and the Prove 
 - **Not handled: retro numbers as columns on `runs`, or a key-value `retros`.** Rejected 2026-10-11 (§9).
 - **Not handled: `Owner review` counts as `retros` columns.** Accepted 2026-10-11: the line stays prose in `retro.md`; nothing queries it. Revisit when the learning loop PRD wants it.
 - **Not handled: a stale-`summary` check.** Accepted 2026-10-11: `check` warns only when `summary` is empty on a `ready` feature; whether it is current is the author's judgment, as the Notes cell was.
-- **Not handled: the cross-repo ideas scanner** (`factory ideas --json` over every repo on the machine, deduped by git common dir so worktrees count once, plus an `/ideas` skill that picks with the owner and hands off a `/prd` prompt for the chosen repo). Its own PRD; FR-20 gives it `idea list --json` per repo. Parked in [`ideas.md`](../../ideas.md) 2026-10-12.
+- **Not handled: the cross-repo ideas scanner** (`factory ideas --json` over every repo on the machine, deduped by git common dir so worktrees count once, plus an `/ideas` skill that picks with the owner and hands off a `/prd` prompt for the chosen repo). Its own PRD; FR-20 gives it `idea list --json` per repo. Parked in [`ideas.md`](../../ideas/README.md) 2026-10-12.
 - **Not handled: `graduated` or `dropped` idea states.** Rejected 2026-10-12: a dead idea leaves the folder; `from_idea` in the PRD and `git log -- docs/ideas/` keep the trace (§10).
 - **Not handled: a re-park guard against dropped ideas.** Accepted 2026-10-12: no evidence yet. Revisit after the first re-park (§10).
 - **Not handled: macOS or Windows paths, `flock` semantics elsewhere.** Inherited from PRD-001 §19.

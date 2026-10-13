@@ -5,10 +5,10 @@
 //! `driver`) or per cache hit (`cached = 1`, `minutes = 0`). Red spawns a
 //! fix worker with the failing output, commits its files by pathspec as
 //! `fix(NNN): gate red at checkpoint n` and reruns; three reds in a row block the
-//! run on a `BLOCK-n` in `agent-log.md` (phase `checkpoint`). Green folds
-//! the slice logs into `agent-log.md` (FR-5), then a checkpoint worker reads
-//! the transcript, drives the covered Prove rows and writes `CP-n`; the
-//! driver renders and commits `docs(NNN): checkpoint n`. A worker that dies gets
+//! run on a `block` entry in the feature's `log.jsonl` (phase `checkpoint`).
+//! Green spawns a checkpoint worker that reads the transcript, drives the
+//! covered Prove rows and writes `CP-n` through `factory docs log add`; the
+//! driver commits `docs(NNN): checkpoint n`. A worker that dies gets
 //! one more spawn, then the block; a worker that blocks parks the run.
 //!
 //! Every step is re-entrant from the board and the run dir alone: a resume
@@ -22,7 +22,7 @@ use std::process::{Command, Stdio};
 use std::time::Instant;
 
 use crate::answers;
-use crate::commit::{self, Fold, Pathspec};
+use crate::commit::{self, Pathspec};
 use crate::config::Config;
 use crate::db::GateInsert;
 use crate::docs::{Docs, Status};
@@ -32,7 +32,7 @@ use crate::gatecache::{self, Entry, GateCache};
 use crate::pack::Pack;
 use crate::quota::{self, Hold, Limit};
 use crate::run::{Phase, Run, WorkerOutcome};
-use crate::scheduler::{self, DEATH_CAP, append_under, pad_list, say, short};
+use crate::scheduler::{self, DEATH_CAP, pad_list, say, short};
 use crate::stream::Summary;
 use crate::worker::{Exit, Job, Worker};
 use crate::{Result, clock, metrics};
@@ -41,15 +41,13 @@ use crate::{Result, clock, metrics};
 pub const RED_CAP: u32 = 3;
 /// `runs/<id>/gates`.
 pub const GATES_DIR: &str = "gates";
-/// The title prefix of a merge-refusal block in `agent-log.md`.
-pub const MERGE_REFUSED: &str = "log merge refused";
 
 /// How the checkpoint left the run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     /// `CP-n` is on the board and committed: the loop reads the board again.
     Done,
-    /// The run waits for the owner on `id` in `agent-log.md`. `fresh` is a
+    /// The run waits for the owner on `id` in the feature's log. `fresh` is a
     /// block written just now (park anew); otherwise the block was already
     /// open when the checkpoint was entered and the park stands.
     Parked {
@@ -75,10 +73,9 @@ pub fn run(
     let feature = run.state().feature.clone();
     let repo = run.state().repo.clone();
     let feature_dir = repo.join(&board.dir);
-    let agent_log = feature_dir.join("agent-log.md");
 
     // A checkpoint block the owner has not answered: the park stands.
-    if let Some(open) = open_checkpoint_blocks(&agent_log)?.into_iter().next() {
+    if let Some(open) = open_checkpoint_blocks(&feature_dir)?.into_iter().next() {
         return Ok(Outcome::Parked {
             what: park_line(&open.0, &open.1),
             id: open.0,
@@ -88,12 +85,6 @@ pub fn run(
 
     let n = board.checkpoints.iter().map(|c| c.n).max().unwrap_or(0) + 1;
     let covers = board.unverified.clone();
-    // A second check: `docs new` creates agent-log.md now (AD-503), but a
-    // feature made by a vendored docs.mjs older than that fix has none.
-    if !agent_log.exists() {
-        fs::write(&agent_log, format!("# Agent log — PRD-{feature}\n"))
-            .map_err(io(format!("write {}", agent_log.display())))?;
-    }
 
     let (started, done) = run
         .events()?
@@ -126,16 +117,6 @@ pub fn run(
         ),
     )?;
 
-    // A merge that will refuse blocks now, not after the gate is paid for.
-    if let Some(detail) = commit::check_logs(docs, &repo, board, &feature)? {
-        let (id, title) = block_on_refusal(run, &feature_dir, &feature, detail, out)?;
-        return Ok(Outcome::Parked {
-            what: park_line(&id, &title),
-            id,
-            fresh: true,
-        });
-    }
-
     // The gate, until green or three reds. A cached red is reused only
     // between fix workers of this entry: an owner's answer or a resume runs
     // the gate again whatever the tree says (the fix may be outside it).
@@ -166,16 +147,14 @@ pub fn run(
                 .find(|l| !l.is_empty())
                 .unwrap_or("no output")
                 .to_string();
-            let id = format!("BLOCK-{}", lowest_free_block(&feature_dir)?);
             let title =
                 answers::block_title(&format!("gate red three times at checkpoint {n}: {line}"));
             let quoted: String = crate::pack::tail(&tail, 40)
                 .lines()
                 .map(|l| format!("  {l}\n"))
                 .collect();
-            let entry = format!(
-                "### {id} — {title} · checkpoint · open\n\n\
-                 **Happened:** the gate (`{gate}`) was red {reds} times in a row at checkpoint {n}; \
+            let body = format!(
+                "**Happened:** the gate (`{gate}`) was red {reds} times in a row at checkpoint {n}; \
                  {fixes} fix worker(s) ran between the runs. The last transcript ({log}) ends:\n{quoted}\
                  **Options:**\n\
                  1. fix the failure by hand, leave the tree as the commit should be, answer this block — the gate runs again\n\
@@ -183,7 +162,7 @@ pub fn run(
                  **Recommended:** 1 — the gate stayed red through {fixes} fix worker(s); the cause is outside what the failing output names.\n",
                 log = result.log.display(),
             );
-            append_under(&agent_log, "## Blockers", &entry)?;
+            let id = answers::add_block(&feature_dir, None, Some("checkpoint"), &title, &body)?;
             run.emit(EventKind::CheckpointBlocked {
                 n,
                 block_id: id.clone(),
@@ -192,7 +171,7 @@ pub fn run(
             say(
                 out,
                 &format!(
-                    "checkpoint {n}: gate red {reds} times — {id} written to agent-log.md: {line}"
+                    "checkpoint {n}: gate red {reds} times — {id} written to log.jsonl: {line}"
                 ),
             )?;
             return Ok(Outcome::Parked {
@@ -214,29 +193,6 @@ pub fn run(
         }
     }
 
-    // Green: fold the slice logs before the worker reads agent-log.md.
-    match commit::fold_logs(docs, &repo, board, &feature)? {
-        Fold::Nothing => {}
-        Fold::Folded { fragments } => {
-            say(
-                out,
-                &format!(
-                    "slice logs merged into agent-log.md ({})",
-                    fragments.join(", ")
-                ),
-            )?;
-            run.emit(EventKind::LogMerged { fragments })?;
-        }
-        Fold::Refused { detail } => {
-            let (id, title) = block_on_refusal(run, &feature_dir, &feature, detail, out)?;
-            return Ok(Outcome::Parked {
-                what: park_line(&id, &title),
-                id,
-                fresh: true,
-            });
-        }
-    }
-
     // The checkpoint worker: once more after a death, then the block.
     loop {
         if let Some(o) = await_quota(run, out)? {
@@ -255,7 +211,6 @@ pub fn run(
             .filter(|w| mine(w) && w.died())
             .count();
         if deaths >= DEATH_CAP {
-            let id = format!("BLOCK-{}", lowest_free_block(&feature_dir)?);
             let title = format!("Two checkpoint workers died at checkpoint {n}");
             let sessions: Vec<String> = run
                 .state()
@@ -270,18 +225,17 @@ pub fn run(
                     )
                 })
                 .collect();
-            let entry = format!(
-                "### {id} — {title} · checkpoint · open\n\n\
-                 **Happened:** {deaths} checkpoint workers exited without writing `CP-{n}` or a block: {sessions}. \
-                 The gate is green and the slice logs are merged; the driver's once-only respawn is spent. \
+            let body = format!(
+                "**Happened:** {deaths} checkpoint workers exited without writing `CP-{n}` or a block: {sessions}. \
+                 The gate is green; the driver's once-only respawn is spent. \
                  Streams and stderr are under `{dir}/`.\n\
                  **Options:** 1. read the last worker's `.stderr` and `.jsonl`, fix the environment (login, PATH, quota) and answer this block — a fresh worker runs; \
-                 2. drive the Prove rows by hand, write `CP-{n}` under `## Checkpoints` and answer this block — the driver commits the checkpoint.\n\
+                 2. drive the Prove rows by hand, add `CP-{n}` (`factory docs log add {feature} --kind checkpoint --slice <last>`) and answer this block — the driver commits the checkpoint.\n\
                  **Recommended:** 1 — a worker that dies before its first tool call is the environment's fault, not the checkpoint's.\n",
                 sessions = sessions.join(", "),
                 dir = crate::worker::dir(run.dir()).display(),
             );
-            append_under(&agent_log, "## Blockers", &entry)?;
+            let id = answers::add_block(&feature_dir, None, Some("checkpoint"), &title, &body)?;
             run.emit(EventKind::CheckpointBlocked {
                 n,
                 block_id: id.clone(),
@@ -290,7 +244,7 @@ pub fn run(
             say(
                 out,
                 &format!(
-                    "checkpoint {n}: second checkpoint worker died — {id} written to agent-log.md"
+                    "checkpoint {n}: second checkpoint worker died — {id} written to log.jsonl"
                 ),
             )?;
             return Ok(Outcome::Parked {
@@ -312,7 +266,7 @@ pub fn run(
             &packs,
             spawn,
         )?;
-        let open_before: HashSet<String> = open_checkpoint_blocks(&agent_log)?
+        let open_before: HashSet<String> = open_checkpoint_blocks(&feature_dir)?
             .into_iter()
             .map(|(id, _)| id)
             .collect();
@@ -339,12 +293,12 @@ pub fn run(
         let after = docs.status(&feature)?;
         if after.checkpoints.iter().any(|c| c.n == n) {
             let spec = Pathspec::from_stream(&exit.summary, board, &repo);
-            let sha = commit_checkpoint(run, docs, board, n, row_id, &spec, &changed_before, out)?;
+            let sha = commit_checkpoint(run, board, n, row_id, &spec, &changed_before, out)?;
             settle(run, row_id, &session_id, &exit.summary, WorkerOutcome::Done)?;
             run.emit(EventKind::CheckpointDone { n, sha })?;
             return Ok(Outcome::Done);
         }
-        let open_now = open_checkpoint_blocks(&agent_log)?;
+        let open_now = open_checkpoint_blocks(&feature_dir)?;
         if let Some((id, title)) = open_now
             .into_iter()
             .find(|(id, _)| !open_before.contains(id))
@@ -364,7 +318,7 @@ pub fn run(
             say(
                 out,
                 &format!(
-                    "checkpoint {n}: worker {session_id} blocked — {id} in agent-log.md: {title}"
+                    "checkpoint {n}: worker {session_id} blocked — {id} in log.jsonl: {title}"
                 ),
             )?;
             return Ok(Outcome::Parked {
@@ -393,7 +347,7 @@ pub fn run(
             )?;
             continue;
         }
-        settle_dead(run, &agent_log, n, &session_id, row_id, &exit, out)?;
+        settle_dead(run, &feature_dir, n, &session_id, row_id, &exit, out)?;
     }
 }
 
@@ -814,12 +768,11 @@ fn note_leftovers(
     Ok(())
 }
 
-/// `render --write`, then one commit of the feature folder, `docs/index.md`
-/// and whatever else the checkpoint worker's stream named.
+/// One commit of the feature folder (its `state.toml` and `log.jsonl`
+/// included) and whatever else the checkpoint worker's stream named.
 #[allow(clippy::too_many_arguments)]
 pub fn commit_checkpoint(
     run: &mut Run,
-    docs: &Docs,
     board: &Status,
     n: u32,
     row_id: i64,
@@ -828,8 +781,7 @@ pub fn commit_checkpoint(
     out: &mut dyn Write,
 ) -> Result<Option<String>> {
     let repo = run.state().repo.clone();
-    docs.render_write()?;
-    let mut want = vec![board.dir.clone(), "docs/index.md".to_string()];
+    let mut want = vec![board.dir.clone()];
     want.extend(spec.paths.iter().cloned());
     let mut files = commit::expand(&repo, &want)?;
     let skip: HashSet<String> = files.iter().chain(&spec.protected).cloned().collect();
@@ -860,9 +812,9 @@ pub fn commit_checkpoint(
     }
 }
 
-/// What a refused `docs log merge` says, on one line: every `✗` refusal
-/// joined with `; `, else the first non-empty line. The cockpit's line uses
-/// it too, so a refusal naming two fragments never reaches the owner as one.
+/// What a refused v2 `docs log merge` said, on one line: every `✗` refusal
+/// joined with `; `, else the first non-empty line. Only the cockpit uses it
+/// now, to show a `MergeRefused` event from a run that predates `log.jsonl`.
 pub fn refusal_summary(detail: &str) -> String {
     let refusals: Vec<&str> = detail
         .lines()
@@ -881,64 +833,11 @@ pub fn refusal_summary(detail: &str) -> String {
     }
 }
 
-/// `docs log merge`'s refusal for prose above a fragment's first `## `
-/// heading (`docs.mjs` `logMerge`).
-const ABOVE_FIRST_HEADING: &str = "has content above its first";
-
-/// A refused `docs log merge`: a `BLOCK-n` in `agent-log.md`, phase
-/// `checkpoint`. The driver edits no fragment (FR-5), so the fix is the
-/// owner's either way; the options fit the refusal. A format slip (prose
-/// above the first `## `, which the driver's title strip did not cover) gets
-/// format options, an AD clash or anything else the renumber ones.
-fn block_on_refusal(
-    run: &mut Run,
-    feature_dir: &Path,
-    feature: &str,
-    detail: String,
-    out: &mut dyn Write,
-) -> Result<(String, String)> {
-    let agent_log = feature_dir.join("agent-log.md");
-    let id = format!("BLOCK-{}", lowest_free_block(feature_dir)?);
-    let question = refusal_summary(&detail);
-    let format_slip = question
-        .split("; ")
-        .all(|r| r.contains(ABOVE_FIRST_HEADING));
-    let quoted: String = detail.lines().map(|l| format!("  {l}\n")).collect();
-    let title = answers::block_title(&format!("{MERGE_REFUSED}: {question}"));
-    let options = if format_slip {
-        "1. in each fragment named above, delete a title line above the first `## ` heading and move any other line under the section it belongs in\n\
-         2. stop the run (`factory stop`) and look at the fragments by hand\n\
-         **Recommended:** 1 — a format slip, not a decision: nothing in the entries changes."
-    } else {
-        "1. renumber the clashing entry in the later fragment into its slice's range (`NN01`, `NN02`, …)\n\
-         2. drop the later entry if it only repeats the earlier one\n\
-         **Recommended:** 1 — each builder's seed is its slice's range."
-    };
-    let entry = format!(
-        "### {id} — {title} · checkpoint · open\n\n\
-         **Happened:** the lanes are drained; `docs log merge {feature}` \
-         merged nothing:\n{quoted}\
-         **Options:**\n{options} \
-         The driver edits no fragment (FR-5): make the fix in the files, then \
-         answer this block and the merge runs again.\n"
-    );
-    append_under(&agent_log, "## Blockers", &entry)?;
-    run.emit(EventKind::MergeRefused {
-        block_id: id.clone(),
-        detail,
-    })?;
-    say(
-        out,
-        &format!("log merge refused — {id} written to agent-log.md: {question}"),
-    )?;
-    Ok((id, title))
-}
-
-/// A checkpoint worker gone without `CP-n` or a block: a Traps line in
-/// `agent-log.md`; the caller respawns or blocks on the count.
+/// A checkpoint worker gone without `CP-n` or a block: a `note` entry in the
+/// feature's log; the caller respawns or blocks on the count.
 fn settle_dead(
     run: &mut Run,
-    agent_log: &Path,
+    feature_dir: &Path,
     n: u32,
     session_id: &str,
     row_id: i64,
@@ -964,13 +863,11 @@ fn settle_dead(
     } else {
         "with a result but neither CP entry nor block"
     };
-    let date = clock::now_rfc3339()[..10].to_string();
-    append_under(
-        agent_log,
-        "## Traps",
-        &format!(
-            "- **Dead checkpoint worker ({date})**: checkpoint {n}, session {session_id} {code} {what}."
-        ),
+    answers::add_note(
+        feature_dir,
+        None,
+        "Dead checkpoint worker",
+        &format!("checkpoint {n}, session {session_id} {code} {what}."),
     )?;
     say(
         out,
@@ -994,10 +891,10 @@ fn settle(
     run.set_worker_outcome(session_id, outcome.as_str())
 }
 
-/// `(id, title)` of every unresolved `BLOCK-n` with phase `checkpoint` in
-/// `agent-log.md`, in file order.
-pub fn open_checkpoint_blocks(agent_log: &Path) -> Result<Vec<(String, String)>> {
-    Ok(answers::entries(agent_log)?
+/// `(id, title)` of every unanswered block with phase `checkpoint` in the
+/// feature's log, in file order.
+pub fn open_checkpoint_blocks(feature_dir: &Path) -> Result<Vec<(String, String)>> {
+    Ok(answers::entries(feature_dir)?
         .into_iter()
         .filter(|e| !e.resolved && e.phase.as_deref() == Some("checkpoint"))
         .map(|e| (e.id, e.title))
@@ -1007,8 +904,8 @@ pub fn open_checkpoint_blocks(agent_log: &Path) -> Result<Vec<(String, String)>>
 /// The index into `events` just past the latest `block_answered` for one of
 /// checkpoint `n`'s own blocks (its `checkpoint_blocked` ids); 0 when the
 /// owner answered none. The death cap and the red count start there: an
-/// answer to another block naming no slice (a refused merge, a closeout
-/// block, another checkpoint's) resets neither.
+/// answer to another block naming no slice (a closeout block, another
+/// checkpoint's) resets neither.
 fn since_answer(events: &[Event], n: u32) -> usize {
     let mut mine: HashSet<&str> = HashSet::new();
     let mut from = 0;
@@ -1047,20 +944,8 @@ fn spawned_before_answer(events: &[Event], n: u32) -> HashSet<String> {
 
 fn park_line(id: &str, title: &str) -> String {
     format!(
-        "checkpoint blocked — {title}: {id} in agent-log.md waits for the owner: `factory answer {id} \"<text>\"`"
+        "checkpoint blocked — {title}: {id} in log.jsonl waits for the owner: `factory answer {id} \"<text>\"`"
     )
-}
-
-/// The lowest `n ≥ 1` no `BLOCK-n` in the feature's logs uses. A builder's
-/// blocks are `NN01`, `NN02`, …; the driver's own stay below 100 (AD-501).
-pub fn lowest_free_block(feature_dir: &Path) -> Result<u32> {
-    let mut used: HashSet<u32> = HashSet::new();
-    for path in answers::log_files(feature_dir)? {
-        used.extend(answers::entries(&path)?.into_iter().map(|e| e.n));
-    }
-    Ok((1..)
-        .find(|n| !used.contains(n))
-        .expect("an unused block number"))
 }
 
 #[cfg(test)]

@@ -1,15 +1,44 @@
----
-slice: 08
-status: pending
-depends_on: [5, 7]
----
-
 # Slice 08 — Ideas migration (FR-20 rest)
 
 **Source**: [`prd.md`](prd.md) → §10 FR-20 (the Migration bullet, the file format, the migration half of the acceptance), §6 FR-16 (`--dry`, the clean-tree refusal, git as the undo), §12 QA plan (the FR-20 row), §14 (`W-IDEAS-V2` for lines an old skill writes after the migration). **Depends on**: 05 (the idea file format, `slug`, the writer and `check`'s ideas rules), 07 (`migrate::plan`/`run`, the plan rows, the blame helper, the v2 fixture and `tests/migrate.rs`).
 **Created**: 2026-10-13 · **Status**: pending
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+
+- **Built**: `src/docs/migrate_ideas.rs` (new) holds `parse` (bounds, title and body, placement, drops), `fields` (`added`/`origin`/`retrigger`, plus the rule that gave `added`) and `plan`. `plan` computes ids with `-2` clashes against `docs/ideas/` and earlier ids, renders through slice 05's `ideas::render`, writes the README only when absent, deletes `ideas.md`, and splices the guess rows to the head of the plan. A dry run warns `added is today: line N is not committed` for a line git has not committed. `src/docs/migrate.rs` changes:
+  - `blame_lines` returns each line's date and whether it is committed (the zero sha is not).
+  - `unlink` now rides a generic `edit_links`, and the new `relink` points every link to `ideas.md` at `ideas/README.md`, anchor dropped.
+  - `plan` calls `migrate_ideas::plan` before `project.toml`.
+  - `run` creates the parent folder before a write.
+  - The fixture `tests/fixture/v2/docs/ideas.md` holds the five placements (Alpha to Echo), a multi-line body, a Re-trigger and both placeholders. `tests/migrate.rs` gains `ideas_migrate` and extends `prd_001_copy_migrates`. The undo and re-run step of slice 07's fixture test snapshots all of `docs/`, so it now covers `docs/ideas/` with no new code.
+- **Inner loop**: 7 runs, 1 red, about 4 minutes. The red was a compile error: the `flush` closure borrowed the bullet list while the loop pushed to it, so `flush` is now a nested fn. The last full `cargo test` was green in 52 s. `cargo fmt --check` and `cargo clippy --all-targets -D warnings` are clean (one redundant closure fixed).
+- **Task 5, PRD-001 copy** (`cargo test --test migrate -- --ignored`, green): the copy has `docs/ideas/` with `README.md` plus 19 files, `ideas.md` is gone, and `check` reports no `E-`. Six links were relinked: the five of Current code plus `slice-11-skills-hook-install.md:27`, written after slicing. This repo's own `ideas.md`, with blame dates read in place:
+
+  ```
+  idea 2026-10-09 git blame line 14: Codex or Cursor as build workers
+  idea 2026-10-09 git blame line 15: Decompose polish into driver-run steps
+  idea 2026-10-09 git blame line 16: Typed lookup layer for `factory ctx` (LSP or SCIP)
+  idea 2026-10-09 git blame line 17: Jev (TypeSafe System One) as a picker in `factory ctx` or the driver
+  idea 2026-10-10 Added line 18: Uncle Bob's quality tools as gate tiers or polish inputs
+  idea 2026-10-10 Parked line 19: Batch `def` lookups in the pack's recon
+  idea 2026-10-10 Parked line 20: Pre-push guard for the driver's own git calls
+  idea 2026-10-10 Parked line 21: Persist CI rerun rows across a driver restart
+  idea 2026-10-11 Added line 22: Run the CI checks locally before the push (`nektos/act` or similar)
+  idea 2026-10-11 Parked line 23: Block worker pushes to a remote with its own `pushurl`
+  idea 2026-10-11 Added line 24: Port concepts from Cursor's pstack verification skills into `verify-app`
+  idea 2026-10-12 Added line 25: Claude Code's advisor tool for workers
+  idea 2026-10-12 git blame line 26: Cross-repo ideas scanner: `factory ideas --json` plus an `/ideas` skill
+  idea 2026-10-12 git blame line 27: `factory bugs pull | list | drop | promote`: production errors as a local bug list
+  idea 2026-10-13 git blame line 29: The skill family lives in this repo; `factory skills install | update` puts it where agents read it
+  idea 2026-10-13 git blame line 30: Driver slice commit subjects run past 50 characters
+  idea 2026-10-13 git blame line 31: Refresh `## Numbers` after the CI rounds
+  idea 2026-10-13 git blame line 32: Mark partial figures in the retro's Numbers table
+  idea 2026-10-13 git blame line 33: A missing transcript in a live run stores zeros
+  ```
+
+  8 take a phrase's date and 11 take blame, all from 2026-10-09 to HEAD.
+- **Deviations**: two, AD-801 and AD-802 in `agent-log.md`. Plan rows carry the title, the line and where `added` came from. A stray non-bullet line under a heading is a `drop` row. Slice 05's round-trip of a title holding `"` already exists (`tests/docs_ideas.rs`), so that test needed no change.
+- **Left for the checkpoint**: task 7, the migration half of the QA plan's FR-20 row.
 
 **Slice**: After this slice `factory docs migrate` also turns `docs/ideas.md` into one file per open idea under `docs/ideas/`, writes `docs/ideas/README.md`, and deletes `ideas.md`. Each bullet is placed by its heading. Graduated bullets are not migrated. Bullets whose placement is a guess (a `### Parked…` heading below `## Graduated`, or an unknown heading) migrate as `open` and are printed first in `--dry`, so the owner reads the risky rows before anything else. Each body is the bullet's text after the title, byte for byte. A migrated fixture then passes `factory docs check` with no warning at all. The tool side of ideas (`idea add|list|drop`, `new --from-idea`, `check`) is slice 05's.
 
@@ -95,3 +124,9 @@ Extend slice 07's `#[ignore]` `prd_001_copy_migrates`: after the migration, `doc
 Rows from [`prd.md`](prd.md) § QA plan: the migration half of the **FR-20** row, "`migrate` on the v2 fixture's `ideas.md`: four files, the Graduated bullet not migrated, the Parked bullet listed first as a guess, bodies byte for byte". Drive it on the real surface with the branch binary in a temp copy of `tests/fixture/v2`: `factory docs migrate --dry` (the head of its output), `factory docs migrate`, `ls docs/ideas`, `cat` of each idea file, `diff` of each body against the source bytes, `factory docs idea list --json`, `factory docs check`. Also run it in a `git archive HEAD docs` copy of this repo and list its `guess` and `drop` rows. The human half is in [`qa-guide.md`](qa-guide.md), not here: the owner reads the guess rows of `migrate --dry` on arca-api and decides which Parked bullets are still open.
 
 **Acceptance:** Progress holds each transcript with its exit code, the four file names, four empty body `diff`s, and the `check` output with no warning line.
+
+**Code-review fixes (2026-10-13).**
+
+- A fence at the margin under an idea bullet ended the bullet (AD-802), but its lines vanished from the plan. FR-20 says dropped text is listed. Each line now gets a `drop` row ("in a fence under no bullet"). Test: `bounds_fences_and_drops`.
+- `this_repos_ideas_at_head` counted the live `docs/ideas.md`, so any parked idea would turn it red. It reads the frozen copy now (AD-9906).
+- The migration half of FR-20 is proven in `evidence/polish-fr20.txt`. `migrate --dry` lists the Echo guess first and leaves `git status` empty. `migrate` writes the four idea files and does not migrate Delta, and `check` is clean.

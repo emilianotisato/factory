@@ -1,25 +1,26 @@
 //! One commit per slice, by pathspec (PRD §7 FR-5). The paths are the
 //! `file_path` of every `Edit` and `Write` call and the `notebook_path` of
-//! every `NotebookEdit` call in the worker's stream (§4 FR-2: the stream is the record) plus the slice file
-//! and its log fragment; the message is `feat(NNN): slice-NN <title>`, no body, no
+//! every `NotebookEdit` call in the worker's stream (§4 FR-2: the stream is the record) plus the slice file,
+//! the feature's `state.toml` and `log.jsonl` (PRD-002 FR-18); the message is `feat(NNN): slice-NN <title>`, no body, no
 //! trailers, the repo's own `user.*`. Never `git add -A`: another lane may be
 //! mid-write in the same tree, and only named paths move. A `Bash` call that
 //! types a file out in full (`cat > f <<EOF`) names it too ([`heredoc_paths`]).
 //! A file the worker made with a command (a generator, a script) is its own
 //! once it `git add`s it by name or by folder ([`added_paths`]); one it never
-//! claims is listed in the fragment under `## Untracked leftovers` and stays
-//! in the tree for the owner. At a checkpoint (FR-4) the same path commits a fix worker's files
-//! (`fix(NNN): gate red at checkpoint n`, [`Pathspec::from_stream`]) and, after
-//! [`fold_logs`] merged the fragments into `agent-log.md`, the feature folder
-//! and the checkpoint worker's files as `docs(NNN): checkpoint n`.
+//! claims is a `note` entry in the feature's log and stays in the tree for
+//! the owner. At a checkpoint (FR-4) the same path commits a fix worker's files
+//! (`fix(NNN): gate red at checkpoint n`, [`Pathspec::from_stream`]) and the
+//! feature folder and the checkpoint worker's files as `docs(NNN): checkpoint n`.
+//!
+//! With lanes ≥ 2 a slice's commit stages the whole `log.jsonl` and
+//! `state.toml`, a sibling's in-flight lines with it: both files are
+//! append-only or keyed per slice, so that is correct.
 use std::collections::{BTreeMap, HashSet};
-use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::Mutex;
 
-use crate::docs::{Docs, Status};
-use crate::error::io;
+use crate::docs::Status;
 use crate::shell;
 use crate::stream::Summary;
 use crate::{Error, Result};
@@ -27,19 +28,19 @@ use crate::{Error, Result};
 /// The tools whose input names a file the worker wrote ([`written_paths`]).
 pub const WRITING_TOOLS: &[&str] = &["Edit", "Write", "NotebookEdit"];
 
-/// The three files no worker may write (`deliver/SKILL.md`): they are the
-/// orchestrator's, and a worker's edit of `agent-log.md` races the merge.
-pub fn protected_files(board: &Status) -> [String; 3] {
-    [
-        format!("{}/prd.md", board.dir),
-        format!("{}/agent-log.md", board.dir),
-        "docs/index.md".to_string(),
-    ]
+/// The two files no worker may write (`deliver/SKILL.md`): they are the
+/// orchestrator's.
+pub fn protected_files(board: &Status) -> [String; 2] {
+    [format!("{}/prd.md", board.dir), "docs/index.md".to_string()]
 }
 
-/// `docs/features/<dir>/log-slice-NN.md`, repo-relative.
-pub fn fragment_path(board: &Status, slice: u32) -> String {
-    format!("{}/log-slice-{slice:02}.md", board.dir)
+/// The feature's `state.toml` and `log.jsonl`, repo-relative: the tool's
+/// writes a slice or checkpoint commit carries (FR-18).
+pub fn tool_files(board: &Status) -> [String; 2] {
+    [
+        format!("{}/state.toml", board.dir),
+        format!("{}/log.jsonl", board.dir),
+    ]
 }
 
 /// `docs/features/<file>`, repo-relative; `None` off the board.
@@ -54,8 +55,8 @@ pub fn slice_path(board: &Status, slice: u32) -> Option<String> {
 /// What a slice's commit holds, and what fell out of the stream's paths.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Pathspec {
-    /// Repo-relative, deduplicated, in stream order; the slice file and the
-    /// fragment last.
+    /// Repo-relative, deduplicated, in stream order; the slice file,
+    /// `state.toml` and `log.jsonl` last.
     pub paths: Vec<String>,
     /// Named in the stream but one of [`protected_files`]: left out.
     pub protected: Vec<String>,
@@ -73,14 +74,16 @@ impl Pathspec {
         if let Some(p) = slice_path(board, slice) {
             push_once(&mut spec.paths, p);
         }
-        push_once(&mut spec.paths, fragment_path(board, slice));
+        for p in tool_files(board) {
+            push_once(&mut spec.paths, p);
+        }
         spec
     }
 
     /// The paths a worker's stream names and nothing else: a fix or checkpoint
-    /// worker (FR-4) has no slice file and no fragment of its own. The
-    /// checkpoint worker may write `agent-log.md`; its caller stages the
-    /// feature folder whole, so the protected split is only informative here.
+    /// worker (FR-4) has no slice file of its own. The checkpoint worker's
+    /// caller stages the feature folder whole, so the protected split is only
+    /// informative here.
     pub fn from_stream(summary: &Summary, board: &Status, repo: &Path) -> Pathspec {
         let canon = repo.canonicalize().unwrap_or_else(|_| repo.to_path_buf());
         let protected = protected_files(board);
@@ -490,148 +493,11 @@ pub fn expand(repo: &Path, paths: &[String]) -> Result<Vec<String>> {
     Ok(out)
 }
 
-/// How the checkpoint's log merge went.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Fold {
-    /// `docs log merge` folded these fragments (repo-relative) into
-    /// `agent-log.md` and removed them; nothing is committed yet.
-    Folded { fragments: Vec<String> },
-    /// No fragment to fold.
-    Nothing,
-    /// `docs log merge` refused — an AD clash; `detail` is what it said.
-    Refused { detail: String },
-}
-
-/// `docs log merge <feature>` at a checkpoint (FR-5), before the checkpoint
-/// worker reads `agent-log.md`. The render and the commit are the
-/// checkpoint's, once the worker has written `CP-n`.
-pub fn fold_logs(docs: &Docs, repo: &Path, board: &Status, feature: &str) -> Result<Fold> {
-    let names = ready_fragments(repo, board, feature)?;
-    if names.is_empty() {
-        return Ok(Fold::Nothing);
-    }
-    if let Some(detail) = refusal(docs.log_merge(feature)?) {
-        return Ok(Fold::Refused { detail });
-    }
-    Ok(Fold::Folded {
-        fragments: names.iter().map(|n| format!("{}/{n}", board.dir)).collect(),
-    })
-}
-
-/// What `docs log merge --dry` refuses, if anything: the checkpoint asks
-/// before it pays for the gate. Run B of the FR-11 A/B (2026-10-11) learned
-/// of a refusal after a 7-minute green, and paid for the gate again once
-/// the owner answered.
-pub fn check_logs(
-    docs: &Docs,
-    repo: &Path,
-    board: &Status,
-    feature: &str,
-) -> Result<Option<String>> {
-    if ready_fragments(repo, board, feature)?.is_empty() {
-        return Ok(None);
-    }
-    Ok(refusal(docs.log_merge_dry(feature)?))
-}
-
-/// The feature's fragments, made fit to merge: `agent-log.md` exists (the
-/// tool merges into an existing file only) and no fragment has a title.
-fn ready_fragments(repo: &Path, board: &Status, feature: &str) -> Result<Vec<String>> {
-    let dir = repo.join(&board.dir);
-    let names = fragments_in(&dir)?;
-    if names.is_empty() {
-        return Ok(names);
-    }
-    let log = dir.join("agent-log.md");
-    // A second check: `docs new` creates agent-log.md now (AD-503), but a
-    // feature made by a vendored docs.mjs older than that fix has none.
-    if !log.exists() {
-        fs::write(&log, format!("# Agent log — PRD-{feature}\n"))
-            .map_err(io(format!("write {}", log.display())))?;
-    }
-    for name in &names {
-        let path = dir.join(name);
-        let text = fs::read_to_string(&path).map_err(io(format!("read {}", path.display())))?;
-        if let Some(body) = untitled(&text) {
-            fs::write(&path, body).map_err(io(format!("write {}", path.display())))?;
-        }
-    }
-    Ok(names)
-}
-
-/// A refused merge's message; `None` when it exited 0.
-fn refusal(out: crate::docs::ToolOutput) -> Option<String> {
-    if out.code == 0 {
-        return None;
-    }
-    let detail = if out.stderr.trim().is_empty() {
-        out.stdout
-    } else {
-        out.stderr
-    };
-    Some(detail.trim().to_string())
-}
-
 /// A commit subject scoped to the feature, as `/deliver`'s builders write
 /// theirs: `feat(018): slice-02 Harness`. The A/B of 2026-10-11 found the
 /// driver's bare `feat: {title}` gave no feature and no slice to search by.
 pub fn subject(board: &Status, kind: &str, text: &str) -> String {
     format!("{kind}({:03}): {text}", board.number)
-}
-
-/// A fragment without the title (`# ...`) lines above its first `## `
-/// heading, or `None` when there is none to drop. `docs log merge` refuses
-/// any line up there, and run B of the FR-11 A/B (2026-10-11) parked on a
-/// `# Log fragment — slice 03` the merge would have thrown away anyway.
-/// Prose up there is left alone: losing it is the merge's call to refuse.
-fn untitled(text: &str) -> Option<String> {
-    let mut titled = false;
-    let mut offset = 0;
-    for line in text.split_inclusive('\n') {
-        let bare = line.trim_end();
-        if bare.starts_with("## ") {
-            break;
-        }
-        if bare.starts_with("# ") {
-            titled = true;
-        } else if !bare.trim().is_empty() {
-            return None;
-        }
-        offset += line.len();
-    }
-    titled.then(|| text[offset..].to_string())
-}
-
-/// `log-slice-NN.md` and `log-fix-N.md` in the feature folder, by name.
-fn fragments_in(dir: &Path) -> Result<Vec<String>> {
-    let rd = match fs::read_dir(dir) {
-        Ok(rd) => rd,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(io(format!("read {}", dir.display()))(e)),
-    };
-    let mut out: Vec<String> = rd
-        .filter_map(|e| e.ok())
-        .filter_map(|e| e.file_name().into_string().ok())
-        .filter(|n| is_fragment(n))
-        .collect();
-    out.sort();
-    Ok(out)
-}
-
-fn is_fragment(name: &str) -> bool {
-    let Some(rest) = name.strip_prefix("log-") else {
-        return false;
-    };
-    let Some(rest) = rest
-        .strip_prefix("slice-")
-        .or_else(|| rest.strip_prefix("fix-"))
-    else {
-        return false;
-    };
-    let Some(digits) = rest.strip_suffix(".md") else {
-        return false;
-    };
-    !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())
 }
 
 /// `git <args>` in the repo root; a non-zero exit is an error quoting stderr.
@@ -672,6 +538,7 @@ mod tests {
     use crate::docs::Slice;
     use crate::stream::ToolUse;
     use serde_json::json;
+    use std::fs;
 
     fn board() -> Status {
         Status {
@@ -721,7 +588,7 @@ mod tests {
     }
 
     #[test]
-    fn pathspec_is_the_written_paths_plus_the_slice_file_and_fragment() {
+    fn pathspec_is_the_written_paths_plus_the_slice_file_state_and_log() {
         let repo = Path::new("/r");
         let mut summary = Summary::dead();
         summary.tool_uses = vec![
@@ -732,7 +599,6 @@ mod tests {
             tool("Write", "/r/docs/features/001-fixture/prd.md"),
             tool("Edit", "/r/docs/index.md"),
             tool("Write", "/tmp/elsewhere.txt"),
-            tool("Write", "/r/docs/features/001-fixture/log-slice-01.md"),
         ];
         let spec = Pathspec::from(&summary, &board(), 1, repo);
         assert_eq!(
@@ -740,8 +606,9 @@ mod tests {
             [
                 "src/a.rs",
                 "nb.ipynb",
-                "docs/features/001-fixture/log-slice-01.md",
                 "docs/features/001-fixture/slice-01-a.md",
+                "docs/features/001-fixture/state.toml",
+                "docs/features/001-fixture/log.jsonl",
             ]
         );
         assert_eq!(
@@ -781,15 +648,6 @@ mod tests {
         ] {
             assert!(added(&[none]).is_empty(), "{none}");
         }
-    }
-
-    #[test]
-    fn fragment_names() {
-        assert!(is_fragment("log-slice-01.md"));
-        assert!(is_fragment("log-fix-3.md"));
-        assert!(!is_fragment("log-slice-.md"));
-        assert!(!is_fragment("agent-log.md"));
-        assert!(!is_fragment("log-slice-01.md.bak"));
     }
 
     fn repo() -> tempfile::TempDir {
@@ -940,17 +798,5 @@ mod tests {
             git(r, &["status", "--porcelain"]).unwrap(),
             "A  owner.txt\n"
         );
-    }
-
-    #[test]
-    fn a_title_above_the_first_section_is_dropped_and_prose_is_not() {
-        let titled = "# Log fragment — slice 03\n\n## Decisions\n\n### AD-301 — q\n";
-        assert_eq!(
-            untitled(titled).as_deref(),
-            Some("## Decisions\n\n### AD-301 — q\n")
-        );
-        assert_eq!(untitled("## Decisions\n\n- a\n"), None);
-        assert_eq!(untitled("# Title\nSome prose.\n\n## Decisions\n"), None);
-        assert_eq!(untitled("# Title only\n").as_deref(), Some(""));
     }
 }

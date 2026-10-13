@@ -4,28 +4,28 @@
 //
 // Order matters, and it is the order a real worker leaves on disk: record the
 // call, pick the scenario step, apply the side effects to the fixture repo
-// (slice frontmatter, log fragment, touched code file), then replay a stream
-// cut from a real `claude -p --output-format stream-json` recording. The board
-// moves before a single event is printed, so a driver that reads the frontmatter
-// after `docs status --json` sees the truth even if it never parses the stream.
+// (state.toml and log.jsonl through `$FACTORY_BIN docs set|log add`, the
+// touched code file), then replay a stream cut from a real `claude -p
+// --output-format stream-json` recording. The board moves before a single
+// event is printed, so a driver that reads `docs status` sees the truth even
+// if it never parses the stream. PRD-002 slice 09: the stub never writes a
+// slice file's status, agent-log.md or a log-*.md fragment, and never runs
+// the node docs tool; the binary allocates every id.
 //
 // Scenario steps come from $FACTORY_STUB_DIR/plan.jsonl, one JSON object per
 // spawn, read by spawn number (call n takes line n); past the end every spawn
 // is `{"outcome":"done"}`. Slice 01 supports `outcome: "done"`, `touch: [...]`
 // and `delay_ms`; slice 03 adds `outcome: "dead"` (init, `building`, exit 137,
 // no result); slice 04 adds `outcome: "blocked"` (a BLOCK entry in the slice's
-// fragment, `status: blocked`, exit 0 — and a follow-up spawn whose pack
+// log, `status: blocked`, exit 0 — and a follow-up spawn whose pack
 // carries a `# Block and answer` section builds to `done`); slice 05 adds
 // `stray: [...]` (files written with no tool call naming them — a heredoc, a
-// generator — that the driver must list, not commit) and `ad: "AD-n"` (the
-// fragment's AD number, to make two fragments clash at `docs log merge`,
-// and `prose: "..."`, a line above the fragment's first `## ` heading that
-// `docs log merge` refuses and the driver's title strip leaves alone);
+// generator — that the driver must list, not commit);
 // slice 06 adds the checkpoint's workers, told apart by the pack's first
 // section: a `# Gate failure` pack is a fix worker (`fix`/`done` touches
 // `touch` or src/lib.txt, `dead` exits 137), a `# Gate transcript` pack is a
-// checkpoint worker (`checkpoint`/`done` writes `CP-n` under `## Checkpoints`
-// in agent-log.md, `blocked` writes a `BLOCK-n · checkpoint · open` there,
+// checkpoint worker (`checkpoint`/`done` logs a `checkpoint` entry, `blocked`
+// a `block` entry with `phase: checkpoint`,
 // `dead` exits 137). Slice 07 adds `rate_limited` / `rate_limited_no_reset`
 // for every role: init, one `rate_limit_event` with `status: rejected`
 // (`resetsAt` 120 s ahead on the driver's clock, or none), an error result
@@ -245,8 +245,7 @@ if (role === 'checkpoint') {
   const rows = [...new Set([...pack.matchAll(/^\| (FR-\d+) \|/gm)].map((x) => x[1]))]
   const dirM = pack.match(/<!-- (docs\/features\/[^/\s]+)\//)
   if (!dirM) fail(65, 'the checkpoint pack names no docs/features/<dir>/ file')
-  const cpDir = path.resolve(cwd, dirM[1])
-  const log = path.join(cpDir, 'agent-log.md')
+  const cpFeature = featureOf(dirM[1])
   if (limited.includes(step.outcome)) rateLimited(step)
   if (step.delay_ms) sleep(Number(step.delay_ms))
   if (step.outcome === 'dead') {
@@ -255,34 +254,29 @@ if (role === 'checkpoint') {
   }
   const today = new Date().toISOString().slice(0, 10)
   if (step.outcome === 'blocked') {
-    const block = `BLOCK-${lowestFreeBlock(cpDir)}`
     const question = step.question ?? 'Which row does the owner want proven by hand?'
-    appendSection(log, '## Blockers', [
-      `### ${block} — ${question} · checkpoint · open`,
-      '',
+    const add = ['log', 'add', cpFeature, '--kind', 'block', '--phase', 'checkpoint', '--title', question, '--body-file', '-']
+    const block = docs(add, [
       `**Happened:** the stub checkpoint worker at checkpoint ${cp} reached a fork the contract does not settle.`,
       '**Options:** 1. the Recommended option; 2. the other one.',
       '**Recommended:** 1 — it is the one the fixture expects.',
-      '',
     ].join('\n'))
     emit(init)
-    tool('Write', { file_path: log, content: fs.readFileSync(log, 'utf8') })
+    docsCall(add, block)
     emit(assistant([{ type: 'text', text: `STATUS: blocked\nBLOCK: ${block}` }]))
     result(['STATUS: blocked', 'PROVE: 0/0 — evidence: none — unreached: all', 'FIXED: none', `BLOCK: ${block} — ${question}`])
     process.exit(0)
   }
   const last = covered[covered.length - 1] ?? '00'
-  appendSection(log, '## Checkpoints', [
-    `### CP-${cp} — after slice-${last} · ${today}`,
-    '',
+  const add = ['log', 'add', cpFeature, '--kind', 'checkpoint', '--phase', 'checkpoint', '--slice', String(Number(last)), '--title', `after slice-${last} · ${today}`, '--body-file', '-']
+  const id = docs(add, [
     `**Covers:** slices ${covered.join(', ')}`,
     '**Gate:** 1 runs, 0 red, 0 min — caught: nothing (driver-run)',
     `**Prove:** ${rows.join(', ') || 'none'} — evidence: none (stub)`,
     '**Fixed:** none',
-    '',
   ].join('\n'))
   emit(init)
-  tool('Write', { file_path: log, content: fs.readFileSync(log, 'utf8') })
+  docsCall(add, id)
   emit(assistant([{ type: 'text', text: 'STATUS: done' }]))
   result(['STATUS: done', `PROVE: ${rows.length}/${rows.length} — evidence: none (stub) — unreached: none`, 'FIXED: none', 'BLOCK: none'])
   process.exit(0)
@@ -291,18 +285,18 @@ if (role === 'checkpoint') {
 // ── 3c. a polish worker (slice 09) ───────────────────────────────────────────
 // The pack's header names the run dir (the PR body goes there) and prd.md
 // (the feature dir). `done`/`polish`: touch `step.touch` (default
-// src/lib.txt), write retro.md from the template under `# Retro`, stamp
-// `reviewed:` in prd.md, write the PR body; `step.slices` (`{"02":
+// src/lib.txt), write retro.md from the template under `# Retro`, set
+// `reviewed` in state.toml, write the PR body; `step.slices` (`{"02":
 // "building"}`) forces slice statuses first, so a test can make `docs ship`
 // refuse; `step.skip` (`["retro"]`, `["body"]` or both) leaves those files
 // unwritten, a worker that skipped its last turn (AD-904). `blocked`: a
-// BLOCK-n `· polish · open` in agent-log.md.
+// `block` entry with `phase: polish`.
 if (role === 'polish') {
   const runDir = pack.match(/^<!-- run dir: (.+?) -->$/m)?.[1]
   const dirM = pack.match(/<!-- (docs\/features\/[^/\s]+)\//)
   if (!runDir || !dirM) fail(65, 'the polish pack names no run dir or no docs/features/<dir>/ file')
   const featDir = path.resolve(cwd, dirM[1])
-  const log = path.join(featDir, 'agent-log.md')
+  const feature = featureOf(dirM[1])
   const prd = path.join(featDir, 'prd.md')
   const retro = path.join(featDir, 'retro.md')
   if (limited.includes(step.outcome)) rateLimited(step)
@@ -313,18 +307,15 @@ if (role === 'polish') {
   }
   const today = new Date().toISOString().slice(0, 10)
   if (step.outcome === 'blocked') {
-    const block = `BLOCK-${lowestFreeBlock(featDir)}`
     const question = step.question ?? 'Which review finding does the owner want kept?'
-    appendSection(log, '## Blockers', [
-      `### ${block} — ${question} · polish · open`,
-      '',
+    const add = ['log', 'add', feature, '--kind', 'block', '--phase', 'polish', '--title', question, '--body-file', '-']
+    const block = docs(add, [
       '**Happened:** the stub polish worker reached a fork the review does not settle.',
       '**Options:** 1. the Recommended option; 2. the other one.',
       '**Recommended:** 1 — it is the one the fixture expects.',
-      '',
     ].join('\n'))
     emit(init)
-    tool('Write', { file_path: log, content: fs.readFileSync(log, 'utf8') })
+    docsCall(add, block)
     emit(assistant([{ type: 'text', text: `STATUS: blocked\nBLOCK: ${block}` }]))
     result(['STATUS: blocked', 'FIXED: nothing', 'RETRO: not written: blocked', 'PR_BODY: not written: blocked', 'DECISIONS: none', `BLOCK: ${block} — ${question}`])
     process.exit(0)
@@ -332,7 +323,7 @@ if (role === 'polish') {
   for (const [nn, status] of Object.entries(step.slices ?? {})) {
     const f = fs.readdirSync(featDir).find((f) => f.startsWith(`slice-${nn}-`) && f.endsWith('.md'))
     if (!f) fail(65, `step.slices names slice ${nn}, which ${dirM[1]} does not have`)
-    setStatus(path.join(featDir, f), status)
+    setStatus(feature, nn, status)
   }
   const touched = (step.touch ?? ['src/lib.txt']).map((f) => path.resolve(cwd, f))
   for (const f of touched) {
@@ -342,19 +333,14 @@ if (role === 'polish') {
   writeStray(step)
   const rel = touched.map((f) => path.relative(cwd, f)).join(', ')
   const skip = new Set(step.skip ?? [])
-  // The template's frontmatter as the pack carries it; the driver fills the keys.
+  // The template as the pack carries it: no frontmatter, the driver writes the numbers.
   const tplM = pack.match(/^# Retro\n[\s\S]*?\n````markdown\n([\s\S]*?)\n````/m)
   if (!tplM) fail(65, 'the polish pack has no ````markdown retro template under # Retro')
-  const fmEnd = tplM[1].indexOf('\n---', 4)
-  if (!tplM[1].startsWith('---\n') || fmEnd === -1) fail(65, 'the retro template in the pack has no frontmatter')
-  const retroText = `${tplM[1].slice(0, fmEnd)}\n---\n\n# Retro — PRD-${dirM[1].match(/(\d{3})-/)[1]}\n\n## Cost vs catch\n\nStub retro (spawn ${n}).\n\n## Score\n\nThe owner's.\n`
+  if (!tplM[1].startsWith('# Retro — PRD-')) fail(65, 'the retro template in the pack does not open with its # Retro heading')
+  const retroText = `# Retro — PRD-${dirM[1].match(/(\d{3})-/)[1]}\n\n## Cost vs catch\n\nStub retro (spawn ${n}).\n\n## Score\n\nThe owner's.\n`
   if (!skip.has('retro')) writeAtomic(retro, retroText)
-  const prdText = fs.readFileSync(prd, 'utf8')
-  const prdEnd = prdText.startsWith('---\n') ? prdText.indexOf('\n---', 4) : -1
-  if (prdEnd === -1) fail(65, `${prd} has no frontmatter`)
-  const fm = prdText.slice(0, prdEnd)
-  const stamped = /^reviewed:.*$/m.test(fm) ? fm.replace(/^reviewed:.*$/m, `reviewed: ${today}`) : `${fm}\nreviewed: ${today}`
-  writeAtomic(prd, stamped + prdText.slice(prdEnd))
+  const reviewed = ['set', feature, `reviewed=${today}`]
+  docs(reviewed)
   const body = path.join(runDir, 'pr-body.md')
   fs.mkdirSync(runDir, { recursive: true })
   if (!skip.has('body')) writeAtomic(body, `## PRD-${dirM[1].match(/(\d{3})-/)[1]} — Fixture\n\nStub PR body (spawn ${n}). PR: \`${dirM[1]}/prd.md\`\n\n### Needs your review\n\n- none\n\n### Human QA\n\nNone — every QA-plan row was proven by the run.\n`)
@@ -364,7 +350,7 @@ if (role === 'polish') {
   for (const f of touched) tool('Write', { file_path: f, content: `polished by spawn ${n}\n` })
   innerRun(step)
   if (!skip.has('retro')) tool('Write', { file_path: retro, content: retroText })
-  tool('Edit', { file_path: prd, old_string: 'status:', new_string: `reviewed: ${today}\nstatus:` })
+  docsCall(reviewed, '')
   if (!skip.has('body')) tool('Write', { file_path: body, content: fs.readFileSync(body, 'utf8') })
   emit(assistant([{ type: 'text', text: 'STATUS: done' }]))
   result([
@@ -394,10 +380,11 @@ if (!fs.existsSync(slicePath)) {
   slicePath = hit
 }
 const featureDir = path.dirname(slicePath)
+const feature = featureOf(path.basename(featureDir))
 
 // ── 4. side effects ──────────────────────────────────────────────────────────
 if (limited.includes(step.outcome)) rateLimited(step)
-setStatus(slicePath, 'building')
+setStatus(feature, nn, 'building')
 if (step.delay_ms) sleep(Number(step.delay_ms))
 if (step.outcome === 'dead') {
   // FR-1's dead worker (slice 03): the session opened, the slice went
@@ -410,17 +397,20 @@ if (step.outcome === 'dead') {
 const answered = /^# Block and answer$/m.test(pack)
 if (step.outcome === 'blocked' && !answered) {
   // FR-3's blocked worker (slice 04): the slice hit a question only the
-  // owner can answer — a BLOCK entry in its fragment, `status: blocked`, a
+  // owner can answer — a `block` entry with its slice, `status: blocked`, a
   // clean exit with a result that names the block. A later spawn whose pack
   // carries the resolution falls through to `done` below.
-  const frag = path.join(featureDir, `log-slice-${nn}.md`)
-  const block = `BLOCK-${Number(`${nn}01`)}`
   const question = step.question ?? 'Which option does the owner want?'
-  writeBlock(frag, nn, block, question)
-  setStatus(slicePath, 'blocked')
+  const add = ['log', 'add', feature, '--kind', 'block', '--slice', String(Number(nn)), '--title', question, '--body-file', '-']
+  const block = docs(add, [
+    `**Happened:** the stub worker on slice ${nn} reached a fork the slice does not settle.`,
+    '**Options:** 1. the Recommended option; 2. the other one.',
+    '**Recommended:** 1 — it is the one the fixture expects.',
+  ].join('\n'))
+  setStatus(feature, nn, 'blocked')
   emit(init)
-  tool('Write', { file_path: frag, content: fs.readFileSync(frag, 'utf8') })
-  tool('Edit', { file_path: slicePath, old_string: 'status: building', new_string: 'status: blocked' })
+  docsCall(add, block)
+  docsCall(['set', feature, `slices.${Number(nn)}.status=blocked`], '')
   emit(assistant([{ type: 'text', text: `STATUS: blocked\nBLOCK: ${block}` }]))
   const text = [
     'STATUS: blocked',
@@ -462,11 +452,16 @@ function writeStray(step) {
   }
 }
 const touchedRel = touched.map((f) => path.relative(cwd, f)).join(', ')
-const fragment = path.join(featureDir, `log-slice-${nn}.md`)
-const ad = writeFragment(fragment, nn, n, touchedRel, step.ad)
-if (step.prose) writeAtomic(fragment, `${step.prose}\n\n${fs.readFileSync(fragment, 'utf8')}`)
-progress(slicePath, n, touchedRel, ad, nn)
-setStatus(slicePath, 'done')
+const adAdd = ['log', 'add', feature, '--kind', 'decision', '--slice', String(Number(nn)), '--title', 'Which code file does the stub worker touch?', '--body-file', '-']
+const ad = docs(adAdd, [
+  `**Chose:** append one line to ${touchedRel} (spawn ${n})`,
+  '**Over:** a new file per spawn, which the driver could not name in its pathspec',
+  '**Because:** FR-10 leaves the touched set to the scenario step; the fixture has one code file on purpose',
+  '**Undo:** drop the appended line',
+  '**Review:** no',
+].join('\n'))
+progress(slicePath, n, touchedRel, ad)
+setStatus(feature, nn, 'done')
 
 // ── 5. the stream ────────────────────────────────────────────────────────────
 emit(init)
@@ -482,9 +477,9 @@ for (const f of step.heredoc ?? []) {
   tool('Bash', { command: `mkdir -p ${path.dirname(f)} && cat > ${f} <<'EOF'\nheredoc from spawn ${n}\nEOF`, description: 'write' })
 }
 if (step.git_add) tool('Bash', { command: `git add ${step.git_add}`, description: 'claim' })
-tool('Write', { file_path: fragment, content: fs.readFileSync(fragment, 'utf8') })
+docsCall(adAdd, ad)
 innerRun(step)
-tool('Edit', { file_path: slicePath, old_string: 'status: building', new_string: 'status: done' })
+docsCall(['set', feature, `slices.${Number(nn)}.status=done`], '')
 emit(assistant([{ type: 'text', text: 'STATUS: done' }]))
 const resultText = [
   'STATUS: done',
@@ -492,7 +487,7 @@ const resultText = [
   `LANE: ${process.env.FACTORY_LANE ?? 1}`,
   `INNER: 1 runs, ${step.inner === 'red' ? 1 : 0} red, 0 min — caught: nothing`,
   'PROVE: none: stub worker',
-  `DECISIONS: AD-${ad}`,
+  `DECISIONS: ${ad}`,
   'BLOCK: none',
 ].join('\n')
 emit({ ...tpl.result, session_id: sessionId, uuid: crypto.randomUUID(), result: resultText })
@@ -532,89 +527,39 @@ function writeAtomic(file, text) {
   }
 }
 
-function setStatus(file, status) {
+// The feature number of a `docs/features/NNN-slug` path or folder name.
+function featureOf(dir) {
+  const m = path.basename(dir).match(/^(\d{3})-/)
+  if (!m) fail(65, `${dir} is not a NNN-slug feature folder`)
+  return m[1]
+}
+
+// `$FACTORY_BIN docs …` in the fixture, `input` on stdin; its stdout trimmed
+// (the id `log add` allocated). The harness sets FACTORY_BIN to the binary
+// under test, so the stub writes the board the way a real worker does.
+function docs(args, input = '') {
+  const bin = process.env.FACTORY_BIN
+  if (!bin) fail(64, 'FACTORY_BIN is not set — the harness sets it (tests/harness/mod.rs)')
+  try {
+    return require('node:child_process').execFileSync(bin, ['docs', ...args], { cwd, input, encoding: 'utf8' }).trim()
+  } catch (e) {
+    fail(65, `factory docs ${args.join(' ')}: ${e.stderr || e.message}`)
+  }
+}
+
+// The stream's record of a `docs` call: one Bash tool call, its output.
+function docsCall(args, out) {
+  const quoted = args.map((a) => (/^[\w./=,:-]+$/.test(a) ? a : `'${a.replace(/'/g, "'\\''")}'`)).join(' ')
+  tool('Bash', { command: `factory docs ${quoted}`, description: 'docs' }, { text: out || 'ok' })
+}
+
+function setStatus(feature, nn, status) {
+  docs(['set', feature, `slices.${Number(nn)}.status=${status}`])
+}
+
+function progress(file, spawn, rel, ad) {
   const text = fs.readFileSync(file, 'utf8')
-  const end = text.startsWith('---\n') ? text.indexOf('\n---', 4) : -1
-  if (end === -1) fail(65, `${file} has no frontmatter`)
-  writeAtomic(file, text.slice(0, end).replace(/^status:.*$/m, `status: ${status}`) + text.slice(end))
-}
-
-function writeFragment(file, nn, spawn, rel, force) {
-  const today = new Date().toISOString().slice(0, 10)
-  const existing = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : ''
-  const count = (existing.match(/^### AD-/gm) ?? []).length
-  const ad = force ? Number(String(force).replace(/^AD-/, '')) : Number(`${nn}01`) + count
-  const entry = [
-    `### AD-${ad} — Which code file does the stub worker touch? · slice-${nn} · ${today}`,
-    '',
-    `**Chose:** append one line to ${rel} (spawn ${spawn})`,
-    '**Over:** a new file per spawn, which the driver could not name in its pathspec',
-    '**Because:** FR-10 leaves the touched set to the scenario step; the fixture has one code file on purpose',
-    '**Undo:** drop the appended line',
-    '**Review:** no',
-    '',
-  ].join('\n')
-  // The fragment may already hold another section (the driver's `## Traps`
-  // after a dead worker): the AD still lands under `## Decisions`.
-  const head = existing.includes('## Decisions') ? '' : '## Decisions\n\n'
-  writeAtomic(file, existing ? `${existing.trimEnd()}\n\n${head}${entry}` : `${head}${entry}`)
-  return ad
-}
-
-function writeBlock(file, nn, block, question) {
-  const existing = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : ''
-  const entry = [
-    `### ${block} — ${question} · slice-${nn} · open`,
-    '',
-    `**Happened:** the stub worker on slice ${nn} reached a fork the slice does not settle.`,
-    '**Options:** 1. the Recommended option; 2. the other one.',
-    '**Recommended:** 1 — it is the one the fixture expects.',
-    '',
-  ].join('\n')
-  const head = existing.includes('## Blockers') ? '' : '## Blockers\n\n'
-  writeAtomic(file, existing ? `${existing.trimEnd()}\n\n${head}${entry}` : `${head}${entry}`)
-}
-
-// The lowest BLOCK number no log file of `dir` (agent-log.md, log-*.md) uses.
-function lowestFreeBlock(dir) {
-  const used = new Set()
-  for (const f of fs.readdirSync(dir).filter((f) => f === 'agent-log.md' || /^log-.*\.md$/.test(f))) {
-    for (const x of fs.readFileSync(path.join(dir, f), 'utf8').matchAll(/^### BLOCK-(\d+)/gm)) used.add(Number(x[1]))
-  }
-  let k = 1
-  while (used.has(k)) k++
-  return k
-}
-
-// Append `entry` at the end of the `heading` section of a log file (before
-// the next `## `), creating the file or the heading when missing.
-function appendSection(file, heading, entry) {
-  const existing = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : ''
-  const lines = existing.split('\n')
-  const h = lines.findIndex((l) => l.trimEnd() === heading)
-  if (h === -1) {
-    writeAtomic(file, existing ? `${existing.trimEnd()}\n\n${heading}\n\n${entry}` : `${heading}\n\n${entry}`)
-    return
-  }
-  // A section ends at the next `## ` or at the `---` above the template's
-  // fenced examples, which close a log `docs new` created (AD-503).
-  let next = lines.findIndex((l, i) => i > h && (l.startsWith('## ') || l.trim() === '---'))
-  if (next === -1) next = lines.length
-  let at = next
-  while (at > h + 1 && lines[at - 1].trim() === '') at--
-  if (at > h + 1 && lines[at - 1].trim() === '_(none)_') {
-    at--
-    while (at > h + 1 && lines[at - 1].trim() === '') at--
-  }
-  const insert = ['', ...entry.trimEnd().split('\n')]
-  if (next < lines.length) insert.push('')
-  lines.splice(at, next - at, ...insert)
-  writeAtomic(file, `${lines.join('\n').trimEnd()}\n`)
-}
-
-function progress(file, spawn, rel, ad, nn) {
-  const text = fs.readFileSync(file, 'utf8')
-  const line = `**Progress**: built by the stub claude (spawn ${spawn}) — appended to ${rel}; AD-${ad} in log-slice-${nn}.md.`
+  const line = `**Progress**: built by the stub claude (spawn ${spawn}) — appended to ${rel}; ${ad} in log.jsonl.`
   const re = /^\*\*Progress\*\*:.*$/m
   const out = re.test(text)
     ? text.replace(re, (cur) => (/_\(written as it lands/.test(cur) ? line : `${cur} · stub spawn ${spawn}`))

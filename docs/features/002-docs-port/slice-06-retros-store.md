@@ -1,15 +1,15 @@
----
-slice: 06
-status: pending
-depends_on: [1]
----
-
 # Slice 06 — Retros store (FR-19 part)
 
 **Source**: [`prd.md`](prd.md) → §9 FR-19 (the `retros` table, `SCHEMA_VERSION` 3, `factory docs retro NNN [--set score=N]`, "`factory report` is unchanged"), §11 OPEN-11 (kept thin). **Depends on**: 01 (the `docs retro` arm goes into slice 01's flat `DocsCli` match and resolves `NNN` through slice 01's board scan).
 **Created**: 2026-10-13 · **Status**: pending
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+- **Built.** `src/db.rs`: `SCHEMA_VERSION` 3, the `retros` table appended to `SCHEMA`, `RETRO_COLUMNS`, `RetroRow`, `upsert_retro` (`ON CONFLICT … DO UPDATE`, `score = COALESCE(excluded.score, retros.score)`, `written_at` set inside), `retro`, `set_retro_score`. The guarded-column list moved out of `migrate` into `const COLUMNS`, unchanged, so the v2-store test can build every column (AD-602). `src/docs/retro.rs` (new): `show`, `set_score`, `lines`. `src/cli/docs.rs`: the `Retro` verb, run from `native` because it alone exits 1 (AD-601). `src/db.rs:1058` and `tests/run.rs:277` now expect version `SCHEMA_VERSION` and `retros`.
+- **Tests.** `src/db.rs`: a v2 store gains `retros`, keeps its `runs` row, and has three version rows after a second open; the PRD-003 migrate body runs on a v3 store; upsert idempotence; a score set first survives the numbers, then `Some(3)` overrides it; `2.23` and `16.0` read back. `src/docs/retro.rs`: `--set` parsing, line order. `tests/docs_retro.rs`: the task 3 acceptance on `Fixture::v3`. `tests/metrics.rs`: `a_version_2_store_gains_retros_and_reports_the_same`, plain and `--json`, against a `cp -a` copy taken while the store was at version 2 (AD-603). `tests/metrics.rs:284`, `:418`, `:503`, `:656` untouched and green.
+- **Inner loop** (`cargo test`): 3 runs, 1 red, about 3 min. The red run caught two test-setup faults: the base `SCHEMA` already declares some guarded columns (`commit_sha`), so the hand-built v2 store must check before each `ALTER`; and `retros.run_id` is enforced as a foreign key, so the retro unit tests need their `runs` row first.
+- **Deviation.** `docs retro` prints the `REAL` minutes in their shortest form (`16`, `2.23`), not `factory report`'s two decimals (AD-604).
+- **Prove (task 6)** is left for the checkpoint: the store half of the FR-19 QA row.
+- **Prove FR-19 store half (CP-1, 2026-10-13)**: a `.backup` copy of the real store (version 2) plus `runs/003-20261013-4139`: `factory report` installed vs branch, plain and `--json`, both `diff`s empty; version `3` and the `.schema retros` text after the branch binary opened it; the installed binary still reports the same on the v3 copy; the original stays at 2. In the v3 repo `docs retro 001 --set score=4` exit 0, `--set score=high` exit 2, `SELECT feature, score FROM retros` → `1|4` — `evidence/cp-1-fr19.txt`.
 
 **Slice**: After this slice the metrics store is at schema version 3 and holds a `retros` table, one row per `(repo, feature)`, with `score`, `shipped_at`, `run_id` and the twelve retro keys. A store the PRD-003 binary made gains the table on first open, and the PRD-003 binary still opens a v3 store. `factory docs retro NNN` prints a feature's row, and `factory docs retro NNN --set score=N` is the one way to set `score`. Two writers call this slice's upsert later: closeout at ship (slice 10, `retro_row`) and `migrate` for every pre-v3 `retro.md` (slice 07). Neither is wired here. `factory report` and `factory retro` do not read the table.
 

@@ -1,0 +1,224 @@
+# FR-17 — coexistence: the shim, the hook body, the skills (CP-3, 2026-10-13)
+# binary: /home/emiliano/.cargo/bin/factory
+
+## the shim: a v2 fixture whose .docs/bin/docs.mjs is the 3-line stub
+$ cat .docs/bin/docs.mjs
+// Stub docs.mjs for the routing test: echoes its arguments, exits 3.
+console.log(process.argv.slice(2).join(' '))
+process.exit(3)
+[exit 0]
+
+$ factory docs status 001 --json
+status 001 --json
+[exit 3]
+
+$ factory docs migrate --dry
+guess 2026-09-22-echo open "Echo" line 33: Parked below Graduated, added from the heading
+relink docs/index.md:65 [`ideas.md`](ideas.md) → [`ideas.md`](ideas/README.md)
+rewrite docs/index.md (frontmatter, 6 table rows and 2 counters dropped; FR-numbers paragraph after **Build order:**)
+rewrite docs/features/001-fixture/prd.md (FR-13 frontmatter, prose header dropped)
+fix docs/features/001-fixture/prd.md type "Feature — the migration fixture" → feature
+drop docs/features/001-fixture/prd.md key: owns_fr
+drop docs/features/001-fixture/prd.md key: retired_fr
+create docs/features/001-fixture/state.toml (status in-progress, 3 slices)
+rewrite docs/features/001-fixture/slice-01-a.md (frontmatter → state.toml)
+rewrite docs/features/001-fixture/slice-02-b.md (frontmatter → state.toml)
+rewrite docs/features/001-fixture/slice-03-c.md (frontmatter → state.toml)
+create docs/features/001-fixture/log.jsonl (AD 4, BLOCK 1, CP 1, answer 1, review 2, note 2)
+delete docs/features/001-fixture/agent-log.md
+create docs/.gitignore (docs.lock)
+row retros (001 fixture) score=4 gate_runs=6 gate_red=1 gate_minutes=3.25 ci_cycles=0 slices=3 checkpoints=1 build_minutes=41.5 polish_minutes=7 out_tokens=120345 cache_read_tokens=4567890 start_context=23456 peak_context=98765 shipped_at=2026-10-13
+keep docs/features/001-fixture/retro.md
+drop docs/ideas.md:6 - One line per idea. Enough to remember *what* and *why*, no… (before any ## heading)
+drop docs/ideas.md:7 - No design, no scope, no tasks here — that's what a `featur… (before any ## heading)
+drop docs/ideas.md:8 - When an idea earns real work: `/prd` → new `features/` fol… (before any ## heading)
+drop docs/ideas.md:9 - Not a backlog with priorities. Just a catch net so ideas s… (before any ## heading)
+drop docs/ideas.md:10 - A line cut from a PRD keeps its recon — say which PRD drop… (before any ## heading)
+drop docs/ideas.md:14 - _(nothing yet)_ (placeholder)
+idea 2026-09-01-alpha open "Alpha" line 15: under ## Open, added from Added
+idea 2026-10-13-bravo open high "Bravo" line 20: under ## Open — high priority, added from git blame
+idea 2026-09-15-charlie owed "Charlie" line 24: under ## Owed by someone else — pending confirmations, added from Parked
+idea not migrated "Delta" line 28: under Graduated
+drop docs/ideas.md:29 - _(move lines here with their `{NNN}` when they get a PRD, … (placeholder)
+create docs/ideas/README.md (the inbox rules)
+delete docs/ideas.md
+rewrite docs/project.toml ([docs] appended, the other tables kept byte for byte)
+dry run: nothing written
+[exit 0]
+
+## native in v3: the same call prints the board
+$ factory docs status 002 --json
+{
+  "number": 2,
+  "slug": "fixture",
+  "dir": "docs/features/002-fixture",
+  "kind": "live",
+  "status": "draft",
+  "reviewed": null,
+  "gate": {
+    "declared": null,
+    "status": "none",
+    "detail": "no gate declared",
+    "candidates": null
+  },
+  "qaPlan": true,
+  "harnessLine": "_(`.claude/skills/verify-<app>/` exists | none — the first slice builds it | gate-only: nothing user-visible changes)_",
+  "harness": {
+    "present": false,
+    "detail": "none — run /verify-app"
+  },
+  "rubric": false,
+  "sliced": false,
+  "allDone": false,
+  "slices": [],
+  "checkpointEvery": 2,
+  "checkpoints": [],
+  "unverified": [],
+  "checkpointDue": false,
+  "next": null,
+  "ready": [],
+  "building": [],
+  "lanes": 1,
+  "freeLanes": [
+    1
+  ],
+  "spawnable": 0,
+  "blocked": [],
+  "openBlocks": [],
+  "openOpens": [
+    1
+  ],
+  "log": {
+    "decisions": 0,
+    "flagged": [],
+    "decide": [],
+    "blocks": 0
+  },
+  "retro": null,
+  "branch": "main"
+}
+[exit 0]
+
+## the hook body: installed, then three commits
+$ factory docs hook
+installed .git/hooks/pre-commit
+[exit 0]
+
+$ head -c 60 .git/hooks/pre-commit
+#!/bin/sh
+# feature-docs hook
+# docs/archive/** is frozen, a[exit 0]
+
+
+
+$ cat .git/hooks/pre-commit
+#!/bin/sh
+# feature-docs hook
+# docs/archive/** is frozen, and docs/ changes must pass `factory docs check`.
+root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+if git diff --cached --name-only --diff-filter=M | grep -q "^docs/archive/"; then
+  echo "docs: docs/archive/** is frozen — move folders, never edit files inside." >&2
+  exit 1
+fi
+if git diff --cached --name-only | grep -q "^docs/" && [ -f "$root/docs/index.md" ]; then
+  command -v factory >/dev/null 2>&1 || exit 0
+  (cd "$root" && factory docs check) || exit 1
+fi
+[exit 0]
+
+--- case 1: modify a file under docs/archive/ and commit
+$ git commit -m edit the archive
+docs: docs/archive/** is frozen — move folders, never edit files inside.
+[exit 1]
+
+--- HEAD unchanged: yes
+$ git status --short
+[exit 0]
+
+
+--- case 2: a broken link in the feature's prd.md, factory on PATH
+$ command -v factory
+/home/emiliano/.cargo/bin/factory
+[exit 0]
+
+$ git commit -m broken link
+  ✗ E-LINK-BROKEN  docs/features/002-fixture/prd.md → missing.md does not resolve
+  ! W-NO-GATE  no verify gate declared in docs/project.toml — run /guardrails, or `factory docs gate set "<cmd>"` (`factory docs gate --candidates` lists likely ones)
+
+1 error, 1 warning
+[exit 1]
+
+--- HEAD unchanged: yes
+
+--- case 3: the same staged change, PATH holding only the git and sh dir
+$ command -v factory
+[exit 1]
+
+$ git commit -m broken link, no factory
+[main 489d10f] broken link, no factory
+ 1 file changed, 1 insertion(+)
+[exit 0]
+
+--- HEAD moved: yes
+
+## the skills: every .md under ~/.claude/skills naming docs.mjs
+$ command grep -rn docs\.mjs /home/emiliano/.claude/skills/ --include=*.md
+/home/emiliano/.claude/skills/feature-docs/SKILL.md:180:`factory docs` does the bookkeeping a machine can decide; in a v2 repo it runs `bin/docs.mjs`. Judgment stays with you.
+[exit 0]
+
+--- the old command spelling, which must be gone:
+$ command grep -rn node ~/.claude/skills/feature-docs/bin/docs.mjs /home/emiliano/.claude/skills/ --include=*.md
+[exit 1]
+
+$ git -C /home/emiliano/.claude/skills diff --stat
+ deliver/SKILL.md                    |  6 +++---
+ deliver/pr-body.md                  |  2 +-
+ feature-docs/SKILL.md               |  8 ++++----
+ feature-docs/autonomy.md            |  4 ++--
+ feature-docs/migration.md           |  4 ++--
+ feature-docs/upgrades/v2.md         |  4 ++--
+ guardrails/SKILL.md                 |  4 ++--
+ polish/SKILL.md                     |  8 ++++----
+ prd-to-tasks/SKILL.md               | 12 ++++++------
+ prd/SKILL.md                        | 16 ++++++++--------
+ prd/template.md                     |  4 ++--
+ test-cleanup/references/adapters.md |  2 +-
+ verify-app/SKILL.md                 |  2 +-
+ 13 files changed, 38 insertions(+), 38 deletions(-)
+[exit 0]
+
+$ git -C /home/emiliano/.claude/skills status --short
+ M deliver/SKILL.md
+ M deliver/pr-body.md
+ M feature-docs/SKILL.md
+ M feature-docs/autonomy.md
+ M feature-docs/migration.md
+ M feature-docs/upgrades/v2.md
+ M guardrails/SKILL.md
+ M polish/SKILL.md
+ M prd-to-tasks/SKILL.md
+ M prd/SKILL.md
+ M prd/template.md
+ M test-cleanup/references/adapters.md
+ M verify-app/SKILL.md
+[exit 0]
+
+## factory docs check in this repo (still v2), through the shim
+$ factory docs doctor
+Framework      v2 (run factory docs migrate --dry)
+drift          0 errors, 4 warnings
+  ! W-PROSE-STATUS  docs/features/003-observatory/prd.md prose Status line does not mention "shipped"
+  ! W-STATUS-BEHIND  PRD-002 is ready but a slice is already building/done — should it be in-progress?
+  ! W-NOT-REVIEWED  PRD-002: every slice is done but it has not been through /polish — review, then set `reviewed:` in prd.md frontmatter
+  ! W-RETRO-FM  docs/features/003-observatory/retro.md frontmatter is missing numbers for: score, gate_minutes
+[exit 0]
+
+$ factory docs check
+  ! W-PROSE-STATUS  docs/features/003-observatory/prd.md prose Status line does not mention "shipped"
+  ! W-STATUS-BEHIND  PRD-002 is ready but a slice is already building/done — should it be in-progress?
+  ! W-NOT-REVIEWED  PRD-002: every slice is done but it has not been through /polish — review, then set `reviewed:` in prd.md frontmatter
+  ! W-RETRO-FM  docs/features/003-observatory/retro.md frontmatter is missing numbers for: score, gate_minutes
+
+0 errors, 4 warnings
+[exit 0]
+

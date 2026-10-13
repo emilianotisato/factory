@@ -1,10 +1,3 @@
----
-slice: 01
-status: done
-lane: 1
-depends_on: []
----
-
 # Slice 01 — Harness: crate, fixture repo, stub claude and gh (FR-10)
 
 **Source**: [`prd.md`](prd.md) → §12 FR-10 (all three bullets), §16 QA plan "Harness: none — FR-10 builds it as the first slice". **Depends on**: — (first slice; everything else depends on this one)

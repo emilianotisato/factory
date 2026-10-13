@@ -1,10 +1,3 @@
----
-slice: 06
-status: done
-depends_on: [1, 2, 3, 4, 5]
-lane: 1
----
-
 # Slice 06 — Retro numbers (FR-25)
 
 **Source**: [`prd.md`](prd.md) → §7 FR-25, four decisions ("`factory retro <run>` writes a `## Numbers` section", "Changed lines are stored", "Comparison stays within the repo", "`measure.py` and `weigh.py` are retired"). **Depends on**: slices 01-05 — the section prints every figure they store: the own/subagent split (01, 02), the pack composition (03), the knobs and hypothesis (04), the quality block (05). Building it earlier would print `—` for most of its columns and need a second pass.

@@ -1,11 +1,10 @@
-//! Slice 05 of PRD-001: commits by pathspec and log merge (PRD §7 FR-5, §4
-//! FR-2). A `done` slice is committed from the paths its worker's stream
-//! named plus its slice file and fragment — never `git add -A`, so two lanes
-//! committing out of order each take only their own work; what the worker
-//! wrote without naming it is listed in the fragment and left in the tree.
-//! When the lanes drain, the fragments are merged into `agent-log.md` and
-//! committed; a refused merge is a `BLOCK-n` the run parks on until the owner
-//! fixes the fragment and answers.
+//! Slice 05 of PRD-001, on the v3 docs (PRD-002 slice 09): commits by
+//! pathspec (PRD §7 FR-5). A `done` slice is committed from the paths its
+//! worker's stream named plus its slice file, the feature's `state.toml` and
+//! its `log.jsonl` — never `git add -A`, so two lanes committing out of order
+//! each take only their own work; what the worker wrote without naming it is
+//! listed in a `note` entry of `log.jsonl` and left in the tree. There is no
+//! fragment and no merge: no `log-*.md` is ever written.
 #[path = "harness/mod.rs"]
 mod harness;
 
@@ -21,7 +20,6 @@ use serde_json::{Value, json};
 
 const BIN: &str = env!("CARGO_BIN_EXE_factory");
 const FEATURE_DIR: &str = "docs/features/001-fixture";
-const AGENT_LOG: &str = "docs/features/001-fixture/agent-log.md";
 
 fn factory(fx: &Fixture, args: &[&str]) -> Output {
     fx.command(BIN).args(args).output().unwrap()
@@ -107,14 +105,6 @@ fn wait_phase(fx: &Fixture, dir: &Path, phase: &str, secs: u64) {
     });
 }
 
-fn seq_first(dir: &Path, kind: &str) -> u64 {
-    events(dir)
-        .iter()
-        .find(|e| e["kind"] == kind)
-        .map(|e| e["seq"].as_u64().unwrap())
-        .unwrap_or_else(|| panic!("no {kind}"))
-}
-
 fn start(fx: &Fixture) -> PathBuf {
     let out = factory(fx, &["run", "001"]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
@@ -156,8 +146,30 @@ fn slice_rel(fx: &Fixture, n: u8) -> String {
         .into_owned()
 }
 
-fn fragment(n: u8) -> String {
-    format!("{FEATURE_DIR}/log-slice-{n:02}.md")
+/// The feature's board and log, which every slice commit stages.
+fn board_files() -> [String; 2] {
+    [
+        format!("{FEATURE_DIR}/state.toml"),
+        format!("{FEATURE_DIR}/log.jsonl"),
+    ]
+}
+
+/// The `Untracked leftovers` notes in `log.jsonl`.
+fn leftover_notes(fx: &Fixture) -> Vec<Value> {
+    fx.log_of("note")
+        .into_iter()
+        .filter(|e| e["title"] == "Untracked leftovers")
+        .collect()
+}
+
+/// No `log-*.md` (fragment or merged log) in the feature folder.
+fn assert_no_md_log(fx: &Fixture) {
+    let md: Vec<String> = fs::read_dir(fx.path().join(FEATURE_DIR))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|f| (f.starts_with("log-") && f.ends_with(".md")) || f == "agent-log.md")
+        .collect();
+    assert!(md.is_empty(), "markdown logs in the feature folder: {md:?}");
 }
 
 fn sorted(mut v: Vec<String>) -> Vec<String> {
@@ -166,7 +178,8 @@ fn sorted(mut v: Vec<String>) -> Vec<String> {
 }
 
 /// One slice's commit as FR-5 asks for it: `feat(NNN): slice-NN <title>`, no body, the
-/// repo's own author, exactly the named paths plus slice file and fragment;
+/// repo's own author, exactly the named paths plus slice file, `state.toml`
+/// and `log.jsonl`;
 /// the `slice_committed` event and the worker row name the same sha.
 fn assert_slice_commit(fx: &Fixture, dir: &Path, n: u8, title: &str, code: &[&str]) -> String {
     let sha = sha_of(fx, &format!("feat(001): slice-{n:02} {title}"));
@@ -181,7 +194,7 @@ fn assert_slice_commit(fx: &Fixture, dir: &Path, n: u8, title: &str, code: &[&st
     );
     let mut want: Vec<String> = code.iter().map(|s| s.to_string()).collect();
     want.push(slice_rel(fx, n));
-    want.push(fragment(n));
+    want.extend(board_files());
     assert_eq!(files_of(fx, &sha), sorted(want.clone()), "{title}: files");
     let ev = events(dir)
         .into_iter()
@@ -204,14 +217,14 @@ fn assert_slice_commit(fx: &Fixture, dir: &Path, n: u8, title: &str, code: &[&st
     sha
 }
 
-// ── tasks 1, 2 and 4: one lane, three commits, leftovers, merge ─────────────
+// ── tasks 1 and 2: one lane, three commits, leftovers, no markdown log ──────
 
 #[test]
-fn each_done_slice_is_committed_by_pathspec_and_the_logs_merge_at_the_end() {
+fn each_done_slice_is_committed_by_pathspec_and_no_markdown_log_is_written() {
     let fx = Fixture::with_index("commits-chain", &[("checkpoint_every", "10")]);
     fx.chain();
     // Slice 01 also leaves a file no tool call names (a generator, a script):
-    // it is listed in the fragment and never committed (FR-5). The file its
+    // it is listed in log.jsonl and never committed (FR-5). The file its
     // `Bash` heredoc typed out is named like a `Write`, and committed.
     fx.write_plan(&[
         json!({"outcome": "done", "touch": ["src/lib.txt"], "stray": ["notes.txt"], "heredoc": ["src/gen/new.rs"]}),
@@ -239,7 +252,7 @@ fn each_done_slice_is_committed_by_pathspec_and_the_logs_merge_at_the_end() {
     assert_slice_commit(&fx, &dir, 2, "B", &["src/lib.txt"]);
     assert_slice_commit(&fx, &dir, 3, "C", &["src/lib.txt"]);
 
-    // The stray file: on disk, in no commit, named in the (now merged) log.
+    // The stray file: on disk, in no commit, named in a log.jsonl note.
     assert!(fx.path().join("notes.txt").exists());
     assert!(
         !fx.git(&["log", "--all", "--format=", "--name-only"])
@@ -247,9 +260,13 @@ fn each_done_slice_is_committed_by_pathspec_and_the_logs_merge_at_the_end() {
             .any(|l| l == "notes.txt"),
         "notes.txt was committed"
     );
-    let log = fx.read(AGENT_LOG);
-    assert!(log.contains("## Untracked leftovers"), "{log}");
-    assert!(log.contains("- notes.txt"), "{log}");
+    let notes = leftover_notes(&fx);
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert_eq!(notes[0]["slice"], 1);
+    assert!(
+        notes[0]["body"].as_str().unwrap().contains("- notes.txt"),
+        "{notes:?}"
+    );
     let leftovers: Vec<Value> = events(&dir)
         .into_iter()
         .filter(|e| e["kind"] == "untracked_leftovers")
@@ -259,48 +276,45 @@ fn each_done_slice_is_committed_by_pathspec_and_the_logs_merge_at_the_end() {
     assert_eq!(leftovers[0]["files"], json!(["notes.txt"]));
     let blob = leftovers[0]["blobs"]["notes.txt"].as_str().unwrap();
     assert_eq!(blob, fx.git(&["hash-object", "notes.txt"]).trim());
-    for n in 1..=3 {
-        assert!(
-            !fx.path().join(fragment(n)).exists(),
-            "fragment {n} survived the merge"
-        );
-    }
-    for ad in ["AD-101", "AD-201", "AD-301"] {
-        assert!(
-            log.contains(&format!("### {ad} —")),
-            "{ad} missing from\n{log}"
-        );
-    }
-
-    // The merge lands in the checkpoint commit (slice 06): agent-log.md,
-    // what `render --write` changed (here prd.md's slice table; the index
-    // was already current) and the fragments' removal. HEAD itself is the
-    // ship commit (slice 09), two commits later.
-    let merge = sha_of(&fx, "docs(001): checkpoint 1");
-    let merged_files = files_of(&fx, &merge);
-    for f in [
-        AGENT_LOG.to_string(),
-        format!("{FEATURE_DIR}/prd.md"),
-        fragment(1),
-        fragment(2),
-        fragment(3),
-    ] {
-        assert!(
-            merged_files.contains(&f),
-            "{f} not in the merge commit: {merged_files:?}"
-        );
-    }
-    let ev = events(&dir)
-        .into_iter()
-        .find(|e| e["kind"] == "log_merged")
-        .expect("log_merged");
-    assert!(
-        ev.get("sha").is_none(),
-        "the sha is the checkpoint commit's (`checkpoint_done`): {ev}"
-    );
+    // Each slice's decision is in log.jsonl, ids allocated in commit order.
+    let ads: Vec<(String, u64)> = fx
+        .log_of("decision")
+        .iter()
+        .map(|e| {
+            (
+                e["id"].as_str().unwrap().to_string(),
+                e["slice"].as_u64().unwrap(),
+            )
+        })
+        .collect();
     assert_eq!(
-        ev["fragments"],
-        json!([fragment(1), fragment(2), fragment(3)])
+        ads,
+        [("AD-1".into(), 1), ("AD-2".into(), 2), ("AD-3".into(), 3)],
+        "{ads:?}"
+    );
+    // After the full run: no fragment, no agent-log.md.
+    assert_no_md_log(&fx);
+
+    // The checkpoint commit stages the feature dir: no index render, no
+    // fragment. HEAD itself is the ship commit, two commits later.
+    let cp_files = files_of(&fx, &sha_of(&fx, "docs(001): checkpoint 1"));
+    assert!(
+        cp_files.contains(&format!("{FEATURE_DIR}/log.jsonl")),
+        "{cp_files:?}"
+    );
+    assert!(
+        !cp_files.iter().any(|f| f == "docs/index.md"),
+        "{cp_files:?}"
+    );
+    assert!(
+        !cp_files
+            .iter()
+            .any(|f| f.rsplit('/').next().unwrap().starts_with("log-slice-")),
+        "{cp_files:?}"
+    );
+    assert!(
+        !events(&dir).iter().any(|e| e["kind"] == "log_merged"),
+        "log_merged is never emitted"
     );
 
     // The tree after: only the leftover is unaccounted for, and git agrees.
@@ -324,7 +338,6 @@ fn each_done_slice_is_committed_by_pathspec_and_the_logs_merge_at_the_end() {
             "slice_committed",
             "checkpoint_started",
             "gate_run",
-            "log_merged",
             "checkpoint_spawned",
             "checkpoint_done",
             "polish_spawned",
@@ -384,166 +397,7 @@ fn two_lanes_commit_out_of_order_and_each_commit_takes_only_its_own_files() {
     fx.git(&["fsck", "--strict"]);
     let k = kinds(&dir);
     assert_eq!(count(&k, "slice_committed"), 3);
-    assert_eq!(count(&k, "log_merged"), 1);
-    assert_eq!(k.last().map(String::as_str), Some("run_finished"));
-}
-
-/// The A/B's BLOCK-1 (retro FR-11): two fragments slip the same way. The
-/// block offers format options, not the AD-clash ones, and the cockpit's
-/// line names both fragments, not the first refusal alone.
-#[test]
-fn a_format_slip_blocks_with_format_options_naming_every_fragment() {
-    let fx = Fixture::with_index("commits-prose", &[("checkpoint_every", "10")]);
-    fx.write_plan(&[
-        json!({"outcome": "done", "prose": "Notes from this slice."}),
-        json!({"outcome": "done", "prose": "Notes from this slice."}),
-        json!({"outcome": "done"}),
-        json!({"outcome": "checkpoint"}),
-    ]);
-    let dir = start(&fx);
-    wait_phase(&fx, &dir, "waiting-owner", 40);
-
-    let log = fx.read(AGENT_LOG);
-    assert!(log.contains("### BLOCK-1 — log merge refused: "), "{log}");
-    assert!(
-        log.contains("delete a title line above the first `## ` heading"),
-        "{log}"
-    );
-    assert!(!log.contains("renumber the clashing entry"), "{log}");
-    assert!(log.contains("The driver edits no fragment (FR-5)"), "{log}");
-
-    let out = factory(&fx, &["wait", &run_id(&dir), "--replay"]);
-    let text = stdout(&out);
-    let line = text
-        .lines()
-        .find(|l| l.starts_with("BLOCK-1 log merge refused: "))
-        .unwrap_or_else(|| panic!("{text}"));
-    assert!(line.contains("log-slice-01.md"), "{line}");
-    assert!(line.contains("log-slice-02.md"), "{line}");
-}
-
-// ── task 4: a refused merge parks the run on a BLOCK in agent-log.md ────────
-
-#[test]
-fn a_refused_merge_blocks_in_agent_log_and_the_answer_retries_it() {
-    let fx = Fixture::with_index("commits-clash", &[("checkpoint_every", "10")]);
-    // Slice 02's builder ignores its range and reuses 01's AD number.
-    fx.write_plan(&[
-        json!({"outcome": "done"}),
-        json!({"outcome": "done", "ad": "AD-101"}),
-        json!({"outcome": "done"}),
-        json!({"outcome": "checkpoint"}),
-    ]);
-    let dir = start(&fx);
-    wait_phase(&fx, &dir, "waiting-owner", 40);
-
-    // Three slice commits, then the merge refuses before any gate is paid
-    // for; the fragments are still there.
-    assert_eq!(
-        sorted(subjects(&fx)),
-        sorted(
-            [
-                "chore: fixture repo",
-                "feat(001): slice-01 A",
-                "feat(001): slice-02 B",
-                "feat(001): slice-03 C"
-            ]
-            .map(String::from)
-            .to_vec()
-        )
-    );
-    for n in 1..=3 {
-        assert!(fx.path().join(fragment(n)).exists(), "fragment {n} gone");
-    }
-    let log = fx.read(AGENT_LOG);
-    assert!(log.starts_with("# Agent log — PRD-001\n"), "{log}");
-    let heading = "### BLOCK-1 — log merge refused: AD-101 in log-slice-02.md is already in log-slice-01.md · checkpoint · open";
-    assert!(log.contains(heading), "{log}");
-    assert!(log.contains("**Recommended:** 1"), "{log}");
-    let refused: Vec<Value> = events(&dir)
-        .into_iter()
-        .filter(|e| e["kind"] == "merge_refused")
-        .collect();
-    assert_eq!(refused.len(), 1);
-    assert_eq!(refused[0]["block_id"], "BLOCK-1");
-    assert!(
-        refused[0]["detail"]
-            .as_str()
-            .unwrap()
-            .contains("AD-101 in log-slice-02.md is already in log-slice-01.md"),
-        "{:?}",
-        refused[0]
-    );
-    let k = kinds(&dir);
-    assert_eq!(k.last().map(String::as_str), Some("run_waiting"));
     assert_eq!(count(&k, "log_merged"), 0);
-    assert_eq!(count(&k, "gate_run"), 0);
-    let driver = state(&dir)["pid"].as_u64().unwrap() as u32;
-    assert!(pid_alive(driver), "driver gone");
-    assert!(
-        driver_log(&dir).contains(
-            "parked (waiting-owner): checkpoint blocked — log merge refused: \
-             AD-101 in log-slice-02.md is already in log-slice-01.md: BLOCK-1 in agent-log.md"
-        ),
-        "{}",
-        driver_log(&dir)
-    );
-    let open = &fx.docs_json("status")["openBlocks"];
-    assert_eq!(open.as_array().map(Vec::len), Some(1), "{open}");
-    assert_eq!(open[0]["n"], 1);
-    assert_eq!(open[0]["phase"], "checkpoint");
-
-    // The owner renumbers the clashing entry and answers; the checkpoint
-    // resumes, the gate runs once, the merge runs again and the checkpoint
-    // commit lands.
-    let frag = fx.path().join(fragment(2));
-    let fixed = fs::read_to_string(&frag)
-        .unwrap()
-        .replace("AD-101", "AD-201");
-    fs::write(&frag, fixed).unwrap();
-    let out = factory(&fx, &["answer", "BLOCK-1", "renumbered to AD-201"]);
-    let text = stdout(&out);
-    assert_eq!(out.status.code(), Some(0), "{text}");
-    assert!(
-        text.starts_with("BLOCK-1 resolved (docs/features/001-fixture/agent-log.md line "),
-        "{text}"
-    );
-    wait_phase(&fx, &dir, "finished", 40);
-
-    assert_eq!(
-        fx.git(&["log", "-1", "--format=%s"]).trim(),
-        "docs(001): ship PRD-001"
-    );
-    let merged_files = files_of(&fx, &sha_of(&fx, "docs(001): checkpoint 1"));
-    assert!(merged_files.contains(&fragment(2)), "{merged_files:?}");
-    assert!(
-        merged_files.contains(&AGENT_LOG.to_string()),
-        "{merged_files:?}"
-    );
-    for n in 1..=3 {
-        assert!(
-            !fx.path().join(fragment(n)).exists(),
-            "fragment {n} survived the merge"
-        );
-    }
-    let log = fx.read(AGENT_LOG);
-    for ad in ["AD-101", "AD-201", "AD-301"] {
-        assert!(
-            log.contains(&format!("### {ad} —")),
-            "{ad} missing from\n{log}"
-        );
-    }
-    assert!(log.contains("· checkpoint · resolved"), "{log}");
-    assert!(log.contains("**Resolution ("), "{log}");
-    assert_eq!(fx.git(&["status", "--porcelain"]), "");
-    fx.git(&["fsck", "--strict"]);
-
-    let k = kinds(&dir);
-    assert!(seq_first(&dir, "block_answered") < seq_first(&dir, "log_merged"));
-    assert!(seq_first(&dir, "log_merged") < seq_first(&dir, "checkpoint_done"));
-    assert_eq!(count(&k, "run_waiting"), 1);
-    assert_eq!(count(&k, "merge_refused"), 1);
-    assert_eq!(count(&k, "gate_run") + count(&k, "gate_cached"), 1);
     assert_eq!(k.last().map(String::as_str), Some("run_finished"));
 }
 
@@ -619,8 +473,10 @@ fn a_resumed_driver_judges_an_orphans_leftovers_against_its_spawn_baseline() {
     ]);
     let dir = start(&fx);
     let driver = state(&dir)["pid"].as_u64().unwrap() as u32;
+    // `slice_spawned` is emitted once the worker is in state.json: a kill
+    // before that leaves an orphan the resumed driver cannot settle.
     wait_until(&fx, &dir, "slice 02's worker to spawn", 20, || {
-        fx.calls().len() == 2 && fx.slice_status(2) == "building"
+        count(&kinds(&dir), "slice_spawned") == 2 && fx.slice_status(2) == "building"
     });
     assert_eq!(unsafe { libc::kill(driver as i32, libc::SIGKILL) }, 0);
     wait_until(&fx, &dir, "the driver to die", 5, || !pid_alive(driver));
@@ -640,8 +496,8 @@ fn a_resumed_driver_judges_an_orphans_leftovers_against_its_spawn_baseline() {
         .collect();
     assert_eq!(leftovers.len(), 1, "{leftovers:?}");
     assert_eq!(leftovers[0]["slice"], 1);
-    let frag = fx.read(&fragment(2));
-    assert!(!frag.contains("Untracked leftovers"), "{frag}");
+    let notes = leftover_notes(&fx);
+    assert!(notes.iter().all(|e| e["slice"] == 1), "{notes:?}");
 
     let out = factory(&fx, &["stop", &run_id(&dir)]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
@@ -738,7 +594,16 @@ fn an_unnamed_tracked_change_beside_a_live_sibling_is_listed_not_committed() {
         "{}",
         fx.git(&["status", "--porcelain"])
     );
-    assert!(fx.read(AGENT_LOG).contains("- src/extra.txt"));
+    let notes = leftover_notes(&fx);
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert_eq!(notes[0]["slice"], 1);
+    assert!(
+        notes[0]["body"]
+            .as_str()
+            .unwrap()
+            .contains("- src/extra.txt"),
+        "{notes:?}"
+    );
 }
 
 fn leftovers_of(dir: &Path) -> Vec<Value> {

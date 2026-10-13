@@ -1,0 +1,70 @@
+# CP-1 FR-13 warning half on the v2 harness + FR-17 routing half
+
+--- v2 repo, docs/project.toml with [docs], [run] and [workers.polish] ---
+$ cat docs/project.toml
+[docs]
+lanes = 2
+
+[run]
+budget = 5000000
+
+[workers.polish]
+model = "sonnet"
+[exit 0]
+
+$ /mnt/devcache/emiliano/cargo-target/debug/factory run 001
+  ✗ no verify gate declared — /guardrails builds one (an interview, never unattended)
+  ✗ working tree not clean (1 path(s)) — commit or stash first
+  ✗ no origin remote — the run ends in a pull request
+
+refused: 3 blocker(s)
+[exit 1]
+
+--- control: an unknown [deploy] table does warn ---
+$ /mnt/devcache/emiliano/cargo-target/debug/factory run 001
+factory: $W/v2/docs/project.toml: unknown key `deploy` ignored
+  ✗ no verify gate declared — /guardrails builds one (an interview, never unattended)
+  ✗ working tree not clean (1 path(s)) — commit or stash first
+  ✗ no origin remote — the run ends in a pull request
+
+refused: 3 blocker(s)
+[exit 1]
+
+--- FR-17: v2 repo, .docs/bin/docs.mjs replaced by the stub ---
+$ cat .docs/bin/docs.mjs
+// Stub docs.mjs for the routing test: echoes its arguments, exits 3.
+console.log(process.argv.slice(2).join(' '))
+process.exit(3)
+[exit 0]
+
+$ /mnt/devcache/emiliano/cargo-target/debug/factory docs status
+status
+[exit 3]
+
+$ /mnt/devcache/emiliano/cargo-target/debug/factory docs status 001 --json
+status 001 --json
+[exit 3]
+
+$ /mnt/devcache/emiliano/cargo-target/debug/factory docs render --write
+render --write
+[exit 3]
+
+--- FR-17: v3 repo is native (no node, removed verbs refused) ---
+$ /mnt/devcache/emiliano/cargo-target/debug/factory docs status 001
+PRD-001 fixture · ready
+qa plan   yes · Harness: _(`.claude/skills/verify-<app>/` exists | none — the first slice builds it | gate-only: nothing user-visible changes)_
+slices    01 pending · 02 pending · 03 building
+next      slice-03 (building)
+lanes     2 · free 1, 2 · spawnable now 2
+opens     OPEN-1
+branch    main
+[exit 0]
+
+$ /mnt/devcache/emiliano/cargo-target/debug/factory docs render --write
+"render" removed in v3: the board is computed, run `factory docs status`
+[exit 2]
+
+$ /mnt/devcache/emiliano/cargo-target/debug/factory docs log merge 001
+"log merge" removed in v3: the log is appended by `factory docs log add`
+[exit 2]
+

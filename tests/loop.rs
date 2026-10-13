@@ -21,11 +21,45 @@ use harness::{FEATURE_DIR, Fixture};
 use serde_json::{Value, json};
 
 const BIN: &str = env!("CARGO_BIN_EXE_factory");
-const RECORDING: &str = "docs/features/001-driver/recordings/claude-p-oneshot-2.1.280.jsonl";
+const RECORDING: &str = "tests/fixture/recordings/claude-p-oneshot-2.1.280.jsonl";
 const PROMPT: &str =
     "Build slice {NN} of PRD-001 as the appended system prompt says. Return the STATUS block.";
-const FRAGMENT: &str = "docs/features/001-fixture/log-slice-01.md";
-const AGENT_LOG: &str = "docs/features/001-fixture/agent-log.md";
+const LOG: &str = "docs/features/001-fixture/log.jsonl";
+
+/// The bodies of the `note` entries titled `title`, each with its `slice`.
+fn notes(fx: &Fixture, title: &str) -> Vec<(Option<u64>, String)> {
+    fx.log_of("note")
+        .iter()
+        .filter(|e| e["title"] == title)
+        .map(|e| {
+            (
+                e["slice"].as_u64(),
+                e["body"].as_str().unwrap_or("").to_string(),
+            )
+        })
+        .collect()
+}
+
+/// The `(id, slice)` of each `decision` entry, in log order.
+fn decisions(fx: &Fixture) -> Vec<(String, u64)> {
+    fx.log_of("decision")
+        .iter()
+        .map(|e| {
+            (
+                e["id"].as_str().unwrap().to_string(),
+                e["slice"].as_u64().unwrap(),
+            )
+        })
+        .collect()
+}
+
+/// The `answer` entries whose `ref` is `id`.
+fn answers_to(fx: &Fixture, id: &str) -> Vec<Value> {
+    fx.log_of("answer")
+        .into_iter()
+        .filter(|e| e["ref"] == id)
+        .collect()
+}
 
 fn factory(fx: &Fixture, args: &[&str]) -> Output {
     fx.command(BIN).args(args).output().unwrap()
@@ -213,7 +247,7 @@ fn pack_is_the_slice_the_cited_sections_the_contract_and_the_inner_loop() {
     let cited = scaffold.replacen("§_(n)_", "§1", 1);
     assert_ne!(cited, scaffold, "the scaffold's Source line cites §_(n)_");
     fs::write(&slice_file, &cited).unwrap();
-    let docs = Docs::locate(fx.path()).unwrap();
+    let docs = Docs::open(fx.path()).unwrap();
     let board = docs.status("001").unwrap();
     let packs = fx.path().join("scenario/packs");
 
@@ -254,11 +288,17 @@ fn pack_is_the_slice_the_cited_sections_the_contract_and_the_inner_loop() {
     assert!(!text.contains("## 2. Users affected"), "{text}");
     assert!(!text.contains("## 3. FR-"), "{text}");
     // The contract with its placeholders filled; the autonomy copy whole.
-    assert!(text.contains("AD-101"), "{text}");
-    assert!(text.contains("BLOCK-101"), "{text}");
+    assert!(
+        text.contains("docs set 001 slices.1.status=done`"),
+        "{text}"
+    );
+    assert!(text.contains("--kind block --slice 1 "), "{text}");
     assert!(text.contains("one slice of PRD-001"), "{text}");
-    assert!(text.contains("slice-01.md"), "{text}");
-    for ph in ["{NNN}", "{NN}", "{seed}"] {
+    assert!(
+        text.contains("`factory docs set 001 slices.1.status=building`"),
+        "{text}"
+    );
+    for ph in ["{NNN}", "{NN}", "{N}", "{seed}", "{factory}"] {
         assert!(!text.contains(ph), "{ph} left in pack");
     }
     assert!(text.contains(pack::AUTONOMY.trim_end()), "autonomy copy");
@@ -277,14 +317,14 @@ fn pack_is_the_slice_the_cited_sections_the_contract_and_the_inner_loop() {
 
     // A different inner-loop command changes exactly one line of the pack.
     fs::write(&slice_file, &cited).unwrap();
-    let idx = fx.path().join("docs/index.md");
+    let idx = fx.path().join("docs/project.toml");
     let t = fs::read_to_string(&idx).unwrap();
-    assert!(t.contains("inner: ./gate.sh --inner\n"));
+    assert!(t.contains("inner = \"./gate.sh --inner\"\n"), "{t}");
     fs::write(
         &idx,
         t.replace(
-            "inner: ./gate.sh --inner\n",
-            "inner: ./gate.sh --inner --fast\n",
+            "inner = \"./gate.sh --inner\"\n",
+            "inner = \"./gate.sh --inner --fast\"\n",
         ),
     )
     .unwrap();
@@ -329,7 +369,7 @@ fn pack_outlines_the_cited_code_and_carries_the_lookup_verbs() {
         "the scaffold's Current code cites `file:line`"
     );
     fs::write(&slice_file, &cites).unwrap();
-    let docs = Docs::locate(fx.path()).unwrap();
+    let docs = Docs::open(fx.path()).unwrap();
     let board = docs.status("001").unwrap();
     let packs = fx.path().join("scenario/packs");
 
@@ -569,7 +609,6 @@ fn run_drives_three_slices_through_the_detached_driver() {
             "slice_committed",
             "checkpoint_started",
             "gate_run",
-            "log_merged",
             "checkpoint_spawned",
             "checkpoint_done",
             "polish_spawned",
@@ -723,7 +762,6 @@ fn a_dead_worker_is_noted_and_respawned_once() {
             "slice_committed",
             "checkpoint_started",
             "gate_run",
-            "log_merged",
             "checkpoint_spawned",
             "checkpoint_done",
             "polish_spawned",
@@ -742,23 +780,18 @@ fn a_dead_worker_is_noted_and_respawned_once() {
     assert_eq!(dead_ev["session_id"], sid0.as_str());
     assert_eq!(dead_ev["exit_code"], 137);
 
-    // Merged into agent-log.md at the checkpoint (slice 05); the merge
-    // itself refuses a fragment with content above its first heading.
-    let frag = fx.read(AGENT_LOG);
-    assert!(frag.contains("## Traps\n"), "{frag}");
+    // One `note` entry in log.jsonl for the death; the done worker's
+    // decision is logged under its slice.
+    let dead_notes = notes(&fx, "Dead worker");
+    assert_eq!(dead_notes.len(), 1, "{dead_notes:?}");
+    assert_eq!(dead_notes[0].0, Some(1));
     assert!(
-        frag.contains("- **Dead worker (")
-            && frag.contains(&format!(
-                "session {sid0} exited 137 with no result; respawned."
-            )),
-        "{frag}"
+        dead_notes[0].1.contains(&format!(
+            "session {sid0} exited 137 with no result; respawned."
+        )),
+        "{dead_notes:?}"
     );
-    assert_eq!(frag.matches("Dead worker").count(), 1);
-    assert!(
-        frag.contains("## Decisions\n"),
-        "the done worker's AD keeps its heading: {frag}"
-    );
-    assert!(frag.contains("### AD-101 "), "{frag}");
+    assert_eq!(decisions(&fx)[0], ("AD-1".to_string(), 1));
 
     let rows = db(&fx).workers(&id).unwrap();
     assert_eq!(rows.len(), 6);
@@ -808,7 +841,7 @@ fn two_dead_workers_block_the_slice_and_park_the_run() {
     let log = fs::read_to_string(dir.join("driver.log")).unwrap();
     assert!(log.contains("respawning once"), "{log}");
     assert!(
-        log.contains("second death, slice blocked (BLOCK-102)"),
+        log.contains("second death, slice blocked (BLOCK-1)"),
         "{log}"
     );
     assert!(log.contains("parked (waiting-owner)"), "{log}");
@@ -836,7 +869,7 @@ fn two_dead_workers_block_the_slice_and_park_the_run() {
         .find(|e| e["kind"] == "slice_blocked")
         .unwrap();
     assert_eq!(blocked_ev["slice"], 1);
-    assert_eq!(blocked_ev["block_id"], "BLOCK-102");
+    assert_eq!(blocked_ev["block_id"], "BLOCK-1");
     assert_eq!(blocked_ev["question"], "Two workers died on slice 01");
     let waiting = events(&dir)
         .into_iter()
@@ -848,22 +881,29 @@ fn two_dead_workers_block_the_slice_and_park_the_run() {
     assert_eq!(board["blocked"], json!([1]));
     assert_eq!(board["building"], json!([]));
 
-    let frag = fx.read(FRAGMENT);
-    assert!(frag.starts_with("## Traps\n"), "{frag}");
-    assert_eq!(frag.matches("- **Dead worker (").count(), 2, "{frag}");
-    assert!(frag.contains("; respawned.\n"), "{frag}");
+    let dead_notes = notes(&fx, "Dead worker");
+    assert_eq!(dead_notes.len(), 2, "{dead_notes:?}");
     assert!(
-        frag.contains("second death on this slice, blocked (BLOCK-102)."),
-        "{frag}"
+        dead_notes.iter().all(|(s, _)| *s == Some(1)),
+        "{dead_notes:?}"
     );
+    assert!(dead_notes[0].1.contains("; respawned."), "{dead_notes:?}");
     assert!(
-        frag.contains(
-            "\n## Blockers\n\n### BLOCK-102 — Two workers died on slice 01 · slice-01 · open\n"
-        ),
-        "{frag}"
+        dead_notes[1]
+            .1
+            .contains("second death on this slice, blocked (BLOCK-1)."),
+        "{dead_notes:?}"
     );
+    let blocks = fx.log_of("block");
+    assert_eq!(blocks.len(), 1, "{blocks:?}");
+    let b = &blocks[0];
+    assert_eq!(b["id"], "BLOCK-1", "{b}");
+    assert_eq!(b["title"], "Two workers died on slice 01", "{b}");
+    assert_eq!(b["slice"], 1, "{b}");
+    assert!(answers_to(&fx, "BLOCK-1").is_empty(), "open");
+    let body = b["body"].as_str().unwrap();
     for key in ["**Happened:**", "**Options:**", "**Recommended:**"] {
-        assert!(frag.contains(key), "{key} missing: {frag}");
+        assert!(body.contains(key), "{key} missing: {body}");
     }
     let rows = db(&fx).workers(&id).unwrap();
     assert_eq!(rows.len(), 2);
@@ -1034,12 +1074,13 @@ fn the_driver_killed_mid_slice_resumes_and_finishes() {
     let i_dead = k.iter().position(|k| k == "worker_dead").unwrap();
     assert!(i_resumed < i_dead, "{k:?}");
 
-    let frag = fx.read(AGENT_LOG);
+    let dead_notes = notes(&fx, "Dead worker");
     assert!(
-        frag.contains(&format!(
-            "session {sid0} exited (code unknown) with no result; respawned."
-        )),
-        "{frag}"
+        dead_notes.iter().any(|(s, b)| *s == Some(1)
+            && b.contains(&format!(
+                "session {sid0} exited (code unknown) with no result; respawned."
+            ))),
+        "{dead_notes:?}"
     );
     let rows = db(&fx).workers(&id).unwrap();
     assert_eq!(rows.len(), 6);
@@ -1086,13 +1127,20 @@ fn stop_and_wait(fx: &Fixture, dir: &Path) {
 fn deaths_count_from_the_last_answer_and_each_block_takes_a_free_id() {
     let fx = Fixture::with_index("dead-answered", &[("checkpoint_every", "10")]);
     fx.chain();
-    // A builder of slice 01 already used BLOCK-102: the driver's death
-    // block must not take that number again.
-    fs::write(
-        fx.path().join(FRAGMENT),
-        "## Blockers\n\n### BLOCK-102 — Which store? · slice-01 · resolved\n\n**Happened:** x\n**Resolution (2026-10-01):** sqlite\n",
-    )
-    .unwrap();
+    // A builder of slice 01 already used BLOCK-1, answered: the driver's
+    // death block must not take that number again.
+    let feature_dir = fx.path().join(FEATURE_DIR);
+    let mut seeded = factory::docs::log::Entry::new(
+        factory::docs::log::Kind::Block,
+        "Which store?",
+        "**Happened:** x\n",
+    );
+    seeded.slice = Some(1);
+    let id = factory::docs::log::add(&feature_dir, seeded).unwrap();
+    assert_eq!(id.as_deref(), Some("BLOCK-1"));
+    let mut answer = factory::docs::log::Entry::new(factory::docs::log::Kind::Answer, "", "sqlite");
+    answer.reference = Some("BLOCK-1".into());
+    factory::docs::log::add(&feature_dir, answer).unwrap();
     fx.git(&["add", "-A"]);
     fx.git(&["commit", "-q", "-m", "chore: an earlier block"]);
     fx.write_plan(&[dead(), dead(), dead(), dead()]);
@@ -1100,13 +1148,13 @@ fn deaths_count_from_the_last_answer_and_each_block_takes_a_free_id() {
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     let dir = only_run_dir(&fx);
     wait_until("the run to park", 40, || parks(&dir) >= 1);
-    assert_eq!(blocked_ids(&dir), ["BLOCK-103"]);
+    assert_eq!(blocked_ids(&dir), ["BLOCK-2"]);
     assert_eq!(fx.calls().len(), 2);
 
     // The owner answers: the two deaths before it are spent. One more death
     // is a respawn, not a block; the second after the answer blocks again,
     // under the next free number.
-    let out = factory(&fx, &["answer", "BLOCK-103", "the login is fixed"]);
+    let out = factory(&fx, &["answer", "BLOCK-2", "the login is fixed"]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     wait_until("the run to park again", 40, || {
         blocked_ids(&dir).len() == 2 && state(&dir)["phase"] == "waiting-owner"
@@ -1116,7 +1164,7 @@ fn deaths_count_from_the_last_answer_and_each_block_takes_a_free_id() {
         4,
         "a death after the answer respawns once"
     );
-    assert_eq!(blocked_ids(&dir), ["BLOCK-103", "BLOCK-104"]);
+    assert_eq!(blocked_ids(&dir), ["BLOCK-2", "BLOCK-3"]);
     let k = kinds(&dir);
     let answered = k.iter().position(|k| k == "block_answered").unwrap();
     assert_eq!(
@@ -1133,16 +1181,24 @@ fn deaths_count_from_the_last_answer_and_each_block_takes_a_free_id() {
         ],
         "{k:?}"
     );
-    let frag = fx.read(FRAGMENT);
+    let blocks = fx.log_of("block");
+    let b3: Vec<&Value> = blocks.iter().filter(|b| b["id"] == "BLOCK-3").collect();
+    assert_eq!(b3.len(), 1, "{blocks:?}");
+    assert_eq!(b3[0]["title"], "Two workers died on slice 01", "{blocks:?}");
+    assert_eq!(b3[0]["slice"], 1, "{blocks:?}");
+    assert!(answers_to(&fx, "BLOCK-3").is_empty(), "BLOCK-3 open");
     assert!(
-        frag.contains("### BLOCK-104 — Two workers died on slice 01 · slice-01 · open\n"),
-        "{frag}"
+        b3[0]["body"]
+            .as_str()
+            .unwrap()
+            .contains("**Happened:** 2 workers on slice 01 exited"),
+        "the count is since the answer: {blocks:?}"
     );
-    assert!(
-        frag.contains("**Happened:** 2 workers on slice 01 exited"),
-        "the count is since the answer: {frag}"
+    assert_eq!(
+        blocks.iter().filter(|b| b["id"] == "BLOCK-1").count(),
+        1,
+        "{blocks:?}"
     );
-    assert_eq!(frag.matches("### BLOCK-102 ").count(), 1, "{frag}");
     stop_and_wait(&fx, &dir);
 }
 
@@ -1161,17 +1217,18 @@ fn a_kill_between_the_second_death_and_the_block_never_spawns_a_third_worker() {
     wait_until("the driver to die", 5, || !pid_alive(driver));
     // Back to the moment after the second death was saved and before the
     // block was written: both outcomes `dead`, the slice still `building`,
-    // no entry under `## Blockers`.
-    let frag = fx.read(FRAGMENT);
-    let traps = &frag[..frag.find("\n## Blockers").unwrap() + 1];
-    fs::write(fx.path().join(FRAGMENT), traps).unwrap();
-    let slice = fx.slice_path(1);
-    let text = fs::read_to_string(&slice).unwrap();
-    fs::write(
-        &slice,
-        text.replacen("status: blocked", "status: building", 1),
-    )
-    .unwrap();
+    // no `block` entry in log.jsonl (the death notes stay).
+    let log = fx.read(LOG);
+    let kept: String = log
+        .lines()
+        .filter(|l| serde_json::from_str::<Value>(l).unwrap()["kind"] != "block")
+        .map(|l| format!("{l}\n"))
+        .collect();
+    assert_ne!(kept, log, "the block was logged");
+    fs::write(fx.path().join(LOG), kept).unwrap();
+    assert!(fx.log_of("block").is_empty());
+    assert_eq!(notes(&fx, "Dead worker").len(), 2);
+    fx.set_slice_status(1, "building");
     assert_eq!(fx.slice_status(1), "building");
 
     let out = factory(&fx, &["run", "001"]);
@@ -1179,13 +1236,86 @@ fn a_kill_between_the_second_death_and_the_block_never_spawns_a_third_worker() {
     wait_until("the resumed driver to park", 30, || parks(&dir) >= 2);
     assert_eq!(fx.calls().len(), 2, "no third worker on a capped slice");
     assert_eq!(fx.slice_status(1), "blocked");
-    assert_eq!(blocked_ids(&dir), ["BLOCK-102", "BLOCK-102"]);
-    let frag = fx.read(FRAGMENT);
-    assert_eq!(
-        frag.matches("### BLOCK-102 — Two workers died on slice 01 · slice-01 · open\n")
-            .count(),
-        1,
-        "{frag}"
-    );
+    assert_eq!(blocked_ids(&dir), ["BLOCK-1", "BLOCK-1"]);
+    let blocks = fx.log_of("block");
+    assert_eq!(blocks.len(), 1, "{blocks:?}");
+    assert_eq!(blocks[0]["id"], "BLOCK-1");
+    assert_eq!(blocks[0]["title"], "Two workers died on slice 01");
+    assert_eq!(blocks[0]["slice"], 1);
+    assert!(answers_to(&fx, "BLOCK-1").is_empty(), "open");
     stop_and_wait(&fx, &dir);
+}
+
+// ── slice 09 task 3: a preflight answer is one `ask` entry, a retry adds none
+
+#[test]
+fn a_preflight_answer_logs_one_ask_entry_and_a_retry_adds_none() {
+    use factory::events::EventKind;
+    use factory::run::{Phase, Run};
+    use std::os::unix::fs::PermissionsExt;
+
+    let fx = Fixture::new("preflight-ask");
+    let item = "no inner loop declared";
+    // A run parked on its preflight ask; its pid is this test's, so the
+    // answer finds a live driver and spawns none.
+    let mut run = Run::create(&data_dir(&fx), fx.path(), "001", None, 1).unwrap();
+    run.emit(EventKind::AskOpened {
+        id: "ASK-1".into(),
+        text: item.into(),
+    })
+    .unwrap();
+    run.set_phase(Phase::WaitingOwner).unwrap();
+    let answers = run.dir().join("answers");
+    let answer_file = answers.join("ASK-1.json");
+    let title = format!("Preflight ASK-1: {item}");
+    let asks = |fx: &Fixture| -> Vec<Value> {
+        fx.log_of("ask")
+            .into_iter()
+            .filter(|e| e["title"] == title.as_str())
+            .collect()
+    };
+
+    // The answer file cannot be written: the `ask` entry went out first and
+    // the ask stays open.
+    fs::create_dir_all(&answers).unwrap();
+    fs::set_permissions(&answers, fs::Permissions::from_mode(0o555)).unwrap();
+    let out = factory(&fx, &["answer", "ASK-1", "proceed"]);
+    fs::set_permissions(&answers, fs::Permissions::from_mode(0o700)).unwrap();
+    assert_ne!(out.status.code(), Some(0), "{}", stdout(&out));
+    assert!(!answer_file.exists());
+    let logged = asks(&fx);
+    assert_eq!(logged.len(), 1, "{:?}", fx.log_entries());
+    assert_eq!(logged[0]["phase"], "preflight", "{}", logged[0]);
+    assert!(
+        logged[0]["body"]
+            .as_str()
+            .unwrap()
+            .starts_with("**Chose:** proceed\n"),
+        "{}",
+        logged[0]
+    );
+    let line = fx
+        .read(LOG)
+        .lines()
+        .find(|l| l.contains(&title))
+        .unwrap()
+        .to_string();
+
+    // The retry writes the answer file and logs nothing more.
+    let out = factory(&fx, &["answer", "ASK-1", "proceed"]);
+    let text = stdout(&out);
+    assert_eq!(out.status.code(), Some(0), "{text}");
+    assert!(
+        text.contains(&format!("ASK-1 answered: proceed — noted in {LOG}")),
+        "{text}"
+    );
+    assert!(answer_file.is_file());
+    assert_eq!(fx.log_of("ask").len(), 1, "{:?}", fx.log_entries());
+    assert_eq!(fx.read(LOG).matches(&title).count(), 1);
+    assert!(fx.read(LOG).contains(&line));
+    let answered = events(run.dir())
+        .into_iter()
+        .filter(|e| e["kind"] == "ask_answered")
+        .count();
+    assert_eq!(answered, 1, "one `ask_answered` across both tries");
 }

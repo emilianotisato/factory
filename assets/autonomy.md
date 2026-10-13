@@ -32,7 +32,7 @@ Ask it of every choice the work forces that nobody wrote down: **does the PRD, t
 |---|---|---|
 | `/polish` **Fix** | fix without asking | same |
 | `/polish`, `/ux-review` **Ask** | one AskUserQuestion round | the test above: an `AD` when local and reversible — taste always lands here — otherwise **block** |
-| `/polish`, `/ux-review` **Park** | an `ideas.md` line or a new slice | an `ideas.md` line only; a new slice changes the plan the owner approved |
+| `/polish`, `/ux-review` **Park** | `factory docs idea add` or a new slice | `factory docs idea add` only; a new slice changes the plan the owner approved |
 | `test-cleanup`, "genuinely in doubt" | ask in-session | **keep the test** and write an `AD` — keeping never loses coverage |
 | `/verify-app` confirm round | one AskUserQuestion round | take what the code shows; an `AD` for each finding it had to choose between |
 | a `DEC-n` candidate | recommend, owner chooses | list it in the PR body; **never write `docs/decisions.md`** |
@@ -40,7 +40,7 @@ Ask it of every choice the work forces that nobody wrote down: **does the PRD, t
 
 ## What an unattended run may write
 
-**May:** application code and tests · the feature's own folder — `prd.md` Status prose and frontmatter status, slices, `agent-log.md` (or, when you were handed a `log-*.md` fragment, that file instead: siblings are running), `retro.md`, `qa-guide.md` · this feature's row and Notes cell in `docs/index.md` · the `inner:` key in `docs/index.md` frontmatter, at preflight, only when none is declared and only in the shape `/deliver` § 0 gives it, with an `AD` marked `fyi` · lines in `docs/ideas.md` · `.claude/skills/verify-*` whenever the app's surface moves under it: a harness slice, a feature-map entry, or a later slice that changes what the harness drives. Extend or repair a recipe, but never drop a step an earlier checkpoint drove.
+**May:** application code and tests · the feature's own folder — `prd.md` Status prose, the feature's and its slices' status through `factory docs set`, slices, the log through `factory docs log add`, `retro.md`, `qa-guide.md` · `factory docs idea add` · `.claude/skills/verify-*` whenever the app's surface moves under it: a harness slice, a feature-map entry, or a later slice that changes what the harness drives. Extend or repair a recipe, but never drop a step an earlier checkpoint drove.
 
 **Never:** `docs/decisions.md` · `docs/ux-rubric.md` · CI workflow files · `CLAUDE.md`, `AGENTS.md`, `.ai/guidelines/` · another feature's folder · anything under `docs/archive/` · the PRD's FRs, acceptance criteria, non-goals or decisions log. A change the run believes one of these needs is a **block**, or a proposal in the PR body when nothing waits on it.
 
@@ -75,15 +75,15 @@ Starting values. The retro records the numbers that will say whether they are ri
 - **Gate:** per slice, the inner loop (`docs gate --inner`); the full gate at a checkpoint. 3 fix attempts on the same failure, then block. A red checkpoint is fixed in place; when the cause is unclear, bisect over the slice commits first.
 - **Slice hand-back:** a subagent that reports done with a gap — no commit, inner loop not green, `docs check` errors — is sent back once, then blocked. A checkpoint that returns without evidence for a row it was asked to prove, same rule.
 - **CI:** 3 fix rounds, then block.
-- **Flaky:** a CI failure unrelated to the diff is re-run once (`gh run rerun <id> --failed`; in a `factory` run the driver does it, never a worker). Passes → name the job in the PR body's CI section, not in `agent-log.md`: a docs-only commit would start CI all over again. Fails again → block.
+- **Flaky:** a CI failure unrelated to the diff is re-run once (`gh run rerun <id> --failed`; in a `factory` run the driver does it, never a worker). Passes → name the job in the PR body's CI section, not in the log: a docs-only commit would start CI all over again. Fails again → block.
 - **Not this branch's:** CI red on something the branch did not touch, or an infrastructure fault (a missing secret, runner or quota) → block at once.
 
 ## Blocker protocol
 
-1. **Write a `BLOCK-n` entry**, shape in [templates/agent-log.md](templates/agent-log.md): what happened, with the `file:line` or command output that proves it; 2-4 options, each with its cost; the recommendation. It goes in the feature's `agent-log.md` — unless you were given a `log-*.md` fragment of your own, which means siblings are running and a direct append would lose somebody's work. Then it goes in your fragment, under `## Blockers`, and the orchestrator merges before it pushes.
-2. **A slice's blocker → set that slice `status: blocked`**, then `docs render --write` — skip the render if you were given a fragment; whoever merges it also renders. A blocker outside a slice names its phase in the heading instead: `preflight`, `slicing`, `polish`, `pr`, `ci`.
+1. **Write a `BLOCK-n` entry** with `factory docs log add NNN --kind block`: what happened, with the `file:line` or command output that proves it; 2-4 options, each with its cost; the recommendation. The tool numbers it and appends it under the feature's lock, so siblings running beside you lose nothing.
+2. **A slice's blocker → `--slice N` on the entry, and `factory docs set NNN slices.N.status=blocked`.** A blocker outside a slice names its phase instead, with `--phase`: `preflight`, `slicing`, `polish`, `pr`, `ci`.
 3. **Commit it** — `docs(NNN): block <where>` — and push the branch (`git push -u origin feat/{slug}`), so the entry is readable away from this machine. In a `factory` run the driver commits and pushes; a worker stops after step 2.
-4. **Notify** with the PushNotification tool. One line, under 200 characters, leading with what to act on: `PRD-013 blocked at slice-02: unique index prevents soft-delete. 3 options in agent-log BLOCK-1`.
+4. **Notify** with the PushNotification tool. One line, under 200 characters, leading with what to act on: `PRD-013 blocked at slice-02: unique index prevents soft-delete. 3 options: factory docs log show 013 --open`.
 5. **Stop.** The final message says the same and gives the entry's path. Start nothing else.
 
 ## The owner answers mid-run
@@ -94,7 +94,7 @@ An unattended run can have the owner in the chat anyway. Nothing waits for them.
 
 The owner answers in the conversation or by editing the entry. Then:
 
-1. Append `**Resolution ({date}):**` with the answer and change the heading's last field from `open` to `resolved`.
+1. Append the answer with `factory docs log add NNN --kind answer --ref BLOCK-n` (`factory answer` does it in a `factory` run); the block is resolved from then on.
 2. **If the answer changes the PRD, apply it as the owner's correction** — inline and visible, dated, citing `BLOCK-n`. This is the one time an unattended run edits FRs or non-goals, and only with the owner's words.
-3. A blocked slice goes back to `building`; render; commit.
+3. A blocked slice goes back to `building` with `factory docs set`; commit.
 4. `/deliver NNN` again. It reads its position from `docs status NNN --json`, so nothing depends on the conversation that started the run.

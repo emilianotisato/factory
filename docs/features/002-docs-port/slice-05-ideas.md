@@ -1,15 +1,9 @@
----
-slice: 05
-status: pending
-depends_on: [3]
----
-
 # Slice 05 — Ideas, tool side (FR-20 part)
 
 **Source**: [`prd.md`](prd.md) → §10 FR-20 (the file format, "leaving is deleting", `idea add|list|drop`, `new --from-idea`, `init`, `check` on ideas, the tool half of the acceptance), §15 (the ideas non-goals). **Depends on**: 03 (the ideas rules and `W-IDEAS-V2` are a new function in slice 03's `src/docs/check.rs`, and the PRD-key rule that must learn `from_idea` is slice 03's).
-**Created**: 2026-10-13 · **Status**: pending
+**Created**: 2026-10-13 · **Status**: done
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**: done 2026-10-13. `src/docs/ideas.rs` is new. It holds `slug`, `render` (the quoted one-line writer slice 08 reuses), `add` (`create_new` with `-2`, `-3`, … and no lock), `read` (the one reader `list`, `new --from-idea` and `check` share), `list` and `drop` (a pathspec commit). The `idea add|list|drop` arm is in `src/cli/docs.rs`, and `log add`'s body reading moved into `read_body`. `scaffold::new_from` adds `from_idea` and `## From idea <id>`, reads the idea before allocating a number, and deletes the idea file last. `init` writes `docs/ideas/README.md` from `assets/docs/ideas-README.md` when it is missing. `check` gains `E-IDEA-NAME`, `E-IDEA-PARSE`, `E-IDEA-FIELD` and `W-IDEAS-V2`. Slice 03's PRD-key rule turned out to be open: it reports missing keys and never unknown ones. So `from_idea` passes with no code change, and a comment records that. `W-SECOND-BOARD` already said `docs/ideas/`. Tests: `tests/docs_ideas.rs` has 7 tests, one per acceptance, and `ideas.rs` has 4 unit tests. All passed on their first run. Inner loop: 2 runs, 1 red, about 1.3 min. The red run caught nothing in this slice. Slice 04 was being built in the same tree, so `cargo test` ran in a copy (Traps in `log-slice-05.md`), and that copy was not a git repo, which `tests/cli.rs` needs. The green run: 25 test binaries, 0 failures, 67 s. Clippy reports nothing in this slice's files. Deviations: AD-501 to AD-504. Task 8 (Prove) is left for the checkpoint.
 
 **Slice**: After this slice a v3 repo keeps its ideas as one markdown file per open idea under `docs/ideas/`. `factory docs idea add` writes one with no lock and no clash, even from two worktrees at once. `idea list --json` gives the per-repo contract the future scanner reads, and `idea drop` deletes one with its reason in a one-path commit. `new --from-idea` turns one into a PRD. `init` writes the folder's `README.md`, and `check` validates every idea file and warns on a leftover `docs/ideas.md`. Turning an existing `ideas.md` into files is `migrate`'s job (slice 08). The worker contract and PR-body edits (`assets/autonomy.md:35,43`, `assets/pr-body.md:39`) are slice 10. The skills edit is slice 11.
 
@@ -82,3 +76,8 @@ The trap: if slice 03's PRD-key rule is a closed list of seven, the first `--fro
 Rows from [`prd.md`](prd.md) § QA plan: the **FR-20** row, its tool half: "concurrent `idea add`; `idea drop` commit; `new --from-idea`; `check` on a bad state", evidence "`tests/docs.rs` transcripts". Run in a `Fixture::v3` copy: two shells adding the same title at once; `idea list --json`; `idea drop <id> --because x` then `git show --stat HEAD`; `new demo --from-idea <id>` then `git status --short`; `check` on a `state: later` file and on a `docs/ideas.md`. The `migrate --dry` half and the arca-api `qa-guide.md` row are slice 08's.
 
 **Acceptance:** each of the five runs has its transcript in this slice's Progress, with the exit code and the read-back (file count, the commit's one path and body, the deletion, the `check` codes).
+
+**Code-review fixes (2026-10-13).**
+
+- `idea drop` passed the idea's path to `git status`, `git commit` and `git checkout` as a plain pathspec, so an id holding `*` or `[` matched other ideas: the drop could commit or refuse on a neighbour's edit. The three calls now use `:(literal)`. Test: `drop_reads_the_id_as_a_literal_path_not_a_glob` (`tests/docs_ideas.rs`).
+- The FR-20 Prove rows (this task 8 and slice 08 task 7) were never driven: no checkpoint named FR-20 and no `evidence/` file existed. Polish drove both halves on the branch binary: `evidence/polish-fr20.txt`, made by `evidence/polish-fr20-drive.sh`. Concurrent adds 2 × 10 gave 20 files, the drop commit holds one path, `--from-idea` carried the body and deleted the idea, and `check` exits 1 on `E-IDEA-PARSE`.

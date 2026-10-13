@@ -1,0 +1,524 @@
+# CP-2 FR-16 — branch binary factory 0.1.0, 2026-10-13
+
+## The v2 fixture (tests/fixture/v2)
+
+--- status 001 --json before, by node .docs/bin/docs.mjs: 1973 bytes
+
+$ /mnt/devcache/emiliano/cargo-target/debug/factory docs migrate --dry
+rewrite docs/index.md (frontmatter, 6 table rows and 2 counters dropped; FR-numbers paragraph after **Build order:**)
+rewrite docs/features/001-fixture/prd.md (FR-13 frontmatter, prose header dropped)
+fix docs/features/001-fixture/prd.md type "Feature — the migration fixture" → feature
+drop docs/features/001-fixture/prd.md key: owns_fr
+drop docs/features/001-fixture/prd.md key: retired_fr
+create docs/features/001-fixture/state.toml (status in-progress, 3 slices)
+rewrite docs/features/001-fixture/slice-01-a.md (frontmatter → state.toml)
+rewrite docs/features/001-fixture/slice-02-b.md (frontmatter → state.toml)
+rewrite docs/features/001-fixture/slice-03-c.md (frontmatter → state.toml)
+create docs/features/001-fixture/log.jsonl (AD 4, BLOCK 1, CP 1, answer 1, review 2, note 2)
+delete docs/features/001-fixture/agent-log.md
+create docs/.gitignore (docs.lock)
+row retros (001 fixture) score=4 gate_runs=6 gate_red=1 gate_minutes=3.25 ci_cycles=0 slices=3 checkpoints=1 build_minutes=41.5 polish_minutes=7 out_tokens=120345 cache_read_tokens=4567890 start_context=23456 peak_context=98765 shipped_at=2026-09-30
+keep docs/features/001-fixture/retro.md
+rewrite docs/project.toml ([docs] appended, the other tables kept byte for byte)
+dry run: nothing written
+[exit 0]
+
+$ git status --porcelain
+[exit 0]
+
+$ /mnt/devcache/emiliano/cargo-target/debug/factory docs migrate
+rewrite docs/index.md (frontmatter, 6 table rows and 2 counters dropped; FR-numbers paragraph after **Build order:**)
+rewrite docs/features/001-fixture/prd.md (FR-13 frontmatter, prose header dropped)
+fix docs/features/001-fixture/prd.md type "Feature — the migration fixture" → feature
+drop docs/features/001-fixture/prd.md key: owns_fr
+drop docs/features/001-fixture/prd.md key: retired_fr
+create docs/features/001-fixture/state.toml (status in-progress, 3 slices)
+rewrite docs/features/001-fixture/slice-01-a.md (frontmatter → state.toml)
+rewrite docs/features/001-fixture/slice-02-b.md (frontmatter → state.toml)
+rewrite docs/features/001-fixture/slice-03-c.md (frontmatter → state.toml)
+create docs/features/001-fixture/log.jsonl (AD 4, BLOCK 1, CP 1, answer 1, review 2, note 2)
+delete docs/features/001-fixture/agent-log.md
+create docs/.gitignore (docs.lock)
+row retros (001 fixture) score=4 gate_runs=6 gate_red=1 gate_minutes=3.25 ci_cycles=0 slices=3 checkpoints=1 build_minutes=41.5 polish_minutes=7 out_tokens=120345 cache_read_tokens=4567890 start_context=23456 peak_context=98765 shipped_at=2026-09-30
+keep docs/features/001-fixture/retro.md
+rewrite docs/project.toml ([docs] appended, the other tables kept byte for byte)
+migrated: 10 files, 1 rows; review with git diff -- docs; undo with git checkout -- docs && git clean -fd docs
+[exit 0]
+
+$ /mnt/devcache/emiliano/cargo-target/debug/factory docs check
+  ! W-IDEAS-V2  docs/ideas.md is the v2 inbox, and an old skill may still write to it — move each line with `factory docs idea add`, then delete the file
+
+0 errors, 1 warning
+[exit 0]
+
+$ /mnt/devcache/emiliano/cargo-target/debug/factory docs status
+001  in-progress  fixture · slices 2/3 done
+     Fixture PRD for the v2 → v3 migration; three slices, c waits for b | and builds on lane 1.
+
+archived: 0 · retired: none
+[exit 0]
+
+--- key sets of status 001 --json, node before vs binary after
+$ diff ../before.keys ../after.keys
+48,60d47
+<   "retro.build_minutes",
+<   "retro.cache_read_tokens",
+<   "retro.checkpoints",
+<   "retro.ci_cycles",
+<   "retro.gate_minutes",
+<   "retro.gate_red",
+<   "retro.gate_runs",
+<   "retro.out_tokens",
+<   "retro.peak_context",
+<   "retro.polish_minutes",
+<   "retro.score",
+<   "retro.slices",
+<   "retro.start_context",
+[exit 1]
+
+--- the only key gone is retro's contents: v3 prints retro: null (board.rs:431),
+--- its numbers are the retros row below (FR-19). Every other value, node vs binary:
+$ jq -c .retro ../after.json
+null
+[exit 0]
+
+$ diff ../before.v ../after.v
+45d44
+<       201,
+46a46
+>       201,
+[exit 1]
+
+--- log.flagged and log.decide hold ids ascending after migration (AD-702); the same values with both sorted:
+$ diff ../before.s ../after.s
+[exit 0]
+
+$ git status --porcelain -- docs/features/*/retro.md docs/archive/*/retro.md
+[exit 0]
+
+$ cat docs/project.toml
+[run]
+budget = 5
+
+[workers.polish]
+model = "sonnet"
+
+[docs]
+framework = 3
+gate = "./gate.sh"
+inner = "./gate.sh --inner"
+gate_parallel = true
+lanes = 2
+checkpoint_every = 2
+prd_max_kb = 120
+slice_max_kb = 30
+[exit 0]
+
+$ sqlite3 factory.db "SELECT * FROM retros" (first run)
+repo|feature|slug|shipped_at|run_id|score|gate_runs|gate_red|gate_minutes|ci_cycles|slices|checkpoints|build_minutes|polish_minutes|out_tokens|cache_read_tokens|start_context|peak_context|written_at
+$W/fr16-fixture/repo|1|fixture|2026-09-30||4|6|1|3.25|0|3|1|41.5|7.0|120345|4567890|23456|98765|2026-10-13T15:15:25Z
+
+--- the undo
+$ git checkout -- docs
+[exit 0]
+
+$ git clean -fdq docs
+[exit 0]
+
+$ git status --porcelain
+[exit 0]
+
+$ node .docs/bin/docs.mjs check
+  ! W-RETRO-FM  docs/features/001-fixture/retro.md frontmatter is missing numbers for: gate_minutes
+
+0 errors, 1 warning
+[exit 0]
+
+--- the re-run
+$ /mnt/devcache/emiliano/cargo-target/debug/factory docs migrate
+rewrite docs/index.md (frontmatter, 6 table rows and 2 counters dropped; FR-numbers paragraph after **Build order:**)
+rewrite docs/features/001-fixture/prd.md (FR-13 frontmatter, prose header dropped)
+fix docs/features/001-fixture/prd.md type "Feature — the migration fixture" → feature
+drop docs/features/001-fixture/prd.md key: owns_fr
+drop docs/features/001-fixture/prd.md key: retired_fr
+create docs/features/001-fixture/state.toml (status in-progress, 3 slices)
+rewrite docs/features/001-fixture/slice-01-a.md (frontmatter → state.toml)
+rewrite docs/features/001-fixture/slice-02-b.md (frontmatter → state.toml)
+rewrite docs/features/001-fixture/slice-03-c.md (frontmatter → state.toml)
+create docs/features/001-fixture/log.jsonl (AD 4, BLOCK 1, CP 1, answer 1, review 2, note 2)
+delete docs/features/001-fixture/agent-log.md
+create docs/.gitignore (docs.lock)
+row retros (001 fixture) score=4 gate_runs=6 gate_red=1 gate_minutes=3.25 ci_cycles=0 slices=3 checkpoints=1 build_minutes=41.5 polish_minutes=7 out_tokens=120345 cache_read_tokens=4567890 start_context=23456 peak_context=98765 shipped_at=2026-09-30
+keep docs/features/001-fixture/retro.md
+rewrite docs/project.toml ([docs] appended, the other tables kept byte for byte)
+migrated: 10 files, 1 rows; review with git diff -- docs; undo with git checkout -- docs && git clean -fd docs
+[exit 0]
+
+$ diff -r ../first docs
+[exit 0]
+
+$ sqlite3 factory.db "SELECT * FROM retros" (after the re-run)
+repo|feature|slug|shipped_at|run_id|score|gate_runs|gate_red|gate_minutes|ci_cycles|slices|checkpoints|build_minutes|polish_minutes|out_tokens|cache_read_tokens|start_context|peak_context|written_at
+$W/fr16-fixture/repo|1|fixture|2026-09-30||4|6|1|3.25|0|3|1|41.5|7.0|120345|4567890|23456|98765|2026-10-13T15:15:26Z
+
+--- the two reads: only written_at may differ
+$ diff ../retros-1.txt ../retros-2.txt
+2c2
+< $W/fr16-fixture/repo|1|fixture|2026-09-30||4|6|1|3.25|0|3|1|41.5|7.0|120345|4567890|23456|98765|2026-10-13T15:15:25Z
+---
+> $W/fr16-fixture/repo|1|fixture|2026-09-30||4|6|1|3.25|0|3|1|41.5|7.0|120345|4567890|23456|98765|2026-10-13T15:15:26Z
+[exit 1]
+
+## This repo's docs (git archive HEAD docs + the merged 002 folder)
+
+--- status 001 --json before, by node .docs/bin/docs.mjs: 6129 bytes
+
+$ /mnt/devcache/emiliano/cargo-target/debug/factory docs migrate --dry
+unlink docs/features/001-driver/prd.md:334 [`agent-log.md`](agent-log.md)
+unlink docs/features/001-driver/slice-07-quota.md:13 [`agent-log.md`](agent-log.md)
+unlink docs/features/001-driver/slice-08-metrics.md:13 [`agent-log.md`](agent-log.md)
+unlink docs/features/001-driver/slice-08-metrics.md:13 [`agent-log.md`](agent-log.md)
+unlink docs/features/002-docs-port/slice-07-migrate.md:87 [the log](agent-log.md)
+unlink docs/features/002-docs-port/slice-07-migrate.md:89 [the log](agent-log.md#ad-3)
+rewrite docs/index.md (frontmatter, 8 table rows and 2 counters dropped; FR-numbers paragraph after **Build order:**)
+rewrite docs/features/001-driver/prd.md (FR-13 frontmatter, prose header dropped)
+fix docs/features/001-driver/prd.md type "Feature — a new Rust binary, `factory`, that replaces the `/deliver` orchestration session. New repo, no migrations. It consumes the existing `docs.mjs` JSON contract and the existing feature-docs v2 files; it changes neither." → feature
+drop docs/features/001-driver/prd.md key: owns_fr
+drop docs/features/001-driver/prd.md key: retired_fr
+create docs/features/001-driver/state.toml (status shipped, reviewed 2026-10-10, 13 slices)
+warn docs/features/001-driver/state.toml: shipped, but v2 kept no shipped date, so it has none
+rewrite docs/features/001-driver/slice-01-harness.md (frontmatter → state.toml)
+rewrite docs/features/001-driver/slice-02-contract-and-state.md (frontmatter → state.toml)
+rewrite docs/features/001-driver/slice-03-one-worker.md (frontmatter → state.toml)
+rewrite docs/features/001-driver/slice-04-lanes-and-parking.md (frontmatter → state.toml)
+rewrite docs/features/001-driver/slice-05-commits-and-log.md (frontmatter → state.toml)
+rewrite docs/features/001-driver/slice-06-checkpoints.md (frontmatter → state.toml)
+rewrite docs/features/001-driver/slice-07-quota.md (frontmatter → state.toml)
+rewrite docs/features/001-driver/slice-08-metrics.md (frontmatter → state.toml)
+rewrite docs/features/001-driver/slice-09-closeout.md (frontmatter → state.toml)
+rewrite docs/features/001-driver/slice-10-cockpit.md (frontmatter → state.toml)
+rewrite docs/features/001-driver/slice-11-ctx-search.md (frontmatter → state.toml)
+rewrite docs/features/001-driver/slice-12-ctx-tags.md (frontmatter → state.toml)
+rewrite docs/features/001-driver/slice-13-ctx-in-the-loop.md (frontmatter → state.toml)
+create docs/features/001-driver/log.jsonl (AD 145, BLOCK 1, CP 7, answer 1, review 78, note 2)
+delete docs/features/001-driver/agent-log.md
+rewrite docs/features/002-docs-port/prd.md (FR-13 frontmatter, prose header dropped)
+fix docs/features/002-docs-port/prd.md type "Refactor — the docs tool moves from `docs.mjs` (node, 2110 lines) into the `factory` binary as `factory docs`, and the docs format moves from v2 to v3. Carries a one-shot docs migration per repo and a metrics-store schema bump (v2 → v3; *an earlier draft said v1 → v2, before PRD-003 took v2*). No public API; the contracts that move are the driver's own docs calls and the skills' `docs.mjs` calls." → refactor
+drop docs/features/002-docs-port/prd.md key: owns_fr
+drop docs/features/002-docs-port/prd.md key: retired_fr
+create docs/features/002-docs-port/state.toml (status ready, 11 slices)
+rewrite docs/features/002-docs-port/slice-01-v3-model.md (frontmatter → state.toml)
+rewrite docs/features/002-docs-port/slice-02-log.md (frontmatter → state.toml)
+rewrite docs/features/002-docs-port/slice-03-check-doctor.md (frontmatter → state.toml)
+rewrite docs/features/002-docs-port/slice-04-lifecycle-verbs.md (frontmatter → state.toml)
+rewrite docs/features/002-docs-port/slice-05-ideas.md (frontmatter → state.toml)
+rewrite docs/features/002-docs-port/slice-06-retros-store.md (frontmatter → state.toml)
+rewrite docs/features/002-docs-port/slice-07-migrate.md (frontmatter → state.toml)
+rewrite docs/features/002-docs-port/slice-08-ideas-migration.md (frontmatter → state.toml)
+rewrite docs/features/002-docs-port/slice-09-driver-switch.md (frontmatter → state.toml)
+rewrite docs/features/002-docs-port/slice-10-closeout-workers.md (frontmatter → state.toml)
+rewrite docs/features/002-docs-port/slice-11-skills-hook-install.md (frontmatter → state.toml)
+create docs/features/002-docs-port/log.jsonl (AD 40, BLOCK 0, CP 1, answer 0, review 0, note 2)
+delete docs/features/002-docs-port/agent-log.md
+rewrite docs/features/003-observatory/prd.md (FR-13 frontmatter, prose header dropped)
+fix docs/features/003-observatory/prd.md type "Enhancement batch — the metrics store (schema v1 → v2, added columns only), `factory report`, a new `factory retro`, a project-scope config file, one new line in the polish contract. No public API. The driver's own ship step changes; nothing a worker does changes except one line of its return." → enhancement
+drop docs/features/003-observatory/prd.md key: owns_fr
+drop docs/features/003-observatory/prd.md key: retired_fr
+fix docs/features/003-observatory/prd.md reviewed 20261013 → 2026-10-13
+create docs/features/003-observatory/state.toml (status shipped, reviewed 2026-10-13, 6 slices)
+warn docs/features/003-observatory/state.toml: shipped, but v2 kept no shipped date, so it has none
+rewrite docs/features/003-observatory/slice-01-subagent-counts.md (frontmatter → state.toml)
+rewrite docs/features/003-observatory/slice-02-recount-per-worker.md (frontmatter → state.toml)
+rewrite docs/features/003-observatory/slice-03-pack-composition.md (frontmatter → state.toml)
+rewrite docs/features/003-observatory/slice-04-knobs.md (frontmatter → state.toml)
+rewrite docs/features/003-observatory/slice-05-quality.md (frontmatter → state.toml)
+rewrite docs/features/003-observatory/slice-06-retro-numbers.md (frontmatter → state.toml)
+create docs/features/003-observatory/log.jsonl (AD 32, BLOCK 0, CP 2, answer 0, review 18, note 2)
+fix docs/features/003-observatory/agent-log.md AD-9901: heading date 20261013 → 2026-10-13
+fix docs/features/003-observatory/agent-log.md AD-9902: heading date 20261013 → 2026-10-13
+fix docs/features/003-observatory/agent-log.md AD-9903: heading date 20261013 → 2026-10-13
+fix docs/features/003-observatory/agent-log.md AD-9904: heading date 20261013 → 2026-10-13
+fix docs/features/003-observatory/agent-log.md AD-9905: heading date 20261013 → 2026-10-13
+delete docs/features/003-observatory/agent-log.md
+create docs/.gitignore (docs.lock)
+row retros (001 driver) score=4 gate_runs=29 gate_red=6 gate_minutes=16 ci_cycles=1 slices=13 checkpoints=7 build_minutes=627 polish_minutes=157 out_tokens=3772425 cache_read_tokens=229975490 start_context=55259 peak_context=182520 shipped_at=2026-09-30
+keep docs/features/001-driver/retro.md
+row retros (003 observatory) score=NULL gate_runs=4 gate_red=2 gate_minutes=2.23 ci_cycles=0 slices=5 checkpoints=2 build_minutes=98.51 polish_minutes=41.64 out_tokens=321597 cache_read_tokens=40618667 start_context=32244 peak_context=167069 shipped_at=2026-09-30
+keep docs/features/003-observatory/retro.md
+create docs/project.toml
+dry run: nothing written
+[exit 0]
+
+$ git status --porcelain
+[exit 0]
+
+$ /mnt/devcache/emiliano/cargo-target/debug/factory docs migrate
+unlink docs/features/001-driver/prd.md:334 [`agent-log.md`](agent-log.md)
+unlink docs/features/001-driver/slice-07-quota.md:13 [`agent-log.md`](agent-log.md)
+unlink docs/features/001-driver/slice-08-metrics.md:13 [`agent-log.md`](agent-log.md)
+unlink docs/features/001-driver/slice-08-metrics.md:13 [`agent-log.md`](agent-log.md)
+unlink docs/features/002-docs-port/slice-07-migrate.md:87 [the log](agent-log.md)
+unlink docs/features/002-docs-port/slice-07-migrate.md:89 [the log](agent-log.md#ad-3)
+rewrite docs/index.md (frontmatter, 8 table rows and 2 counters dropped; FR-numbers paragraph after **Build order:**)
+rewrite docs/features/001-driver/prd.md (FR-13 frontmatter, prose header dropped)
+fix docs/features/001-driver/prd.md type "Feature — a new Rust binary, `factory`, that replaces the `/deliver` orchestration session. New repo, no migrations. It consumes the existing `docs.mjs` JSON contract and the existing feature-docs v2 files; it changes neither." → feature
+drop docs/features/001-driver/prd.md key: owns_fr
+drop docs/features/001-driver/prd.md key: retired_fr
+create docs/features/001-driver/state.toml (status shipped, reviewed 2026-10-10, 13 slices)
+warn docs/features/001-driver/state.toml: shipped, but v2 kept no shipped date, so it has none
+rewrite docs/features/001-driver/slice-01-harness.md (frontmatter → state.toml)
+rewrite docs/features/001-driver/slice-02-contract-and-state.md (frontmatter → state.toml)
+rewrite docs/features/001-driver/slice-03-one-worker.md (frontmatter → state.toml)
+rewrite docs/features/001-driver/slice-04-lanes-and-parking.md (frontmatter → state.toml)
+rewrite docs/features/001-driver/slice-05-commits-and-log.md (frontmatter → state.toml)
+rewrite docs/features/001-driver/slice-06-checkpoints.md (frontmatter → state.toml)
+rewrite docs/features/001-driver/slice-07-quota.md (frontmatter → state.toml)
+rewrite docs/features/001-driver/slice-08-metrics.md (frontmatter → state.toml)
+rewrite docs/features/001-driver/slice-09-closeout.md (frontmatter → state.toml)
+rewrite docs/features/001-driver/slice-10-cockpit.md (frontmatter → state.toml)
+rewrite docs/features/001-driver/slice-11-ctx-search.md (frontmatter → state.toml)
+rewrite docs/features/001-driver/slice-12-ctx-tags.md (frontmatter → state.toml)
+rewrite docs/features/001-driver/slice-13-ctx-in-the-loop.md (frontmatter → state.toml)
+create docs/features/001-driver/log.jsonl (AD 145, BLOCK 1, CP 7, answer 1, review 78, note 2)
+delete docs/features/001-driver/agent-log.md
+rewrite docs/features/002-docs-port/prd.md (FR-13 frontmatter, prose header dropped)
+fix docs/features/002-docs-port/prd.md type "Refactor — the docs tool moves from `docs.mjs` (node, 2110 lines) into the `factory` binary as `factory docs`, and the docs format moves from v2 to v3. Carries a one-shot docs migration per repo and a metrics-store schema bump (v2 → v3; *an earlier draft said v1 → v2, before PRD-003 took v2*). No public API; the contracts that move are the driver's own docs calls and the skills' `docs.mjs` calls." → refactor
+drop docs/features/002-docs-port/prd.md key: owns_fr
+drop docs/features/002-docs-port/prd.md key: retired_fr
+create docs/features/002-docs-port/state.toml (status ready, 11 slices)
+rewrite docs/features/002-docs-port/slice-01-v3-model.md (frontmatter → state.toml)
+rewrite docs/features/002-docs-port/slice-02-log.md (frontmatter → state.toml)
+rewrite docs/features/002-docs-port/slice-03-check-doctor.md (frontmatter → state.toml)
+rewrite docs/features/002-docs-port/slice-04-lifecycle-verbs.md (frontmatter → state.toml)
+rewrite docs/features/002-docs-port/slice-05-ideas.md (frontmatter → state.toml)
+rewrite docs/features/002-docs-port/slice-06-retros-store.md (frontmatter → state.toml)
+rewrite docs/features/002-docs-port/slice-07-migrate.md (frontmatter → state.toml)
+rewrite docs/features/002-docs-port/slice-08-ideas-migration.md (frontmatter → state.toml)
+rewrite docs/features/002-docs-port/slice-09-driver-switch.md (frontmatter → state.toml)
+rewrite docs/features/002-docs-port/slice-10-closeout-workers.md (frontmatter → state.toml)
+rewrite docs/features/002-docs-port/slice-11-skills-hook-install.md (frontmatter → state.toml)
+create docs/features/002-docs-port/log.jsonl (AD 40, BLOCK 0, CP 1, answer 0, review 0, note 2)
+delete docs/features/002-docs-port/agent-log.md
+rewrite docs/features/003-observatory/prd.md (FR-13 frontmatter, prose header dropped)
+fix docs/features/003-observatory/prd.md type "Enhancement batch — the metrics store (schema v1 → v2, added columns only), `factory report`, a new `factory retro`, a project-scope config file, one new line in the polish contract. No public API. The driver's own ship step changes; nothing a worker does changes except one line of its return." → enhancement
+drop docs/features/003-observatory/prd.md key: owns_fr
+drop docs/features/003-observatory/prd.md key: retired_fr
+fix docs/features/003-observatory/prd.md reviewed 20261013 → 2026-10-13
+create docs/features/003-observatory/state.toml (status shipped, reviewed 2026-10-13, 6 slices)
+warn docs/features/003-observatory/state.toml: shipped, but v2 kept no shipped date, so it has none
+rewrite docs/features/003-observatory/slice-01-subagent-counts.md (frontmatter → state.toml)
+rewrite docs/features/003-observatory/slice-02-recount-per-worker.md (frontmatter → state.toml)
+rewrite docs/features/003-observatory/slice-03-pack-composition.md (frontmatter → state.toml)
+rewrite docs/features/003-observatory/slice-04-knobs.md (frontmatter → state.toml)
+rewrite docs/features/003-observatory/slice-05-quality.md (frontmatter → state.toml)
+rewrite docs/features/003-observatory/slice-06-retro-numbers.md (frontmatter → state.toml)
+create docs/features/003-observatory/log.jsonl (AD 32, BLOCK 0, CP 2, answer 0, review 18, note 2)
+fix docs/features/003-observatory/agent-log.md AD-9901: heading date 20261013 → 2026-10-13
+fix docs/features/003-observatory/agent-log.md AD-9902: heading date 20261013 → 2026-10-13
+fix docs/features/003-observatory/agent-log.md AD-9903: heading date 20261013 → 2026-10-13
+fix docs/features/003-observatory/agent-log.md AD-9904: heading date 20261013 → 2026-10-13
+fix docs/features/003-observatory/agent-log.md AD-9905: heading date 20261013 → 2026-10-13
+delete docs/features/003-observatory/agent-log.md
+create docs/.gitignore (docs.lock)
+row retros (001 driver) score=4 gate_runs=29 gate_red=6 gate_minutes=16 ci_cycles=1 slices=13 checkpoints=7 build_minutes=627 polish_minutes=157 out_tokens=3772425 cache_read_tokens=229975490 start_context=55259 peak_context=182520 shipped_at=2026-09-30
+keep docs/features/001-driver/retro.md
+row retros (003 observatory) score=NULL gate_runs=4 gate_red=2 gate_minutes=2.23 ci_cycles=0 slices=5 checkpoints=2 build_minutes=98.51 polish_minutes=41.64 out_tokens=321597 cache_read_tokens=40618667 start_context=32244 peak_context=167069 shipped_at=2026-09-30
+keep docs/features/003-observatory/retro.md
+create docs/project.toml
+migrated: 45 files, 2 rows; review with git diff -- docs; undo with git checkout -- docs && git clean -fd docs
+[exit 0]
+
+$ /mnt/devcache/emiliano/cargo-target/debug/factory docs check
+  ! W-STATUS-BEHIND  PRD-002 is ready but a slice is already building/done — should it be in-progress? (`factory docs set 002 status=in-progress`)
+  ! W-IDEAS-V2  docs/ideas.md is the v2 inbox, and an old skill may still write to it — move each line with `factory docs idea add`, then delete the file
+
+0 errors, 2 warnings
+[exit 0]
+
+$ /mnt/devcache/emiliano/cargo-target/debug/factory docs status
+001  shipped      driver · slices 13/13 done
+     **Shipped 2026-10-10**, pending owner review: 13 slices, 7 checkpoints, polish by a local review, a security pass and Cursor `grok-4.7-high` (about 100 findings, fixed by 5 fixers; 3 parked in `ideas.md`). 145 decisions, 31 flagged `decide` and 47 `fyi`. PR from `feat/driver`. Human QA pending (FR-7, FR-11). Rust `factory` binary replaces the `/deliver` session. Detached driver, `claude -p` workers with context packs, lanes that park on a block and keep going, gates/commits/log merge/CI/PR run by the driver at zero tokens, thin Claude Code cockpit for blocks and the closing review (phone), SQLite metrics, quota pause plus per-run budget. Calls `docs.mjs` as a subprocess; the port is PRD-002. Proof: stub harness in `cargo test`, then A/B against `/deliver` on icg-cloud and arca-api (tokens −40%, owner questionnaire). FR-12 `factory ctx` (`def`/`refs`/`outline`, ripgrep crates + tree-sitter tags, no LSP) after a 27-agent research pass over 55 owner sessions: lookups are 56–74% of worker calls and 92% of result bytes. Cut 2026-10-09: closeout worker folded into polish, gate cache keyed on code paths only. All 16 OPENs closed. Jev (TypeSafe) assessed 2026-10-09: not now, parked in `ideas.md`, memo `ctx-jev-research.md`; three Jev-free grafts kept from it (`followup_reads`, pack-doc hint, `def` body default), the seen-before stub cut. Gate declared; a bare crate skeleton was committed 2026-10-09 so preflight resolves it (slice 01 fills it in). Sliced 2026-10-09 into 13 slices (§17): spine 01 harness → 02 contract/state → 03 one worker (highest risk) → 04 lanes → 05 commits/log → 06 checkpoints → 07 quota → 08 metrics → 09 closeout/PR/CI → 10 cockpit; branch 11 ctx search → 12 ctx tags off 01; 13 ctx-in-the-loop joins both. Checkpoints every 2. FR-11 A/B is a post-ship owner measurement in `qa-guide.md` (with FR-7), no slice. One fact corrected at slicing: the worker guard hook is new (`factory hook` via `--settings`), not existing.
+002  ready        docs-port · slices 9/11 done
+     **Agreed 2026-10-11** (seven interview forks; Cursor `grok-4.7-high` adversarial pass, 22 findings corrected inline; the cut kept all eight extras). Ports `docs.mjs` into `factory docs` and moves the format to v3: `docs/project.toml` instead of index frontmatter; one `state.toml` per feature, written only by `factory docs set` under a per-feature lock; an append-only `log.jsonl` per feature with ids allocated at append, `log add
+003  shipped      observatory · slices 6/6 done
+     **Agreed 2026-10-13** (three interview rounds, eight forks; Cursor `grok-4.7-high` adversarial pass, 25 findings, 20 corrected inline; the cut kept all nine extras). The eyes for the full switch decided 2026-10-12: no more A/B, experiments are knob changes measured by the store. FR-21 counts the subagents a worker spawns (read from the Claude Code transcript dir after exit; `report` under-counted both A/B rounds by 2.3M and 2.1M), `in_subagent` on `tool_calls`, `report --recount` to fix stored runs, token columns on `--per-worker`. FR-22 `pack_parts`: chars per pack section, printed per role beside `start_context`. FR-23 project scope `docs/project.toml` `[workers.<role>]` and `[run]`, `runs.knobs` with each value's source, `--hypothesis`, `model_id` from the stream. FR-24 quality at zero tokens: a `FINDINGS high= medium= low= fixed= parked=` line in the polish return, `fix_commits`, `ci_red_rounds`, `ci_reruns`, decision counts; no composite score. FR-25 `factory retro <run>` writes a `## Numbers` section into `retro.md` between markers (per-role own/subagent, knobs, quality, pack composition, comparison with the repo's last three runs per slice and per changed line); retires `measure.py`/`weigh.py`. Schema v1 → v2 (added columns only). Proof: gate + stub with a subagent recording, then a replay on the stored arca (18,465,008) and icg (8,131,594) runs. Not handled: learn loop, `factory grade`, owner signals, post-merge churn, stream fallback, per-turn series. **Sliced 2026-10-13, six slices:** 01 subagent counts (spine: schema v2, split collector, transcript reader, exit record, totals, harness scenario) → 02 recount + per-worker tokens (depends 01; replay on the stored runs) ▲ · 03 pack composition, 04 knobs, 05 quality signals (independent of each other and of 01/02) ▲ · 06 retro numbers (depends 01-05; `factory retro`, changed lines, retires `measure.py` step) ▲. QA guide: FR-25 Human row + the ten-minute replay.
+
+archived: 0 · retired: none
+[exit 0]
+
+--- key sets of status 001 --json, node before vs binary after
+$ diff ../before.keys ../after.keys
+40,52d39
+<   "retro.build_minutes",
+<   "retro.cache_read_tokens",
+<   "retro.checkpoints",
+<   "retro.ci_cycles",
+<   "retro.gate_minutes",
+<   "retro.gate_red",
+<   "retro.gate_runs",
+<   "retro.out_tokens",
+<   "retro.peak_context",
+<   "retro.polish_minutes",
+<   "retro.score",
+<   "retro.slices",
+<   "retro.start_context",
+[exit 1]
+
+--- the only key gone is retro's contents: v3 prints retro: null (board.rs:431),
+--- its numbers are the retros row below (FR-19). Every other value, node vs binary:
+$ jq -c .retro ../after.json
+null
+[exit 0]
+
+$ diff ../before.v ../after.v
+84d83
+<       9003,
+86a86
+>       9003,
+143d142
+<       9003,
+150a150
+>       9003,
+[exit 1]
+
+--- log.flagged and log.decide hold ids ascending after migration (AD-702); the same values with both sorted:
+$ diff ../before.s ../after.s
+[exit 0]
+
+$ git status --porcelain -- docs/features/*/retro.md docs/archive/*/retro.md
+[exit 0]
+
+$ cat docs/project.toml
+[docs]
+framework = 3
+gate = "cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test"
+inner = "cargo test"
+lanes = 4
+checkpoint_every = 2
+prd_max_kb = 120
+slice_max_kb = 30
+[exit 0]
+
+$ sqlite3 factory.db "SELECT * FROM retros" (first run)
+repo|feature|slug|shipped_at|run_id|score|gate_runs|gate_red|gate_minutes|ci_cycles|slices|checkpoints|build_minutes|polish_minutes|out_tokens|cache_read_tokens|start_context|peak_context|written_at
+$W/fr16-own/repo|1|driver|2026-09-30||4|29|6|16.0|1|13|7|627.0|157.0|3772425|229975490|55259|182520|2026-10-13T15:15:26Z
+$W/fr16-own/repo|3|observatory|2026-09-30|||4|2|2.23|0|5|2|98.51|41.64|321597|40618667|32244|167069|2026-10-13T15:15:26Z
+
+--- the undo
+$ git checkout -- docs
+[exit 0]
+
+$ git clean -fdq docs
+[exit 0]
+
+$ git status --porcelain
+[exit 0]
+
+$ node .docs/bin/docs.mjs check
+  ! W-GATE-UNRESOLVED  gate "cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test" — no Cargo.toml for cargo; no Cargo.toml for cargo; no Cargo.toml for cargo
+  ! W-PROSE-STATUS  docs/features/003-observatory/prd.md prose Status line does not mention "shipped"
+  ! W-STATUS-BEHIND  PRD-002 is ready but a slice is already building/done — should it be in-progress?
+  ! W-RETRO-FM  docs/features/003-observatory/retro.md frontmatter is missing numbers for: score, gate_minutes
+
+0 errors, 4 warnings
+[exit 0]
+
+--- the re-run
+$ /mnt/devcache/emiliano/cargo-target/debug/factory docs migrate
+unlink docs/features/001-driver/prd.md:334 [`agent-log.md`](agent-log.md)
+unlink docs/features/001-driver/slice-07-quota.md:13 [`agent-log.md`](agent-log.md)
+unlink docs/features/001-driver/slice-08-metrics.md:13 [`agent-log.md`](agent-log.md)
+unlink docs/features/001-driver/slice-08-metrics.md:13 [`agent-log.md`](agent-log.md)
+unlink docs/features/002-docs-port/slice-07-migrate.md:87 [the log](agent-log.md)
+unlink docs/features/002-docs-port/slice-07-migrate.md:89 [the log](agent-log.md#ad-3)
+rewrite docs/index.md (frontmatter, 8 table rows and 2 counters dropped; FR-numbers paragraph after **Build order:**)
+rewrite docs/features/001-driver/prd.md (FR-13 frontmatter, prose header dropped)
+fix docs/features/001-driver/prd.md type "Feature — a new Rust binary, `factory`, that replaces the `/deliver` orchestration session. New repo, no migrations. It consumes the existing `docs.mjs` JSON contract and the existing feature-docs v2 files; it changes neither." → feature
+drop docs/features/001-driver/prd.md key: owns_fr
+drop docs/features/001-driver/prd.md key: retired_fr
+create docs/features/001-driver/state.toml (status shipped, reviewed 2026-10-10, 13 slices)
+warn docs/features/001-driver/state.toml: shipped, but v2 kept no shipped date, so it has none
+rewrite docs/features/001-driver/slice-01-harness.md (frontmatter → state.toml)
+rewrite docs/features/001-driver/slice-02-contract-and-state.md (frontmatter → state.toml)
+rewrite docs/features/001-driver/slice-03-one-worker.md (frontmatter → state.toml)
+rewrite docs/features/001-driver/slice-04-lanes-and-parking.md (frontmatter → state.toml)
+rewrite docs/features/001-driver/slice-05-commits-and-log.md (frontmatter → state.toml)
+rewrite docs/features/001-driver/slice-06-checkpoints.md (frontmatter → state.toml)
+rewrite docs/features/001-driver/slice-07-quota.md (frontmatter → state.toml)
+rewrite docs/features/001-driver/slice-08-metrics.md (frontmatter → state.toml)
+rewrite docs/features/001-driver/slice-09-closeout.md (frontmatter → state.toml)
+rewrite docs/features/001-driver/slice-10-cockpit.md (frontmatter → state.toml)
+rewrite docs/features/001-driver/slice-11-ctx-search.md (frontmatter → state.toml)
+rewrite docs/features/001-driver/slice-12-ctx-tags.md (frontmatter → state.toml)
+rewrite docs/features/001-driver/slice-13-ctx-in-the-loop.md (frontmatter → state.toml)
+create docs/features/001-driver/log.jsonl (AD 145, BLOCK 1, CP 7, answer 1, review 78, note 2)
+delete docs/features/001-driver/agent-log.md
+rewrite docs/features/002-docs-port/prd.md (FR-13 frontmatter, prose header dropped)
+fix docs/features/002-docs-port/prd.md type "Refactor — the docs tool moves from `docs.mjs` (node, 2110 lines) into the `factory` binary as `factory docs`, and the docs format moves from v2 to v3. Carries a one-shot docs migration per repo and a metrics-store schema bump (v2 → v3; *an earlier draft said v1 → v2, before PRD-003 took v2*). No public API; the contracts that move are the driver's own docs calls and the skills' `docs.mjs` calls." → refactor
+drop docs/features/002-docs-port/prd.md key: owns_fr
+drop docs/features/002-docs-port/prd.md key: retired_fr
+create docs/features/002-docs-port/state.toml (status ready, 11 slices)
+rewrite docs/features/002-docs-port/slice-01-v3-model.md (frontmatter → state.toml)
+rewrite docs/features/002-docs-port/slice-02-log.md (frontmatter → state.toml)
+rewrite docs/features/002-docs-port/slice-03-check-doctor.md (frontmatter → state.toml)
+rewrite docs/features/002-docs-port/slice-04-lifecycle-verbs.md (frontmatter → state.toml)
+rewrite docs/features/002-docs-port/slice-05-ideas.md (frontmatter → state.toml)
+rewrite docs/features/002-docs-port/slice-06-retros-store.md (frontmatter → state.toml)
+rewrite docs/features/002-docs-port/slice-07-migrate.md (frontmatter → state.toml)
+rewrite docs/features/002-docs-port/slice-08-ideas-migration.md (frontmatter → state.toml)
+rewrite docs/features/002-docs-port/slice-09-driver-switch.md (frontmatter → state.toml)
+rewrite docs/features/002-docs-port/slice-10-closeout-workers.md (frontmatter → state.toml)
+rewrite docs/features/002-docs-port/slice-11-skills-hook-install.md (frontmatter → state.toml)
+create docs/features/002-docs-port/log.jsonl (AD 40, BLOCK 0, CP 1, answer 0, review 0, note 2)
+delete docs/features/002-docs-port/agent-log.md
+rewrite docs/features/003-observatory/prd.md (FR-13 frontmatter, prose header dropped)
+fix docs/features/003-observatory/prd.md type "Enhancement batch — the metrics store (schema v1 → v2, added columns only), `factory report`, a new `factory retro`, a project-scope config file, one new line in the polish contract. No public API. The driver's own ship step changes; nothing a worker does changes except one line of its return." → enhancement
+drop docs/features/003-observatory/prd.md key: owns_fr
+drop docs/features/003-observatory/prd.md key: retired_fr
+fix docs/features/003-observatory/prd.md reviewed 20261013 → 2026-10-13
+create docs/features/003-observatory/state.toml (status shipped, reviewed 2026-10-13, 6 slices)
+warn docs/features/003-observatory/state.toml: shipped, but v2 kept no shipped date, so it has none
+rewrite docs/features/003-observatory/slice-01-subagent-counts.md (frontmatter → state.toml)
+rewrite docs/features/003-observatory/slice-02-recount-per-worker.md (frontmatter → state.toml)
+rewrite docs/features/003-observatory/slice-03-pack-composition.md (frontmatter → state.toml)
+rewrite docs/features/003-observatory/slice-04-knobs.md (frontmatter → state.toml)
+rewrite docs/features/003-observatory/slice-05-quality.md (frontmatter → state.toml)
+rewrite docs/features/003-observatory/slice-06-retro-numbers.md (frontmatter → state.toml)
+create docs/features/003-observatory/log.jsonl (AD 32, BLOCK 0, CP 2, answer 0, review 18, note 2)
+fix docs/features/003-observatory/agent-log.md AD-9901: heading date 20261013 → 2026-10-13
+fix docs/features/003-observatory/agent-log.md AD-9902: heading date 20261013 → 2026-10-13
+fix docs/features/003-observatory/agent-log.md AD-9903: heading date 20261013 → 2026-10-13
+fix docs/features/003-observatory/agent-log.md AD-9904: heading date 20261013 → 2026-10-13
+fix docs/features/003-observatory/agent-log.md AD-9905: heading date 20261013 → 2026-10-13
+delete docs/features/003-observatory/agent-log.md
+create docs/.gitignore (docs.lock)
+row retros (001 driver) score=4 gate_runs=29 gate_red=6 gate_minutes=16 ci_cycles=1 slices=13 checkpoints=7 build_minutes=627 polish_minutes=157 out_tokens=3772425 cache_read_tokens=229975490 start_context=55259 peak_context=182520 shipped_at=2026-09-30
+keep docs/features/001-driver/retro.md
+row retros (003 observatory) score=NULL gate_runs=4 gate_red=2 gate_minutes=2.23 ci_cycles=0 slices=5 checkpoints=2 build_minutes=98.51 polish_minutes=41.64 out_tokens=321597 cache_read_tokens=40618667 start_context=32244 peak_context=167069 shipped_at=2026-09-30
+keep docs/features/003-observatory/retro.md
+create docs/project.toml
+migrated: 45 files, 2 rows; review with git diff -- docs; undo with git checkout -- docs && git clean -fd docs
+[exit 0]
+
+$ diff -r ../first docs
+[exit 0]
+
+$ sqlite3 factory.db "SELECT * FROM retros" (after the re-run)
+repo|feature|slug|shipped_at|run_id|score|gate_runs|gate_red|gate_minutes|ci_cycles|slices|checkpoints|build_minutes|polish_minutes|out_tokens|cache_read_tokens|start_context|peak_context|written_at
+$W/fr16-own/repo|1|driver|2026-09-30||4|29|6|16.0|1|13|7|627.0|157.0|3772425|229975490|55259|182520|2026-10-13T15:15:26Z
+$W/fr16-own/repo|3|observatory|2026-09-30|||4|2|2.23|0|5|2|98.51|41.64|321597|40618667|32244|167069|2026-10-13T15:15:26Z
+
+--- the two reads: only written_at may differ
+$ diff ../retros-1.txt ../retros-2.txt
+[exit 0]
+
+## The PRD-001 copy test
+
+$ cargo test -q --test migrate -- --ignored
+
+running 1 test
+.
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.68s
+
+[exit 0]
+

@@ -51,6 +51,22 @@ fn tool_use_paths(events: &[Value]) -> Vec<String> {
         .collect()
 }
 
+/// The `command` of every `Bash` tool call, in stream order.
+fn bash_commands(events: &[Value]) -> Vec<String> {
+    events
+        .iter()
+        .filter(|e| e["type"] == "assistant")
+        .flat_map(|e| {
+            e["message"]["content"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        })
+        .filter(|c| c["type"] == "tool_use" && c["name"] == "Bash")
+        .filter_map(|c| c["input"]["command"].as_str().map(str::to_string))
+        .collect()
+}
+
 #[test]
 fn stub_claude_flips_the_slice_then_replays_a_result() {
     let fx = Fixture::new("stub-claude");
@@ -121,23 +137,58 @@ fn stub_claude_flips_the_slice_then_replays_a_result() {
         "{paths:?}"
     );
     assert!(
-        paths.iter().any(|p| p.ends_with("/log-slice-01.md")),
-        "{paths:?}"
-    );
-    assert!(
         paths.contains(&slice.to_str().unwrap().to_string()),
         "{paths:?}"
     );
-    // One tool_result per tool_use: two Reads, two Writes, the inner run,
-    // the Edit (slice 08 added the Reads and the `Bash ./gate.sh --inner`).
+    // The board writes are `factory docs` calls, never a file the worker
+    // edits (PRD-002 slice 09): its AD, the inner run, its status.
+    let bash = bash_commands(&events);
+    assert_eq!(bash.len(), 3, "{bash:?}");
+    assert!(
+        bash[0].starts_with("factory docs log add 001 --kind decision --slice 1 "),
+        "{bash:?}"
+    );
+    assert_eq!(bash[2], "factory docs set 001 slices.1.status=done");
+    assert!(
+        !paths
+            .iter()
+            .any(|p| p.ends_with(".md") && p.contains("/log-")),
+        "{paths:?}"
+    );
+    // One tool_result per tool_use: two Reads, the Write, the AD, the inner
+    // run, the status (slice 08 added the Reads and the `Bash ./gate.sh --inner`).
     assert_eq!(events.iter().filter(|e| e["type"] == "user").count(), 6);
 
     // The side effects: the board moved before the stream was printed.
     assert_eq!(fx.slice_status(1), "done");
-    let fragment = fx.read("docs/features/001-fixture/log-slice-01.md");
-    assert!(fragment.starts_with("## Decisions\n"), "{fragment}");
-    assert!(fragment.contains("\n### AD-101 — "), "{fragment}");
-    assert!(fragment.contains("**Review:** no"), "{fragment}");
+    let decisions = fx.log_of("decision");
+    assert_eq!(decisions.len(), 1, "{decisions:?}");
+    assert_eq!(decisions[0]["id"], "AD-1", "{decisions:?}");
+    assert_eq!(decisions[0]["slice"], 1, "{decisions:?}");
+    assert!(
+        decisions[0]["body"]
+            .as_str()
+            .unwrap()
+            .contains("**Review:** no"),
+        "{decisions:?}"
+    );
+    // The feature dir: the PRD, its board, three slices — no agent-log.md,
+    // no log fragment.
+    let feature = fx.path().join("docs/features/001-fixture");
+    for f in ["prd.md", "state.toml", "log.jsonl"] {
+        assert!(feature.join(f).is_file(), "{f}");
+    }
+    let names: Vec<String> = fs::read_dir(&feature)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert_eq!(
+        names.iter().filter(|n| n.starts_with("slice-")).count(),
+        3,
+        "{names:?}"
+    );
+    assert!(!names.iter().any(|n| n == "agent-log.md"), "{names:?}");
+    assert!(!names.iter().any(|n| n.starts_with("log-")), "{names:?}");
     assert_eq!(
         fx.read("src/lib.txt"),
         "fixture code file\ntouched by spawn 1\n"
@@ -206,10 +257,10 @@ fn stub_claude_delay_leaves_the_slice_building_mid_spawn() {
     );
     assert_eq!(fx.slice_status(2), "done");
     assert_eq!(fx.read("src/other.txt"), "touched by spawn 1\n");
-    assert!(
-        fx.read("docs/features/001-fixture/log-slice-02.md")
-            .contains("### AD-201 — ")
-    );
+    let decisions = fx.log_of("decision");
+    assert_eq!(decisions.len(), 1, "{decisions:?}");
+    assert_eq!(decisions[0]["id"], "AD-1", "{decisions:?}");
+    assert_eq!(decisions[0]["slice"], 2, "{decisions:?}");
     assert_eq!(fx.calls()[0]["pack_source"], "inline");
 }
 
