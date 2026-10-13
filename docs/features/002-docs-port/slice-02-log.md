@@ -1,15 +1,20 @@
 ---
 slice: 02
-status: pending
+status: done
 depends_on: [1]
+lane: 2
 ---
 
 # Slice 02 — The log (FR-14)
 
 **Source**: [`prd.md`](prd.md) → §4 FR-14 (all six decisions, the `phase` field added at slicing included), §5 FR-15 (`log add|show` in the verb list). **Depends on**: 01 (it takes slice 01's `state::lock`, writes into the feature folder slice 01's `new` creates, and fills the `Status` log fields slice 01 leaves empty).
-**Created**: 2026-10-13 · **Status**: pending
+**Created**: 2026-10-13 · **Status**: done
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+- **Built (2026-10-13)**: `src/docs/log.rs`, which holds the `Entry` (serde, absent options skipped, `ref` renamed), `add` (validation before the lock; the `ref` check, the id allocation and the one-write append inside `state::lock`; a torn last line keeps its own line), `entries` (skips and returns unparseable lines), `select` and `render` (Notes, Blockers, Decisions, Checkpoints, with Resolution and Owner lines under their entries). The board's `checkpoints`, `unverified`, `checkpoint_due`, `open_blocks` and `log` are now computed from `log.jsonl` in `src/docs/board.rs feature_state`. `factory docs log add|show` is in `src/cli/docs.rs`, which now passes stderr to `dispatch` for `show`'s skipped-line notes. Snapshot: `tests/snapshots/docs-log/show.md` (`FACTORY_BLESS=1` rewrites it). Integration tests are in `tests/docs_log.rs`: the 2×50 concurrent process run, the body round-trip, the board fields, and the exit-2 refusals with the `log merge` pointer.
+- **Inner loop**: 3 full `cargo test` runs, 2 red, about 2 min. Neither red run was this slice's code. Slice 06, building in the same tree, had first a half-written `retro` verb (compile error), then three red `db::tests` retros tests. Between those runs, the targeted `cargo test --lib docs::` and `--test docs_log --test docs_v3 --test docs` were green. The last full run had 351 passed and 0 failed.
+- **Deviations**: none from the tasks. AD-201 covers what the slice left open (extra `--ref` refusal, filters with `--json`, both slice and phase in a heading).
+- **Prove (FR-14)**: left for the checkpoint, as task 6 says.
 
 **Slice**: After this slice a v3 feature has an append-only `log.jsonl`, written only by `factory docs log add`, which allocates the id under the feature's `docs.lock`, and read by `factory docs log show`, which renders today's `agent-log.md` shape on demand. The board's log-derived fields (`checkpoints`, `unverified`, `checkpoint_due`, `open_blocks`, `log`) are computed from it, so `status 001 --json` is complete except the gate fields slice 04 fills. The driver does not write the log yet: its BLOCK, ask, answer and checkpoint writes move in slice 09, and the worker contracts in slice 10. `check` on the log is slice 03.
 
