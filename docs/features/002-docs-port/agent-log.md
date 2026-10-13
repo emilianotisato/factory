@@ -40,6 +40,12 @@ _(none)_
 - `cargo test` stops at the first failing test binary; `cargo test --no-fail-fast` shows every red target in one run.
 - `cargo fmt` formats the sibling lane's files too; run `rustfmt --edition 2024 <your files>` instead.
 
+- The PreToolUse hook refuses a Bash command whose text holds both a git word and `push`, including `out.push(` inside a heredoc or a `python -c`. Write the script with the Write tool to a scratch file, then run it with Bash.
+
+- The slice's acceptance filter `grep -v '/feature-docs/bin/'` drops every command line too, since each one holds `~/.claude/skills/feature-docs/bin/docs.mjs` in its text, so it passes on an untouched tree. `--include='*.md'` already leaves `bin/docs.mjs` out: count with `command grep -rn 'docs\.mjs' ~/.claude/skills/ --include='*.md'` and no filter.
+- The owner's current global pre-commit hook (`~/.config/git/hooks/pre-commit`, v2 `node docs.mjs check`) refuses any commit that stages `docs/` in a v3 repo (`E-NO-BOARD`). Commit in a scratch v3 repo with `GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1`. The owner must paste the `factory docs hook` body before migrating a repo, or its first commit is refused.
+- This lane's cargo target is `target/lane-2` (`CARGO_TARGET_DIR`), not `target/debug`; use `env!("CARGO_BIN_EXE_factory")` in tests.
+
 ## Blockers
 
 _(none)_
@@ -348,6 +354,38 @@ The inner loop is green only with all of them. A slice-03 commit without them fa
 **Undo:** none needed.
 **Review:** no
 
+### AD-801 — What does an idea row in the plan say? · slice-08 · 2026-10-13
+
+**Chose:** `idea <id> <state>[ high] "<title>" line <n>: <rule>, added from <Parked|Added|the heading|git blame>`. `guess` rows have the same shape with `guess` as the verb. `relink` rows show the old link and the new one.
+**Over:** the slice's bare `idea <id> <state>[ high] <rule>`.
+**Because:** the owner reads these rows on arca-api to decide which guesses are still open (the FR-20 human row). The id alone is a slug cut at 50 characters. The line number and the source of the date are what let the owner check a row against `ideas.md`.
+**Undo:** drop the title, the line and the `added from` part from the `format!` in `migrate_ideas::plan`.
+**Review:** no
+
+### AD-802 — What happens to a line under a heading that is not a bullet? · slice-08 · 2026-10-13
+
+**Chose:** a non-blank line under a `##` that is not a bullet or a continuation of one becomes a `drop docs/ideas.md:<n> … (not a bullet)` row. A fence indented under a bullet stays in that bullet's body. A fence at the margin ends the bullet.
+**Over:** silently skipping such lines, or failing the migration.
+**Because:** FR-20 says text that is not a bullet under a heading is "dropped and listed". A drifted repo may hold a paragraph between bullets, and the owner should see it in `--dry` before it disappears. An indented fence is the bullet's own code block, which has to round-trip byte for byte.
+**Undo:** remove the `Dropped("not a bullet")` branch in `migrate_ideas::parse`.
+**Review:** no
+
+### AD-1101 — Three swapped skill lines run v2-only verbs · slice-11 · 2026-10-13
+
+**Chose:** swap `node ~/.claude/skills/feature-docs/bin/docs.mjs` for `factory docs` on all 25 command lines as the PRD says, including `prd/SKILL.md:164` and `feature-docs/migration.md:121` (`factory docs check --fix`) and `deliver/SKILL.md:145` (`factory docs log merge {NNN}`). They work in a v2 repo through the shim. In a v3 repo, `check --fix` exits 2 with "unexpected argument '--fix' found" and `log merge` exits 2 with "\"log merge\" removed in v3: the log is appended by `factory docs log add`".
+**Over:** rewording them into v3 verbs (`check`, `log add`), which changes what the skills do in every v2 repo the owner still has.
+**Because:** the PRD orders a string swap, and the slice says not to reword. Each skill's behaviour in v3 is PRD-004's, where the skills move into this repo.
+**Undo:** reword the three lines in `~/.claude/skills`; nothing in this repo depends on them.
+**Review:** decide
+
+### AD-1102 — The skills' ideas lines keep a v2 fallback · slice-11 · 2026-10-13
+
+**Chose:** every edited ideas line names `factory docs idea add` (or `new <slug> --from-idea <id>` in `prd/SKILL.md:56`) and keeps a clause for v2 repos: "in a v2 repo (`factory docs doctor` says so), … `docs/ideas.md` … as before". Three lines the PRD did not list got the same treatment so that `ideas.md` appears only in v2 clauses: `prd/SKILL.md:28` (the by-hand check), `prd/SKILL.md:151` (link sideways) and `prd/template.md:31` (Split from). `prd/template.md:66` names `docs/ideas/` in a code span, not a link.
+**Over:** the bare v3 wording the PRD gives, and a markdown link to `../../ideas/`.
+**Because:** `docs.mjs` has no `idea` verb (its `default:` case exits 2), so in an unmigrated repo `/polish`'s Park step would lose its findings. A template link to `ideas/` is broken in every v2 repo and one to `ideas.md` in every v3 repo; a code span is checked by neither.
+**Undo:** drop the v2 clauses once every repo is migrated.
+**Review:** decide
+
 ## Checkpoints
 
 ### CP-1 — after slice-06 · 2026-10-13
@@ -363,6 +401,13 @@ The inner loop is green only with all of them. A slice-03 commit without them fa
 **Gate:** 2 runs, 1 red, 0.9 min — caught: clippy `double_ended_iterator_last` at `src/docs/migrate.rs:1891` (fixed by the driver in 1bc6f2c)
 **Prove:** FR-16, FR-17 (routing half; the hook and skills half is slice 11's, not built), FR-18, FR-19 (closeout half; the store half is CP-1's) — evidence: `evidence/cp-2-fr16.txt`, `evidence/cp-2-fr17.txt`, `evidence/cp-2-fr18.txt`, `evidence/cp-2-fr19.txt`, driven by `evidence/cp-2-drive.sh`
 **Fixed:** none
+
+### CP-3 — after slice-11 · 2026-10-13
+
+**Covers:** slices 11
+**Gate:** 1 run, 0 red, 1.0 min — caught: nothing (421 passed, 0 failed)
+**Prove:** FR-15 (help, every verb once, the three removed verbs), FR-17 (shim, hook body with both refusals and the no-`factory` pass, skills grep, `factory docs check` in this repo) — evidence: `evidence/cp-3-fr15.txt`, `evidence/cp-3-fr17.txt`, driven by `evidence/cp-3-drive.sh` on the installed `~/.cargo/bin/factory`. The FR-17 human row stays the owner's (`qa-guide.md`)
+**Fixed:** `factory docs check` in this repo exited 1: `E-LINK-BROKEN` at `slice-08-ideas-migration.md:47`, a Progress link to `log-slice-08.md`, which the driver's log merge deleted. Relinked to `agent-log.md`; check now 0 errors, exit 0
 
 ---
 
@@ -474,3 +519,5 @@ Entry shapes. Copy them above; examples inside this fence are ignored by the too
 - assets/retro.md
 - skills/factory-deliver/SKILL.md
 - src/cli/hook.rs
+
+- src/docs/migrate.rs

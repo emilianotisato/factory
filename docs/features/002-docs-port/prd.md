@@ -226,10 +226,10 @@ Workflow: one branch, one PR, one commit per slice, the full gate and the Prove 
 | [05 — Ideas, tool side (FR-20 part)](slice-05-ideas.md) | ✅ done | 03 |
 | [06 — Retros store (FR-19 part)](slice-06-retros-store.md) | ✅ done | 01 |
 | [07 — migrate (FR-16)](slice-07-migrate.md) | ✅ done | 03, 06 |
-| [08 — Ideas migration (FR-20 rest)](slice-08-ideas-migration.md) | pending | 05, 07 |
+| [08 — Ideas migration (FR-20 rest)](slice-08-ideas-migration.md) | ✅ done | 05, 07 |
 | [09 — Driver switch (FR-18 core)](slice-09-driver-switch.md) | ✅ done | 04 |
 | [10 — Closeout and worker-facing rest (FR-18 rest, FR-19 write path)](slice-10-closeout-workers.md) | ✅ done | 05, 06, 09 |
-| [11 — Skills edit, hook verb, install (FR-17 rest)](slice-11-skills-hook-install.md) | pending | 08, 10 |
+| [11 — Skills edit, hook verb, install (FR-17 rest)](slice-11-skills-hook-install.md) | ✅ done | 08, 10 |
 <!-- /docs:slices -->
 
 ## 14. Sequencing risk
