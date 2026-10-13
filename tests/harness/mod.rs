@@ -55,6 +55,26 @@ impl Fixture {
     /// A fixture whose `docs/index.md` frontmatter also carries `extra` keys
     /// (`checkpoint_every`, for one).
     pub fn with_index(name: &str, extra: &[(&str, &str)]) -> Fixture {
+        let fx = Self::bare(name);
+        fx.build(extra);
+        fx
+    }
+
+    /// The same repo on the v3 layout (PRD-002 FR-18), built by the binary:
+    /// `factory docs init`, `new`, `slice`, then `set 001 status=ready`.
+    pub fn v3(name: &str) -> Fixture {
+        Self::v3_with(name, &[])
+    }
+
+    /// A v3 fixture whose `[docs]` table also carries `extra` keys.
+    pub fn v3_with(name: &str, extra: &[(&str, &str)]) -> Fixture {
+        let fx = Self::bare(name);
+        fx.build_v3(extra);
+        fx
+    }
+
+    /// The temp dirs and the env, before any repo is built.
+    fn bare(name: &str) -> Fixture {
         let mut base = tempfile::Builder::new()
             .prefix(&format!("factory-{name}-"))
             .tempdir()
@@ -81,44 +101,23 @@ impl Fixture {
         let node = find_in_path("node").expect("node on PATH");
         let git = find_in_path("git").expect("git on PATH");
         let env = build_env(base.path(), &stub_dir, &gitconfig, &node, &git);
-        let fx = Fixture {
+        Fixture {
             base,
             root,
             stub_dir,
             node,
             git,
             env,
-        };
-        fx.build(extra);
-        fx
+        }
     }
 
     fn build(&self, extra: &[(&str, &str)]) {
         // A bare origin next to the repo: preflight refuses a repo with no
         // `origin` remote (docs.mjs `preflight`), and later slices push to it.
-        let origin = self.base.path().join("origin.git");
-        self.git_in(
-            self.base.path(),
-            &[
-                "init",
-                "-q",
-                "--bare",
-                "-b",
-                "main",
-                origin.to_str().unwrap(),
-            ],
-        );
-        self.git(&["init", "-q", "-b", "main"]);
-        self.git(&["config", "user.name", "Fixture"]);
-        self.git(&["config", "user.email", "fixture@example.invalid"]);
-        self.git(&["remote", "add", "origin", origin.to_str().unwrap()]);
-
-        copy_dir(&fixture_src().join(".docs"), &self.root.join(".docs"));
         // The gate script exists before the index names it: docs.mjs resolves a
         // `./gate.sh` gate by checking the file is there.
-        let gate = self.root.join("gate.sh");
-        fs::copy(fixture_src().join("gate.sh"), &gate).expect("copy gate.sh");
-        fs::set_permissions(&gate, fs::Permissions::from_mode(0o755)).expect("chmod gate.sh");
+        self.init_repo();
+        copy_dir(&fixture_src().join(".docs"), &self.root.join(".docs"));
 
         self.docs(&["init"]);
         self.write_index_frontmatter(extra);
@@ -138,6 +137,122 @@ impl Fixture {
 
         self.git(&["add", "-A"]);
         self.git(&["commit", "-q", "-m", "chore: fixture repo"]);
+    }
+
+    /// The origin, the git identity and the gate script, shared by both
+    /// layouts.
+    fn init_repo(&self) {
+        let origin = self.base.path().join("origin.git");
+        self.git_in(
+            self.base.path(),
+            &[
+                "init",
+                "-q",
+                "--bare",
+                "-b",
+                "main",
+                origin.to_str().unwrap(),
+            ],
+        );
+        self.git(&["init", "-q", "-b", "main"]);
+        self.git(&["config", "user.name", "Fixture"]);
+        self.git(&["config", "user.email", "fixture@example.invalid"]);
+        self.git(&["remote", "add", "origin", origin.to_str().unwrap()]);
+        let gate = self.root.join("gate.sh");
+        fs::copy(fixture_src().join("gate.sh"), &gate).expect("copy gate.sh");
+        fs::set_permissions(&gate, fs::Permissions::from_mode(0o755)).expect("chmod gate.sh");
+    }
+
+    fn build_v3(&self, extra: &[(&str, &str)]) {
+        self.init_repo();
+        self.factory_docs(&["init"]);
+        let mut toml = String::from(
+            "[docs]\nframework = 3\ngate = \"./gate.sh\"\ninner = \"./gate.sh --inner\"\nlanes = 2\ngate_parallel = true\n",
+        );
+        for (k, v) in extra {
+            toml.push_str(&format!("{k} = {v}\n"));
+        }
+        fs::write(self.root.join("docs/project.toml"), toml).unwrap();
+        self.factory_docs(&["new", "fixture", "--title", "Fixture"]);
+        self.factory_docs(&["slice", FEATURE, "a"]);
+        self.factory_docs(&["slice", FEATURE, "b"]);
+        self.factory_docs(&["slice", FEATURE, "c", "--depends", "2"]);
+        self.patch_prd_v3();
+        self.factory_docs(&["set", FEATURE, "status=ready"]);
+
+        fs::create_dir_all(self.root.join("src")).unwrap();
+        fs::write(self.root.join("src/lib.txt"), "fixture code file\n").unwrap();
+        fs::create_dir_all(self.root.join("scenario")).unwrap();
+        fs::write(self.root.join(".gitignore"), "/scenario/\n").unwrap();
+
+        self.git(&["add", "-A"]);
+        self.git(&["commit", "-q", "-m", "chore: fixture repo"]);
+    }
+
+    /// The v3 scaffold with its `summary` filled, the harness line and one
+    /// `run` row per slice.
+    fn patch_prd_v3(&self) {
+        let p = self.root.join(FEATURE_DIR).join("prd.md");
+        let text = fs::read_to_string(&p).expect("fixture prd.md");
+        let mut out = Vec::new();
+        let mut in_summary = false;
+        for line in text.lines() {
+            if in_summary && line.starts_with("  ") {
+                continue;
+            }
+            in_summary = false;
+            if line == "summary: |" {
+                out.push(line.to_string());
+                out.push("  Fixture PRD, approved for the harness run.".to_string());
+                out.push("  Three slices; c waits for b.".to_string());
+                in_summary = true;
+            } else if line.starts_with("**Harness**:") {
+                out.push("**Harness**: none — fixture, gate-only".to_string());
+            } else if line.starts_with("| FR-1 |") {
+                for (n, name) in [("01", "a"), ("02", "b"), ("03", "c")] {
+                    out.push(format!(
+                        "| FR-1 | run slice {n} ({name}) in the fixture → the board shows it done | test transcript | no |"
+                    ));
+                }
+            } else {
+                out.push(line.to_string());
+            }
+        }
+        fs::write(&p, out.join("\n") + "\n").unwrap();
+    }
+
+    /// `factory docs <args>`; panics on a non-zero exit.
+    pub fn factory_docs(&self, args: &[&str]) -> String {
+        let out = self.factory_docs_output(args);
+        assert!(
+            out.status.success(),
+            "factory docs {args:?} exited {:?}\nstdout:\n{}\nstderr:\n{}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).expect("utf8")
+    }
+
+    /// `factory docs <args>` whatever the exit code.
+    pub fn factory_docs_output(&self, args: &[&str]) -> Output {
+        self.command(env!("CARGO_BIN_EXE_factory"))
+            .arg("docs")
+            .args(args)
+            .output()
+            .expect("run factory docs")
+    }
+
+    /// `factory docs <cmd> 001 --json` parsed, whatever the exit code.
+    pub fn factory_docs_json(&self, cmd: &str) -> Value {
+        let out = self.factory_docs_output(&[cmd, FEATURE, "--json"]);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        serde_json::from_str(&stdout).unwrap_or_else(|e| {
+            panic!(
+                "factory docs {cmd} --json is not JSON ({e})\nstdout:\n{stdout}\nstderr:\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            )
+        })
     }
 
     fn write_index_frontmatter(&self, extra: &[(&str, &str)]) {

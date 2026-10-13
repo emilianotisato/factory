@@ -1,7 +1,8 @@
 ---
 slice: 01
-status: pending
+status: done
 depends_on: []
+lane: 1
 ---
 
 # Slice 01 — v3 model and the factory docs entry (FR-13, FR-15 part, FR-17 routing)
@@ -9,7 +10,11 @@ depends_on: []
 **Source**: [`prd.md`](prd.md) → §3 FR-13 (all five decisions), §5 FR-15 (the `docs` subcommand, `init`, `new`, `slice`, `status`, `set`, exit codes, "removed in v3"), §7 FR-17 (the routing bullet). **Depends on**: — (the spine: every later slice reads the v3 model this one lands).
 **Created**: 2026-10-13 · **Status**: pending
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**: built 2026-10-13.
+- **Built**: `src/docs.rs` moved to `src/docs/mod.rs` unchanged except `Serialize` on the board structs (`Slice.file` prints `null` when empty, `ready[]` entries omit `status`). New submodules `project` (`[docs]` reader with the v2 defaults, tri-state `gate_parallel`, a line-based `[docs]` writer that leaves `[run]`/`[workers]` byte for byte), `frontmatter` (port of `parseFrontmatter` plus `key: |` block scalars), `state` (`state.toml`, `docs.lock` flock, `set` read inside the lock, `write_atomic`), `board` (scan, `resolve`, `feature_state`, the no-argument board), `scaffold` (`init`, `new` with the `docs-next-number` allocator, `slice`). `assets/docs/` holds the v3 `index.md`, PRD and slice scaffolds. `src/cli/docs.rs` routes: help → `migrate`/`doctor` → v3 native → v2 `exec node` → `init` → "not on the framework"; `render`, `vendor`, `log merge` exit 2 "removed in v3". `config.rs` `PROJECT_TOP_KEYS` gains `docs`; its unknown-table test now uses `[deploy]`. Harness: `Fixture::v3`, `factory_docs`, `factory_docs_output`, `factory_docs_json`; stub `tests/fixture/stub-docs/docs.mjs`; `tests/docs_v3.rs` (10 tests).
+- **Inner loop** (`cargo test`): 3 runs, 1 red, ~2.3 min. The red run caught a wrong test expectation: `docs.mjs` strips one newline after the closing `---`, so the body keeps the blank line; the port was right.
+- **Deviations**: `init` runs natively in any non-v3 repo without `docs/index.md`, not only one without `docs/` (AD-101). ADs 102-104 in `log-slice-01.md`.
+- **Prove**: left for the checkpoint (FR-13 row, first half of FR-17).
 
 **Slice**: After this slice the `factory` binary has a `docs` subcommand that reads and writes the v3 layout natively (`docs/project.toml` `[docs]`, one `state.toml` per feature, a frontmatter-only `prd.md`) and passes every call in a v2 repo through to `node docs.mjs` unchanged. `init`, `new`, `slice`, `status` and `set` run natively on v3. The board it prints carries every `Status` field except the ones the log (slice 02) and the gate (slice 04) fill, which stay at their empty values. The driver is untouched: it still runs `node docs.mjs` through `Docs::locate` until slice 09. The log, `check`, `doctor`, the gate, preflight, ship, archive, lanes, renumber, ideas, retro, migrate and hook are later slices.
 
