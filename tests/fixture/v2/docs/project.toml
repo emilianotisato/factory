@@ -1,0 +1,5 @@
+[run]
+budget = 5
+
+[workers.polish]
+model = "sonnet"
