@@ -60,6 +60,7 @@ _(none)_
 **Because:** one reader for both paths, and the cockpit figure never failed on the subagents dir before.
 **Undo:** match `Subagents::Unreadable` in `measure()` and return the error.
 **Review:** fyi
+**Owner (2026-10-13):** kept
 
 ### AD-103 — What counts as one own turn when a line with usage has no message id? · slice-01 · 2026-10-12
 **Chose:** `num_turns` is the number of distinct own `message.id`s with usage, plus one per own usage line that carries no id.
@@ -81,6 +82,7 @@ _(none)_
 **Because:** the slice moves the version to 2 (task 1); the test's point is "applied once", not "version 1".
 **Undo:** put the literal back.
 **Review:** fyi
+**Owner (2026-10-13):** kept
 
 ### AD-201 — Which run do the recount tests mutate? · slice-02 · 2026-10-13
 **Chose:** both recount tests run on slice 01's `subagent_run` scenario (the `finished_run` plan with a polish that spawned two subagents).
@@ -95,6 +97,7 @@ _(none)_
 **Because:** a recount that leaves the store half-rewritten is worse than none; every worker the driver spawns gets a stream file at spawn.
 **Undo:** in `src/cli/report.rs` `recount`, skip the worker and carry its old `tool_calls` rows over.
 **Review:** fyi
+**Owner (2026-10-13):** kept
 
 ### AD-203 — Where does the recount get the gate pair that marks inner-loop calls? · slice-02 · 2026-10-13
 **Chose:** from `docs gate` and `docs gate --inner` in the run's repo at recount time, as the driver reads them. When the repo or the docs tool is gone, there is no pair and an inner-loop call is classified as a plain `bash` call.
@@ -102,6 +105,7 @@ _(none)_
 **Because:** the `kind` of a gate run is not an FR-21 figure, and the lookup figures do not depend on it. `gates` rows are never touched.
 **Undo:** pass `None` as the gate pair in `recount`.
 **Review:** fyi
+**Owner (2026-10-13):** kept
 
 ### AD-204 — Which phases count as "finished, stopped or failed"? · slice-02 · 2026-10-13
 **Chose:** `Phase::is_over()`, so `finished` and `failed`. A stopped run is phase `finished` with `stopped: true` (`src/cli/stop.rs:3`), so there is no `stopped` phase to test.
@@ -123,6 +127,7 @@ _(none)_
 **Because:** the slice appends columns to that line; the test's figures (lookups, `ctx_share`, `repeat_rate`) are all still checked.
 **Undo:** put back the exact strings with the full column list once slice 04 lands.
 **Review:** fyi
+**Owner (2026-10-13):** kept
 
 ### AD-301 — How is a section mean computed when only some of a role's packs wrote it? · slice-03 · 2026-10-12
 **Chose:** each section's mean is taken over every row of the role that recorded `pack_parts`. A row without that section (an unanswered slice has no `block_and_answer`) counts 0. Sections are listed in the order the packs first wrote them, and the JSON object keeps that order.
@@ -130,6 +135,7 @@ _(none)_
 **Because:** the line exists to split the start into its shares, so the parts should sum to the whole they sit beside.
 **Undo:** divide each section's sum by its own row count in `pack_by_role` (`src/cli/report.rs`).
 **Review:** fyi
+**Owner (2026-10-13):** kept
 
 ### AD-302 — What do a role with no `pack_parts`, and a run with no workers, print? · slice-03 · 2026-10-12
 **Chose:** a role whose rows all have null `pack_parts` prints `{role} —` and is `null` in the JSON. A null `start_context` prints `start_context —`. A run with no workers prints `pack_by_role: none`, like `weighted_by_role`.
@@ -148,6 +154,7 @@ _(none)_
 **Because:** task 3's acceptance puts `pack_by_role` last, and the order of tuples in the migration list does not matter.
 **Undo:** move the tuple and restore the two assertions if `pack_by_role` stops being last.
 **Review:** fyi
+**Owner (2026-10-13):** kept
 
 ### AD-401 — How does the knobs text show a role whose effort came from another scope? · slice-04 · 2026-10-12
 **Chose:** `polish sonnet/high project/default`: the model's scope, then `/` and the effort's scope, only when the two differ. In the fixture, `docs/project.toml` sets only the polish model, so its effort comes from the default and the line reads `project/default`.
@@ -155,6 +162,7 @@ _(none)_
 **Because:** task 2 writes `effort_source` exactly when the scopes differ, and the text should not drop what the row says. The acceptance check `polish sonnet/high project` still matches as a prefix.
 **Undo:** drop the `effort_source` branch in `knobs_text` (`src/cli/report.rs`).
 **Review:** fyi
+**Owner (2026-10-13):** kept
 
 ### AD-402 — Which resume does the `--hypothesis` harness test drive? · slice-04 · 2026-10-12
 **Chose:** a run parked on a preflight ask, whose driver has exited: the second `factory run 001 --hypothesis other` takes the resumable branch. The live branch calls the same `hypothesis_ignored` helper.
@@ -162,6 +170,7 @@ _(none)_
 **Because:** a parked-on-a-block run resumed with `--foreground` waits for the owner and hangs the test (see Traps). The refusal line and the unchanged row are the same on both branches.
 **Undo:** add a live-run case using the `set_pid` pattern from `tests/run.rs`.
 **Review:** fyi
+**Owner (2026-10-13):** kept
 
 ### AD-403 — Who adds slice 03's `pack_by_role` to the key list in `tests/metrics.rs`? · slice-04 · 2026-10-12
 **Chose:** this slice added it after `knobs` and `hypothesis`. Slice 03 was already done and committed without it, so `report_prints_the_retro_keys_then_the_run_keys` was red on the shared tree.
@@ -197,6 +206,7 @@ _(none)_
 **Because:** they are slices 04 and 05's code: `config::load_with_project`, `Findings`, `model_id`, `PolishFindingsMissing`, and the FR-24 asserts. Slice 05's commit `a1ba623` listed them while siblings were live. Slice 04 edited its files with `python3 -I` scripts (see Traps), which no tool call names. The green gate and every CP-1 row ran on this tree. Without these files, `feat/observatory` does not build: its committed `tests/knobs.rs` and `report.rs` call code that exists only here. All lanes were drained, so no sibling was mid-write.
 **Undo:** `git reset HEAD~1 -- <the eight files>` before the push, then commit them separately.
 **Review:** fyi
+**Owner (2026-10-13):** kept
 
 ### AD-601 — How does the Prove task get a diff of `001-driver/retro.md` from run 024, whose `retro.md` lives in another repo? · slice-06 · 2026-10-13
 **Chose:** `factory retro <run> --file <PATH>` writes the section into the named file instead of the feature's own `retro.md`; without `--file` the subcommand resolves `runs.repo` + `runs.feature` as the slice says.
@@ -204,6 +214,7 @@ _(none)_
 **Because:** run 024 is `repo = /home/emiliano/Projects/Prokey/wt-b`, feature 024; its resolved `retro.md` is Prokey's, while slice-06 task 7 asks for the `git diff` of `docs/features/001-driver/retro.md`. The flag is one optional argument; the default path is unchanged.
 **Undo:** drop `file` from `RetroArgs` in `src/cli/retro.rs`; Prove then diffs Prokey's file.
 **Review:** decide
+**Owner (2026-10-13):** kept
 
 ### AD-602 — Which earlier runs make the cohort when a run starts in the same second the previous one finished? · slice-06 · 2026-10-13
 **Chose:** `Db::earlier_runs(repo, before, except, limit)`: same `repo`, phase `finished`, `finished_at <= started_at`, `id != except`, newest `finished_at` first, then id.
@@ -225,6 +236,7 @@ _(none)_
 **Because:** prd §7 and §12 make the old family PRD-002's and the owner's; the run may not write outside the repo. Until the template changes, a polish worker reading it can still be told to run `measure.py`, which is the one live instruction left.
 **Undo:** n/a; the fix is one line in the template, for the owner or PRD-002.
 **Review:** decide
+**Owner (2026-10-13):** kept
 
 ### AD-605 — Repo files naming `measure.py` beyond the acceptance's list · slice-06 · 2026-10-13
 **Chose:** keep them: `001-driver/agent-log.md`, `evidence/cp-2-*.txt`, `evidence/cp-4-*.txt`, `slice-03-one-worker.md`, `slice-09-closeout.md`, `002-docs-port/prd.md`, `docs/index.md`, and the origin citations in `src/stream.rs` and `src/cli/report.rs:93`, beside the ones task 5 names.
@@ -232,6 +244,7 @@ _(none)_
 **Because:** each is a record of what was done or the origin of a rule, not a step anyone follows; rewriting history would make them wrong. The only instruction, `001-driver/qa-guide.md` step 6, now names `factory report` and `factory retro`.
 **Undo:** n/a.
 **Review:** fyi
+**Owner (2026-10-13):** kept
 
 ### AD-9901 — Which range counts a run's changed lines? · polish · 20261013
 **Chose:** `git diff --shortstat <default_branch>...HEAD` (three dots: from the merge base) in `retro::changed_lines`.
@@ -239,6 +252,7 @@ _(none)_
 **Because:** with two dots, `git diff` compares the two tips, so every commit that landed on the default branch after the feature branched counts as this run's lines, reversed. Any run whose base moved stores a wrong cost per line. Three dots is the branch's own diff, which is what FR-25 means by changed lines.
 **Undo:** one character in `src/retro.rs` `changed_lines`.
 **Review:** decide
+**Owner (2026-10-13):** kept
 
 ### AD-9902 — Which characters does the transcript path turn into `-`? · polish · 20261013
 **Chose:** every character that is not an ASCII letter or digit, in `measure::transcript_path` and in the stub.
@@ -246,6 +260,7 @@ _(none)_
 **Because:** Claude Code's own dirs on this machine show `_` and spaces become `-` too (`ICG/apk_fiscal_arca` is stored as `-home-emiliano-Projects-ICG-apk-fiscal-arca`). With the narrower rule, such a repo's subagents read as "no dir", which is zeros. The PRD's §13 had this rule on the confirm list.
 **Undo:** the closure in `transcript_path` and the stub's two regexes.
 **Review:** fyi
+**Owner (2026-10-13):** kept
 
 ### AD-9903 — Does a stopped run join the comparison cohort? · polish · 20261013
 **Chose:** no: `Db::earlier_runs` skips a run with a `run_stopped` event.
@@ -253,6 +268,7 @@ _(none)_
 **Because:** a stopped run is phase `finished` too, with a fraction of a feature's tokens. In the "Compared with" table it reads as a cheap run.
 **Undo:** drop the `NOT EXISTS` clause in `earlier_runs`.
 **Review:** fyi
+**Owner (2026-10-13):** kept
 
 ### AD-9904 — What does `retro::write` do with markers that are not one pair in order? · polish · 20261013
 **Chose:** refuse, leave the file as it was, and return the counts in the error. At ship that error is one `ship: no ## Numbers written — …` line, never a stopped ship.
@@ -260,6 +276,7 @@ _(none)_
 **Because:** the markers sit in a file the owner and the polish worker both write. A quoted marker in the prose must not cost a paragraph or a shipped run.
 **Undo:** the marker count in `retro::write` and the `if let Err` in `closeout::ship`.
 **Review:** fyi
+**Owner (2026-10-13):** kept
 
 ### AD-9905 — How are a fork's copied messages counted? · polish · 20261013
 **Chose:** once per session: `measure::subagents` drops a subagent message whose `message.id` the parent or an earlier subagent file already holds.
@@ -267,6 +284,7 @@ _(none)_
 **Because:** a forked subagent's transcript starts with copies of the parent's and its siblings' assistant messages, same ids. Session `788a618e` counted them twice. Run 024's polish session (`ddbb0927`) has no copies, so the CP-1 and CP-2 evidence figures stand.
 **Undo:** the `seen` set in `measure::subagents`.
 **Review:** fyi
+**Owner (2026-10-13):** kept
 
 ## Checkpoints
 

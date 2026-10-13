@@ -72,3 +72,5 @@ Written by `/deliver` in the closeout commit, from the agent's side of the run.
 ## Score
 
 The owner's to set. From the agent's side, the framework served well: checkpoints and the Opus fallback caught real defects, and the main cost was noise from the shared checkout and a second opinion that timed out.
+
+**Owner review (2026-10-13):** 18 kept, 0 changed (AD-102, 105, 202, 203, 206, 301, 303, 401, 402, 601, 604, 605, 901, 9901, 9902, 9903, 9904, 9905)
