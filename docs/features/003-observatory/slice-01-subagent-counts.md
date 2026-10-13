@@ -1,7 +1,8 @@
 ---
 slice: 01
-status: pending
+status: done
 depends_on: []
+lane: 1
 ---
 
 # Slice 01 — Subagent counts (FR-21, core)
@@ -9,7 +10,13 @@ depends_on: []
 **Source**: [`prd.md`](prd.md) → §3 FR-21, decisions 1 and 2 ("Subagent usage is read from the worker's transcript dir after it exits", "The collector tells main lines from subagent lines"); §2 Blast radius (schema v1 → v2, added columns only). **Depends on**: —
 **Created**: 2026-10-13 · **Status**: pending
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**: 2026-10-12, built tasks 1-7.
+- **Built**: schema v2 (`workers.sub_input`, `sub_cache_write`, `sub_cache_read`, `sub_output`, `subagents`; `tool_calls.in_subagent`) with a v1-store migration test; the collector reads `parent_tool_use_id`, so `start_context`, `peak_context` and `num_turns` count own lines only and each `ToolUse` carries `in_subagent`; `paths::claude_config_dir`, `measure::transcript_path` and `measure::subagents` (`None` / `Read` / `Unreadable`), with `measure()` reusing it for the cockpit; `metrics::record_subagents` at the three exit sites, nulls plus one `SubagentsUnread` event on an unreadable dir; `quota::weighted` and the report's token totals add the `sub_*` columns, the new last key `weighted_by_role` prints `own+sub` per role, and the lookup figures read own calls only; the stub writes a `CLAUDE_CONFIG_DIR` projects dir and replays `tests/stubs/polish-subagents.jsonl` (16 lines cut from `ddbb0927`, scrubbed) on `{"outcome":"polish","subagents":2}`; `factory wait` prints `subagents unread: …` and `skills/factory-deliver/SKILL.md` §2 calls it information.
+- **Inner loop**: 5 runs, 4 red, about 3 min. Run 1: the v1-store test re-added columns the v1 `SCHEMA` already has. Run 2: the report key slice was one short, and the stub never wrote the subagents dir (a top-level `const` read before it was initialised, so polish died and was retried). Run 3: a one-off load race in `tests/commits.rs` (passes alone and in runs 4-5). Run 4: `tests/run.rs` still expected schema version 1 (AD-105).
+- **Budget**: subagent tokens now count against `budget_weighted_tokens`, so a polish with heavy subagents pauses a run earlier than before. This is FR-21 as specified; there is no separate own-only budget.
+- **Accepted cost**: the stored A/B baselines (`ctx_share` 0.025, the lookup shares, `followup_reads`) mixed own and subagent calls. The own-only figures are not comparable with them; the next runs re-baseline.
+- **Deviations**: none from the tasks. ADs 101-105 in `log-slice-01.md`.
+- **Prove (task 8)**: the FR-21 row, first half, is left for CP-1 with the full gate. The scenario is `tests/metrics.rs` `a_polish_with_subagents_counts_them_apart_from_its_own`.
 
 **Slice**: After this slice every worker row carries what its subagents cost, apart from its own usage, and the run's `weighted_tokens` and budget count both. The collector stops mixing a subagent's lines into the worker's own `start_context`, `peak_context` and `tool_calls`. The stub harness gains a projects dir and one "polish with subagents" scenario. It leaves `--recount` and the per-worker token columns to slice 02, and the retro to slice 06.
 

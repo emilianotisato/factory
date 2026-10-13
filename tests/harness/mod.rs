@@ -453,6 +453,9 @@ fn build_env(
         ("FACTORY_CONFIG_DIR".to_string(), s(&base.join("config"))),
         ("GIT_CONFIG_GLOBAL".to_string(), s(gitconfig)),
         ("GIT_CONFIG_NOSYSTEM".to_string(), "1".to_string()),
+        // Claude Code's config dir: where the stub writes a session's
+        // subagent transcripts and the driver reads them (PRD-003 FR-21).
+        ("CLAUDE_CONFIG_DIR".to_string(), s(&base.join("claude"))),
     ])
 }
 

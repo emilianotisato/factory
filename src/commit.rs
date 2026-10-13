@@ -703,6 +703,7 @@ mod tests {
             result_ts: None,
             result_error: false,
             result_head: None,
+            in_subagent: false,
         }
     }
 

@@ -2101,6 +2101,8 @@ fn settle(
 ) -> Result<()> {
     run.db()
         .finish_worker(row_id, summary, outcome.as_str(), &clock::now_rfc3339())?;
+    // Never fails the exit: an unreadable dir is an event and null columns.
+    let _ = metrics::record_subagents(run, row_id, session_id);
     metrics::record_exit(run, row_id, summary)?;
     run.set_worker_outcome(session_id, outcome.as_str())
 }

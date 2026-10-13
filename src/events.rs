@@ -105,6 +105,14 @@ pub enum EventKind {
         slice: u32,
         section: u32,
     },
+    /// PRD-003 FR-21: a worker's `subagents/` dir exists but could not be
+    /// read; its `sub_*` columns stay null. Information, never a failure.
+    SubagentsUnread {
+        worker_id: i64,
+        session_id: String,
+        path: String,
+        error: String,
+    },
     /// FR-5: the slice's commit — the stream's written paths plus the slice
     /// file and its fragment, by pathspec; `files` is what was staged.
     SliceCommitted {

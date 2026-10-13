@@ -102,6 +102,14 @@ pub fn home() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/"))
 }
 
+/// Claude Code's config dir: `$CLAUDE_CONFIG_DIR`, else `~/.claude`. The
+/// driver and its workers share it (`worker::KEEP_CLAUDE_VARS`).
+pub fn claude_config_dir() -> PathBuf {
+    non_empty("CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home().join(".claude"))
+}
+
 /// The git toplevel of `from`, canonical.
 pub fn repo_root(from: &Path) -> Result<PathBuf> {
     let out = Command::new("git")

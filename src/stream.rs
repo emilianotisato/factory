@@ -4,7 +4,7 @@
 //! not read, so a Claude Code upgrade adds lines and fields without a panic.
 //! `peak_context` follows `measure.py:56-67`: per assistant message
 //! `input + cache_creation + cache_read`, peak is the maximum.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::Deserialize;
 use serde_json::{Map, Value};
@@ -160,6 +160,9 @@ pub struct ToolUse {
     /// The first [`RESULT_HEAD`] characters of the result text, for the
     /// gate verdict (`metrics::is_red`); `result_chars` counts the whole.
     pub result_head: Option<String>,
+    /// Issued by one of the worker's subagents (a line with
+    /// `parent_tool_use_id`), not by the worker itself (PRD-003 FR-21).
+    pub in_subagent: bool,
 }
 
 /// How much of a `tool_result` the summary keeps as text.
@@ -186,6 +189,8 @@ pub struct Summary {
     pub has_result: bool,
     pub usage: Option<Usage>,
     pub model_usage: Value,
+    /// Distinct own assistant messages with usage, once the `result` came;
+    /// the `result`'s own `num_turns` mixes in nothing it can split.
     pub num_turns: Option<u64>,
     pub duration_ms: Option<u64>,
     pub terminal_reason: Option<String>,
@@ -196,6 +201,8 @@ pub struct Summary {
     pub session_id: Option<String>,
     pub result_text: Option<String>,
     pub status_hint: Option<StatusHint>,
+    /// `peak_context` and `start_context` read the worker's own lines
+    /// only: a subagent's context is its own window (PRD-003 FR-21).
     pub peak_context: Option<u64>,
     /// The first assistant message's context (`measure.py` start): what the
     /// worker read before it did anything (FR-8 `start_context`).
@@ -264,6 +271,9 @@ impl Summary {
 pub struct Collector {
     summary: Summary,
     pending: HashMap<String, usize>,
+    /// Own assistant message ids with usage; a line with no id counts alone.
+    own_turns: HashSet<String>,
+    anonymous_turns: u64,
 }
 
 impl Collector {
@@ -293,11 +303,18 @@ impl Collector {
         self.summary.events += 1;
         match ev {
             StreamEvent::Assistant { message, rest } => {
-                if let Some(u) = &message.usage {
+                let in_subagent = in_subagent(rest);
+                if let (Some(u), false) = (&message.usage, in_subagent) {
                     let ctx = u.context();
                     self.summary.peak_context =
                         Some(self.summary.peak_context.map_or(ctx, |p| p.max(ctx)));
                     self.summary.start_context.get_or_insert(ctx);
+                    match &message.id {
+                        Some(id) => {
+                            self.own_turns.insert(id.clone());
+                        }
+                        None => self.anonymous_turns += 1,
+                    }
                 }
                 let ts = timestamp(rest);
                 for block in &message.content {
@@ -324,6 +341,7 @@ impl Collector {
                         result_ts: None,
                         result_error: false,
                         result_head: None,
+                        in_subagent,
                     });
                 }
             }
@@ -358,7 +376,7 @@ impl Collector {
                 s.has_result = true;
                 s.usage = r.usage.clone();
                 s.model_usage = r.model_usage.clone();
-                s.num_turns = r.num_turns;
+                s.num_turns = Some(self.own_turns.len() as u64 + self.anonymous_turns);
                 s.duration_ms = r.duration_ms;
                 s.terminal_reason = r.terminal_reason.clone();
                 s.is_error = r.is_error;
@@ -383,6 +401,14 @@ impl Collector {
     pub fn finish(self) -> Summary {
         self.summary
     }
+}
+
+/// A line a subagent wrote: its `parent_tool_use_id` names the `Agent`
+/// call that spawned it; the worker's own lines carry null.
+fn in_subagent(rest: &Map<String, Value>) -> bool {
+    rest.get("parent_tool_use_id")
+        .and_then(Value::as_str)
+        .is_some()
 }
 
 /// A line's `timestamp`, when the stream carries one (`--verbose` does).
@@ -454,5 +480,29 @@ mod tests {
         assert_eq!(s.rate_limit.unwrap().utilization_pct, Some(30));
         let (_, s) = parse(&line(r#"{"status":"rejected"}"#));
         assert_eq!(s.rate_limit.unwrap().utilization_pct, None);
+    }
+
+    #[test]
+    fn subagent_lines_stay_out_of_the_context_and_the_turns() {
+        let assistant = |id: &str, parent: &str, cache_read: u64, tool: &str| {
+            format!(
+                r#"{{"type":"assistant","parent_tool_use_id":{parent},"message":{{"id":"{id}","content":[{{"type":"tool_use","id":"{tool}","name":"Read","input":{{}}}}],"usage":{{"input_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":{cache_read},"output_tokens":5}}}}}}"#
+            )
+        };
+        let text = [
+            assistant("m1", "null", 100, "t1"),
+            assistant("m2", r#""toolu_x""#, 9000, "t2"),
+            r#"{"type":"user","parent_tool_use_id":"toolu_x","message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":"abc"}]}}"#.to_string(),
+            assistant("m3", "null", 300, "t3"),
+            r#"{"type":"result","num_turns":9}"#.to_string(),
+        ]
+        .join("\n");
+        let (_, s) = parse(&text);
+        assert_eq!(s.peak_context, Some(301));
+        assert_eq!(s.start_context, Some(101));
+        assert_eq!(s.num_turns, Some(2));
+        let flags: Vec<_> = s.tool_uses.iter().map(|t| t.in_subagent).collect();
+        assert_eq!(flags, [false, true, false]);
+        assert_eq!(s.tool_uses[1].result_chars, Some(3));
     }
 }

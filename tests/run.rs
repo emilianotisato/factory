@@ -9,7 +9,7 @@ use std::process::{Command, Output};
 
 use factory::cli::run::{begin, ensure_branch};
 use factory::config;
-use factory::db::Db;
+use factory::db::{Db, SCHEMA_VERSION};
 use factory::docs::{Branch, Docs};
 use factory::events::EventKind;
 use factory::run::{Phase, Run, WorkerRef, alive, load_state, pid_alive, start_time};
@@ -267,8 +267,8 @@ fn opening_the_store_twice_applies_the_schema_once() {
     let path = dir.path().join("deep/er/factory.db");
     let a = Db::open(&path).unwrap();
     let b = Db::open(&path).unwrap();
-    assert_eq!(a.schema_version().unwrap(), 1);
-    assert_eq!(b.schema_version().unwrap(), 1);
+    assert_eq!(a.schema_version().unwrap(), SCHEMA_VERSION);
+    assert_eq!(b.schema_version().unwrap(), SCHEMA_VERSION);
     let versions: i64 = b
         .conn()
         .query_row("SELECT count(*) FROM schema_version", [], |r| r.get(0))

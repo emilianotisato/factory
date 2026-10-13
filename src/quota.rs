@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-use crate::db::Db;
+use crate::db::{Db, WorkerRow};
 use crate::events::EventKind;
 use crate::run::{Phase, Run};
 use crate::scheduler::{SLOW_TICK, say};
@@ -110,14 +110,33 @@ pub fn weighted(db: &Db, run_id: &str) -> Result<u64> {
     Ok(weighted_sum(db, run_id)?.round() as u64)
 }
 
-/// The sum unrounded: what the budget is compared with.
+/// The sum unrounded: what the budget is compared with. A worker's
+/// subagents count against it like the worker itself (PRD-003 FR-21).
 pub fn weighted_sum(db: &Db, run_id: &str) -> Result<f64> {
-    let n = |v: Option<i64>| v.unwrap_or(0).max(0) as u64;
     Ok(db
         .workers(run_id)?
         .iter()
-        .map(|w| weigh(n(w.input), n(w.cache_write), n(w.cache_read), n(w.output)))
+        .map(|w| weigh_own(w) + weigh_sub(w))
         .sum())
+}
+
+fn n(v: Option<i64>) -> u64 {
+    v.unwrap_or(0).max(0) as u64
+}
+
+/// A worker row's own usage, weighted; nulls as zero.
+pub fn weigh_own(w: &WorkerRow) -> f64 {
+    weigh(n(w.input), n(w.cache_write), n(w.cache_read), n(w.output))
+}
+
+/// What a worker row's subagents used, weighted; nulls as zero.
+pub fn weigh_sub(w: &WorkerRow) -> f64 {
+    weigh(
+        n(w.sub_input),
+        n(w.sub_cache_write),
+        n(w.sub_cache_read),
+        n(w.sub_output),
+    )
 }
 
 /// Why nothing may spawn right now.
@@ -386,6 +405,22 @@ mod tests {
         assert_eq!(Limit::from(&s), None);
         // No result at all is a death (FR-1), not a limit.
         assert_eq!(Limit::from(&Summary::dead()), None);
+    }
+
+    #[test]
+    fn subagent_output_weighs_like_the_workers_own() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let run = Run::create(&tmp.path().join("data"), &repo, "001", None, 1).unwrap();
+        run.db()
+            .conn()
+            .execute(
+                "INSERT INTO workers (run_id, role, started_at, output, sub_output) VALUES (?1, 'polish', 'x', 100, 100)",
+                [run.id().as_str()],
+            )
+            .unwrap();
+        assert_eq!(weighted(run.db(), run.id().as_str()).unwrap(), 1000);
     }
 
     #[test]

@@ -22,6 +22,7 @@ Run `factory wait <id> --timeout 1500` in a background Bash and do nothing else 
   - `BLOCK-n …` or `ASK-n …`: the owner decides. Run `factory status <id>` once for context, then `AskUserQuestion` with the question's text, the Recommended option first, the alternatives after it, and `Other` for a free answer. Then `factory answer BLOCK-n "<the choice>"` (or `ASK-n`) and wait again. `wait` prints a question again on every call until it is answered, so if the owner will not answer now, say that `factory wait <id>` brings it back, and end.
   - `paused until …`: information; the run resumes by itself. Wait again.
   - `stand-in: …`: information; the polish worker left the retro or the PR body unwritten and factory filled it from a template. The PR body's first line says so. Wait again, and name the file when §3 gives the owner the PR URL.
+  - `subagents unread: …`: information; a worker's subagent transcripts could not be read, so its subagent tokens stay blank in `report`. The run goes on. Wait again.
   - `parked: …`: a cap was reached and the driver has exited. Ask the owner for a new budget; on an answer run `factory run NNN --budget <n>` and wait again. With none, report that `factory run NNN --budget <n>` resumes it, and end: `wait` prints the park again on every call while it stands.
   - `stopped: …`: the owner stopped it. Report; `factory run NNN` resumes it later. End.
   - `failed: …`: report the reason with `factory status <id>`. End.

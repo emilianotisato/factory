@@ -16,7 +16,8 @@ pub const CURSOR_FILE: &str = "cockpit.cursor";
 
 /// §9: a block, an ask, a quota pause, a cap reached, finished, failed — and
 /// `run_stopped`, the end of a stopped run (AD-1002), and a closeout file
-/// filled from a template (`template_stand_in`, AD-904). Everything else is
+/// filled from a template (`template_stand_in`, AD-904), and a worker whose
+/// subagents could not be counted (`subagents_unread`). Everything else is
 /// progress and only shows in `factory status`.
 pub fn is_cockpit(kind: &EventKind) -> bool {
     matches!(
@@ -32,6 +33,7 @@ pub fn is_cockpit(kind: &EventKind) -> bool {
             | EventKind::RunStopped { .. }
             | EventKind::RunFailed { .. }
             | EventKind::TemplateStandIn { .. }
+            | EventKind::SubagentsUnread { .. }
     )
 }
 
@@ -106,6 +108,15 @@ pub fn line(ev: &Event, feature: &str) -> Option<String> {
             };
             format!(
                 "stand-in: {file} is a template, the polish worker wrote none — the PR body's first line says so"
+            )
+        }
+        EventKind::SubagentsUnread {
+            session_id, error, ..
+        } => {
+            let short: String = session_id.chars().take(8).collect();
+            format!(
+                "subagents unread: worker {short} — {}; its subagent tokens stay blank, the run goes on",
+                first_line(error)
             )
         }
         _ => return None,
@@ -467,6 +478,18 @@ mod tests {
             }),
             Some(
                 "stand-in: docs/features/001-x/retro.md is a template, the polish worker wrote none — the PR body's first line says so"
+                    .into()
+            )
+        );
+        assert_eq!(
+            l(EventKind::SubagentsUnread {
+                worker_id: 3,
+                session_id: "ddbb0927-aaaa".into(),
+                path: "/c/projects/-r/ddbb0927-aaaa.jsonl".into(),
+                error: "read /c/x: Permission denied\nmore".into(),
+            }),
+            Some(
+                "subagents unread: worker ddbb0927 — read /c/x: Permission denied; its subagent tokens stay blank, the run goes on"
                     .into()
             )
         );

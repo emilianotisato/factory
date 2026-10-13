@@ -48,6 +48,12 @@
 // The git-add claim adds `git_add: "<args>"` on a `done` build: after the
 // stray and heredoc files exist, the worker really runs `git add <args>` and
 // the stream carries that Bash call, so the driver can read the claim.
+// PRD-003 FR-21 adds `subagents: 2` on a `polish` step: the stream carries
+// polish-subagents.jsonl (cut from a real polish worker's stream: own lines
+// and subagent lines with `parent_tool_use_id`), and the session's transcript
+// dir under $CLAUDE_CONFIG_DIR gets `subagents/agent-<i>.jsonl` with the
+// usage in subagentFixtures(); `subagents_unreadable: true` then makes that
+// dir mode 000. No other step writes a transcript dir.
 const fs = require('node:fs')
 const path = require('node:path')
 const crypto = require('node:crypto')
@@ -345,6 +351,7 @@ if (role === 'polish') {
   fs.mkdirSync(runDir, { recursive: true })
   if (!skip.has('body')) writeAtomic(body, `## PRD-${dirM[1].match(/(\d{3})-/)[1]} — Fixture\n\nStub PR body (spawn ${n}). PR: \`${dirM[1]}/prd.md\`\n\n### Needs your review\n\n- none\n\n### Human QA\n\nNone — every QA-plan row was proven by the run.\n`)
   emit(init)
+  if (step.subagents) subagentRun(step)
   readFile(prd)
   for (const f of touched) tool('Write', { file_path: f, content: `polished by spawn ${n}\n` })
   innerRun(step)
@@ -604,6 +611,76 @@ function progress(file, spawn, rel, ad, nn) {
     ? text.replace(re, (cur) => (/_\(written as it lands/.test(cur) ? line : `${cur} · stub spawn ${spawn}`))
     : `${text.trimEnd()}\n\n${line}\n`
   writeAtomic(file, out)
+}
+
+// Two messages per subagent, each logged twice with a growing output count,
+// as Claude Code logs a streamed message: only the last usage per id counts.
+// Final sums: input 16, cache_write 3600, cache_read 102000, output 1000.
+// A function, not a top-level const: the polish branch above calls
+// subagentRun before a const this far down would be initialised.
+function subagentFixtures() {
+  return [
+    [
+      { id: 'msg_sub_a1', input: 3, cw: 1000, cr: 20000, out: [10, 400] },
+      { id: 'msg_sub_a2', input: 5, cw: 2000, cr: 21000, out: [50, 300] },
+    ],
+    [
+      { id: 'msg_sub_b1', input: 7, cw: 500, cr: 30000, out: [20, 200] },
+      { id: 'msg_sub_b2', input: 1, cw: 100, cr: 31000, out: [5, 100] },
+    ],
+  ]
+}
+
+// FR-21: the cut stream, then the transcript dir the driver reads after exit.
+function subagentRun(step) {
+  const fixtures = subagentFixtures()
+  const count = Number(step.subagents)
+  if (!(count >= 1 && count <= fixtures.length)) fail(65, `subagents: ${step.subagents} — the stub has ${fixtures.length} fixtures`)
+  const cut = fs.readFileSync(path.join(__dirname, 'polish-subagents.jsonl'), 'utf8').split('\n').filter((l) => l.trim())
+  for (const line of cut) {
+    emit({ ...JSON.parse(line), session_id: sessionId, uuid: crypto.randomUUID(), timestamp: new Date().toISOString() })
+  }
+  const configDir = process.env.CLAUDE_CONFIG_DIR
+  if (!configDir) fail(64, 'CLAUDE_CONFIG_DIR is not set — the harness sets it (tests/harness/mod.rs)')
+  // The driver's rule (src/measure.rs transcript_path): every "/" and "." of the cwd as "-".
+  const slug = cwd.replace(/[/.]/g, '-')
+  const dir = path.join(configDir, 'projects', slug, sessionId, 'subagents')
+  fs.mkdirSync(dir, { recursive: true })
+  for (let i = 0; i < count; i++) {
+    const lines = []
+    let sec = 0
+    for (const m of fixtures[i]) {
+      for (const out of m.out) {
+        lines.push(JSON.stringify({
+          type: 'assistant',
+          parentUuid: null,
+          isSidechain: true,
+          agentId: `stub${i + 1}`,
+          sessionId,
+          timestamp: `2026-10-13T10:00:${String(sec++).padStart(2, '0')}.000Z`,
+          message: {
+            model: 'claude-opus-5-5',
+            id: m.id,
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'text', text: '(scrubbed)' }],
+            usage: { input_tokens: m.input, cache_creation_input_tokens: m.cw, cache_read_input_tokens: m.cr, output_tokens: out },
+          },
+        }))
+      }
+    }
+    fs.writeFileSync(path.join(dir, `agent-${i + 1}.jsonl`), `${lines.join('\n')}\n`)
+    fs.writeFileSync(path.join(dir, `agent-${i + 1}.meta.json`), JSON.stringify({
+      agentType: 'general-purpose',
+      description: 'review the diff',
+      toolUseId: `toolu_stub_agent_${i + 1}`,
+      spawnDepth: 1,
+      requestShape: 'foreground',
+      requestNonInteractive: true,
+      model: 'claude-opus-5-5',
+    }))
+  }
+  if (step.subagents_unreadable) fs.chmodSync(dir, 0o000)
 }
 
 function sleep(ms) {

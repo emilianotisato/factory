@@ -12,7 +12,7 @@ use crate::run::RunState;
 use crate::stream::Summary;
 use crate::{Result, clock};
 
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -153,6 +153,14 @@ pub struct WorkerRow {
     /// The repo-relative files the worker's pack held (slice 13), from the
     /// pack header; empty for a worker spawned before slice 13.
     pub pack_files: Vec<String>,
+    /// What the worker's subagents used, from its transcript dir (PRD-003
+    /// FR-21); null when not read.
+    pub sub_input: Option<i64>,
+    pub sub_cache_write: Option<i64>,
+    pub sub_cache_read: Option<i64>,
+    pub sub_output: Option<i64>,
+    /// How many subagents had an assistant message; null when not read.
+    pub subagents: Option<i64>,
 }
 
 /// One `tool_calls` row to insert (FR-8).
@@ -174,6 +182,8 @@ pub struct ToolCallInsert<'a> {
     pub label_expanded: Option<bool>,
     /// A `read`/`bash-cat` of a file the worker's pack held (slice 13).
     pub pack_doc: bool,
+    /// The call came from one of the worker's subagents (PRD-003 FR-21).
+    pub in_subagent: bool,
 }
 
 /// One `tool_calls` row, as tests and the report read it back.
@@ -194,6 +204,7 @@ pub struct ToolCallRow {
     pub label_expanded: Option<bool>,
     /// Null (a row from before slice 13) reads as false.
     pub pack_doc: bool,
+    pub in_subagent: bool,
 }
 
 /// One `gates` row to insert (FR-4, FR-8).
@@ -264,6 +275,14 @@ impl Db {
             ("runs", "pr_url", "TEXT"),
             ("workers", "pack_files", "TEXT"),
             ("tool_calls", "pack_doc", "INTEGER"),
+            // v2 (PRD-003). Null `sub_*` means not read: an older row, or a
+            // transcript dir that could not be read; zero means none.
+            ("workers", "sub_input", "INTEGER"),
+            ("workers", "sub_cache_write", "INTEGER"),
+            ("workers", "sub_cache_read", "INTEGER"),
+            ("workers", "sub_output", "INTEGER"),
+            ("workers", "subagents", "INTEGER"),
+            ("tool_calls", "in_subagent", "INTEGER NOT NULL DEFAULT 0"),
         ] {
             if !self.has_column(table, column)? {
                 tx.execute(
@@ -494,6 +513,29 @@ impl Db {
             .unwrap_or_default())
     }
 
+    /// The worker's subagent usage as `(input, cache_write, cache_read,
+    /// output, count)`; `None` writes nulls (the dir could not be read).
+    pub fn set_worker_subagents(
+        &self,
+        id: i64,
+        sub: Option<(i64, i64, i64, i64, i64)>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE workers SET sub_input = ?2, sub_cache_write = ?3, sub_cache_read = ?4,
+                                sub_output = ?5, subagents = ?6
+             WHERE id = ?1",
+            params![
+                id,
+                sub.map(|s| s.0),
+                sub.map(|s| s.1),
+                sub.map(|s| s.2),
+                sub.map(|s| s.3),
+                sub.map(|s| s.4),
+            ],
+        )?;
+        Ok(())
+    }
+
     /// The slice's commit on the worker that built it (FR-5).
     pub fn set_worker_commit(&self, id: i64, sha: &str) -> Result<()> {
         self.conn.execute(
@@ -509,7 +551,7 @@ impl Db {
             "SELECT id, run_id, role, slice, session_id, model, effort, input, cache_write, cache_read,
                     output, thinking, cost_usd, num_turns, duration_ms, terminal_reason, outcome,
                     peak_context, started_at, ended_at, commit_sha, checkpoint, start_context,
-                    pack_files
+                    pack_files, sub_input, sub_cache_write, sub_cache_read, sub_output, subagents
              FROM workers WHERE run_id = ?1 ORDER BY id",
         )?;
         let rows = stmt.query_map([run_id], |r| {
@@ -541,6 +583,11 @@ impl Db {
                     .get::<_, Option<String>>(23)?
                     .and_then(|t| serde_json::from_str(&t).ok())
                     .unwrap_or_default(),
+                sub_input: r.get(24)?,
+                sub_cache_write: r.get(25)?,
+                sub_cache_read: r.get(26)?,
+                sub_output: r.get(27)?,
+                subagents: r.get(28)?,
             })
         })?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
@@ -601,8 +648,8 @@ impl Db {
             let mut stmt = tx.prepare(
                 "INSERT INTO tool_calls (run_id, worker_id, seq, tool, kind, result_chars, target_hash,
                                          repeat_in_worker, repeat_in_run, ts, label_followup,
-                                         label_expanded, pack_doc)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                                         label_expanded, pack_doc, in_subagent)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             )?;
             for t in rows {
                 stmt.execute(params![
@@ -619,6 +666,7 @@ impl Db {
                     t.label_followup.map(i64::from),
                     t.label_expanded.map(i64::from),
                     t.pack_doc as i64,
+                    t.in_subagent as i64,
                 ])?;
             }
         }
@@ -630,7 +678,8 @@ impl Db {
     pub fn tool_calls(&self, run_id: &str) -> Result<Vec<ToolCallRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, run_id, worker_id, seq, tool, kind, result_chars, target_hash,
-                    repeat_in_worker, repeat_in_run, ts, label_followup, label_expanded, pack_doc
+                    repeat_in_worker, repeat_in_run, ts, label_followup, label_expanded, pack_doc,
+                    in_subagent
              FROM tool_calls WHERE run_id = ?1 ORDER BY id",
         )?;
         let rows = stmt.query_map([run_id], |r| {
@@ -649,6 +698,7 @@ impl Db {
                 label_followup: r.get::<_, Option<i64>>(11)?.map(|n| n != 0),
                 label_expanded: r.get::<_, Option<i64>>(12)?.map(|n| n != 0),
                 pack_doc: r.get::<_, Option<i64>>(13)?.is_some_and(|n| n != 0),
+                in_subagent: r.get::<_, i64>(14)? != 0,
             })
         })?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
@@ -698,6 +748,44 @@ mod tests {
             }
             let db = Db::open(&path).unwrap();
             assert!(db.has_column("tool_calls", "pack_doc").unwrap());
+            assert!(db.has_column("workers", "subagents").unwrap());
+            assert!(db.has_column("tool_calls", "in_subagent").unwrap());
         }
+    }
+
+    #[test]
+    fn a_version_1_store_migrates_in_place_and_keeps_nulls() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("factory.db");
+        {
+            // The v1 store: the base schema plus the v1 guarded columns it lacks.
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            conn.execute_batch(
+                "ALTER TABLE workers ADD COLUMN start_context INTEGER;
+                 ALTER TABLE workers ADD COLUMN pack_files TEXT;
+                 ALTER TABLE runs ADD COLUMN pr_url TEXT;
+                 INSERT INTO schema_version (version, applied_at) VALUES (1, 'then');
+                 INSERT INTO runs (id, repo, feature, started_at, phase, budget_weighted_tokens)
+                   VALUES ('r1', '/repo', 'f', 'then', 'done', 0);
+                 INSERT INTO workers (run_id, role, started_at, output)
+                   VALUES ('r1', 'build', 'then', 7);",
+            )
+            .unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        assert_eq!(db.schema_version().unwrap(), 2);
+        let w = &db.workers("r1").unwrap()[0];
+        assert_eq!(w.output, Some(7));
+        assert_eq!(
+            (
+                w.sub_input,
+                w.sub_cache_write,
+                w.sub_cache_read,
+                w.sub_output,
+                w.subagents
+            ),
+            (None, None, None, None, None)
+        );
     }
 }

@@ -77,7 +77,7 @@ pub const KEYS: [&str; 23] = [
 /// list (AD-802; `lookup_share_chars`, slice 13). The three `cockpit_*`
 /// figures after `cockpit_peak_context` let the FR-8 cross-check compare all
 /// four of the QA guide's figures with `measure.py`, not just the peak.
-pub const EXTRA_KEYS: [&str; 8] = [
+pub const EXTRA_KEYS: [&str; 9] = [
     "worker_gate_runs",
     "worker_gate_red",
     "cockpit_peak_context",
@@ -86,6 +86,7 @@ pub const EXTRA_KEYS: [&str; 8] = [
     "cockpit_start_context",
     "lookup_share_chars",
     "followup_reads_by_role",
+    "weighted_by_role",
 ];
 
 // The reversal rule's constants, PRD §14 FR-12 decision 4: "`followup_reads`
@@ -293,6 +294,62 @@ fn by_role_text(by_role: &BTreeMap<String, Followups>) -> String {
     }
 }
 
+/// A role's weighted tokens: the workers' own, and their subagents'
+/// (PRD-003 FR-21).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct OwnSub {
+    pub own: u64,
+    pub sub: u64,
+}
+
+/// Weighted tokens per role, own and subagents apart.
+pub fn weighted_by_role(workers: &[WorkerRow]) -> BTreeMap<String, OwnSub> {
+    let mut sums: BTreeMap<String, (f64, f64)> = BTreeMap::new();
+    for w in workers {
+        let e = sums.entry(w.role.clone()).or_default();
+        e.0 += quota::weigh_own(w);
+        e.1 += quota::weigh_sub(w);
+    }
+    sums.into_iter()
+        .map(|(r, (own, sub))| {
+            (
+                r,
+                OwnSub {
+                    own: own.round() as u64,
+                    sub: sub.round() as u64,
+                },
+            )
+        })
+        .collect()
+}
+
+/// `build 9950000+0 · polish 1582003+1859987`, roles in [`ROLE_ORDER`].
+fn weighted_by_role_text(by_role: &BTreeMap<String, OwnSub>) -> String {
+    let known = ROLE_ORDER.iter().filter_map(|r| by_role.get_key_value(*r));
+    let other = by_role
+        .iter()
+        .filter(|(r, _)| !ROLE_ORDER.contains(&r.as_str()));
+    let parts: Vec<String> = known
+        .chain(other)
+        .map(|(r, w)| format!("{r} {}+{}", w.own, w.sub))
+        .collect();
+    if parts.is_empty() {
+        "none".to_string()
+    } else {
+        parts.join(" · ")
+    }
+}
+
+/// The worker's own calls: the lookup figures leave its subagents' out
+/// (PRD-003 FR-21), though the table keeps them.
+fn own_calls(db: &Db, run_id: &str) -> Result<Vec<ToolCallRow>> {
+    Ok(db
+        .tool_calls(run_id)?
+        .into_iter()
+        .filter(|c| !c.in_subagent)
+        .collect())
+}
+
 /// Worker rows by role.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Workers {
@@ -363,6 +420,8 @@ pub struct Report {
     pub lookup_share_chars: f64,
     /// Roles with no `ctx` call are left out.
     pub followup_reads_by_role: BTreeMap<String, Followups>,
+    /// Weighted tokens per role, own and subagents apart.
+    pub weighted_by_role: BTreeMap<String, OwnSub>,
     pub thresholds: Thresholds,
     /// With `--per-worker` only.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -386,7 +445,7 @@ fn ratio(num: u64, den: u64) -> f64 {
 pub fn compute(db: &Db, run_id: &str, cockpit: Option<&Measure>) -> Result<Report> {
     let workers = db.workers(run_id)?;
     let gates = db.gates(run_id)?;
-    let calls = db.tool_calls(run_id)?;
+    let calls = own_calls(db, run_id)?;
     let events = db.events(run_id)?;
     let n = |v: Option<i64>| v.unwrap_or(0).max(0) as u64;
     let count = |kind: &str| events.iter().filter(|e| e.kind == kind).count() as u64;
@@ -426,8 +485,11 @@ pub fn compute(db: &Db, run_id: &str, cockpit: Option<&Measure>) -> Result<Repor
         checkpoints: count("checkpoint_done"),
         build_minutes: minutes(&["build", "fix"]),
         polish_minutes: minutes(&["polish"]),
-        out_tokens: workers.iter().map(|w| n(w.output)).sum(),
-        cache_read_tokens: workers.iter().map(|w| n(w.cache_read)).sum(),
+        out_tokens: workers.iter().map(|w| n(w.output) + n(w.sub_output)).sum(),
+        cache_read_tokens: workers
+            .iter()
+            .map(|w| n(w.cache_read) + n(w.sub_cache_read))
+            .sum(),
         start_context: workers
             .iter()
             .filter_map(|w| w.start_context)
@@ -438,8 +500,11 @@ pub fn compute(db: &Db, run_id: &str, cockpit: Option<&Measure>) -> Result<Repor
             .filter_map(|w| w.peak_context)
             .max()
             .map_or(0, |v| v.max(0) as u64),
-        input_tokens: workers.iter().map(|w| n(w.input)).sum(),
-        cache_write_tokens: workers.iter().map(|w| n(w.cache_write)).sum(),
+        input_tokens: workers.iter().map(|w| n(w.input) + n(w.sub_input)).sum(),
+        cache_write_tokens: workers
+            .iter()
+            .map(|w| n(w.cache_write) + n(w.sub_cache_write))
+            .sum(),
         weighted_tokens: quota::weighted(db, run_id)?,
         cockpit_tokens: cockpit.map(Measure::weighted),
         workers: Workers {
@@ -468,6 +533,7 @@ pub fn compute(db: &Db, run_id: &str, cockpit: Option<&Measure>) -> Result<Repor
         cockpit_start_context: cockpit.map(|m| m.start_context),
         lookup_share_chars: ratio(lookup_chars, all_chars),
         followup_reads_by_role: followups_by_role(&workers, &calls),
+        weighted_by_role: weighted_by_role(&workers),
         per_worker: None,
     })
 }
@@ -515,6 +581,10 @@ impl Report {
                 "followup_reads_by_role: {}",
                 by_role_text(&self.followup_reads_by_role)
             ),
+            format!(
+                "weighted_by_role: {}",
+                weighted_by_role_text(&self.weighted_by_role)
+            ),
         ]
     }
 }
@@ -530,7 +600,7 @@ pub fn report(args: &ReportArgs, out: &mut dyn Write) -> Result<i32> {
     if args.per_worker {
         let db = run.db();
         let id = run.id().as_str();
-        r.per_worker = Some(per_worker(&db.workers(id)?, &db.tool_calls(id)?));
+        r.per_worker = Some(per_worker(&db.workers(id)?, &own_calls(db, id)?));
     }
     if args.json {
         let text = serde_json::to_string_pretty(&r).map_err(json("report"))?;
@@ -567,6 +637,20 @@ mod tests {
         assert_eq!(r.lines()[16], "cockpit_tokens: 0 (no --cockpit)");
         assert_eq!(r.lines()[17], "workers: 0 (none)");
         assert_eq!(r.lines()[21], "followup_reads: 0 of 0 ctx calls (0%)");
+        assert_eq!(EXTRA_KEYS.last(), Some(&"weighted_by_role"));
+        assert_eq!(r.lines().last().unwrap(), "weighted_by_role: none");
+    }
+
+    #[test]
+    fn weighted_by_role_text_puts_own_before_subagents() {
+        let mut m = BTreeMap::new();
+        m.insert("polish".to_string(), OwnSub { own: 3, sub: 4 });
+        m.insert("audit".to_string(), OwnSub { own: 9, sub: 0 });
+        m.insert("build".to_string(), OwnSub { own: 1, sub: 0 });
+        assert_eq!(
+            weighted_by_role_text(&m),
+            "build 1+0 · polish 3+4 · audit 9+0"
+        );
     }
 
     #[test]

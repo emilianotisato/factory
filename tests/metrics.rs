@@ -44,7 +44,7 @@ const KEYS: [&str; 23] = [
     "pack_doc_read_chars",
 ];
 
-const EXTRA_KEYS: [&str; 8] = [
+const EXTRA_KEYS: [&str; 9] = [
     "worker_gate_runs",
     "worker_gate_red",
     "cockpit_peak_context",
@@ -53,6 +53,7 @@ const EXTRA_KEYS: [&str; 8] = [
     "cockpit_start_context",
     "lookup_share_chars",
     "followup_reads_by_role",
+    "weighted_by_role",
 ];
 
 const THRESHOLDS: [&str; 3] = [
@@ -281,8 +282,8 @@ fn report_prints_the_retro_keys_then_the_run_keys() {
     let lines: Vec<&str> = text.lines().collect();
     let keys: Vec<&str> = lines.iter().map(|l| key(l)).collect();
     assert_eq!(&keys[..23], &KEYS);
-    assert_eq!(&keys[23..31], &EXTRA_KEYS);
-    assert_eq!(&keys[31..], &THRESHOLDS);
+    assert_eq!(&keys[23..32], &EXTRA_KEYS);
+    assert_eq!(&keys[32..], &THRESHOLDS);
     assert_eq!(lines[0], "score: ");
     assert_eq!(value(&lines, "slices"), "3");
     assert_eq!(value(&lines, "checkpoints"), "1");
@@ -584,5 +585,198 @@ fn ctx_calls_are_labelled_and_the_report_reads_the_reversal_rule() {
     assert_eq!(
         v["per_worker"].as_array().map(Vec::len),
         Some(workers.len())
+    );
+}
+
+/// PRD-003 FR-21: `finished_run`'s plan with a polish that spawned two
+/// subagents (`tests/stubs/polish-subagents.jsonl` in its stream, two
+/// `subagents/agent-*.jsonl` in its transcript dir).
+fn subagent_run(name: &str, polish: Value) -> (Fixture, String) {
+    let fx = Fixture::with_index(name, &[("checkpoint_every", "10")]);
+    fx.chain();
+    fx.write_plan(&[
+        json!({"outcome": "done"}),
+        json!({"outcome": "done"}),
+        json!({"outcome": "done"}),
+        json!({"outcome": "checkpoint"}),
+        polish,
+    ]);
+    let out = factory(&fx, &["run", "001", "--budget", "70000000", "--foreground"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let id = only_run_id(&fx);
+    (fx, id)
+}
+
+/// Where the driver looked for a worker's subagents.
+fn subagents_dir(fx: &Fixture, db: &Db, id: &str, session: &str) -> PathBuf {
+    let repo = db.run_row(id).unwrap().unwrap().repo;
+    let config = PathBuf::from(&fx.env()["CLAUDE_CONFIG_DIR"]);
+    let t = factory::measure::transcript_path(&config, Path::new(&repo), session);
+    t.with_extension("").join("subagents")
+}
+
+fn walk(dir: &Path) -> Vec<PathBuf> {
+    let Ok(rd) = fs::read_dir(dir) else {
+        return vec![];
+    };
+    rd.flatten()
+        .flat_map(|e| {
+            let p = e.path();
+            let mut v = walk(&p);
+            v.push(p);
+            v
+        })
+        .collect()
+}
+
+/// The stub's own subagent tool ids (`polish-subagents.jsonl`).
+const SUB_CALLS: [&str; 3] = [
+    "toolu_01A2vUPNoiVFpu8NZt47c9Hw",
+    "toolu_01XF4DoDBK9iqyiTtW1y3BoL",
+    "toolu_018mpyWtq6JxVie45VoGUJyx",
+];
+
+#[test]
+fn a_polish_with_subagents_counts_them_apart_from_its_own() {
+    let (fx, id) = subagent_run(
+        "metrics-subagents",
+        json!({"outcome": "polish", "subagents": 2}),
+    );
+    let db = db(&fx);
+    let workers = db.workers(&id).unwrap();
+    let polish = workers.iter().find(|w| w.role == "polish").unwrap();
+    let session = polish.session_id.as_deref().unwrap();
+    let dir = subagents_dir(&fx, &db, &id, session);
+    assert!(
+        dir.is_dir(),
+        "the stub wrote where the driver looks: {} not in {:?}",
+        dir.display(),
+        walk(Path::new(&fx.env()["CLAUDE_CONFIG_DIR"]))
+    );
+    // The fixtures' final usage per message id (tests/stubs/claude).
+    assert_eq!(
+        (
+            polish.sub_input,
+            polish.sub_cache_write,
+            polish.sub_cache_read,
+            polish.sub_output,
+            polish.subagents
+        ),
+        (Some(16), Some(3600), Some(102_000), Some(1000), Some(2)),
+        "{polish:?}"
+    );
+    // The cut's larger own message; its subagent lines run past 220k.
+    assert_eq!(polish.peak_context, Some(89_526));
+    for w in workers.iter().filter(|w| w.role != "polish") {
+        assert_eq!(
+            (
+                w.sub_input,
+                w.sub_cache_write,
+                w.sub_cache_read,
+                w.sub_output,
+                w.subagents
+            ),
+            (Some(0), Some(0), Some(0), Some(0), Some(0)),
+            "{w:?}"
+        );
+    }
+
+    // The stream's tool_use ids, in order, against the stored flags.
+    let stream = fs::read_to_string(
+        data_dir(&fx)
+            .join("runs")
+            .join(&id)
+            .join("workers")
+            .join(format!("{session}.jsonl")),
+    )
+    .unwrap();
+    let ids: Vec<String> = stream
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|v| v["type"] == "assistant")
+        .flat_map(|v| {
+            v["message"]["content"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        })
+        .filter(|b| b["type"] == "tool_use")
+        .map(|b| b["id"].as_str().unwrap().to_string())
+        .collect();
+    let calls: Vec<ToolCallRow> = db
+        .tool_calls(&id)
+        .unwrap()
+        .into_iter()
+        .filter(|c| c.worker_id == polish.id)
+        .collect();
+    assert_eq!(calls.len(), ids.len());
+    for (c, tid) in calls.iter().zip(&ids) {
+        assert_eq!(
+            c.in_subagent,
+            SUB_CALLS.contains(&tid.as_str()),
+            "{tid}: {c:?}"
+        );
+    }
+    assert_eq!(calls.iter().filter(|c| c.in_subagent).count(), 3);
+    let events =
+        fs::read_to_string(data_dir(&fx).join("runs").join(&id).join("events.jsonl")).unwrap();
+    assert!(!events.contains("subagents_unread"), "{events}");
+
+    // The report's totals and the budget count them.
+    let out = factory(&fx, &["report", &id, "--json"]);
+    assert_eq!(out.status.code(), Some(0));
+    let r: Value = serde_json::from_str(&stdout(&out)).unwrap();
+    let sub = quota::weigh(16, 3600, 102_000, 1000);
+    let own: f64 = workers.iter().map(quota::weigh_own).sum();
+    assert_eq!(r["weighted_tokens"], (own + sub).round() as u64);
+    assert_eq!(r["weighted_by_role"]["polish"]["sub"], sub.round() as u64);
+    assert_eq!(r["weighted_by_role"]["build"]["sub"], 0);
+    let sum = |f: fn(&WorkerRow) -> Option<i64>| -> i64 {
+        workers.iter().map(|w| f(w).unwrap_or(0)).sum()
+    };
+    assert_eq!(r["out_tokens"], sum(|w| w.output) + 1000);
+    assert_eq!(r["cache_read_tokens"], sum(|w| w.cache_read) + 102_000);
+}
+
+#[cfg(unix)]
+#[test]
+fn an_unreadable_subagents_dir_is_nulls_and_one_event_never_a_failed_run() {
+    use std::os::unix::fs::PermissionsExt;
+    let (fx, id) = subagent_run(
+        "metrics-subagents-unread",
+        json!({"outcome": "polish", "subagents": 2, "subagents_unreadable": true}),
+    );
+    let db = db(&fx);
+    let polish = db
+        .workers(&id)
+        .unwrap()
+        .into_iter()
+        .find(|w| w.role == "polish")
+        .unwrap();
+    let dir = subagents_dir(&fx, &db, &id, polish.session_id.as_deref().unwrap());
+    // Root reads through any mode: nothing to test there.
+    let root = fs::read_dir(&dir).is_ok();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+    if root {
+        return;
+    }
+    assert_eq!(db.run_row(&id).unwrap().unwrap().phase, "finished");
+    assert_eq!(
+        (
+            polish.sub_input,
+            polish.sub_cache_write,
+            polish.sub_cache_read,
+            polish.sub_output,
+            polish.subagents
+        ),
+        (None, None, None, None, None),
+        "{polish:?}"
+    );
+    let events =
+        fs::read_to_string(data_dir(&fx).join("runs").join(&id).join("events.jsonl")).unwrap();
+    assert_eq!(
+        events.matches("\"subagents_unread\"").count(),
+        1,
+        "{events}"
     );
 }

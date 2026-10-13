@@ -7,6 +7,10 @@
 //! `<session>/subagents/*.jsonl` summed in, several sessions combined).
 //! The build and polish minute markers stay out: the driver has its own
 //! clock for those (AD-805).
+//!
+//! PRD-003 FR-21 reads a worker's subagents the same way, apart from its
+//! own usage: [`transcript_path`] finds the session file under Claude
+//! Code's projects dir, [`subagents`] sums what sits beside it.
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -190,28 +194,84 @@ pub fn measure(path: &Path) -> Result<Measure> {
         .and_then(|at| main.iter().find(|x| x.ts >= at))
         .map_or(0, Msg::ctx);
 
-    let sub_dir = path
-        .to_str()
-        .and_then(|p| p.strip_suffix(".jsonl"))
-        .map(|p| PathBuf::from(p).join("subagents"));
-    if let Some(dir) = sub_dir
-        && let Ok(rd) = fs::read_dir(&dir)
-    {
-        let mut files: Vec<PathBuf> = rd
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
-            .collect();
-        files.sort();
-        for f in files {
-            let msgs = assistant_msgs(&load(&f)?);
-            if msgs.is_empty() {
-                continue;
-            }
-            m.subagents += 1;
-            add_totals(&mut m, &msgs);
-        }
+    // The cockpit has always skipped a dir it cannot read.
+    if let Subagents::Read { usage, count } = subagents(path) {
+        m.subagents += count;
+        m.calls += usage.calls;
+        m.input_tokens += usage.input_tokens;
+        m.out_tokens += usage.out_tokens;
+        m.cache_write_tokens += usage.cache_write_tokens;
+        m.cache_read_tokens += usage.cache_read_tokens;
+        m.peak_context = m.peak_context.max(usage.peak_context);
     }
     Ok(m)
+}
+
+/// What a session's subagents used, apart from its own messages.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Subagents {
+    /// No `<session>/subagents/` dir: Claude Code writes one only when the
+    /// session spawned a subagent.
+    None,
+    /// Final usage per message summed over every `*.jsonl` there; `count`
+    /// is the files that had an assistant message.
+    Read { usage: Measure, count: usize },
+    /// The dir exists but it, or a file in it, could not be read.
+    Unreadable(String),
+}
+
+/// The subagents beside `transcript`: `<transcript minus .jsonl>/subagents`.
+pub fn subagents(transcript: &Path) -> Subagents {
+    let Some(dir) = transcript
+        .to_str()
+        .and_then(|p| p.strip_suffix(".jsonl"))
+        .map(|p| PathBuf::from(p).join("subagents"))
+    else {
+        return Subagents::None;
+    };
+    // `exists` is false on a permission error too; the read below tells.
+    if fs::symlink_metadata(&dir).is_err() {
+        return Subagents::None;
+    }
+    let rd = match fs::read_dir(&dir) {
+        Ok(rd) => rd,
+        Err(e) => return Subagents::Unreadable(format!("read {}: {e}", dir.display())),
+    };
+    let mut files: Vec<PathBuf> = rd
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
+        .collect();
+    files.sort();
+    let mut usage = Measure::default();
+    let mut count = 0;
+    for f in files {
+        let rows = match load(&f) {
+            Ok(rows) => rows,
+            Err(e) => return Subagents::Unreadable(e.to_string()),
+        };
+        let msgs = assistant_msgs(&rows);
+        if msgs.is_empty() {
+            continue;
+        }
+        count += 1;
+        add_totals(&mut usage, &msgs);
+    }
+    Subagents::Read { usage, count }
+}
+
+/// Where Claude Code keeps a session's transcript: `<config
+/// dir>/projects/<cwd with every "/" and "." as "-">/<session>.jsonl`. The
+/// cwd is the worker's, the run's repo.
+pub fn transcript_path(config_dir: &Path, repo: &Path, session_id: &str) -> PathBuf {
+    let slug: String = repo
+        .to_string_lossy()
+        .chars()
+        .map(|c| if c == '/' || c == '.' { '-' } else { c })
+        .collect();
+    config_dir
+        .join("projects")
+        .join(slug)
+        .join(format!("{session_id}.jsonl"))
 }
 
 /// `combine`: several sessions of one run. Tokens and calls add; the start
@@ -318,5 +378,94 @@ mod tests {
     #[test]
     fn a_missing_transcript_is_an_error_not_a_zero() {
         assert!(measure(Path::new("/nonexistent/x.jsonl")).is_err());
+    }
+    #[test]
+    fn the_transcript_path_slugs_the_repo() {
+        assert_eq!(
+            transcript_path(
+                Path::new("/tmp/c"),
+                Path::new("/home/e/Projects/Prokey/wt-b"),
+                "abc"
+            ),
+            PathBuf::from("/tmp/c/projects/-home-e-Projects-Prokey-wt-b/abc.jsonl")
+        );
+        assert_eq!(
+            transcript_path(Path::new("/c"), Path::new("/a/b.c/d"), "s"),
+            PathBuf::from("/c/projects/-a-b-c-d/s.jsonl")
+        );
+    }
+
+    /// Two lines on one message id with growing usage: the final one counts.
+    fn agent_lines(id: &str, out: u64) -> String {
+        let line = |o: u64, ts: &str| {
+            format!(
+                r#"{{"type":"assistant","timestamp":"{ts}","message":{{"id":"{id}","usage":{{"input_tokens":2,"cache_creation_input_tokens":10,"cache_read_input_tokens":100,"output_tokens":{o}}}}}}}"#
+            )
+        };
+        format!(
+            "{}\n{}\n",
+            line(1, "2026-10-13T10:00:00Z"),
+            line(out, "2026-10-13T10:00:01Z")
+        )
+    }
+
+    #[test]
+    fn subagents_sit_apart_beside_the_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = transcript_path(dir.path(), Path::new("/r/x"), "s1");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, agent_lines("own", 7)).unwrap();
+        assert_eq!(subagents(&path), Subagents::None);
+
+        let sub = path.parent().unwrap().join("s1/subagents");
+        fs::create_dir_all(&sub).unwrap();
+        assert_eq!(
+            subagents(&path),
+            Subagents::Read {
+                usage: Measure::default(),
+                count: 0
+            }
+        );
+        fs::write(sub.join("agent-1.jsonl"), agent_lines("a", 50)).unwrap();
+        fs::write(sub.join("agent-2.jsonl"), agent_lines("b", 30)).unwrap();
+        fs::write(sub.join("agent-1.meta.json"), r#"{"agentType":"x"}"#).unwrap();
+        fs::write(sub.join("agent-3.jsonl"), "{\"type\":\"user\"}\n").unwrap();
+        let Subagents::Read { usage, count } = subagents(&path) else {
+            panic!("{:?}", subagents(&path));
+        };
+        assert_eq!(count, 2);
+        assert_eq!(
+            (
+                usage.input_tokens,
+                usage.cache_write_tokens,
+                usage.cache_read_tokens,
+                usage.out_tokens
+            ),
+            (4, 20, 200, 80)
+        );
+        // The cockpit's single figure keeps adding them in.
+        let m = measure(&path).unwrap();
+        assert_eq!((m.out_tokens, m.subagents), (87, 2));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dir_that_cannot_be_read_is_unreadable_not_none() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        fs::write(&path, "").unwrap();
+        let sub = dir.path().join("s/subagents");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(sub.join("agent-1.jsonl"), agent_lines("a", 5)).unwrap();
+        fs::set_permissions(&sub, fs::Permissions::from_mode(0o000)).unwrap();
+        // Root reads through any mode: nothing to test there.
+        let root = fs::read_dir(&sub).is_ok();
+        let got = subagents(&path);
+        fs::set_permissions(&sub, fs::Permissions::from_mode(0o755)).unwrap();
+        if root {
+            return;
+        }
+        assert!(matches!(got, Subagents::Unreadable(_)), "{got:?}");
     }
 }

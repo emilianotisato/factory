@@ -27,7 +27,9 @@ use sha2::{Digest, Sha256};
 use crate::Result;
 use crate::clock;
 use crate::db::{GateInsert, ToolCallInsert};
-use crate::measure::epoch_secs;
+use crate::events::EventKind;
+use crate::measure::{self, Subagents, epoch_secs};
+use crate::paths;
 use crate::run::{GateCmds, Run};
 use crate::shell;
 use crate::stream::{Summary, ToolUse};
@@ -250,6 +252,9 @@ pub struct CallRow {
     pub ts: Option<String>,
     pub label_followup: Option<bool>,
     pub label_expanded: Option<bool>,
+    /// A subagent's call: kept in `seq` and the repeat sets, so the windows
+    /// above count it; only the report's lookup figures leave it out.
+    pub in_subagent: bool,
 }
 
 pub fn call_rows(
@@ -280,6 +285,7 @@ pub fn call_rows(
                 ts: t.ts.clone(),
                 label_followup: labels[i].0,
                 label_expanded: labels[i].1,
+                in_subagent: t.in_subagent,
             }
         })
         .collect()
@@ -447,6 +453,47 @@ pub fn pack_doc(t: &ToolUse, kind: Kind, held: &[String], repo: &Path) -> bool {
     })
 }
 
+/// PRD-003 FR-21: what the worker's subagents used, read from Claude
+/// Code's transcript dir once the worker exited, onto its row. No dir is
+/// zeros; a dir that cannot be read is nulls and one `subagents_unread`
+/// event. The stream's own subagent lines are never a fallback: their
+/// output count is an early snapshot. `Err` only when that event could not
+/// be written; the callers drop it, so an exit always settles.
+pub fn record_subagents(run: &mut Run, worker_id: i64, session_id: &str) -> Result<()> {
+    let path = measure::transcript_path(&paths::claude_config_dir(), &run.state().repo, session_id);
+    let written = match measure::subagents(&path) {
+        Subagents::None => run
+            .db()
+            .set_worker_subagents(worker_id, Some((0, 0, 0, 0, 0))),
+        Subagents::Read { usage, count } => {
+            let n = |v: u64| v as i64;
+            run.db().set_worker_subagents(
+                worker_id,
+                Some((
+                    n(usage.input_tokens),
+                    n(usage.cache_write_tokens),
+                    n(usage.cache_read_tokens),
+                    n(usage.out_tokens),
+                    count as i64,
+                )),
+            )
+        }
+        Subagents::Unreadable(error) => {
+            let _ = run.db().set_worker_subagents(worker_id, None);
+            Err(crate::Error::Msg(error))
+        }
+    };
+    if let Err(e) = written {
+        run.emit(EventKind::SubagentsUnread {
+            worker_id,
+            session_id: session_id.to_string(),
+            path: path.display().to_string(),
+            error: e.to_string(),
+        })?;
+    }
+    Ok(())
+}
+
 /// Write a settled worker's `tool_calls` rows (one transaction) and its
 /// inner-loop runs as `gates` rows. Called from both `settle`s
 /// (`scheduler`, `checkpoint`) once the `workers` row is closed.
@@ -478,6 +525,7 @@ pub fn record_exit(run: &Run, worker_id: i64, summary: &Summary) -> Result<()> {
             label_followup: r.label_followup,
             label_expanded: r.label_expanded,
             pack_doc: pack_doc(t, r.kind, &held, &repo),
+            in_subagent: r.in_subagent,
         })
         .collect();
     db.insert_tool_calls(&inserts)?;
@@ -521,6 +569,7 @@ mod tests {
             result_ts: None,
             result_error: false,
             result_head: None,
+            in_subagent: false,
         }
     }
 
@@ -603,6 +652,17 @@ mod tests {
         let second = call_rows(&[f()], None, &mut seen);
         assert!(!second[0].repeat_in_worker);
         assert!(second[0].repeat_in_run);
+    }
+
+    #[test]
+    fn a_subagent_call_keeps_its_place_in_the_sequence() {
+        let mut sub = bash("cat g");
+        sub.in_subagent = true;
+        let r = rows(&[use_("Read", json!({ "file_path": "f" })), sub, bash("ls")]);
+        assert_eq!(
+            r.iter().map(|r| (r.seq, r.in_subagent)).collect::<Vec<_>>(),
+            vec![(1, false), (2, true), (3, false)]
+        );
     }
 
     fn ctx(cmd: &str, answer: &str) -> ToolUse {
