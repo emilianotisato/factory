@@ -86,3 +86,13 @@ factory docs gate set "<the command that proves a change is done>"
 Then `/prd` in Claude Code to write the first feature, and `/deliver NNN` to build it.
 
 The gate for this repo is `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test`. The test harness is a fixture repo plus a stub `claude` that replays recorded streams, so the whole loop runs in `cargo test` with no tokens.
+
+## Releasing
+
+A release is a tag. `.github/workflows/release.yml` (cargo-dist) builds the Linux and macOS binaries and the installer for every `v*` tag.
+
+1. Bump `version` in `Cargo.toml` in the PR. A skill edit forces it: the `bundle.lock` gate test goes red and says `FACTORY_BUNDLE_WRITE=1 cargo test`, which rewrites `skills/bundle.lock`. A binary-only change bumps the same way.
+2. Merge to `main`.
+3. `scripts/release.sh` on a clean, current `main`. It tags `v<version>`, pushes the tag and prints the workflow URL. It refuses a wrong branch, a dirty tree, a stale lock or a tag that already exists.
+
+On a machine that runs a `cargo install --path .` build, keep upgrading with `cargo install --path .`. The installer writes the same `~/.cargo/bin/factory` plus a receipt, and `factory upgrade` then takes the source build for a release install.
