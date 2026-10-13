@@ -68,7 +68,7 @@ Gate numbers come from the `CP-1`..`CP-7` entries in `agent-log.md` (17 runs, 5 
 
 ## FR-11 — A/B, icg-cloud PRD-018 · 2026-10-11
 
-Run A was `/deliver 018`, PR [#24](https://github.com/ICG-Argentina/icg-cloud/pull/24). Run B was `/factory-deliver 018`, run `018-20261011-6490`, PR [#25](https://github.com/ICG-Argentina/icg-cloud/pull/25). Both started from base `cde31ac` on Opus 5.5. The setup, the owner's answers and the timeline are in [`ab/runs.md`](ab/runs.md). This section holds the results the QA guide asks for. arca-api, the second project, has not run yet.
+Run A was `/deliver 018`, PR [#24](https://github.com/ICG-Argentina/icg-cloud/pull/24). Run B was `/factory-deliver 018`, run `018-20261011-6490`, PR [#25](https://github.com/ICG-Argentina/icg-cloud/pull/25). Both started from base `cde31ac` on Opus 5.5. The setup, the owner's answers and the timeline are in [`ab/runs.md`](ab/runs.md). This section holds the results the QA guide asks for. arca-api, the second project, ran on 2026-10-12; its results are in the next section.
 
 ### The sixteen answers
 
@@ -155,10 +155,74 @@ All fixes are on `fix/001-ab-findings`: 268 tests before the claim change, 272 a
 
 ### Next
 
-- **arca-api round:** the repo is `~/Projects/Prokey/arca-api` (`~/Projects/ICG/arca-api` is a copy with no git). Branch from `main`, since its PR #63 is open. It has no draft PRD: the owner writes PRD-023 with `/prd` in a fresh arca-api session, then runs A (`/deliver`) and B (`/factory-deliver`). Run B uses the binary from `fix/001-ab-findings`, so the round also tests these fixes on a real project.
+- **arca-api round: done 2026-10-12**, see the next section. Setup as planned: the repo is `~/Projects/Prokey/arca-api` (`~/Projects/ICG/arca-api` is a copy with no git). Branch from `main`, since its PR #63 is open. It has no draft PRD: the owner writes PRD-023 with `/prd` in a fresh arca-api session, then runs A (`/deliver`) and B (`/factory-deliver`). Run B uses the binary from `fix/001-ab-findings`, so the round also tests these fixes on a real project.
 - **Per-role split, decided 2026-10-12, built and merged 2026-10-12** (`d414119`): `factory report` prints `followup_reads_by_role` in text and JSON. On run `018-20261011-6490` it prints `build 2 of 7 (29%), polish 5 of 14 (36%)`. Each follow-up was a 25–80 line read of a neighbouring method or a callee. Also seen: the polish worker ran `factory ctx --help` twice.
 - **Branches (2026-10-12):** the owner dropped the PR ceremony for this repo while it is early: work merges into `main` locally and `main` is pushed. `main` holds the six A/B fixes (PR #3, `81ba7ee`), the per-role split, the A/B records, the PRD-002 draft and the three minor fixes above. Gate green at 276 tests. The installed binary (`~/.cargo/bin/factory`) is built from that `main`, so arca-api's run B uses it. Every other branch is deleted; `main` is the only one.
 - **PR pick for icg-cloud, owner's call (2026-10-12): #24.** Done as [#26](https://github.com/ICG-Argentina/icg-cloud/pull/26) (2026-10-12): #24's head plus the badge fix and B's extras (the inbox link above the company search, the count beside the subject, year-first times, the failing source named in the log, and its isolation tests), without B's defects. Close #24 and #25 when it merges; the merge stays the owner's. #24 won the blind review, and its polish caught the leak #25 still has.
+
+## FR-11 — A/B, arca-api PRD-024 · 2026-10-12
+
+Run A was `/deliver 024`, PR [#64](https://github.com/prokeycloud/arca/pull/64). Run B was `/factory-deliver 024`, run `024-20261012-e894`, PR [#65](https://github.com/prokeycloud/arca/pull/65), on the binary from `main` with the icg fixes. Both started from base `91b4c59` on Opus 5.5, serial, one after the other. Setup, timeline, the owner's answers and the blind review are in [`ab/runs.md`](ab/runs.md) § arca-api.
+
+### Answers and review
+
+| # | question | run A | run B |
+|---|---|---|---|
+| 1–2 | Does what the PRD asked · merge after normal review | yes · yes | yes · yes |
+| 3 | Decisions you would overturn | 1 | 2–3 |
+| 4–5 | Code quality · tests prove the FRs | 5 · prove | 5 · prove |
+| 6–7 | Built but not asked · asked but missing | none · none | none · none |
+| 8 | Overall | ship as is | ship after minor fixes |
+
+The owner found B's UI better and was unsure B's code matched A's. A blind review (X and Y from `git archive` exports, no history or PR metadata) put **B ahead, 32 to 30**, no merge blocker on either side. A's weak spot was systematic: about ten record loads turn any database error into an unlogged 404, against slice 09. B's worst defects were local: one missing audit label, and "Todas" not clearing a stale taxpayer filter (FR-84). Both are minor fixes. Run B had no decision to make (18 fyi, all kept in review), yet the owner would overturn 2–3: a judgment formed after QA, not voiced in the review.
+
+### Numbers
+
+Weighted as in the icg round. Run A from its 25 transcripts, run B from `factory report --cockpit`.
+
+| | run A | run B | icg A → B, for scale |
+|---|---|---|---|
+| build | 9.86M | 9.95M | 4.92M → 3.63M |
+| checkpoints | 4.15M | 3.94M | 2.93M → 1.27M |
+| fixes | inside the above | 0.34M | — |
+| polish and closeout | 6.36M | 1.95M | 6.13M → 1.19M |
+| orchestrator or cockpit | 2.13M | 0.97M | 2.18M → 0.62M |
+| **total** | **22,488,877** | **17,144,058** (76.2%) | 41.5% |
+| launch to draft PR | 3h 56m | 2h 58m | 3h 07m → 3h 01m |
+
+### Pass criteria (QA guide step 7)
+
+| criterion | result |
+|---|---|
+| `weighted_tokens(B) ≤ 0.6 × weighted_tokens(A)` | **fail**: 76.2%, 3.65M over the 13,493,326 bar |
+| `cockpit_tokens(B) ≤ 5%` of `weighted_tokens(B)` | **fail, narrowly**: 6.0% of the workers' figure, 5.7% of the total. It includes the 18-decision review and three hours of 25-minute check-ins. |
+| run B's draft PR has CI green | **pass**: 4 of 4 first time, then again after the review commit. The PR stays a draft by design (FR-6). |
+| questionnaire (step 5) | **pass** on the guide's rule (yes on 1–2, none on 6–7, 5 on 4, "after fixes" on 8), though one notch under A on 3 and 8 |
+
+**Both token criteria fail, so this project is a `BLOCK` for the owner to judge** (step 7). The cockpit miss is small and mostly the owner's own review time. The token miss is not noise; it has a cause.
+
+### Why the build did not get cheaper
+
+**The driver saves a fixed amount, and the bar is a ratio.** Across both projects the saving is polish (−4.9M icg, −4.4M arca) and orchestration (−1.6M, −1.2M): about 5.5–6.5M either way. Build plus checkpoints barely moved here (14.0M → 13.9M; icg 7.9M → 4.9M). PRD-024 is a build twice the size of PRD-018, so the same fixed saving is a smaller share, and 0.6× fails.
+
+**Builders cost the same because they behave the same.** Run B's 9 builders took 610 turns against run A's 547 calls, read 59.9M cache against 58.5M, wrote 462k output against 472k. `factory ctx` was not the lever: 11 calls by builders (`ctx_share` 0.025); they read with `sed -n` (153 calls) and `grep` (84). Lookups are cheap anyway: every builder tool result together is about 1.5M characters, roughly 0.4M tokens.
+
+**The cost is turns × context.** Cache reads are 6.0M of the builders' 9.95M weighted. The starting context alone (about 45k, mostly Claude Code's system prompt plus the pack) re-read on every turn is about 27.8M of the 59.9M cache read, 46%. The rest is each builder's own growing session, peaking near 150k on average.
+
+**FR-12's reversal rule:** builders' `followup_reads` is 1 of 11 (9%), under 30%, so no widening. `ctx_share` is under 10% on both projects now (7.3%, 2.5%), so the shrink trigger has fired twice. Owner's call.
+
+### What the round found in factory
+
+No repair commits this time: no BLOCK, no leftovers, no owner question during the build. The icg fixes held on a real Go project. Two red gates (CP-4, CP-5) were fixed by the driver's own fix workers.
+
+- **The QA stack has fixed ports.** Run A's harness stack had to be stopped before run B could run its own. A/B setup, not factory.
+- **The owner's message leaked into the blind review's agents again**, through the workflow harness. Labels kept it harmless this time.
+
+### Next
+
+- **Owner's calls:** the two failed criteria (BLOCK under step 7), and the FR-12 shrink.
+- **The lever is builder turns and starting context, not lookups.** Options to weigh, cheapest first: a smaller fixed context per worker (trim the pack, check what Claude Code's own system prompt costs under `-p`); fewer turns per slice (batch edits, run the inner gate less often); a cheaper builder model or an advisor arm (`docs/ideas.md`). Measure each on one PRD before the next A/B.
+- **Merge picks for arca-api** are the owner's: #64 (A) or #65 (B) plus B's two minor fixes, or a mix as icg did with #26.
 
 ## FR-7 — Cockpit from the phone
 
