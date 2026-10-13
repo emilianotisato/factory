@@ -1,0 +1,232 @@
+# FR-20 — migration half: the v2 fixture's ideas.md
+
+$ /mnt/devcache/emiliano/cargo-target/debug/factory docs migrate --dry
+guess 2026-09-22-echo open "Echo" line 33: Parked below Graduated, added from the heading
+relink docs/index.md:65 [`ideas.md`](ideas.md) → [`ideas.md`](ideas/README.md)
+rewrite docs/index.md (frontmatter, 6 table rows and 2 counters dropped; FR-numbers paragraph after **Build order:**)
+rewrite docs/features/001-fixture/prd.md (FR-13 frontmatter, prose header dropped)
+fix docs/features/001-fixture/prd.md type "Feature — the migration fixture" → feature
+drop docs/features/001-fixture/prd.md key: owns_fr
+drop docs/features/001-fixture/prd.md key: retired_fr
+create docs/features/001-fixture/state.toml (status in-progress, 3 slices)
+rewrite docs/features/001-fixture/slice-01-a.md (frontmatter → state.toml)
+rewrite docs/features/001-fixture/slice-02-b.md (frontmatter → state.toml)
+rewrite docs/features/001-fixture/slice-03-c.md (frontmatter → state.toml)
+create docs/features/001-fixture/log.jsonl (AD 4, BLOCK 1, CP 1, answer 1, review 2, note 2)
+delete docs/features/001-fixture/agent-log.md
+create docs/.gitignore (docs.lock)
+row retros (001 fixture) score=4 gate_runs=6 gate_red=1 gate_minutes=3.25 ci_cycles=0 slices=3 checkpoints=1 build_minutes=41.5 polish_minutes=7 out_tokens=120345 cache_read_tokens=4567890 start_context=23456 peak_context=98765 shipped_at=2026-10-13
+keep docs/features/001-fixture/retro.md
+drop docs/ideas.md:6 - One line per idea. Enough to remember *what* and *why*, no… (before any ## heading)
+drop docs/ideas.md:7 - No design, no scope, no tasks here — that's what a `featur… (before any ## heading)
+drop docs/ideas.md:8 - When an idea earns real work: `/prd` → new `features/` fol… (before any ## heading)
+drop docs/ideas.md:9 - Not a backlog with priorities. Just a catch net so ideas s… (before any ## heading)
+drop docs/ideas.md:10 - A line cut from a PRD keeps its recon — say which PRD drop… (before any ## heading)
+drop docs/ideas.md:14 - _(nothing yet)_ (placeholder)
+idea 2026-09-01-alpha open "Alpha" line 15: under ## Open, added from Added
+idea 2026-10-13-bravo open high "Bravo" line 20: under ## Open — high priority, added from git blame
+idea 2026-09-15-charlie owed "Charlie" line 24: under ## Owed by someone else — pending confirmations, added from Parked
+idea not migrated "Delta" line 28: under Graduated
+drop docs/ideas.md:29 - _(move lines here with their `{NNN}` when they get a PRD, … (placeholder)
+create docs/ideas/README.md (the inbox rules)
+delete docs/ideas.md
+rewrite docs/project.toml ([docs] appended, the other tables kept byte for byte)
+dry run: nothing written
+[exit 0]
+
+$ git status --porcelain
+[exit 0]
+
+$ /mnt/devcache/emiliano/cargo-target/debug/factory docs migrate
+guess 2026-09-22-echo open "Echo" line 33: Parked below Graduated, added from the heading
+relink docs/index.md:65 [`ideas.md`](ideas.md) → [`ideas.md`](ideas/README.md)
+rewrite docs/index.md (frontmatter, 6 table rows and 2 counters dropped; FR-numbers paragraph after **Build order:**)
+rewrite docs/features/001-fixture/prd.md (FR-13 frontmatter, prose header dropped)
+fix docs/features/001-fixture/prd.md type "Feature — the migration fixture" → feature
+drop docs/features/001-fixture/prd.md key: owns_fr
+drop docs/features/001-fixture/prd.md key: retired_fr
+create docs/features/001-fixture/state.toml (status in-progress, 3 slices)
+rewrite docs/features/001-fixture/slice-01-a.md (frontmatter → state.toml)
+rewrite docs/features/001-fixture/slice-02-b.md (frontmatter → state.toml)
+rewrite docs/features/001-fixture/slice-03-c.md (frontmatter → state.toml)
+create docs/features/001-fixture/log.jsonl (AD 4, BLOCK 1, CP 1, answer 1, review 2, note 2)
+delete docs/features/001-fixture/agent-log.md
+create docs/.gitignore (docs.lock)
+row retros (001 fixture) score=4 gate_runs=6 gate_red=1 gate_minutes=3.25 ci_cycles=0 slices=3 checkpoints=1 build_minutes=41.5 polish_minutes=7 out_tokens=120345 cache_read_tokens=4567890 start_context=23456 peak_context=98765 shipped_at=2026-10-13
+keep docs/features/001-fixture/retro.md
+drop docs/ideas.md:6 - One line per idea. Enough to remember *what* and *why*, no… (before any ## heading)
+drop docs/ideas.md:7 - No design, no scope, no tasks here — that's what a `featur… (before any ## heading)
+drop docs/ideas.md:8 - When an idea earns real work: `/prd` → new `features/` fol… (before any ## heading)
+drop docs/ideas.md:9 - Not a backlog with priorities. Just a catch net so ideas s… (before any ## heading)
+drop docs/ideas.md:10 - A line cut from a PRD keeps its recon — say which PRD drop… (before any ## heading)
+drop docs/ideas.md:14 - _(nothing yet)_ (placeholder)
+idea 2026-09-01-alpha open "Alpha" line 15: under ## Open, added from Added
+idea 2026-10-13-bravo open high "Bravo" line 20: under ## Open — high priority, added from git blame
+idea 2026-09-15-charlie owed "Charlie" line 24: under ## Owed by someone else — pending confirmations, added from Parked
+idea not migrated "Delta" line 28: under Graduated
+drop docs/ideas.md:29 - _(move lines here with their `{NNN}` when they get a PRD, … (placeholder)
+create docs/ideas/README.md (the inbox rules)
+delete docs/ideas.md
+rewrite docs/project.toml ([docs] appended, the other tables kept byte for byte)
+migrated: 16 files, 1 rows; review with git diff -- docs; undo with git checkout -- docs && git clean -fd docs
+[exit 0]
+
+$ ls docs/ideas
+2026-09-01-alpha.md
+2026-09-15-charlie.md
+2026-09-22-echo.md
+2026-10-13-bravo.md
+README.md
+[exit 0]
+
+--- docs/ideas/2026-09-01-alpha.md
+---
+title: "Alpha"
+state: "open"
+added: "2026-09-01"
+---
+
+Added 2026-09-01. First line
+  and its second line, indented.
+
+--- docs/ideas/2026-09-15-charlie.md
+---
+title: "Charlie"
+state: "owed"
+added: "2026-09-15"
+origin: "PRD-001 polish"
+---
+
+Parked from PRD-001 polish (2026-09-15), the vendor owes the answer.
+
+--- docs/ideas/2026-09-22-echo.md
+---
+title: "Echo"
+state: "open"
+added: "2026-09-22"
+origin: "PRD-001 polish review"
+---
+
+worth a look
+
+--- docs/ideas/2026-10-13-bravo.md
+---
+title: "Bravo"
+state: "open"
+added: "2026-10-13"
+retrigger: "when PRD-002 ships."
+priority: "high"
+---
+
+no date here. Re-trigger: when PRD-002 ships.
+
+$ /mnt/devcache/emiliano/cargo-target/debug/factory docs idea list --json
+[
+  {
+    "id": "2026-09-01-alpha",
+    "path": "docs/ideas/2026-09-01-alpha.md",
+    "title": "Alpha",
+    "state": "open",
+    "added": "2026-09-01",
+    "origin": null,
+    "retrigger": null,
+    "priority": null,
+    "first_sentence": "Added 2026-09-01.",
+    "body_chars": 62
+  },
+  {
+    "id": "2026-09-15-charlie",
+    "path": "docs/ideas/2026-09-15-charlie.md",
+    "title": "Charlie",
+    "state": "owed",
+    "added": "2026-09-15",
+    "origin": "PRD-001 polish",
+    "retrigger": null,
+    "priority": null,
+    "first_sentence": "Parked from PRD-001 polish (2026-09-15), the vendor owes the answer.",
+    "body_chars": 69
+  },
+  {
+    "id": "2026-09-22-echo",
+    "path": "docs/ideas/2026-09-22-echo.md",
+    "title": "Echo",
+    "state": "open",
+    "added": "2026-09-22",
+    "origin": "PRD-001 polish review",
+    "retrigger": null,
+    "priority": null,
+    "first_sentence": "worth a look",
+    "body_chars": 13
+  },
+  {
+    "id": "2026-10-13-bravo",
+    "path": "docs/ideas/2026-10-13-bravo.md",
+    "title": "Bravo",
+    "state": "open",
+    "added": "2026-10-13",
+    "origin": null,
+    "retrigger": "when PRD-002 ships.",
+    "priority": "high",
+    "first_sentence": "no date here.",
+    "body_chars": 46
+  }
+]
+[exit 0]
+
+$ /mnt/devcache/emiliano/cargo-target/debug/factory docs check
+docs check: clean
+[exit 0]
+
+# FR-20 — tool half, in a fresh v3 repo
+
+$ /mnt/devcache/emiliano/cargo-target/debug/factory docs init
+created docs/project.toml, docs/index.md, docs/features/, docs/ideas/, docs/archive/, docs/ideas/README.md, docs/.gitignore
+next: declare the verify gate under [docs] in docs/project.toml (`gate = "<cmd>"`), or run /guardrails
+[exit 0]
+
+## concurrent idea add, same title, 2 x 10
+$ sh -c ls docs/ideas | grep -c "same"
+20
+[exit 0]
+
+## idea drop
+$ /mnt/devcache/emiliano/cargo-target/debug/factory docs idea drop 2026-10-13-doomed --because polish drive
+dropped 2026-10-13-doomed: docs/ideas/2026-10-13-doomed.md deleted and committed
+[exit 0]
+
+$ git show --name-status --format=%B HEAD
+docs: drop idea 2026-10-13-doomed
+
+polish drive
+
+
+D	docs/ideas/2026-10-13-doomed.md
+[exit 0]
+
+## new --from-idea
+$ /mnt/devcache/emiliano/cargo-target/debug/factory docs new demo --from-idea 2026-10-13-seed
+created docs/features/001-demo/prd.md, state.toml
+deleted docs/ideas/2026-10-13-seed.md: commit it with the PRD
+PRD-001
+⚠ no verify gate declared — mention /guardrails in the hand-off
+[exit 0]
+
+$ sh -c ls docs/ideas/2026-10-13-seed.md 2>&1; grep -n 'from_idea\|## From idea\|Carried body' docs/features/*-demo/prd.md
+ls: cannot access 'docs/ideas/2026-10-13-seed.md': No such file or directory
+11:from_idea: "2026-10-13-seed"
+16:## From idea 2026-10-13-seed
+18:Carried body.
+[exit 0]
+
+$ git status --short
+?? docs/features/
+[exit 0]
+
+## check on a bad idea file
+$ /mnt/devcache/emiliano/cargo-target/debug/factory docs check
+  ✗ E-IDEA-PARSE  docs/ideas/2026-10-13-broken.md: no frontmatter
+  ! W-NO-GATE  no verify gate declared in docs/project.toml — run /guardrails, or `factory docs gate set "<cmd>"` (`factory docs gate --candidates` lists likely ones)
+
+1 error, 1 warning
+[exit 1]
+

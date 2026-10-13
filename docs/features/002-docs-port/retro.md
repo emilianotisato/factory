@@ -1,17 +1,17 @@
 ---
 score:
-gate_runs:
-gate_red:
-gate_minutes:
+gate_runs: 5
+gate_red: 2
+gate_minutes: 3.10
 ci_cycles: 0
-slices:
-checkpoints:
-build_minutes:
-polish_minutes:
-out_tokens:
-cache_read_tokens:
-start_context:
-peak_context:
+slices: 11
+checkpoints: 3
+build_minutes: 98.35
+polish_minutes: 0.08
+out_tokens: 731597
+cache_read_tokens: 81081814
+start_context: 32860
+peak_context: 169795
 ---
 
 # Retro — PRD-002
@@ -63,3 +63,30 @@ Written by `/deliver` in the closeout commit, from the agent's side of the run.
 ## Score
 
 Left to the owner. From the agent's side: the slices built clean, but the checkpoints vouched for a tree HEAD did not hold, and an FR went unproven until polish.
+
+## Numbers
+
+<!-- factory:numbers -->
+| role | workers | own | subagents | weighted | minutes | turns |
+|---|---:|---:|---:|---:|---:|---:|
+| build | 11 | 7775808 | 2436701 | 10212509 | 94 | 691 |
+| fix | 2 | 110372 | 0 | 110372 | 4 | 11 |
+| checkpoint | 3 | 1123042 | 0 | 1123042 | 10 | 74 |
+| polish | 1 | 8797 | 3657786 | 3666583 | 0 | 101 |
+| total | 17 | 9018020 | 6094487 | 15112506 | 108 | 877 |
+
+Knobs: build opus/high default · fix opus/high default · checkpoint opus/high default · polish opus/high default · budget 30000000 default · lanes 4 · factory 0.1.0 · claude 2.1.296
+
+Hypothesis: none
+
+quality: gate_red 2 · worker_gate_red 0 · fix_commits 2 · ci_red_rounds 0 · ci_reruns 0 · findings high=3 medium=6 low=18 fixed=13 parked=7 · decisions 50 decide 8 blocks 0
+
+Pack (build): slice 19970 · prd_sections 17030 · outline 10607 · lookup 890 · contract 3033 · autonomy 11246 · inner_loop 25 · total 62802 · start_context 53232
+
+Compared with:
+
+| run | feature | weighted | slices | per slice | lines changed | per line |
+|---|---|---:|---:|---:|---:|---:|
+| 002-20261013-e729 (this run) | 002 | 15112506 | 11 | 1373864 | 24701 | 612 |
+| 003-20261013-4139 | 003 | 6966177 | 5 | 1393235 | — | — |
+<!-- /factory:numbers -->

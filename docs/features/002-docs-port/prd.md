@@ -1,7 +1,7 @@
 ---
 number: 002
 slug: docs-port
-status: ready
+status: shipped
 reviewed: 20261013
 owns_fr: [13-20]
 retired_fr: []
