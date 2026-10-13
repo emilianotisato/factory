@@ -4,6 +4,12 @@
 **Created**: 2026-10-13
 
 **Progress**: built 2026-10-13.
+CP-2 FR-5 in a throwaway worktree of HEAD plus the staged index, one space appended to `skills/ux/references/rubric.md`:
+1. red, `skills/bundle.lock is stale: bump version in Cargo.toml`, exit 101: `docs/features/004-skills/evidence/cp-2-fr5-1-red.txt`
+2. refused, `FACTORY_BUNDLE_WRITE=1` at 0.2.0, `skills changed since 0.2.0: bump Cargo.toml past 0.2.0 first`, exit 101: `docs/features/004-skills/evidence/cp-2-fr5-2-refused.txt`
+3. rewrite at `0.2.1`, 5 passed, the lock now `version = "0.2.1"`: `docs/features/004-skills/evidence/cp-2-fr5-3-rewrite.txt`
+4. green, 5 passed: `docs/features/004-skills/evidence/cp-2-fr5-4-green.txt`
+Worktree removed; the branch's `skills/bundle.lock` still says `0.2.0`.
 
 - **Built**: `src/skills.rs` gains `LOCK`, `Lock` (`parse`, `text`), `version_parts` (the one integer parser; slice 03's `verdict_for` calls it too, AD-6), `check_lock` and `relock`, with six unit tests covering every case task 1 lists. `tests/skills_bundle.rs` gains `bundle_lock_matches` and `the_lock_records_what_a_manifest_carries`, both reading one `OnceLock` result so a write run never races a reader (AD-7). `Cargo.toml` and `Cargo.lock` move to `0.2.0`; `skills/bundle.lock` is written at `0.2.0`, sha256 `8845b9b6…2619`. `tests/knobs.rs` builds its expected tail from `CARGO_PKG_VERSION`.
 - **Lock written**: `cargo test --test skills_bundle` with no lock went red twice with `no skills/bundle.lock: run FACTORY_BUNDLE_WRITE=1 cargo test`. The write run passed 5 of 5, and the plain run after it passed 5 of 5.

@@ -1,0 +1,21 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s
+     Running tests/release.rs (/mnt/devcache/emiliano/cargo-target/debug/deps/release-786730a6d0b522f5)
+
+running 3 tests
+test the_readme_offers_the_installer_before_cargo_install ... ok
+test the_release_workflow_runs_on_version_tags_for_the_four_targets ... ok
+test dist_builds_four_unix_targets_and_the_shell_installer ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/upgrade.rs (/mnt/devcache/emiliano/cargo-target/debug/deps/upgrade-332260f0e8e10a3f)
+
+running 5 tests
+test a_receipt_for_another_prefix_is_from_source ... ok
+test no_receipt_prints_the_source_line_from_config ... ok
+test check_on_the_latest_release_is_already_current ... ok
+test check_prints_the_newer_release_and_installs_nothing ... ok
+test no_receipt_and_no_source_prints_the_installer ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
