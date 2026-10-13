@@ -30,7 +30,7 @@ use crate::ci::{self, CheckRow, Checks, CiRun, Verdict};
 use crate::cli::report::{self, Report};
 use crate::cli::run::load_preflight;
 use crate::commit::{self, Pathspec};
-use crate::config::Config;
+use crate::config::{self, Config};
 use crate::db::RetroRow;
 use crate::docs::ideas::{self, Idea};
 use crate::docs::{Docs, Ship, Status, scaffold};
@@ -42,7 +42,7 @@ use crate::run::{Phase, Run, WorkerOutcome, WorkerRef};
 use crate::scheduler::{self, DEATH_CAP, say, short};
 use crate::stream::{Findings, Summary};
 use crate::worker::{self, Exit, Job, Worker};
-use crate::{Result, clock, metrics, retro};
+use crate::{Result, clock, metrics, paths, retro};
 
 /// The phases a closeout block names in its heading (autonomy § Blocker
 /// protocol step 2).
@@ -1855,6 +1855,13 @@ pub fn settle_orphan(
             sha: committed.as_ref().map(|c| c.sha.clone()),
             files: committed.map(|c| c.files).unwrap_or_default(),
         })?;
+        // As the live path, after the event (AD-1): the next pass sees polish
+        // done and never files. The scheduler hands orphans no config, so it
+        // is read here; an unreadable one files nothing (AD-30001).
+        let repo = run.state().repo.clone();
+        if let Ok(loaded) = config::load_with_project(&paths::config_dir(), &repo) {
+            file_friction(run, board, &loaded.config, out);
+        }
         return Ok(());
     }
     let events = run.events()?;

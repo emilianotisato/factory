@@ -15,6 +15,13 @@
 - **Checkpoint 1, FR-1 `models.md` bullet.** The grep prints nothing: `docs/features/004-skills/evidence/cp-1-fr1-models-grep.txt`.
 - **Checkpoint 1, fixed.** Commit 34d9bca lacked `src/lib.rs` `pub mod review;` and the `models.md`, `polish` and `prd` skill edits, so HEAD did not compile (`docs/features/004-skills/evidence/cp-1-head-build.txt`); the checkpoint commit carries them.
 
+**Code-review fixes (2026-10-13).**
+- A pass whose diff or stream read failed ended the whole command with `?`, dropping the passes already printed and the `log:` line. Each pass now prints `unreviewed (error: …)` and the loop goes on; `log:` is always last.
+- A reviewer that exited non-zero, or ended on an `is_error` result, had its text counted as findings, so a rate limit read as a clean review. It is now printed under `(exit N, partial)` or `unreviewed (exit N, error: …)` and not counted (AD-17, AD-18).
+- Ctrl-C or SIGTERM to `factory` left the reviewer's process group running and spending quota. SIGINT, SIGTERM and SIGHUP now kill the group, then re-raise (AD-19).
+- The probe matched the model only as a bare token; `gpt-5,` in a list missed. Punctuation around the token is trimmed now.
+- A `--diff` base starting with `-` reached `git diff` as a flag. It is now a usage error, exit 1.
+
 **Slice**: After this slice the cross-vendor second opinion is one command. `factory review second --diff <base> [-- <paths>]` probes `cursor-agent --list-models`, splits the diff into passes of at most 600 changed lines, runs each pass read-only under a timeout with the stream logged under the data dir, and prints one markdown section per pass. `--doc <file> --prompt "<text>"` runs one pass over a document. A dead auth costs nothing and says `unreviewed: <reason>` with exit 2; a timeout keeps the text it had. `/polish` and `/prd` call the command, and `models.md` loses its invocation block. A stub `cursor-agent` beside the stub `claude` proves it all inside `cargo test`.
 
 **Highest risk: the live shape of `--stream-partial-output` was never recorded.** `tests/stubs/cursor-review.jsonl` was captured without it: three whole `assistant` events and a `result` whose text equals their concatenation. Live deltas might arrive as many small `assistant` events and then a full one repeating them, which would print the partial text twice. The `result` text is authoritative whenever it exists, so only the timeout path is exposed. The owner's FR-6 human row is the proof; do not add delta handling for a shape nobody has seen.

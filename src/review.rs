@@ -12,6 +12,7 @@ use std::fs::{self, File};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -179,8 +180,60 @@ pub enum Ended {
     Killed,
 }
 
+/// The reviewer's process group while it runs, 0 otherwise. It sits in its
+/// own group, so a Ctrl-C or a closed terminal reaches factory alone: the
+/// handler kills this group, or the reviewer runs on with no timeout.
+static CHILD_GROUP: AtomicI32 = AtomicI32::new(0);
+
+/// Clears `CHILD_GROUP` on every way out of `run_logged`.
+struct Watched;
+
+impl Drop for Watched {
+    fn drop(&mut self) {
+        CHILD_GROUP.store(0, Ordering::SeqCst);
+    }
+}
+
+extern "C" fn forward(sig: libc::c_int) {
+    let group = CHILD_GROUP.load(Ordering::SeqCst);
+    // SAFETY: `kill`, `signal` and `raise` are async-signal-safe. The
+    // re-raise, with the default disposition back, ends factory as the
+    // signal would have, once the handler returns.
+    unsafe {
+        if group > 0 {
+            libc::kill(-group, libc::SIGKILL);
+        }
+        libc::signal(sig, libc::SIG_DFL);
+        libc::raise(sig);
+    }
+}
+
+/// Route SIGINT, SIGTERM and SIGHUP through `forward`, once per process. A
+/// signal factory started out ignoring (`nohup`) stays ignored.
+fn forward_signals() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+            // SAFETY: zeroed `sigaction`s are valid; the handler touches an
+            // atomic and async-signal-safe calls only.
+            unsafe {
+                let mut old: libc::sigaction = std::mem::zeroed();
+                libc::sigaction(sig, std::ptr::null(), &mut old);
+                if old.sa_sigaction == libc::SIG_IGN {
+                    continue;
+                }
+                let mut sa: libc::sigaction = std::mem::zeroed();
+                sa.sa_sigaction = forward as extern "C" fn(libc::c_int) as libc::sighandler_t;
+                libc::sigemptyset(&mut sa.sa_mask);
+                libc::sigaction(sig, &sa, std::ptr::null_mut());
+            }
+        }
+    });
+}
+
 /// Run `cmd` with stdout to `out` and stderr to `err`, killing its process
-/// group once `timeout` passes. The elapsed time with it.
+/// group once `timeout` passes, or when factory is signalled. The elapsed
+/// time with it.
 fn run_logged(
     mut cmd: Command,
     out: &Path,
@@ -193,6 +246,7 @@ fn run_logged(
         .stderr(Stdio::from(file(err)?))
         // Its own group: a wrapper script's children die with it.
         .process_group(0);
+    forward_signals();
     let started = Instant::now();
     let mut child = cmd.spawn().map_err(|e| {
         Error::Msg(format!(
@@ -200,6 +254,8 @@ fn run_logged(
             cmd.get_program().to_string_lossy()
         ))
     })?;
+    let _watched = Watched;
+    CHILD_GROUP.store(child.id() as i32, Ordering::SeqCst);
     loop {
         if let Some(status) = child.try_wait().map_err(io("poll the reviewer"))? {
             return Ok((Ended::Exited(status.code()), started.elapsed()));
@@ -248,11 +304,20 @@ pub fn probe(cfg: &Review, dir: &Path) -> std::result::Result<(), String> {
             code.map_or("on a signal".to_string(), |c| c.to_string())
         )),
         _ if text.contains("login") || text.contains("Authentication required") => Err(first),
-        _ if !text.split_whitespace().any(|t| t == cfg.model) => {
+        _ if !lists_model(&text, &cfg.model) => {
             Err(format!("model {} not in --list-models", cfg.model))
         }
         _ => Ok(()),
     }
+}
+
+/// Whether `--list-models` output names `model`. A token is compared with
+/// what cannot be part of a model id trimmed off its ends: the format was
+/// never seen working, and `grok-4.7-high,` or `(grok-4.7-high)` is a listing.
+pub fn lists_model(text: &str, model: &str) -> bool {
+    let id = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_');
+    text.split_whitespace()
+        .any(|t| t.trim_matches(|c| !id(c)) == model)
 }
 
 /// What a pass's stream said.
@@ -260,6 +325,9 @@ pub fn probe(cfg: &Review, dir: &Path) -> std::result::Result<(), String> {
 pub struct Parsed {
     /// The `result` event's text: the run finished.
     pub result: Option<String>,
+    /// A `result` with `is_error`: the run failed, and its text is the
+    /// reason, never findings.
+    pub error: Option<String>,
     /// Every `assistant` event's text items, joined: what a killed run had.
     pub partial: String,
 }
@@ -284,6 +352,9 @@ pub fn parse_stream(text: &str) -> Parsed {
             continue;
         };
         match v["type"].as_str() {
+            Some("result") if v["is_error"] == true => {
+                p.error = Some(v["result"].as_str().unwrap_or_default().to_string());
+            }
             Some("result") => {
                 if let Some(r) = v["result"].as_str() {
                     p.result = Some(r.to_string());
@@ -452,5 +523,20 @@ mod tests {
         // The three assistant texts joined are the result: the join is right.
         assert_eq!(parse_stream(&first(15)).text(), line(16)["result"].as_str());
         assert_eq!(parse_stream("not json\n{}\n").text(), None);
+    }
+
+    #[test]
+    fn the_model_is_found_with_punctuation_around_it() {
+        for text in [
+            "grok-4.7-high - Grok 4.7 High",
+            "auto, grok-4.7-high, gpt-5",
+            "* grok-4.7-high (current)",
+            "[grok-4.7-high]",
+        ] {
+            assert!(lists_model(text, "grok-4.7-high"), "{text}");
+        }
+        for text in ["grok-4.7-high-max", "xgrok-4.7-high", "grok-4.7", ""] {
+            assert!(!lists_model(text, "grok-4.7-high"), "{text}");
+        }
     }
 }

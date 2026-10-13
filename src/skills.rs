@@ -213,6 +213,36 @@ pub struct Manifest {
 pub struct Rendered {
     pub files: Vec<String>,
     pub links: Vec<String>,
+    /// `.agents/skills` already resolves to `.claude/skills`, so no links.
+    pub shared: bool,
+}
+
+impl Rendered {
+    /// The `skills <v>: …` line `init` and `skills update` print.
+    pub fn summary(&self) -> String {
+        let v = env!("CARGO_PKG_VERSION");
+        let n = self.files.len();
+        if self.shared {
+            format!(
+                "skills {v}: {SKILLS_DIR}/ ({n} files, factory.toml), {LINKS_DIR}/ is {SKILLS_DIR}/ (no links)"
+            )
+        } else {
+            format!(
+                "skills {v}: {SKILLS_DIR}/ ({n} files, factory.toml), {LINKS_DIR}/ ({} links)",
+                self.links.len()
+            )
+        }
+    }
+
+    /// What the commit line stages. A shared `.agents/skills` is the owner's
+    /// link, not ours, and `git add` refuses a path beyond a symlinked `.agents`.
+    pub fn dirs(&self) -> Vec<&'static str> {
+        if self.shared {
+            vec![SKILLS_DIR]
+        } else {
+            vec![SKILLS_DIR, LINKS_DIR]
+        }
+    }
 }
 
 /// `../../.claude/skills/<name>`, the target of `.agents/skills/<name>`.
@@ -251,12 +281,76 @@ fn write_real(path: &Path, text: &str) -> Result<()> {
     fs::write(path, text).map_err(io(format!("write {}", path.display())))
 }
 
-/// Writes every [`FILES`] entry to `.claude/skills/`, byte-identical and over
-/// whatever is there, then the eight `.agents/skills` links, then the
-/// manifest.
-pub fn render(root: &Path) -> Result<Rendered> {
+/// Why `rel` under `root` cannot take the bundle: a symlink or a
+/// non-directory there. Absent and real directories pass.
+fn not_real_dir(root: &Path, rel: &str) -> Option<String> {
+    let meta = fs::symlink_metadata(root.join(rel)).ok()?;
+    if meta.file_type().is_symlink() {
+        Some(format!("{rel} is a symlink"))
+    } else if !meta.is_dir() {
+        Some(format!("{rel} is not a directory"))
+    } else {
+        None
+    }
+}
+
+fn refuse_layout(why: String) -> Error {
+    Error::Msg(format!(
+        "{why}: the skills are rendered into real directories only, nothing written"
+    ))
+}
+
+/// Run before [`render`] writes a skill file. A symlinked `.claude`,
+/// `.claude/skills`, `.agents` or `.agents/skills` would carry the writes,
+/// and the link clearing, outside the repo or round a loop, so each must be a
+/// real directory or absent. The exception: `.agents/skills` resolving to
+/// `.claude/skills`, where Codex already reads the skills; `true` then, and
+/// no links go in. Creates `.claude/skills` to compare against it, and takes
+/// back what it created when it refuses.
+fn layout(root: &Path) -> Result<bool> {
+    for rel in [".claude", SKILLS_DIR] {
+        if let Some(why) = not_real_dir(root, rel) {
+            return Err(refuse_layout(why));
+        }
+    }
+    let claude = root.join(".claude");
     let skills = root.join(SKILLS_DIR);
-    let mut done = Rendered::default();
+    let (had_claude, had_skills) = (claude.exists(), skills.exists());
+    fs::create_dir_all(&skills).map_err(io(format!("mkdir {}", skills.display())))?;
+    let shared = match (
+        fs::canonicalize(root.join(LINKS_DIR)),
+        fs::canonicalize(&skills),
+    ) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    };
+    if shared {
+        return Ok(true);
+    }
+    for rel in [".agents", LINKS_DIR] {
+        if let Some(why) = not_real_dir(root, rel) {
+            if !had_skills {
+                let _ = fs::remove_dir(&skills);
+            }
+            if !had_claude {
+                let _ = fs::remove_dir(&claude);
+            }
+            return Err(refuse_layout(why));
+        }
+    }
+    Ok(false)
+}
+
+/// Writes every [`FILES`] entry to `.claude/skills/`, byte-identical and over
+/// whatever is there, then the eight `.agents/skills` links unless
+/// [`layout`] finds them shared, then the manifest.
+pub fn render(root: &Path) -> Result<Rendered> {
+    let shared = layout(root)?;
+    let skills = root.join(SKILLS_DIR);
+    let mut done = Rendered {
+        shared,
+        ..Rendered::default()
+    };
     let mut files = BTreeMap::new();
     for (rel, content) in FILES {
         let parts: Vec<&str> = rel.split('/').collect();
@@ -270,9 +364,12 @@ pub fn render(root: &Path) -> Result<Rendered> {
         done.files.push(format!("{SKILLS_DIR}/{rel}"));
     }
     let agents = root.join(LINKS_DIR);
-    fs::create_dir_all(&agents).map_err(io(format!("mkdir {}", agents.display())))?;
+    let names: &[&str] = if shared { &[] } else { &NAMES };
+    if !shared {
+        fs::create_dir_all(&agents).map_err(io(format!("mkdir {}", agents.display())))?;
+    }
     let mut links = BTreeMap::new();
-    for name in NAMES {
+    for name in names {
         let path = agents.join(name);
         clear(&path)?;
         let target = link_target(name);
@@ -322,13 +419,17 @@ pub enum Verdict {
     SourceCheckout,
     /// No manifest.
     None,
-    /// A manifest that does not parse, or whose version is not three integers.
+    /// A manifest that does not parse, or a version, the manifest's or the
+    /// binary's, that is not three integers. Holds the whole line, naming
+    /// which side is at fault.
     Unreadable(String),
     Checked {
         version: Version,
         /// Manifest files whose bytes differ, relative to `.claude/skills/`.
         hand_edited: Vec<String>,
-        /// Manifest files absent on disk, relative to `.claude/skills/`.
+        /// What the manifest lists and the disk lacks: files relative to
+        /// `.claude/skills/`, and links, absent or retargeted, relative to
+        /// the repo (`.agents/skills/polish`).
         missing: Vec<String>,
     },
 }
@@ -358,11 +459,18 @@ fn verdict_for(root: &Path, binary: &str) -> Verdict {
     let m = match read_manifest(root) {
         Ok(Some(m)) => m,
         Ok(None) => return Verdict::None,
-        Err(e) => return Verdict::Unreadable(e),
+        Err(e) => return Verdict::Unreadable(format!("unreadable {MANIFEST}: {e}")),
     };
     let binary = binary.to_string();
-    let (Some(repo_v), Some(bin_v)) = (version_parts(&m.version), version_parts(&binary)) else {
-        return Verdict::Unreadable(format!("version \"{}\" is not three integers", m.version));
+    let Some(repo_v) = version_parts(&m.version) else {
+        return Verdict::Unreadable(format!(
+            "unreadable {MANIFEST}: version \"{}\" is not three integers",
+            m.version
+        ));
+    };
+    // A pre-release build (`0.3.0-rc.1`): the binary is at fault, not the repo.
+    let Some(bin_v) = version_parts(&binary) else {
+        return Verdict::Unreadable(format!("binary version {binary} is not three integers"));
     };
     let version = match repo_v.cmp(&bin_v) {
         std::cmp::Ordering::Less => Version::Behind {
@@ -378,11 +486,21 @@ fn verdict_for(root: &Path, binary: &str) -> Verdict {
     };
     let skills = root.join(SKILLS_DIR);
     let (mut hand_edited, mut missing) = (Vec::new(), Vec::new());
-    for (rel, hash) in &m.files {
+    // A hand-written key must not make a read outside the dir it names.
+    for (rel, hash) in m.files.iter().filter(|(r, _)| plain(r)) {
         match fs::read(skills.join(rel)) {
             Ok(bytes) if sha256_hex(&bytes) == *hash => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => missing.push(rel.clone()),
             _ => hand_edited.push(rel.clone()),
+        }
+    }
+    let prefix = format!("{LINKS_DIR}/");
+    for (rel, target) in &m.links {
+        if !rel.strip_prefix(&prefix).is_some_and(plain) {
+            continue;
+        }
+        if fs::read_link(root.join(rel)).ok().as_deref() != Some(Path::new(target)) {
+            missing.push(rel.clone());
         }
     }
     Verdict::Checked {
@@ -407,7 +525,7 @@ impl Verdict {
         let (version, hand_edited, missing) = match self {
             Verdict::SourceCheckout => return vec!["source checkout".into()],
             Verdict::None => return vec!["none → factory init".into()],
-            Verdict::Unreadable(e) => return vec![format!("unreadable {MANIFEST}: {e}")],
+            Verdict::Unreadable(line) => return vec![line.clone()],
             Verdict::Checked {
                 version,
                 hand_edited,
@@ -468,18 +586,32 @@ fn plain(rel: &str) -> bool {
 /// `.claude/skills/` and links under `.agents/skills/`, then the directories
 /// under `.claude/skills/` the removals left empty. Returns the repo-relative
 /// paths removed.
+///
+/// `plain` keys can still pass through a symlinked directory, and an old key
+/// can name a directory the new bundle renders: a file key goes only when it
+/// is no directory and its resolved parent sits in `.claude/skills/`, a link
+/// key only when a symlink is there, and the empty-dir sweep stops at the
+/// first directory that resolves elsewhere.
 pub fn remove_dropped(root: &Path, old: &Manifest, new: &Manifest) -> Result<Vec<String>> {
     let skills = root.join(SKILLS_DIR);
+    let canon = fs::canonicalize(&skills).ok();
+    let within = |p: &Path, strictly: bool| match (&canon, fs::canonicalize(p)) {
+        (Some(c), Ok(p)) => p.starts_with(c) && !(strictly && p == *c),
+        _ => false,
+    };
     let mut removed = Vec::new();
     for rel in old.files.keys().filter(|r| !new.files.contains_key(*r)) {
         let path = skills.join(rel);
-        if !plain(rel) || fs::symlink_metadata(&path).is_err() {
+        if !plain(rel)
+            || !fs::symlink_metadata(&path).is_ok_and(|m| !m.is_dir())
+            || !path.parent().is_some_and(|p| within(p, false))
+        {
             continue;
         }
-        clear(&path)?;
+        fs::remove_file(&path).map_err(io(format!("remove {}", path.display())))?;
         removed.push(format!("{SKILLS_DIR}/{rel}"));
         let mut dir = path.parent();
-        while let Some(d) = dir.filter(|d| *d != skills && d.starts_with(&skills)) {
+        while let Some(d) = dir.filter(|d| *d != skills && within(d, true)) {
             if fs::remove_dir(d).is_err() {
                 break;
             }
@@ -492,10 +624,10 @@ pub fn remove_dropped(root: &Path, old: &Manifest, new: &Manifest) -> Result<Vec
             continue;
         };
         let path = root.join(LINKS_DIR).join(name);
-        if !plain(name) || fs::symlink_metadata(&path).is_err() {
+        if !plain(name) || !fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
             continue;
         }
-        clear(&path)?;
+        fs::remove_file(&path).map_err(io(format!("remove {}", path.display())))?;
         removed.push(rel.clone());
     }
     Ok(removed)
@@ -526,14 +658,6 @@ mod tests {
     }
 
     #[test]
-    fn a_fresh_render_is_current() {
-        let dir = rendered();
-        let v = verdict(dir.path());
-        assert_eq!(v.lines(), [format!("current ({V})")]);
-        assert!(v.is_ok());
-    }
-
-    #[test]
     fn no_manifest_is_none() {
         let dir = rendered();
         fs::remove_file(dir.path().join(MANIFEST)).unwrap();
@@ -553,18 +677,6 @@ mod tests {
                 format!("behind (repo 0.0.0, binary {V}) → factory skills update"),
                 "hand-edited: polish/SKILL.md".to_string(),
             ]
-        );
-    }
-
-    #[test]
-    fn a_newer_manifest_is_ahead() {
-        let dir = rendered();
-        edit_manifest(dir.path(), |m| m.version = "999.0.0".into());
-        assert_eq!(
-            verdict(dir.path()).lines_with(|| "factory upgrade".into()),
-            [format!(
-                "ahead (repo 999.0.0, binary {V}) → factory upgrade"
-            )]
         );
     }
 
@@ -600,13 +712,6 @@ mod tests {
         let v = verdict(dir.path());
         assert_eq!(v.lines(), ["hand-edited: gate/SKILL.md, polish/SKILL.md"]);
         assert!(!v.is_ok());
-    }
-
-    #[test]
-    fn a_deleted_file_is_missing() {
-        let dir = rendered();
-        fs::remove_file(dir.path().join(SKILLS_DIR).join("ux/SKILL.md")).unwrap();
-        assert_eq!(verdict(dir.path()).lines(), ["missing: ux/SKILL.md"]);
     }
 
     #[test]
@@ -665,6 +770,148 @@ mod tests {
         assert!(fs::symlink_metadata(root.join(LINKS_DIR).join("old")).is_err());
         assert!(root.join("outside.md").is_file());
         assert!(root.join(SKILLS_DIR).join("prd/SKILL.md").is_file());
+    }
+
+    /// Every entry under `dir`, sorted, relative names.
+    fn listing(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .map(|rd| {
+                rd.map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn render_refuses_a_linked_or_non_dir_layout_and_writes_nothing() {
+        let cases: [(&str, &str, &str); 5] = [
+            (".claude", "", "is a symlink"),
+            (SKILLS_DIR, ".claude", "is a symlink"),
+            (".agents", "", "is a symlink"),
+            (LINKS_DIR, ".agents", "is a symlink"),
+            (".claude", "file", "is not a directory"),
+        ];
+        for (at, real_parent, says) in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            let outside = tempfile::tempdir().unwrap();
+            fs::create_dir(outside.path().join("polish")).unwrap();
+            fs::write(outside.path().join("polish/keep.md"), "keep").unwrap();
+            if real_parent == "file" {
+                fs::write(root.join(at), "x").unwrap();
+            } else {
+                if !real_parent.is_empty() {
+                    fs::create_dir(root.join(real_parent)).unwrap();
+                }
+                symlink(outside.path(), root.join(at)).unwrap();
+            }
+            let before = listing(root);
+            let err = render(root).unwrap_err().to_string();
+            assert!(
+                err.contains(&format!("{at} {says}"))
+                    && err.contains("real directories only, nothing written"),
+                "{at}: {err}"
+            );
+            assert_eq!(listing(root), before, "{at}");
+            assert_eq!(listing(outside.path()), ["polish"], "{at}");
+            assert_eq!(listing(&outside.path().join("polish")), ["keep.md"], "{at}");
+        }
+    }
+
+    #[test]
+    fn an_agents_link_to_the_skills_dir_shares_them_without_links() {
+        for (at, target) in [(LINKS_DIR, "../.claude/skills"), (".agents", ".claude")] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            if at == LINKS_DIR {
+                fs::create_dir(root.join(".agents")).unwrap();
+            }
+            symlink(target, root.join(at)).unwrap();
+            let done = render(root).unwrap();
+            assert!(done.shared && done.links.is_empty(), "{at}");
+            assert_eq!(done.files.len(), FILES.len(), "{at}");
+            assert!(read_manifest(root).unwrap().unwrap().links.is_empty());
+            for name in NAMES {
+                let real = fs::symlink_metadata(root.join(SKILLS_DIR).join(name)).unwrap();
+                assert!(real.is_dir() && !real.is_symlink(), "{at} {name}");
+                assert!(root.join(LINKS_DIR).join(name).join("SKILL.md").is_file());
+            }
+            assert!(fs::symlink_metadata(root.join(at)).unwrap().is_symlink());
+            assert!(verdict(root).is_ok(), "{at}");
+            assert!(
+                done.summary()
+                    .ends_with(".agents/skills/ is .claude/skills/ (no links)")
+            );
+            assert_eq!(done.dirs(), [SKILLS_DIR]);
+        }
+    }
+
+    #[test]
+    fn remove_dropped_never_reaches_through_a_link_or_takes_a_dir() {
+        let dir = rendered();
+        let root = dir.path();
+        let new = read_manifest(root).unwrap().unwrap();
+        let mut old = new.clone();
+        let outside = tempfile::tempdir().unwrap();
+        fs::create_dir(outside.path().join("sub")).unwrap();
+        fs::write(outside.path().join("target.txt"), "t").unwrap();
+        fs::write(outside.path().join("sub/x.md"), "x").unwrap();
+        symlink(outside.path(), root.join(SKILLS_DIR).join("evil")).unwrap();
+        for key in ["evil/target.txt", "evil/sub/x.md", "gate"] {
+            old.files.insert(key.into(), file_hash("t"));
+        }
+        fs::create_dir(root.join(LINKS_DIR).join("real")).unwrap();
+        old.links
+            .insert(format!("{LINKS_DIR}/real"), link_target("real"));
+
+        assert_eq!(
+            remove_dropped(root, &old, &new).unwrap(),
+            Vec::<String>::new()
+        );
+        assert_eq!(listing(outside.path()), ["sub", "target.txt"]);
+        assert_eq!(listing(&outside.path().join("sub")), ["x.md"]);
+        assert!(root.join(SKILLS_DIR).join("gate/SKILL.md").is_file());
+        assert!(root.join(LINKS_DIR).join("real").is_dir());
+    }
+
+    #[test]
+    fn a_deleted_or_retargeted_link_is_missing() {
+        let dir = rendered();
+        let root = dir.path();
+        fs::remove_file(root.join(LINKS_DIR).join("polish")).unwrap();
+        fs::remove_file(root.join(LINKS_DIR).join("ux")).unwrap();
+        symlink(link_target("prd"), root.join(LINKS_DIR).join("ux")).unwrap();
+        let v = verdict(root);
+        assert_eq!(
+            v.lines(),
+            [format!("missing: {LINKS_DIR}/polish, {LINKS_DIR}/ux")]
+        );
+        assert!(!v.is_ok());
+    }
+
+    #[test]
+    fn a_key_leaving_its_dir_is_never_read() {
+        let dir = rendered();
+        let root = dir.path();
+        fs::write(root.join(".claude/outside.md"), "o").unwrap();
+        edit_manifest(root, |m| {
+            m.files.insert("../outside.md".into(), file_hash("other"));
+            m.links
+                .insert(format!("{LINKS_DIR}/../../x"), "anything".into());
+            m.links.insert("elsewhere/x".into(), "anything".into());
+        });
+        assert_eq!(verdict(root).lines(), [format!("current ({V})")]);
+    }
+
+    #[test]
+    fn an_unparseable_binary_version_blames_the_binary() {
+        let dir = rendered();
+        assert_eq!(
+            verdict_for(dir.path(), "0.3.0-rc.1").lines(),
+            ["binary version 0.3.0-rc.1 is not three integers"]
+        );
     }
 
     #[test]

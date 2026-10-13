@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use clap::Subcommand;
 
 use crate::error::io;
-use crate::skills::{self, LINKS_DIR, MANIFEST, SKILLS_DIR, Verdict, Version};
+use crate::skills::{self, MANIFEST, SKILLS_DIR, Verdict, Version};
 use crate::{Error, Result, paths};
 
 #[derive(Subcommand, Debug, Clone)]
@@ -90,21 +90,17 @@ pub fn update(root: &Path, out: &mut dyn Write) -> Result<i32> {
     for l in verdict.lines() {
         say(out, &format!("was: {l}"))?;
     }
-    say(
-        out,
-        &format!(
-            "skills {v}: {SKILLS_DIR}/ ({} files, factory.toml), {LINKS_DIR}/ ({} links)",
-            rendered.files.len(),
-            rendered.links.len()
-        ),
-    )?;
+    say(out, &rendered.summary())?;
     for r in &removed {
         say(out, &format!("removed {r}"))?;
     }
     // The dirs, not the files: `git add` of a dir stages the deletions too.
     say(
         out,
-        &format!("commit: git add {SKILLS_DIR} {LINKS_DIR} && git commit -m \"chore: skills {v}\""),
+        &format!(
+            "commit: git add {} && git commit -m \"chore: skills {v}\"",
+            rendered.dirs().join(" ")
+        ),
     )?;
     Ok(0)
 }

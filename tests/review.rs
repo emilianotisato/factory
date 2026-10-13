@@ -4,8 +4,9 @@
 mod harness;
 
 use std::fs;
+use std::os::unix::process::ExitStatusExt;
 use std::path::PathBuf;
-use std::process::Output;
+use std::process::{Output, Stdio};
 use std::time::{Duration, Instant};
 
 use harness::Fixture;
@@ -276,4 +277,138 @@ fn a_bad_combination_is_a_usage_error_with_exit_1_and_no_call() {
         assert!(String::from_utf8_lossy(&o.stderr).contains("usage: factory review second"));
     }
     assert!(calls(&fx).is_empty());
+}
+
+/// The `## Pass n` section of `out`, up to the next section or the log line.
+fn section(out: &str, n: usize) -> &str {
+    let start = out
+        .find(&format!("## Pass {n} "))
+        .unwrap_or_else(|| panic!("no pass {n}: {out}"));
+    let rest = &out[start..];
+    let end = rest[1..]
+        .find("\n## Pass ")
+        .or_else(|| rest.find("\nlog: "))
+        .map_or(rest.len(), |e| e + 1);
+    &rest[..end]
+}
+
+#[test]
+fn a_pass_that_errors_is_unreviewed_and_the_others_still_run() {
+    let fx = fixture("review-pass-error", 20);
+    scenario(&fx, json!({"unlink_stream_on_call": 2}));
+    let o = review(&fx, &["--diff", "main"]);
+    let out = stdout(&o);
+    assert_eq!(o.status.code(), Some(0), "{out}");
+    let two = section(&out, 2);
+    assert!(two.contains("\n\nunreviewed (error: read "), "{two}");
+    assert!(two.contains("review-2.jsonl"), "{two}");
+    let result: Value = serde_json::from_str(STREAM.lines().last().unwrap()).unwrap();
+    let first = result["result"].as_str().unwrap().lines().next().unwrap();
+    assert!(section(&out, 1).contains(first), "{out}");
+    assert!(section(&out, 3).contains(first), "{out}");
+    assert!(log_dir(&out).is_dir(), "{out}");
+
+    // The only pass errors: nothing reviewed, exit 2, the log line still last.
+    let fx = fixture("review-pass-error-only", 20);
+    scenario(&fx, json!({"unlink_stream_on_call": 1}));
+    let o = review(&fx, &["--diff", "main", "--", "a", "b"]);
+    let out = stdout(&o);
+    assert_eq!(o.status.code(), Some(2), "{out}");
+    assert!(section(&out, 1).contains("unreviewed (error: "), "{out}");
+    assert!(log_dir(&out).is_dir(), "{out}");
+}
+
+#[test]
+fn a_non_zero_exit_marks_its_partial_and_does_not_count() {
+    let fx = fixture("review-exit-partial", 20);
+    scenario(&fx, json!({"exit_after_assistant": 1, "exit_code": 3}));
+    let o = review(&fx, &["--diff", "main", "--", "a", "b"]);
+    let out = stdout(&o);
+    assert_eq!(o.status.code(), Some(2), "{out}");
+    let want = format!("(exit 3, partial)\n\n{}\n", assistant_text(7));
+    assert!(section(&out, 1).contains(&want), "{out}");
+    assert!(log_dir(&out).is_dir(), "{out}");
+}
+
+#[test]
+fn an_error_result_is_unreviewed_with_its_reason() {
+    let fx = fixture("review-error-result", 20);
+    scenario(
+        &fx,
+        json!({"exit_after_assistant": 1, "error_result": "rate limit reached"}),
+    );
+    let o = review(&fx, &["--diff", "main", "--", "a", "b"]);
+    let out = stdout(&o);
+    assert_eq!(o.status.code(), Some(2), "{out}");
+    let one = section(&out, 1);
+    assert!(
+        one.contains("\n\nunreviewed (exit 1, error: rate limit reached)\n"),
+        "{one}"
+    );
+    assert!(one.contains("(exit 1, partial)"), "{one}");
+}
+
+#[test]
+fn a_base_starting_with_a_dash_is_a_usage_error() {
+    let fx = fixture("review-dash-base", 20);
+    let target = fx.path().join("written-by-git");
+    let o = review(&fx, &[&format!("--diff=--output={}", target.display())]);
+    assert_eq!(o.status.code(), Some(1), "{}", stdout(&o));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("usage: factory review second"));
+    assert!(!target.exists());
+    assert!(calls(&fx).is_empty());
+}
+
+/// Whether `pid` still runs. A zombie waiting to be reaped by its new
+/// parent is gone.
+fn alive(pid: i32) -> bool {
+    // SAFETY: signal 0 only checks that the pid exists.
+    if unsafe { libc::kill(pid, 0) } != 0 {
+        return false;
+    }
+    fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |s| {
+        !s.rsplit(')')
+            .next()
+            .unwrap_or("")
+            .trim_start()
+            .starts_with('Z')
+    })
+}
+
+#[test]
+fn a_signal_to_factory_kills_the_reviewer_too() {
+    let fx = fixture("review-signal", 60);
+    scenario(&fx, json!({"sleep_after_assistant": 1}));
+    let mut child = fx
+        .command(BIN)
+        .args(["review", "second", "--diff", "main", "--", "a", "b"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let pid_file = fx.stub_dir().join("cursor-agent.pid");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let pid = loop {
+        if let Ok(t) = fs::read_to_string(&pid_file)
+            && let Ok(p) = t.trim().parse::<i32>()
+        {
+            break p;
+        }
+        assert!(Instant::now() < deadline, "the stub never started");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    std::thread::sleep(Duration::from_millis(200));
+    // SAFETY: a plain syscall on the child this test spawned.
+    unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
+    let status = child.wait().unwrap();
+    assert_eq!(status.signal(), Some(libc::SIGTERM), "{status:?}");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while alive(pid) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    if alive(pid) {
+        // SAFETY: as above; the stray stub must not outlive the test.
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+        panic!("the reviewer {pid} outlived factory");
+    }
 }

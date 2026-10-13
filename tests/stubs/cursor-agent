@@ -10,9 +10,17 @@
 //   sleep_after_assistant: n
 //     a review call replays up to and including the n-th `assistant` event,
 //     then sleeps 60 s (the caller's timeout kills it).
+//   exit_after_assistant: n, exit_code: c (default 1), error_result: text
+//     a review call replays up to and including the n-th `assistant` event,
+//     writes a `result` event with `is_error` and `text` when error_result is
+//     set, then exits c.
+//   unlink_stream_on_call: n
+//     the n-th review call deletes its own stream file (under
+//     $FACTORY_DATA_DIR/reviews/) and exits 1, so reading it back fails.
 //
 // Otherwise a review call replays cursor-review.jsonl, a recorded stream,
-// to stdout line by line and exits 0.
+// to stdout line by line and exits 0. Every review call writes its pid to
+// $FACTORY_STUB_DIR/cursor-agent.pid.
 const fs = require('node:fs')
 const path = require('node:path')
 
@@ -40,15 +48,40 @@ if (argv.includes('--list-models')) {
   process.exit(0)
 }
 
+if (stubDir) fs.writeFileSync(path.join(stubDir, 'cursor-agent.pid'), `${process.pid}\n`)
+
+const unlinkOn = scenario.unlink_stream_on_call
+if (unlinkOn && stubDir) {
+  const log = fs.readFileSync(path.join(stubDir, 'cursor-agent.log'), 'utf8')
+  const call = log.split('\n').filter((l) => l.startsWith('["-p"')).length
+  if (call === unlinkOn) {
+    const reviews = path.join(process.env.FACTORY_DATA_DIR, 'reviews')
+    for (const d of fs.readdirSync(reviews)) {
+      fs.rmSync(path.join(reviews, d, `review-${call}.jsonl`), { force: true })
+    }
+    process.exit(1)
+  }
+}
+
 const lines = fs.readFileSync(path.join(__dirname, 'cursor-review.jsonl'), 'utf8').split('\n')
 if (lines[lines.length - 1] === '') lines.pop()
 const stop = scenario.sleep_after_assistant
+const quit = scenario.exit_after_assistant
 let seen = 0
 for (const line of lines) {
   fs.writeSync(1, `${line}\n`)
-  if (stop && JSON.parse(line).type === 'assistant' && ++seen === stop) {
+  if (JSON.parse(line).type !== 'assistant') continue
+  seen++
+  if (stop && seen === stop) {
     setTimeout(() => process.exit(0), 60_000)
     return
+  }
+  if (quit && seen === quit) {
+    if (scenario.error_result !== undefined) {
+      const ev = { type: 'result', subtype: 'error', is_error: true, result: scenario.error_result }
+      fs.writeSync(1, `${JSON.stringify(ev)}\n`)
+    }
+    process.exit(scenario.exit_code ?? 1)
   }
 }
 process.exit(0)

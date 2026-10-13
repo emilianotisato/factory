@@ -108,9 +108,12 @@ impl Pathspec {
                 None => {}
             }
         }
+        // `symlink_metadata`, not `is_dir`: a symlink to a folder is one path
+        // git stores as a link, and classed as a dir only what changed under
+        // it was ever swept, never the link itself.
         for raw in added_paths(summary) {
             match relativize(repo, &canon, &raw) {
-                Some(rel) if repo.join(&rel).is_dir() => push_once(&mut spec.dirs, rel),
+                Some(rel) if real_dir(&repo.join(&rel)) => push_once(&mut spec.dirs, rel),
                 Some(rel) if protected.contains(&rel) => push_once(&mut spec.protected, rel),
                 Some(rel) => push_once(&mut spec.paths, rel),
                 None => {}
@@ -223,6 +226,11 @@ fn program(c: &shell::Simple) -> Option<&str> {
 /// A path spelled out, not by an expansion or a glob.
 fn literal(p: &str) -> bool {
     !p.is_empty() && !p.contains(['$', '`', '*', '?', '[', '~'])
+}
+
+/// A directory itself, not a symlink to one.
+fn real_dir(p: &Path) -> bool {
+    std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir())
 }
 
 fn push_once(v: &mut Vec<String>, s: String) {
@@ -711,6 +719,27 @@ mod tests {
         // Nothing changed: no commit.
         assert_eq!(commit(r, &paths, "feat: again").unwrap(), None);
         assert_eq!(commit(r, &[], "feat: none").unwrap(), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_git_add_of_a_symlink_to_a_folder_claims_the_link_as_a_path() {
+        let dir = repo();
+        let r = dir.path();
+        fs::create_dir_all(r.join("skills/prd")).unwrap();
+        fs::write(r.join("skills/prd/SKILL.md"), "s\n").unwrap();
+        fs::create_dir_all(r.join(".claude/skills")).unwrap();
+        std::os::unix::fs::symlink("../../skills/prd", r.join(".claude/skills/prd")).unwrap();
+        let mut summary = Summary::dead();
+        summary.tool_uses = vec![ToolUse {
+            input: json!({ "command": "git add .claude/skills/prd skills" }),
+            ..tool("Bash", "")
+        }];
+        let spec = Pathspec::from_stream(&summary, &board(), r);
+        assert_eq!(spec.paths, [".claude/skills/prd"]);
+        assert_eq!(spec.dirs, ["skills"]);
+        let c = commit(r, &spec.paths, "feat: link").unwrap().unwrap();
+        assert_eq!(c.files, [".claude/skills/prd"]);
     }
 
     #[test]

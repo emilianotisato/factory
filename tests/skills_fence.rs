@@ -82,7 +82,7 @@ fn skill(root: &Path, rel: &str) -> std::path::PathBuf {
     root.join(".claude/skills").join(rel)
 }
 
-/// The seven verdict fixtures, by name, from a committed `init`.
+/// The eight verdict fixtures, by name, from a committed `init`.
 fn fixture(kind: &str) -> tempfile::TempDir {
     let dir = initialised();
     let root = dir.path();
@@ -98,6 +98,7 @@ fn fixture(kind: &str) -> tempfile::TempDir {
             fs::write(&p, format!("{text}x")).unwrap();
         }
         "missing" => fs::remove_file(skill(root, "ux/SKILL.md")).unwrap(),
+        "missing-link" => fs::remove_file(root.join(".agents/skills/polish")).unwrap(),
         other => panic!("no fixture {other}"),
     }
     dir
@@ -191,6 +192,7 @@ fn doctor_prints_one_line_per_verdict() {
         ),
         ("hand-edited", "hand-edited: polish/SKILL.md".to_string()),
         ("missing", "missing: ux/SKILL.md".to_string()),
+        ("missing-link", "missing: .agents/skills/polish".to_string()),
     ];
     for (kind, line) in cases {
         let dir = fixture(kind);
@@ -351,15 +353,79 @@ fn update_refuses_a_hand_edit_until_git_restores_it() {
 }
 
 #[test]
-fn update_restores_a_missing_file() {
-    let dir = fixture("missing");
-    let (code, out) = update(dir.path());
-    assert_eq!(code, 0, "{out}");
+fn update_restores_a_missing_file_or_link() {
     let ux = FILES.iter().find(|(p, _)| *p == "ux/SKILL.md").unwrap().1;
-    assert_eq!(
-        fs::read_to_string(skill(dir.path(), "ux/SKILL.md")).unwrap(),
-        ux
+    for kind in ["missing", "missing-link"] {
+        let dir = fixture(kind);
+        let root = dir.path();
+        let (code, out) = update(root);
+        assert_eq!(code, 0, "{kind}: {out}");
+        assert_eq!(
+            fs::read_to_string(skill(root, "ux/SKILL.md")).unwrap(),
+            ux,
+            "{kind}"
+        );
+        assert_eq!(
+            fs::read_link(root.join(".agents/skills/polish")).unwrap(),
+            Path::new("../../.claude/skills/polish"),
+            "{kind}"
+        );
+        assert_eq!(update(root), (0, "already current\n".to_string()), "{kind}");
+    }
+}
+
+#[test]
+fn update_refuses_a_linked_agents_dir_and_writes_nothing() {
+    let dir = fixture("behind");
+    let root = dir.path();
+    let outside = tempfile::tempdir().unwrap();
+    fs::create_dir(outside.path().join("polish")).unwrap();
+    fs::write(outside.path().join("polish/keep.md"), "keep\n").unwrap();
+    fs::remove_dir_all(root.join(".agents")).unwrap();
+    symlink(outside.path(), root.join(".agents")).unwrap();
+    let before = snapshot(root);
+    let o = run(root, "factory", &["skills", "update"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(!o.status.success(), "{}", stdout(&o));
+    assert!(
+        err.contains(".agents is a symlink: the skills are rendered into real directories only"),
+        "{err}"
     );
+    assert_eq!(snapshot(root), before);
+    assert_eq!(
+        fs::read_to_string(outside.path().join("polish/keep.md")).unwrap(),
+        "keep\n"
+    );
+}
+
+/// `.agents/skills -> ../.claude/skills`, the way Codex is often pointed at
+/// the skills: update renders through no link loop and stages no links.
+#[test]
+fn update_into_a_shared_agents_dir_writes_no_links() {
+    let dir = fixture("behind");
+    let root = dir.path();
+    fs::remove_dir_all(root.join(".agents/skills")).unwrap();
+    symlink("../.claude/skills", root.join(".agents/skills")).unwrap();
+    let (code, out) = update(root);
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains(".agents/skills/ is .claude/skills/ (no links)"),
+        "{out}"
+    );
+    assert!(
+        out.contains("commit: git add .claude/skills && git commit"),
+        "{out}"
+    );
+    for (rel, content) in FILES {
+        assert_eq!(
+            &fs::read_to_string(root.join(".agents/skills").join(rel)).unwrap(),
+            content,
+            "{rel}"
+        );
+    }
+    let m: Manifest = toml::from_str(&fs::read_to_string(root.join(MANIFEST)).unwrap()).unwrap();
+    assert!(m.links.is_empty());
+    assert_eq!(update(root), (0, "already current\n".to_string()));
 }
 
 #[test]

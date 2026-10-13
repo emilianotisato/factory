@@ -53,6 +53,14 @@ fn write_new(path: &Path, text: &str) -> Result<()> {
 /// the convention block where its heading is absent. Commits nothing: it
 /// prints the line that would.
 pub fn init(root: &Path, out: &mut dyn Write) -> Result<()> {
+    // With a manifest the skills are `factory skills update`'s; a source
+    // checkout reads `skills/` live (PRD-004 FR-2). First, so a layout
+    // `render` refuses leaves the repo untouched.
+    let rendered = if root.join(skills::MANIFEST).exists() || skills::source_checkout(root) {
+        None
+    } else {
+        Some(skills::render(root)?)
+    };
     let docs = root.join("docs");
     let mut made: Vec<String> = Vec::new();
     let toml = root.join(PROJECT_FILE);
@@ -92,15 +100,15 @@ pub fn init(root: &Path, out: &mut dyn Write) -> Result<()> {
             .map_err(io(format!("write {}", ignore.display())))?;
         made.push("docs/.gitignore".into());
     }
-    // With a manifest the skills are `factory skills update`'s; a source
-    // checkout reads `skills/` live (PRD-004 FR-2).
-    let rendered = if root.join(skills::MANIFEST).exists() || skills::source_checkout(root) {
-        None
-    } else {
-        Some(skills::render(root)?)
+    let (convention, skipped) = convention(root)?;
+    let say_skipped = |out: &mut dyn Write| -> Result<()> {
+        for (name, why) in &skipped {
+            say(out, &format!("convention block: skipped {name} ({why})"))?;
+        }
+        Ok(())
     };
-    let convention = convention(root)?;
     if made.is_empty() && rendered.is_none() && convention.is_empty() {
+        say_skipped(out)?;
         return say(out, "already initialised");
     }
     let version = env!("CARGO_PKG_VERSION");
@@ -110,22 +118,14 @@ pub fn init(root: &Path, out: &mut dyn Write) -> Result<()> {
         paths.push("docs".into());
     }
     if let Some(r) = &rendered {
-        say(
-            out,
-            &format!(
-                "skills {version}: {}/ ({} files, factory.toml), {}/ ({} links)",
-                skills::SKILLS_DIR,
-                r.files.len(),
-                skills::LINKS_DIR,
-                r.links.len()
-            ),
-        )?;
-        paths.extend([skills::SKILLS_DIR.into(), skills::LINKS_DIR.into()]);
+        say(out, &r.summary())?;
+        paths.extend(r.dirs().into_iter().map(String::from));
     }
     if !convention.is_empty() {
         say(out, &format!("convention block: {}", convention.join(", ")))?;
         paths.extend(convention);
     }
+    say_skipped(out)?;
     let subject = match rendered {
         Some(_) => format!("chore: factory init (skills {version})"),
         None => "chore: factory init".to_string(),
@@ -143,24 +143,43 @@ pub fn init(root: &Path, out: &mut dyn Write) -> Result<()> {
     )
 }
 
+/// A convention file left alone, and why.
+type Skipped = (&'static str, &'static str);
+
 /// Appends [`CONVENTION`] to `CLAUDE.md` and `AGENTS.md`, each created when
 /// absent and skipped when it already holds the heading. Each file is re-read
 /// just before its turn, so when `CLAUDE.md` is a link to `AGENTS.md` the
 /// append through the first name shows up in the second and the block lands
 /// once. Returns the repo-relative files written, a link's target in place of
-/// the link so `git add` picks the changed file.
-fn convention(root: &Path) -> Result<Vec<String>> {
+/// the link so `git add` picks the changed file, and the names skipped with
+/// why: a link resolving outside the repo, or nowhere, is never appended to.
+fn convention(root: &Path) -> Result<(Vec<String>, Vec<Skipped>)> {
     let heading = CONVENTION.lines().next().unwrap_or_default();
     let canon_root = fs::canonicalize(root).map_err(io(format!("resolve {}", root.display())))?;
+    let has_heading = |text: &str| text.lines().any(|l| l.trim_end() == heading);
     let mut written: Vec<String> = Vec::new();
+    let mut skipped = Vec::new();
     for name in ["CLAUDE.md", "AGENTS.md"] {
         let path = root.join(name);
+        if fs::symlink_metadata(&path).is_ok() {
+            match fs::canonicalize(&path) {
+                Ok(p) if p.starts_with(&canon_root) => {}
+                Ok(_) => {
+                    skipped.push((name, "links outside the repo"));
+                    continue;
+                }
+                Err(_) => {
+                    skipped.push((name, "a dangling link"));
+                    continue;
+                }
+            }
+        }
         let text = match fs::read_to_string(&path) {
             Ok(t) => t,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
             Err(e) => return Err(io(format!("read {}", path.display()))(e)),
         };
-        if text.lines().any(|l| l == heading) {
+        if has_heading(&text) {
             continue;
         }
         let sep = match text.as_str() {
@@ -187,7 +206,14 @@ fn convention(root: &Path) -> Result<Vec<String>> {
             written.push(shown);
         }
     }
-    Ok(written)
+    // `CLAUDE.md -> AGENTS.md` with no `AGENTS.md` dangles on its turn and
+    // resolves once `AGENTS.md` is written: the block reached it, no skip.
+    skipped.retain(|(name, _)| {
+        !fs::canonicalize(root.join(name)).is_ok_and(|p| {
+            p.starts_with(&canon_root) && fs::read_to_string(&p).is_ok_and(|t| has_heading(&t))
+        })
+    });
+    Ok((written, skipped))
 }
 
 /// `allocateNumber` (`docs.mjs:1251`): the scan of `features/` and

@@ -12,6 +12,11 @@
 - **Checkpoint 1, FR-7 row.** The three scenarios by name with `--nocapture`, 3 passed: `docs/features/004-skills/evidence/cp-1-fr7-friction-tests.txt`. It holds the idea file's text (`2026-10-13-friction-repo-prd-001.md`: origin `repo PRD-001 run 001-20261013-2001`, both bullets, the retro's path) and the source's porcelain line `?? docs/ideas/2026-10-13-friction-repo-prd-001.md`.
 - **Checkpoint 1, fixed.** Commit 393ddbd carried only `tests/closeout.rs`: `src/closeout.rs`, `src/config.rs` and `tests/stubs/claude` stayed in the tree, so HEAD did not compile (`docs/features/004-skills/evidence/cp-1-head-build.txt`); the checkpoint commit carries them.
 
+**Code-review fixes (2026-10-13).**
+- A polish worker adopted by a resumed driver (`settle_orphan`) never filed the retro's friction. It now files right after `PolishDone`, the same place as AD-1 (AD-20); the owner's hand `proceed` path still files nothing, by design (AD-21).
+- A `[source]` without a string `path` made every config load fail. It now loads as no `[source]` and warns (AD-22).
+- Unknown keys under `[review]` and `[source]` were silently ignored, so `timeout = 60` left the 900 s default with no word. They now warn like `[workers.<role>]` keys do.
+
 **Slice**: After this slice a run's retro friction reaches the skills repo without a copy-paste step. Right after the polish commit, closeout reads the retro's `## Framework friction → skills repo` section. When it holds more than the template's placeholder and `[source] path` in `~/.config/factory/config.toml` names a checkout with `docs/ideas/`, closeout writes one idea there: `friction: <repo> PRD-NNN`, the section verbatim and the retro's path. Nothing is committed, and the run prints the idea's path. With no `[source]`, a placeholder-only section, or any failure, nothing is filed, nothing is printed, and the run goes on. Slice 06 reads the same `[source] path` for its from-source upgrade line.
 
 ## Current code / environment

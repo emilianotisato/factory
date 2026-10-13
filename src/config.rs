@@ -142,6 +142,8 @@ const PROJECT_TOP_KEYS: [&str; 3] = ["docs", "run", "workers"];
 const RUN_KEYS: [&str; 1] = ["budget"];
 const ROLE_KEYS: [&str; 4] = ["build", "fix", "checkpoint", "polish"];
 const WORKER_KEYS: [&str; 2] = ["model", "effort"];
+const SOURCE_KEYS: [&str; 1] = ["path"];
+const REVIEW_KEYS: [&str; 4] = ["agent", "model", "timeout_secs", "pass_lines"];
 
 /// The project scope, relative to the repo the run targets (PRD-003 FR-23).
 pub const PROJECT_FILE: &str = "docs/project.toml";
@@ -155,10 +157,16 @@ pub fn load(config_dir: &Path) -> Result<Loaded> {
         warnings: Vec::new(),
         sources: Sources::default(),
     };
-    let Some(table) = read_table(&path)? else {
+    let Some(mut table) = read_table(&path)? else {
         return Ok(loaded);
     };
     loaded.warnings = warn(&path, unknown_keys(&table, &TOP_KEYS));
+    if drop_pathless_source(&mut table) {
+        loaded.warnings.push(format!(
+            "{}: `[source]` has no `path` string, ignored",
+            path.display()
+        ));
+    }
     loaded.sources.budget = scope(&table, &["budget_weighted_tokens"], Source::User);
     for (role, s) in loaded.sources.workers.each_mut() {
         s.model = scope(&table, &["workers", role, "model"], Source::User);
@@ -321,6 +329,19 @@ fn scope(table: &toml::Table, at: &[&str], scope: Source) -> Source {
     if v.is_some() { scope } else { Source::Default }
 }
 
+/// A `[source]` with no string `path` (`[source] dir = …`) is taken out
+/// before the typed read, so it loads as no `[source]` and warns instead of
+/// failing every command that reads the config. `true` when it was.
+fn drop_pathless_source(table: &mut toml::Table) -> bool {
+    let pathless = table
+        .get("source")
+        .is_some_and(|s| !s.get("path").is_some_and(toml::Value::is_str));
+    if pathless {
+        table.remove("source");
+    }
+    pathless
+}
+
 fn warn(path: &Path, keys: Vec<String>) -> Vec<String> {
     keys.into_iter()
         .map(|k| format!("{}: unknown key `{k}` ignored", path.display()))
@@ -339,6 +360,17 @@ fn unknown_keys(table: &toml::Table, top: &[&str]) -> Vec<String> {
                 .filter(|k| !RUN_KEYS.contains(&k.as_str()))
                 .map(|k| format!("run.{k}")),
         );
+    }
+    // A misspelled `[review]` or `[source]` key (`timeout` for
+    // `timeout_secs`) would otherwise fall back to the default unsaid.
+    for (name, keys) in [("source", &SOURCE_KEYS[..]), ("review", &REVIEW_KEYS[..])] {
+        if let (true, Some(toml::Value::Table(t))) = (top.contains(&name), table.get(name)) {
+            out.extend(
+                t.keys()
+                    .filter(|k| !keys.contains(&k.as_str()))
+                    .map(|k| format!("{name}.{k}")),
+            );
+        }
     }
     if let Some(toml::Value::Table(workers)) = table.get("workers") {
         for (role, v) in workers {
@@ -446,6 +478,55 @@ mod tests {
             assert_eq!(l.config.source.map(|s| s.path), Some(want));
             assert!(l.warnings.is_empty(), "{:?}", l.warnings);
         }
+    }
+
+    #[test]
+    fn a_source_without_a_path_warns_and_loads_as_none() {
+        for written in [
+            "[source]\ndir = \"/x\"\n",
+            "[source]\npath = 1\n",
+            "source = \"/x\"\n",
+        ] {
+            let (cfg, _) = dirs(Some(written), None);
+            let l = load(cfg.path()).unwrap();
+            assert_eq!(l.config.source, None, "{written}");
+            assert!(
+                l.warnings
+                    .iter()
+                    .any(|w| w.contains("`[source]` has no `path`")),
+                "{written}: {:?}",
+                l.warnings
+            );
+        }
+        let (cfg, _) = dirs(Some("[source]\ndir = \"/x\"\n"), None);
+        let l = load(cfg.path()).unwrap();
+        assert!(
+            l.warnings.iter().any(|w| w.contains("`source.dir`")),
+            "{:?}",
+            l.warnings
+        );
+    }
+
+    #[test]
+    fn an_unknown_key_in_review_or_source_warns_and_the_default_stands() {
+        let (cfg, _) = dirs(
+            Some("[review]\ntimeout = 60\n\n[source]\npath = \"/x\"\nbranch = \"main\"\n"),
+            None,
+        );
+        let l = load(cfg.path()).unwrap();
+        assert_eq!(l.config.review, Review::default());
+        assert_eq!(l.config.source.map(|s| s.path), Some(PathBuf::from("/x")));
+        assert_eq!(l.warnings.len(), 2, "{:?}", l.warnings);
+        assert!(
+            l.warnings[0].contains("unknown key `source.branch`"),
+            "{:?}",
+            l.warnings
+        );
+        assert!(
+            l.warnings[1].contains("unknown key `review.timeout`"),
+            "{:?}",
+            l.warnings
+        );
     }
 
     #[test]

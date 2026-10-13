@@ -2146,14 +2146,13 @@ fn a_friction_section_is_filed_as_an_untracked_idea_in_the_source() {
     fx.chain();
     let src = source_repo(&fx);
     fx.write_plan(&polish_with_friction(FRICTION));
+    let before = today();
     let dir = start(&fx);
     wait_phase(&fx, &dir, "finished", 90);
 
     let retro = fs::read_to_string(fx.path().join(RETRO)).unwrap();
     assert!(retro.contains(FRICTION), "{retro}");
-    let today = &factory::clock::now_rfc3339()[..10];
-    let id = format!("{today}-friction-repo-prd-001");
-    assert_eq!(ideas_in(&src), [format!("{id}.md")]);
+    let id = friction_id(&src, &before, "");
     let idea = fs::read_to_string(src.join(format!("docs/ideas/{id}.md"))).unwrap();
     for want in [
         "title: \"friction: repo PRD-001\"",
@@ -2222,4 +2221,58 @@ fn a_placeholder_only_friction_section_files_nothing() {
     assert_eq!(ideas_in(&src), Vec::<String>::new());
     assert_eq!(ideas_in(fx.path()), Vec::<String>::new());
     assert!(!driver_log(&dir).contains("friction:"));
+}
+
+#[test]
+fn a_polish_orphan_adopted_by_a_resumed_driver_files_its_friction() {
+    let fx = Fixture::new("friction-orphan");
+    fx.chain();
+    let src = source_repo(&fx);
+    fx.write_plan(&plan_with(&[
+        json!({"outcome": "polish", "friction": FRICTION, "delay_ms": 3000}),
+    ]));
+    let before = today();
+    let dir = start(&fx);
+    wait_until(&fx, &dir, "the polish worker", 90, || {
+        state(&dir)["workers"]
+            .as_array()
+            .is_some_and(|w| w.iter().any(|w| w["role"] == "polish"))
+    });
+    let s = state(&dir);
+    let driver = s["pid"].as_u64().unwrap() as i32;
+    let polish = s["workers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["role"] == "polish")
+        .unwrap()["pid"]
+        .as_u64()
+        .unwrap() as u32;
+    assert_eq!(unsafe { libc::kill(driver, libc::SIGKILL) }, 0);
+    wait_until(&fx, &dir, "the orphan polish worker to exit", 30, || {
+        !factory::run::pid_alive(polish)
+    });
+    assert_eq!(ideas_in(&src), Vec::<String>::new());
+
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    wait_phase(&fx, &dir, "finished", 90);
+    let log = driver_log(&dir);
+    assert!(log.contains("of an earlier driver returned"), "{log}");
+    friction_id(&src, &before, &log);
+}
+
+fn today() -> String {
+    factory::clock::now_rfc3339()[..10].to_string()
+}
+
+/// The one friction idea in `src`, dated the day the run started or the day
+/// it ended: a run across midnight UTC files under either.
+fn friction_id(src: &Path, before: &str, context: &str) -> String {
+    let ideas = ideas_in(src);
+    [before.to_string(), today()]
+        .iter()
+        .map(|d| format!("{d}-friction-repo-prd-001"))
+        .find(|id| ideas == [format!("{id}.md")])
+        .unwrap_or_else(|| panic!("{ideas:?}\n{context}"))
 }
