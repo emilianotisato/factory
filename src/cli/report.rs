@@ -16,20 +16,30 @@
 //! `followup_reads_by_role` splits `followup_reads` by worker role: the
 //! icg-cloud A/B mixed a polish worker's follow-ups with the builders', and
 //! the reversal rule is read on the builders' share (retro FR-11, 2026-10-12).
-use std::collections::BTreeMap;
+//!
+//! PRD-003 FR-24 appends the quality counts, no composite score: fix
+//! commits, CI red rounds and reruns from the events, the polish `FINDINGS`
+//! and the agent log's counts from the `runs` row, and prints them again on
+//! one `quality:` line beside `gate_red` and `worker_gate_red`.
+use std::collections::{BTreeMap, HashSet};
+use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 
 use clap::Args;
 use serde::Serialize;
+use serde_json::Value;
 
 use crate::db::Db;
 use crate::db::{ToolCallRow, WorkerRow};
+use crate::docs::Docs;
 use crate::error::{io, json};
-use crate::measure::{self, Measure};
-use crate::metrics::{CTX_KINDS, LOOKUP_KINDS};
-use crate::run::Run;
-use crate::{Result, paths, quota};
+use crate::measure::{self, Measure, Subagents};
+use crate::metrics::{self, CTX_KINDS, LOOKUP_KINDS};
+use crate::pack::Part;
+use crate::run::{GateCmds, Run};
+use crate::stream::Findings;
+use crate::{Error, Result, paths, quota, stream, worker};
 
 #[derive(Args, Debug, Clone)]
 pub struct ReportArgs {
@@ -44,6 +54,10 @@ pub struct ReportArgs {
     /// `ctx_share` and `repeat_rate` for each worker, after the run's keys
     #[arg(long)]
     pub per_worker: bool,
+    /// Rewrite the run's token, context and `tool_calls` rows from the
+    /// stored streams and the transcript dirs first (a finished run only)
+    #[arg(long)]
+    pub recount: bool,
 }
 
 /// The retro keys (`retro.md:2-14`), in order, then the run keys (§10).
@@ -77,7 +91,7 @@ pub const KEYS: [&str; 23] = [
 /// list (AD-802; `lookup_share_chars`, slice 13). The three `cockpit_*`
 /// figures after `cockpit_peak_context` let the FR-8 cross-check compare all
 /// four of the QA guide's figures with `measure.py`, not just the peak.
-pub const EXTRA_KEYS: [&str; 9] = [
+pub const EXTRA_KEYS: [&str; 19] = [
     "worker_gate_runs",
     "worker_gate_red",
     "cockpit_peak_context",
@@ -87,6 +101,16 @@ pub const EXTRA_KEYS: [&str; 9] = [
     "lookup_share_chars",
     "followup_reads_by_role",
     "weighted_by_role",
+    "fix_commits",
+    "ci_red_rounds",
+    "ci_reruns",
+    "findings",
+    "decisions",
+    "decide",
+    "blocks",
+    "knobs",
+    "hypothesis",
+    "pack_by_role",
 ];
 
 // The reversal rule's constants, PRD §14 FR-12 decision 4: "`followup_reads`
@@ -199,10 +223,23 @@ pub struct PerWorker {
     pub ctx_calls: u64,
     pub ctx_share: f64,
     pub repeat_rate: f64,
+    /// The worker's own usage, weighted (PRD-003 FR-21).
+    pub weighted_own: u64,
+    /// Its subagents', weighted; `None` when they were not read.
+    pub weighted_sub: Option<u64>,
+    pub subagents: Option<i64>,
+    /// The model that answered (PRD-003 FR-23); `None` on an older row.
+    pub model_id: Option<String>,
+}
+
+/// `—` for a figure that was not read.
+fn or_dash<T: std::fmt::Display>(v: Option<T>) -> String {
+    v.map_or_else(|| "—".to_string(), |n| n.to_string())
 }
 
 impl PerWorker {
-    /// `worker 3 build slice 02 (1a2b3c4d): lookups 6, ctx_share 0.333, repeat_rate 0.167`.
+    /// `worker 3 build slice 02 (1a2b3c4d): lookups 6, ctx_share 0.333,
+    /// repeat_rate 0.167, own 812000 sub 0 subagents 0, model_id claude-opus-5-5`.
     fn text(&self) -> String {
         let slice = self
             .slice
@@ -211,10 +248,31 @@ impl PerWorker {
             format!(" ({})", s.chars().take(8).collect::<String>())
         });
         format!(
-            "worker {} {}{slice}{session}: lookups {}, ctx_share {:.3}, repeat_rate {:.3}",
-            self.id, self.role, self.lookups, self.ctx_share, self.repeat_rate
+            "worker {} {}{slice}{session}: lookups {}, ctx_share {:.3}, repeat_rate {:.3}, own {} sub {} subagents {}, model_id {}",
+            self.id,
+            self.role,
+            self.lookups,
+            self.ctx_share,
+            self.repeat_rate,
+            self.weighted_own,
+            or_dash(self.weighted_sub),
+            or_dash(self.subagents),
+            or_dash(self.model_id.as_deref())
         )
     }
+}
+
+/// The row's subagent columns were never read (an unreadable dir, a lost
+/// transcript, a row from before PRD-003).
+fn sub_unread(w: &WorkerRow) -> bool {
+    [
+        w.sub_input,
+        w.sub_cache_write,
+        w.sub_cache_read,
+        w.sub_output,
+    ]
+    .iter()
+    .all(Option::is_none)
 }
 
 /// `(lookups, ctx calls, repeats)` among `calls`.
@@ -244,6 +302,10 @@ pub fn per_worker(workers: &[WorkerRow], calls: &[ToolCallRow]) -> Vec<PerWorker
                 ctx_calls: ctx,
                 ctx_share: ratio(ctx, lookups),
                 repeat_rate: ratio(repeats, lookups),
+                weighted_own: quota::weigh_own(w).round() as u64,
+                weighted_sub: (!sub_unread(w)).then(|| quota::weigh_sub(w).round() as u64),
+                subagents: w.subagents,
+                model_id: w.model_id.clone(),
             }
         })
         .collect()
@@ -340,6 +402,98 @@ fn weighted_by_role_text(by_role: &BTreeMap<String, OwnSub>) -> String {
     }
 }
 
+/// One role's packs (PRD-003 FR-22), means over its rows that recorded
+/// `pack_parts`: each section's chars in the order the packs wrote them (a
+/// row without the section counts 0, so the sections add up to the total),
+/// the pack total, and `start_context` beside it, of which the pack is a share.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct PackShare {
+    #[serde(serialize_with = "in_order")]
+    pub sections: Vec<(String, u64)>,
+    pub total: u64,
+    pub start_context: Option<u64>,
+}
+
+/// The sections as a JSON object, keys in pack order.
+fn in_order<S: serde::Serializer>(
+    sections: &[(String, u64)],
+    s: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    s.collect_map(sections.iter().map(|(k, n)| (k, n)))
+}
+
+/// [`PackShare`] per role; `None` for a role with no `pack_parts` row (a run
+/// from before FR-22).
+pub fn pack_by_role(workers: &[WorkerRow]) -> BTreeMap<String, Option<PackShare>> {
+    let mut rows: BTreeMap<String, Vec<(Vec<Part>, Option<i64>)>> = BTreeMap::new();
+    for w in workers {
+        let role = rows.entry(w.role.clone()).or_default();
+        if let Some(parts) = w
+            .pack_parts
+            .as_deref()
+            .and_then(|t| serde_json::from_str::<Vec<Part>>(t).ok())
+        {
+            role.push((parts, w.start_context));
+        }
+    }
+    let mean = |sum: u64, n: usize| (sum as f64 / n as f64).round() as u64;
+    rows.into_iter()
+        .map(|(role, rows)| {
+            if rows.is_empty() {
+                return (role, None);
+            }
+            let mut sums: Vec<(String, u64)> = Vec::new();
+            for p in rows.iter().flat_map(|(parts, _)| parts) {
+                match sums.iter_mut().find(|(s, _)| *s == p.section) {
+                    Some(s) => s.1 += p.chars as u64,
+                    None => sums.push((p.section.clone(), p.chars as u64)),
+                }
+            }
+            let starts: Vec<u64> = rows.iter().filter_map(|r| r.1).map(|n| n as u64).collect();
+            let share = PackShare {
+                total: mean(sums.iter().map(|s| s.1).sum(), rows.len()),
+                sections: sums
+                    .into_iter()
+                    .map(|(s, sum)| (s, mean(sum, rows.len())))
+                    .collect(),
+                start_context: (!starts.is_empty())
+                    .then(|| mean(starts.iter().sum(), starts.len())),
+            };
+            (role, Some(share))
+        })
+        .collect()
+}
+
+/// `build slice 9120 outline 7800 … total 28400 start_context 45000 ·
+/// polish —`, roles in [`ROLE_ORDER`].
+fn pack_by_role_text(by_role: &BTreeMap<String, Option<PackShare>>) -> String {
+    let known = ROLE_ORDER.iter().filter_map(|r| by_role.get_key_value(*r));
+    let other = by_role
+        .iter()
+        .filter(|(r, _)| !ROLE_ORDER.contains(&r.as_str()));
+    let parts: Vec<String> = known
+        .chain(other)
+        .map(|(r, share)| match share {
+            None => format!("{r} —"),
+            Some(p) => {
+                let sections: Vec<String> =
+                    p.sections.iter().map(|(s, n)| format!("{s} {n}")).collect();
+                format!(
+                    "{r} {} total {} start_context {}",
+                    sections.join(" "),
+                    p.total,
+                    or_dash(p.start_context)
+                )
+            }
+        })
+        .collect();
+    if parts.is_empty() {
+        "none".to_string()
+    } else {
+        parts.join(" · ")
+    }
+}
+
 /// The worker's own calls: the lookup figures leave its subagents' out
 /// (PRD-003 FR-21), though the table keeps them.
 fn own_calls(db: &Db, run_id: &str) -> Result<Vec<ToolCallRow>> {
@@ -422,6 +576,23 @@ pub struct Report {
     pub followup_reads_by_role: BTreeMap<String, Followups>,
     /// Weighted tokens per role, own and subagents apart.
     pub weighted_by_role: BTreeMap<String, OwnSub>,
+    /// `fix_committed` events: checkpoint fix workers that landed a commit.
+    pub fix_commits: u64,
+    pub ci_red_rounds: u64,
+    pub ci_reruns: u64,
+    /// The polish `FINDINGS` line; `None` when it had none.
+    pub findings: Option<Findings>,
+    /// Stored at ship; `None` before it.
+    pub decisions: Option<u32>,
+    pub decide: Option<u32>,
+    pub blocks: Option<u32>,
+    /// What the run resolved at its start (PRD-003 FR-23), the stored
+    /// object; `None` on a run from before it.
+    pub knobs: Option<Value>,
+    pub hypothesis: Option<String>,
+    /// Per role, what its packs were made of (PRD-003 FR-22); `None` for a
+    /// role none of whose rows recorded `pack_parts`.
+    pub pack_by_role: BTreeMap<String, Option<PackShare>>,
     pub thresholds: Thresholds,
     /// With `--per-worker` only.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -447,6 +618,7 @@ pub fn compute(db: &Db, run_id: &str, cockpit: Option<&Measure>) -> Result<Repor
     let gates = db.gates(run_id)?;
     let calls = own_calls(db, run_id)?;
     let events = db.events(run_id)?;
+    let row = db.run_row(run_id)?;
     let n = |v: Option<i64>| v.unwrap_or(0).max(0) as u64;
     let count = |kind: &str| events.iter().filter(|e| e.kind == kind).count() as u64;
     let minutes = |roles: &[&str]| {
@@ -534,6 +706,19 @@ pub fn compute(db: &Db, run_id: &str, cockpit: Option<&Measure>) -> Result<Repor
         lookup_share_chars: ratio(lookup_chars, all_chars),
         followup_reads_by_role: followups_by_role(&workers, &calls),
         weighted_by_role: weighted_by_role(&workers),
+        fix_commits: count("fix_committed"),
+        ci_red_rounds: count("ci_red"),
+        ci_reruns: count("ci_rerun"),
+        findings: row.as_ref().and_then(|r| r.findings),
+        decisions: row.as_ref().and_then(|r| r.decisions),
+        decide: row.as_ref().and_then(|r| r.decide),
+        blocks: row.as_ref().and_then(|r| r.blocks),
+        knobs: row
+            .as_ref()
+            .and_then(|r| r.knobs.as_deref())
+            .and_then(|t| serde_json::from_str(t).ok()),
+        hypothesis: row.as_ref().and_then(|r| r.hypothesis.clone()),
+        pack_by_role: pack_by_role(&workers),
         per_worker: None,
     })
 }
@@ -585,8 +770,183 @@ impl Report {
                 "weighted_by_role: {}",
                 weighted_by_role_text(&self.weighted_by_role)
             ),
+            format!("fix_commits: {}", self.fix_commits),
+            format!("ci_red_rounds: {}", self.ci_red_rounds),
+            format!("ci_reruns: {}", self.ci_reruns),
+            format!("findings: {}", findings_text(self.findings)),
+            format!("decisions: {}", dash(self.decisions)),
+            format!("decide: {}", dash(self.decide)),
+            format!("blocks: {}", dash(self.blocks)),
+            format!("knobs: {}", knobs_text(self.knobs.as_ref())),
+            format!("hypothesis: {}", or_dash(self.hypothesis.as_deref())),
+            format!("pack_by_role: {}", pack_by_role_text(&self.pack_by_role)),
         ]
     }
+
+    /// FR-24's quality block on one line; a null count prints `—`.
+    pub fn quality_line(&self) -> String {
+        let findings = match self.findings {
+            Some(f) => format!("findings {}", f.text()),
+            None => "findings: —".to_string(),
+        };
+        format!(
+            "quality: gate_red {} · worker_gate_red {} · fix_commits {} · ci_red_rounds {} · ci_reruns {} · {findings} · decisions {} decide {} blocks {}",
+            self.gate_red,
+            self.worker_gate_red,
+            self.fix_commits,
+            self.ci_red_rounds,
+            self.ci_reruns,
+            dash(self.decisions),
+            dash(self.decide),
+            dash(self.blocks),
+        )
+    }
+}
+
+fn dash(v: Option<u32>) -> String {
+    v.map_or_else(|| "—".to_string(), |n| n.to_string())
+}
+
+fn findings_text(f: Option<Findings>) -> String {
+    f.map_or_else(|| "—".to_string(), |f| f.text())
+}
+
+/// `build opus/high default · … · polish sonnet/high project · budget
+/// 30000000 user · lanes 1 · factory 0.1.0 · claude 2.1.296`. A role whose
+/// effort came from another scope reads `project/user`; `—` for no knobs.
+fn knobs_text(k: Option<&Value>) -> String {
+    let Some(k) = k else {
+        return "—".to_string();
+    };
+    let s = |v: &Value| v.as_str().unwrap_or("—").to_string();
+    let mut parts: Vec<String> = ROLE_ORDER
+        .iter()
+        .map(|role| (role, &k["workers"][role]))
+        .filter(|(_, w)| !w.is_null())
+        .map(|(role, w)| {
+            let mut src = s(&w["source"]);
+            if let Some(e) = w["effort_source"].as_str() {
+                src = format!("{src}/{e}");
+            }
+            format!("{role} {}/{} {src}", s(&w["model"]), s(&w["effort"]))
+        })
+        .collect();
+    parts.extend([
+        format!(
+            "budget {} {}",
+            or_dash(k["budget"]["value"].as_u64()),
+            s(&k["budget"]["source"])
+        ),
+        format!("lanes {}", or_dash(k["lanes"].as_u64())),
+        format!("factory {}", s(&k["factory_version"])),
+        // `2.1.296 (Claude Code)` reads `2.1.296`.
+        format!(
+            "claude {}",
+            or_dash(k["claude_version"].as_str().and_then(|v| v.split_whitespace().next()))
+        ),
+    ]);
+    parts.join(" · ")
+}
+
+/// `--recount` (PRD-003 FR-21): rewrite the run's token, context and
+/// `tool_calls` rows from the streams under `runs/<id>/workers/` and the
+/// transcript dirs, one `recount:` line per worker. `events`, `gates` and
+/// the run's docs stay as they are. A run still going is refused: the
+/// budget and the quota pause read these rows live.
+pub fn recount(run: &Run, out: &mut dyn Write) -> Result<()> {
+    let phase = run.state().phase;
+    if !phase.is_over() {
+        return Err(Error::Msg(format!(
+            "report --recount: run {} is {phase}; only a finished, stopped or failed run is recounted",
+            run.id()
+        )));
+    }
+    let db = run.db();
+    let run_id = run.id().as_str();
+    let repo = run.state().repo.clone();
+    let mut workers = db.workers(run_id)?;
+    // `repeat_in_run` depends on which worker came first.
+    workers.sort_by(|a, b| (&a.started_at, a.id).cmp(&(&b.started_at, b.id)));
+    // Every stream is read before a row is written: one gone leaves the
+    // store as it was.
+    let mut ended = Vec::new();
+    for w in &workers {
+        let short: String = w
+            .session_id
+            .as_deref()
+            .unwrap_or("")
+            .chars()
+            .take(8)
+            .collect();
+        if w.ended_at.is_none() {
+            writeln!(out, "recount: {} {short} no result yet, skipped", w.role)
+                .map_err(io("stdout"))?;
+            continue;
+        }
+        let session = w.session_id.as_deref().unwrap_or("");
+        let path = worker::stream_path(run.dir(), session);
+        let text = fs::read_to_string(&path).map_err(|e| {
+            Error::Msg(format!(
+                "report --recount: worker {} stream {}: {e}; nothing rewritten",
+                w.id,
+                path.display()
+            ))
+        })?;
+        ended.push((w, session, short, stream::parse(&text).1));
+    }
+    // The gate pair as the driver reads it, so an inner-loop run keeps its kind.
+    let gate = Docs::locate(&repo).ok().and_then(|d| {
+        let gate = d.gate().ok()?;
+        let inner = d.gate_inner().ok().filter(|s| !s.is_empty());
+        Some(GateCmds { gate, inner })
+    });
+    let config = paths::claude_config_dir();
+    db.delete_tool_calls(run_id)?;
+    let mut seen_run = HashSet::new();
+    for (w, session, short, summary) in &ended {
+        db.update_worker_usage(w.id, summary)?;
+        metrics::insert_calls(
+            db,
+            run_id,
+            w.id,
+            &summary.tool_uses,
+            gate.as_ref(),
+            &repo,
+            &mut seen_run,
+        )?;
+        let transcript = measure::transcript_path(&config, &repo, session);
+        let (sub, note) = if fs::symlink_metadata(&transcript).is_err() {
+            (None, ", transcript missing, own tokens only".to_string())
+        } else {
+            match measure::subagents(&transcript) {
+                Subagents::None => (Some((0, 0, 0, 0, 0)), String::new()),
+                Subagents::Read { usage, count } => {
+                    (Some(metrics::sub_columns(&usage, count)), String::new())
+                }
+                Subagents::Unreadable(e) => (None, format!(", subagents unreadable: {e}")),
+            }
+        };
+        db.set_worker_subagents(w.id, sub)?;
+        let u = summary.usage.as_ref();
+        let own = quota::weigh(
+            u.and_then(|u| u.input_tokens).unwrap_or(0),
+            u.and_then(|u| u.cache_creation_input_tokens).unwrap_or(0),
+            u.and_then(|u| u.cache_read_input_tokens).unwrap_or(0),
+            u.and_then(|u| u.output_tokens).unwrap_or(0),
+        );
+        let n = |v: i64| v.max(0) as u64;
+        let sub_weighted = sub.map(|s| quota::weigh(n(s.0), n(s.1), n(s.2), n(s.3)).round() as u64);
+        writeln!(
+            out,
+            "recount: {} {short} own {} sub {} subagents {}{note}",
+            w.role,
+            own.round() as u64,
+            or_dash(sub_weighted),
+            or_dash(sub.map(|s| s.4))
+        )
+        .map_err(io("stdout"))?;
+    }
+    Ok(())
 }
 
 pub fn report(args: &ReportArgs, out: &mut dyn Write) -> Result<i32> {
@@ -596,6 +956,12 @@ pub fn report(args: &ReportArgs, out: &mut dyn Write) -> Result<i32> {
     } else {
         Some(measure::combine(&args.cockpit)?)
     };
+    if args.recount {
+        // The JSON on stdout stays one object.
+        let mut err = std::io::stderr();
+        let lines: &mut dyn Write = if args.json { &mut err } else { out };
+        recount(&run, lines)?;
+    }
     let mut r = compute(run.db(), run.id().as_str(), cockpit.as_ref())?;
     if args.per_worker {
         let db = run.db();
@@ -610,6 +976,7 @@ pub fn report(args: &ReportArgs, out: &mut dyn Write) -> Result<i32> {
         for line in r
             .lines()
             .into_iter()
+            .chain([r.quality_line()])
             .chain(r.thresholds.lines())
             .chain(workers)
         {
@@ -637,8 +1004,130 @@ mod tests {
         assert_eq!(r.lines()[16], "cockpit_tokens: 0 (no --cockpit)");
         assert_eq!(r.lines()[17], "workers: 0 (none)");
         assert_eq!(r.lines()[21], "followup_reads: 0 of 0 ctx calls (0%)");
-        assert_eq!(EXTRA_KEYS.last(), Some(&"weighted_by_role"));
-        assert_eq!(r.lines().last().unwrap(), "weighted_by_role: none");
+        assert_eq!(EXTRA_KEYS[8], "weighted_by_role");
+        assert_eq!(r.lines()[KEYS.len() + 8], "weighted_by_role: none");
+        assert_eq!(
+            &EXTRA_KEYS[9..16],
+            [
+                "fix_commits",
+                "ci_red_rounds",
+                "ci_reruns",
+                "findings",
+                "decisions",
+                "decide",
+                "blocks"
+            ]
+        );
+        assert_eq!(r.lines()[KEYS.len() + 15], "blocks: —");
+        assert_eq!(&EXTRA_KEYS[16..18], ["knobs", "hypothesis"]);
+        assert_eq!(r.lines()[KEYS.len() + 17], "hypothesis: —");
+        assert_eq!(r.lines()[KEYS.len() + 16], "knobs: —");
+        assert_eq!(EXTRA_KEYS.last(), Some(&"pack_by_role"));
+        assert_eq!(r.lines().last().unwrap(), "pack_by_role: none");
+    }
+
+    #[test]
+    fn pack_by_role_means_each_section_in_pack_order() {
+        let row = |role: &str, parts: Option<&str>, start: Option<i64>| WorkerRow {
+            role: role.to_string(),
+            start_context: start,
+            pack_parts: parts.map(str::to_string),
+            ..WorkerRow::default()
+        };
+        let workers = [
+            row("polish", Some(r#"[{"section":"branch","chars":10}]"#), None),
+            row(
+                "build",
+                Some(r#"[{"section":"slice","chars":100},{"section":"outline","chars":51}]"#),
+                Some(1000),
+            ),
+            row(
+                "build",
+                Some(
+                    r#"[{"section":"slice","chars":200},{"section":"block_and_answer","chars":10},{"section":"outline","chars":50}]"#,
+                ),
+                Some(2001),
+            ),
+            row("build", None, Some(9999)),
+            row("fix", None, None),
+        ];
+        let m = pack_by_role(&workers);
+        let build = m["build"].as_ref().unwrap();
+        assert_eq!(
+            build.sections,
+            [
+                ("slice".to_string(), 150),
+                ("outline".to_string(), 51),
+                ("block_and_answer".to_string(), 5)
+            ]
+        );
+        assert_eq!((build.total, build.start_context), (206, Some(1501)));
+        assert_eq!(m["fix"], None);
+        assert_eq!(
+            pack_by_role_text(&m),
+            "build slice 150 outline 51 block_and_answer 5 total 206 start_context 1501 · fix — · polish branch 10 total 10 start_context —"
+        );
+        let json = serde_json::to_value(&m).unwrap();
+        assert_eq!(json["build"]["sections"]["outline"], 51);
+        assert_eq!(json["fix"], Value::Null);
+    }
+
+    #[test]
+    fn the_quality_line_dashes_what_is_null() {
+        let mut r = Report {
+            fix_commits: 2,
+            ci_red_rounds: 1,
+            ..Report::default()
+        };
+        assert_eq!(
+            r.quality_line(),
+            "quality: gate_red 0 · worker_gate_red 0 · fix_commits 2 · ci_red_rounds 1 · ci_reruns 0 · findings: — · decisions — decide — blocks —"
+        );
+        r.findings = Some(Findings {
+            high: 1,
+            medium: 2,
+            low: 3,
+            fixed: 4,
+            parked: 2,
+        });
+        (r.decisions, r.decide, r.blocks) = (Some(3), Some(0), Some(0));
+        assert!(
+            r.quality_line().ends_with(
+                " · findings high=1 medium=2 low=3 fixed=4 parked=2 · decisions 3 decide 0 blocks 0"
+            ),
+            "{}",
+            r.quality_line()
+        );
+        assert!(
+            r.lines()
+                .contains(&"findings: high=1 medium=2 low=3 fixed=4 parked=2".to_string())
+        );
+    }
+
+    #[test]
+    fn knobs_text_names_each_roles_scope() {
+        let k = serde_json::json!({
+            "workers": {
+                "build": {"model": "opus", "effort": "high", "source": "default"},
+                "fix": {"model": "opus", "effort": "high", "source": "default"},
+                "checkpoint": {"model": "opus", "effort": "high", "source": "default"},
+                "polish": {"model": "sonnet", "effort": "low", "source": "project", "effort_source": "user"},
+            },
+            "budget": {"value": 30000000, "source": "user"},
+            "lanes": 1,
+            "factory_version": "0.1.0",
+            "claude_version": "2.1.296 (Claude Code)",
+        });
+        assert_eq!(
+            knobs_text(Some(&k)),
+            "build opus/high default · fix opus/high default · checkpoint opus/high default · \
+             polish sonnet/low project/user · budget 30000000 user · lanes 1 · factory 0.1.0 · claude 2.1.296"
+        );
+        let old = serde_json::json!({"budget": {"value": 5, "source": "flag"}, "lanes": null, "claude_version": null});
+        assert_eq!(
+            knobs_text(Some(&old)),
+            "budget 5 flag · lanes — · factory — · claude —"
+        );
     }
 
     #[test]

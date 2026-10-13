@@ -1,7 +1,8 @@
 ---
 slice: 02
-status: pending
+status: done
 depends_on: [1]
+lane: 1
 ---
 
 # Slice 02 — Recount and per-worker tokens (FR-21, rest)
@@ -9,7 +10,11 @@ depends_on: [1]
 **Source**: [`prd.md`](prd.md) → §3 FR-21, decisions 3 and 4 ("`factory report <run> --recount`", "`report --per-worker` prints tokens") and the FR-21 acceptance targets. **Depends on**: slice 01 — it rewrites the `sub_*` columns and reuses the split collector and the transcript reader; without them there is nothing to recount.
 **Created**: 2026-10-13 · **Status**: pending
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+- Built: `factory report <run> --recount` (`src/cli/report.rs` `recount`): refuses a run whose phase is not over (exit 1, names the phase), reads every ended worker's stream first (one missing → nothing rewritten, AD-202), deletes the run's `tool_calls`, then per worker in `started_at` order rewrites the usage columns only (`db::update_worker_usage`), re-inserts its calls through `metrics::insert_calls` (factored out of `record_exit`, shared `seen_run`), and rewrites `sub_*` from the transcript dir: transcript gone → nulls and `transcript missing, own tokens only`; unreadable dir → nulls and `subagents unreadable: <error>`. One `recount:` line per worker (stderr under `--json`, AD-205), then the normal report. `events`, `gates` and docs are never written. `--per-worker` gains `weighted_own`, `weighted_sub` (null when `sub_*` are), `subagents`, in text and JSON. The stub now writes every session's `<session>.jsonl` transcript (AD-206).
+- Tests: `tests/metrics.rs` `recount_rewrites_the_tokens_and_tool_calls_from_the_streams` (mutated polish row, half its calls deleted → row, every `tool_calls` row, `gates`, `weighted_tokens` and `events.jsonl` back to the pre-mutation values; per-worker JSON figures), `recount_without_the_transcript_keeps_own_tokens_only` (the note, `sub_*` null, `—` in the per-worker text, events byte-identical, a `building` run refused with exit 1).
+- Inner loop (`cargo test`): 7 runs (two `--test metrics` only), 5 red or cut short, ~14 min. Run 1 caught slice 04's `model_id` appended to the per-worker line, which broke my exact asserts (fixed with prefix matches). The other red runs failed only on sibling slices' in-flight work: the `EXTRA_KEYS` list slices 03, 04 and 05 are appending to, and slice 04's `tests/knobs.rs` hanging past 10 min. The full run with `--skip` on slice 04's two in-progress `knobs` tests was green (20 targets, 64 s). The last `--test metrics` run after a format fix: all slice-02 tests green, `report_prints_the_retro_keys_then_the_run_keys` red on the siblings' new keys `knobs`, `hypothesis`, `pack_by_role`.
+- Deviations: tests run on slice 01's subagent scenario, not `finished_run()` (AD-201). Prove (task 4) is left for CP-1.
 
 **Slice**: After this slice the two A/B runs stored on this machine can be corrected in the store with one command, and `report --per-worker` says what each worker cost. It leaves `model_id` to slice 04 (which appends it to the same per-worker line) and the retro to slice 06.
 

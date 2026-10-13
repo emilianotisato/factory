@@ -44,7 +44,7 @@ const KEYS: [&str; 23] = [
     "pack_doc_read_chars",
 ];
 
-const EXTRA_KEYS: [&str; 9] = [
+const EXTRA_KEYS: [&str; 16] = [
     "worker_gate_runs",
     "worker_gate_red",
     "cockpit_peak_context",
@@ -54,7 +54,16 @@ const EXTRA_KEYS: [&str; 9] = [
     "lookup_share_chars",
     "followup_reads_by_role",
     "weighted_by_role",
+    "fix_commits",
+    "ci_red_rounds",
+    "ci_reruns",
+    "findings",
+    "decisions",
+    "decide",
+    "blocks",
 ];
+
+const FINDINGS: &str = "high=1 medium=2 low=3 fixed=4 parked=2";
 
 const THRESHOLDS: [&str; 3] = [
     "followup threshold 30%",
@@ -282,8 +291,13 @@ fn report_prints_the_retro_keys_then_the_run_keys() {
     let lines: Vec<&str> = text.lines().collect();
     let keys: Vec<&str> = lines.iter().map(|l| key(l)).collect();
     assert_eq!(&keys[..23], &KEYS);
-    assert_eq!(&keys[23..32], &EXTRA_KEYS);
-    assert_eq!(&keys[32..], &THRESHOLDS);
+    // FR-24's quality line sits between the keys and the threshold lines.
+    let q = keys
+        .iter()
+        .position(|k| *k == "quality")
+        .expect("a quality line");
+    assert_eq!(&keys[23..q], &EXTRA_KEYS);
+    assert_eq!(&keys[q + 1..], &THRESHOLDS);
     assert_eq!(lines[0], "score: ");
     assert_eq!(value(&lines, "slices"), "3");
     assert_eq!(value(&lines, "checkpoints"), "1");
@@ -297,6 +311,15 @@ fn report_prints_the_retro_keys_then_the_run_keys() {
     assert_eq!(value(&lines, "cockpit_tokens"), "0 (no --cockpit)");
     assert_eq!(value(&lines, "worker_gate_runs"), "4");
     assert_eq!(value(&lines, "worker_gate_red"), "1");
+    // FR-24: the stub polish's `FINDINGS` line, and the quality block.
+    assert_eq!(value(&lines, "findings"), FINDINGS);
+    assert_eq!(value(&lines, "fix_commits"), "0");
+    let quality = value(&lines, "quality");
+    assert!(
+        quality.starts_with("gate_red 0 · worker_gate_red 1 · fix_commits 0 · ")
+            && quality.contains(&format!(" · findings {FINDINGS} · decisions ")),
+        "{quality}"
+    );
     // The stub polish worker returns within a second; the figure is its
     // duration, two decimals.
     let polish_minutes: f64 = value(&lines, "polish_minutes").parse().unwrap();
@@ -407,6 +430,22 @@ fn report_json_round_trips_and_cockpit_measures_the_transcript() {
     assert!(v["score"].is_null());
     assert!(v["cockpit_tokens"].is_null());
     assert_eq!(v["worker_gate_red"], 1);
+    assert_eq!(
+        v["findings"],
+        json!({"high": 1, "medium": 2, "low": 3, "fixed": 4, "parked": 2})
+    );
+    // The agent log's counts at ship are what `docs status` prints now.
+    let status: Value = serde_json::from_str(&fx.docs(&["status", "001", "--json"])).unwrap();
+    assert_eq!(
+        v["decisions"], status["log"]["decisions"],
+        "{}",
+        status["log"]
+    );
+    assert_eq!(
+        v["decide"].as_u64(),
+        status["log"]["decide"].as_array().map(|a| a.len() as u64)
+    );
+    assert_eq!(v["blocks"], status["log"]["blocks"]);
     let text = stdout(&factory(&fx, &["report", &id]));
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(
@@ -553,19 +592,20 @@ fn ctx_calls_are_labelled_and_the_report_reads_the_reversal_rule() {
         .chars()
         .take(8)
         .collect();
-    assert_eq!(
-        per[0],
-        format!(
-            "worker {} build slice 01 ({sid}): lookups 5, ctx_share 0.400, repeat_rate 0.000",
-            first.id
-        )
+    // Slice 04 appends `model_id` after `subagents`.
+    let head = format!(
+        "worker {} build slice 01 ({sid}): lookups 5, ctx_share 0.400, repeat_rate 0.000, own {} sub 0 subagents 0",
+        first.id,
+        quota::weigh_own(first).round() as u64
     );
+    assert!(per[0].starts_with(&head), "{}", per[0]);
     assert!(per[1].contains(" build slice 02 "), "{}", per[1]);
     assert!(
-        per[1].ends_with("lookups 2, ctx_share 0.000, repeat_rate 0.000"),
+        per[1].contains("lookups 2, ctx_share 0.000, repeat_rate 0.000, own "),
         "{}",
         per[1]
     );
+    assert!(per[1].contains(" sub 0 subagents 0"), "{}", per[1]);
     assert!(text.find("repeat_rate vs 26.7%").unwrap() < text.find(per[0]).unwrap());
 
     let out = factory(&fx, &["report", &id, "--json", "--per-worker"]);
@@ -605,6 +645,34 @@ fn subagent_run(name: &str, polish: Value) -> (Fixture, String) {
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     let id = only_run_id(&fx);
     (fx, id)
+}
+
+/// FR-24: a polish return without a `FINDINGS` line leaves the five columns
+/// null, emits one `polish_findings_missing` and prints `findings: —`.
+#[test]
+fn a_polish_return_without_findings_is_nulls_and_one_event() {
+    let (fx, id) = subagent_run(
+        "metrics-findings-missing",
+        json!({"outcome": "polish", "skip": ["findings"]}),
+    );
+    assert_eq!(db(&fx).run_row(&id).unwrap().unwrap().findings, None);
+    let events =
+        fs::read_to_string(data_dir(&fx).join("runs").join(&id).join("events.jsonl")).unwrap();
+    assert_eq!(
+        events.matches("\"polish_findings_missing\"").count(),
+        1,
+        "{events}"
+    );
+    let text = stdout(&factory(&fx, &["report", &id]));
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(value(&lines, "findings"), "—");
+    assert!(
+        value(&lines, "quality").contains(" · findings: — · "),
+        "{text}"
+    );
+    let v: Value =
+        serde_json::from_str(&stdout(&factory(&fx, &["report", &id, "--json"]))).unwrap();
+    assert!(v["findings"].is_null(), "{v}");
 }
 
 /// Where the driver looked for a worker's subagents.
@@ -779,4 +847,273 @@ fn an_unreadable_subagents_dir_is_nulls_and_one_event_never_a_failed_run() {
         1,
         "{events}"
     );
+}
+
+/// A tool call row without its id: what `--recount` must write back.
+fn call_key(c: &ToolCallRow) -> String {
+    format!(
+        "{} {} {} {} {:?} {} {} {} {:?} {:?} {} {}",
+        c.worker_id,
+        c.seq,
+        c.tool,
+        c.kind,
+        c.result_chars,
+        c.target_hash,
+        c.repeat_in_worker,
+        c.repeat_in_run,
+        c.label_followup,
+        c.label_expanded,
+        c.pack_doc,
+        c.in_subagent
+    )
+}
+
+fn polish_row(db: &Db, id: &str) -> WorkerRow {
+    db.workers(id)
+        .unwrap()
+        .into_iter()
+        .find(|w| w.role == "polish")
+        .unwrap()
+}
+
+fn sub_cols(w: &WorkerRow) -> [Option<i64>; 5] {
+    [
+        w.sub_input,
+        w.sub_cache_write,
+        w.sub_cache_read,
+        w.sub_output,
+        w.subagents,
+    ]
+}
+
+fn events_text(fx: &Fixture, id: &str) -> Vec<u8> {
+    fs::read(data_dir(fx).join("runs").join(id).join("events.jsonl")).unwrap()
+}
+
+fn weighted_tokens(fx: &Fixture, id: &str) -> u64 {
+    let out = factory(fx, &["report", id, "--json"]);
+    let v: Value = serde_json::from_str(&stdout(&out)).unwrap();
+    v["weighted_tokens"].as_u64().unwrap()
+}
+
+/// PRD-003 FR-21: `--recount` writes back what the driver wrote at exit,
+/// from the stored stream and the transcript dir, and nothing else.
+#[test]
+fn recount_rewrites_the_tokens_and_tool_calls_from_the_streams() {
+    let (fx, id) = subagent_run(
+        "metrics-recount",
+        json!({"outcome": "polish", "subagents": 2}),
+    );
+    let db = db(&fx);
+    let before = polish_row(&db, &id);
+    let calls_before: Vec<String> = db.tool_calls(&id).unwrap().iter().map(call_key).collect();
+    let gates_before = db.gates(&id).unwrap();
+    let weighted_before = weighted_tokens(&fx, &id);
+    let events_before = events_text(&fx, &id);
+    assert_eq!(before.subagents, Some(2));
+
+    db.conn()
+        .execute(
+            "UPDATE workers SET output = 0, sub_input = NULL, sub_cache_write = NULL,
+                                sub_cache_read = NULL, sub_output = NULL, subagents = NULL
+             WHERE id = ?1",
+            [before.id],
+        )
+        .unwrap();
+    let deleted = db
+        .conn()
+        .execute(
+            "DELETE FROM tool_calls WHERE worker_id = ?1 AND seq % 2 = 0",
+            [before.id],
+        )
+        .unwrap();
+    assert!(deleted > 0);
+    assert_ne!(weighted_tokens(&fx, &id), weighted_before);
+
+    let out = factory(&fx, &["report", &id, "--recount"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = stdout(&out);
+    let recount: Vec<&str> = text
+        .lines()
+        .filter(|l| l.starts_with("recount: "))
+        .collect();
+    assert_eq!(recount.len(), 5, "{text}");
+    let short: String = before
+        .session_id
+        .as_deref()
+        .unwrap()
+        .chars()
+        .take(8)
+        .collect();
+    let sub = quota::weigh(16, 3600, 102_000, 1000).round() as u64;
+    assert_eq!(
+        recount[4],
+        format!(
+            "recount: polish {short} own {} sub {sub} subagents 2",
+            quota::weigh_own(&before).round() as u64
+        )
+    );
+    // The report of the rewritten store follows.
+    assert!(text.contains("\nweighted_tokens: "), "{text}");
+
+    let after = polish_row(&db, &id);
+    assert_eq!(after.output, before.output);
+    assert_eq!(sub_cols(&after), sub_cols(&before));
+    assert_eq!(after, before);
+    let calls_after: Vec<String> = db.tool_calls(&id).unwrap().iter().map(call_key).collect();
+    assert_eq!(calls_after, calls_before);
+    assert_eq!(db.gates(&id).unwrap(), gates_before);
+    assert_eq!(weighted_tokens(&fx, &id), weighted_before);
+    assert_eq!(events_text(&fx, &id), events_before);
+
+    // FR-21 per worker: the tokens beside the lookups.
+    let out = factory(&fx, &["report", &id, "--json", "--per-worker"]);
+    let v: Value = serde_json::from_str(&stdout(&out)).unwrap();
+    let per = v["per_worker"].as_array().unwrap();
+    let polish = per.iter().find(|p| p["role"] == "polish").unwrap();
+    assert_eq!(
+        polish["weighted_own"],
+        quota::weigh_own(&after).round() as u64
+    );
+    assert_eq!(polish["weighted_sub"], sub);
+    assert_eq!(polish["subagents"], 2);
+    let build = per.iter().find(|p| p["role"] == "build").unwrap();
+    assert_eq!(build["weighted_sub"], 0);
+    assert_eq!(build["subagents"], 0);
+    assert!(build["weighted_own"].as_u64().unwrap() > 0);
+}
+
+/// A transcript Claude Code has since lost: own tokens only, said per
+/// worker; a run still going is refused.
+#[test]
+fn recount_without_the_transcript_keeps_own_tokens_only() {
+    let (fx, id) = subagent_run(
+        "metrics-recount-lost",
+        json!({"outcome": "polish", "subagents": 2}),
+    );
+    let db = db(&fx);
+    let before = polish_row(&db, &id);
+    let session = before.session_id.clone().unwrap();
+    let transcript = subagents_dir(&fx, &db, &id, &session)
+        .parent()
+        .unwrap()
+        .with_extension("jsonl");
+    assert!(transcript.is_file(), "{}", transcript.display());
+    fs::remove_file(&transcript).unwrap();
+    let events_before = events_text(&fx, &id);
+
+    let out = factory(&fx, &["report", &id, "--recount", "--per-worker"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = stdout(&out);
+    let line = text
+        .lines()
+        .find(|l| l.starts_with("recount: polish "))
+        .unwrap_or_else(|| panic!("{text}"));
+    assert!(
+        line.ends_with(" sub — subagents —, transcript missing, own tokens only"),
+        "{line}"
+    );
+    let after = polish_row(&db, &id);
+    assert_eq!(sub_cols(&after), [None; 5]);
+    assert_eq!(after.output, before.output);
+    assert_eq!(events_text(&fx, &id), events_before);
+    // The per-worker text prints `—` for the columns not read, and the
+    // three token columns on every row.
+    let per: Vec<&str> = text.lines().filter(|l| l.starts_with("worker ")).collect();
+    assert_eq!(per.len(), 5, "{text}");
+    for l in &per {
+        assert!(
+            l.contains(", own ") && l.contains(" sub ") && l.contains(" subagents "),
+            "{l}"
+        );
+    }
+    let polish = per.iter().find(|l| l.contains(" polish ")).unwrap();
+    assert!(polish.contains(" sub — subagents —"), "{polish}");
+
+    // A live run's budget reads these rows: refused, nothing written.
+    let state = data_dir(&fx).join("runs").join(&id).join("state.json");
+    let mut s: Value = serde_json::from_str(&fs::read_to_string(&state).unwrap()).unwrap();
+    s["phase"] = json!("building");
+    fs::write(&state, serde_json::to_string(&s).unwrap()).unwrap();
+    let out = factory(&fx, &["report", &id, "--recount"]);
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("is building"), "{err}");
+    assert!(stdout(&out).is_empty());
+}
+
+/// PRD-003 FR-22: every worker row's `pack_parts` sums to the pack the stub
+/// was handed, after its header lines and the blank line; the three roles
+/// show three section lists; `report` means them per role.
+#[test]
+fn every_worker_row_records_what_its_pack_was_made_of() {
+    let (fx, id) = finished_run();
+    let workers = db(&fx).workers(&id).unwrap();
+    let calls = fx.calls();
+    let mut lists: Vec<(String, Vec<String>)> = Vec::new();
+    for w in &workers {
+        let parts: Vec<Value> = serde_json::from_str(
+            w.pack_parts
+                .as_deref()
+                .unwrap_or_else(|| panic!("{} row has no pack_parts", w.role)),
+        )
+        .unwrap();
+        let call = calls
+            .iter()
+            .find(|c| c["session_id"].as_str() == w.session_id.as_deref())
+            .unwrap_or_else(|| panic!("no call for {:?}", w.session_id));
+        let pack = call["pack"].as_str().unwrap();
+        let (_, body) = pack.split_once("\n\n").unwrap();
+        let sum: u64 = parts.iter().map(|p| p["chars"].as_u64().unwrap()).sum();
+        assert_eq!(sum, body.chars().count() as u64, "{} pack", w.role);
+        let names: Vec<String> = parts
+            .iter()
+            .map(|p| p["section"].as_str().unwrap().to_string())
+            .collect();
+        if !lists.iter().any(|(r, _)| *r == w.role) {
+            lists.push((w.role.clone(), names));
+        }
+    }
+    let roles: Vec<&str> = lists.iter().map(|(r, _)| r.as_str()).collect();
+    assert_eq!(roles, ["build", "checkpoint", "polish"]);
+    assert_eq!(lists[0].1[0], "slice");
+    assert_eq!(lists[1].1[0], "gate_transcript");
+    assert_eq!(lists[2].1[0], "branch");
+    assert!(lists[0].1 != lists[1].1 && lists[1].1 != lists[2].1 && lists[0].1 != lists[2].1);
+
+    let r: Value =
+        serde_json::from_str(&stdout(&factory(&fx, &["report", &id, "--json"]))).unwrap();
+    let polish = workers.iter().find(|w| w.role == "polish").unwrap();
+    let parts: Vec<Value> = serde_json::from_str(polish.pack_parts.as_deref().unwrap()).unwrap();
+    let branch = parts.iter().find(|p| p["section"] == "branch").unwrap();
+    assert_eq!(
+        r["pack_by_role"]["polish"]["sections"]["branch"],
+        branch["chars"]
+    );
+    let starts: Vec<i64> = workers
+        .iter()
+        .filter(|w| w.role == "build")
+        .filter_map(|w| w.start_context)
+        .collect();
+    let mean = (starts.iter().sum::<i64>() as f64 / starts.len() as f64).round() as u64;
+    assert_eq!(r["pack_by_role"]["build"]["start_context"], json!(mean));
+
+    let text = stdout(&factory(&fx, &["report", &id]));
+    let line = text
+        .lines()
+        .find(|l| l.starts_with("pack_by_role: "))
+        .unwrap_or_else(|| panic!("{text}"));
+    assert!(line.starts_with("pack_by_role: build slice "), "{line}");
+    assert!(line.contains(" · checkpoint gate_transcript "), "{line}");
+    assert!(line.contains(" · polish branch "), "{line}");
 }

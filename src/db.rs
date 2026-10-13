@@ -9,7 +9,7 @@ use std::time::Duration;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 use crate::run::RunState;
-use crate::stream::Summary;
+use crate::stream::{Findings, Summary};
 use crate::{Result, clock};
 
 pub const SCHEMA_VERSION: i64 = 2;
@@ -119,10 +119,22 @@ pub struct RunRow {
     pub budget_weighted_tokens: u64,
     /// The draft PR (FR-6), once opened.
     pub pr_url: Option<String>,
+    /// PRD-003 FR-23: what the run resolved at its start, as JSON
+    /// (`config::knobs`); null on a run from before it.
+    pub knobs: Option<String>,
+    /// The one line `factory run --hypothesis` gave; most runs have none.
+    pub hypothesis: Option<String>,
+    /// PRD-003 FR-24: the polish return's `FINDINGS` line; `None` when it
+    /// had none or polish has not returned.
+    pub findings: Option<Findings>,
+    /// `docs status` `log` counts at ship: `AD` entries, `decide` ones, blocks.
+    pub decisions: Option<u32>,
+    pub decide: Option<u32>,
+    pub blocks: Option<u32>,
 }
 
 /// One `workers` row.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct WorkerRow {
     pub id: i64,
     pub run_id: String,
@@ -153,6 +165,9 @@ pub struct WorkerRow {
     /// The repo-relative files the worker's pack held (slice 13), from the
     /// pack header; empty for a worker spawned before slice 13.
     pub pack_files: Vec<String>,
+    /// The pack's sections and their chars as JSON, `[{"section", "chars"}]`
+    /// (PRD-003 FR-22); null for a worker spawned before it.
+    pub pack_parts: Option<String>,
     /// What the worker's subagents used, from its transcript dir (PRD-003
     /// FR-21); null when not read.
     pub sub_input: Option<i64>,
@@ -161,6 +176,9 @@ pub struct WorkerRow {
     pub sub_output: Option<i64>,
     /// How many subagents had an assistant message; null when not read.
     pub subagents: Option<i64>,
+    /// The model of the worker's first own assistant message: what
+    /// answered, beside `model`, what was asked for (PRD-003 FR-23).
+    pub model_id: Option<String>,
 }
 
 /// One `tool_calls` row to insert (FR-8).
@@ -283,6 +301,23 @@ impl Db {
             ("workers", "sub_output", "INTEGER"),
             ("workers", "subagents", "INTEGER"),
             ("tool_calls", "in_subagent", "INTEGER NOT NULL DEFAULT 0"),
+            // FR-22: the pack's sections and their chars, as JSON.
+            ("workers", "pack_parts", "TEXT"),
+            // FR-23: the knobs a run resolved, its hypothesis, and the model
+            // that answered a worker (its first own assistant message).
+            ("runs", "knobs", "TEXT"),
+            ("runs", "hypothesis", "TEXT"),
+            ("workers", "model_id", "TEXT"),
+            // FR-24: the polish `FINDINGS` line (null when it had none) and
+            // the agent log's counts at ship.
+            ("runs", "findings_high", "INTEGER"),
+            ("runs", "findings_medium", "INTEGER"),
+            ("runs", "findings_low", "INTEGER"),
+            ("runs", "findings_fixed", "INTEGER"),
+            ("runs", "findings_parked", "INTEGER"),
+            ("runs", "decisions", "INTEGER"),
+            ("runs", "decide", "INTEGER"),
+            ("runs", "blocks", "INTEGER"),
         ] {
             if !self.has_column(table, column)? {
                 tx.execute(
@@ -365,7 +400,9 @@ impl Db {
         Ok(self
             .conn
             .query_row(
-                "SELECT id, repo, feature, branch, started_at, finished_at, phase, budget_weighted_tokens, pr_url
+                "SELECT id, repo, feature, branch, started_at, finished_at, phase, budget_weighted_tokens, pr_url,
+                        findings_high, findings_medium, findings_low, findings_fixed, findings_parked,
+                        decisions, decide, blocks, knobs, hypothesis
                  FROM runs WHERE id = ?1",
                 [id],
                 |r| {
@@ -379,10 +416,84 @@ impl Db {
                         phase: r.get(6)?,
                         budget_weighted_tokens: r.get::<_, i64>(7)? as u64,
                         pr_url: r.get(8)?,
+                        knobs: r.get("knobs")?,
+                        hypothesis: r.get("hypothesis")?,
+                        findings: match (
+                            r.get(9)?,
+                            r.get(10)?,
+                            r.get(11)?,
+                            r.get(12)?,
+                            r.get(13)?,
+                        ) {
+                            (Some(high), Some(medium), Some(low), Some(fixed), Some(parked)) => {
+                                Some(Findings {
+                                    high,
+                                    medium,
+                                    low,
+                                    fixed,
+                                    parked,
+                                })
+                            }
+                            _ => None,
+                        },
+                        decisions: r.get(14)?,
+                        decide: r.get(15)?,
+                        blocks: r.get(16)?,
                     })
                 },
             )
             .optional()?)
+    }
+
+    /// FR-24: the polish `FINDINGS` counts, or five nulls.
+    pub fn set_run_findings(&self, run_id: &str, f: Option<Findings>) -> Result<()> {
+        self.conn.execute(
+            "UPDATE runs SET findings_high = ?2, findings_medium = ?3, findings_low = ?4,
+                             findings_fixed = ?5, findings_parked = ?6
+             WHERE id = ?1",
+            params![
+                run_id,
+                f.map(|f| f.high),
+                f.map(|f| f.medium),
+                f.map(|f| f.low),
+                f.map(|f| f.fixed),
+                f.map(|f| f.parked),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// FR-24: the agent log's `AD` entries, `decide` ones and blocks at ship.
+    pub fn set_run_log_counts(
+        &self,
+        run_id: &str,
+        decisions: u32,
+        decide: u32,
+        blocks: u32,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE runs SET decisions = ?2, decide = ?3, blocks = ?4 WHERE id = ?1",
+            params![run_id, decisions, decide, blocks],
+        )?;
+        Ok(())
+    }
+
+    /// FR-23: the knobs JSON, written once at run start.
+    pub fn set_run_knobs(&self, run_id: &str, knobs: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE runs SET knobs = ?2 WHERE id = ?1",
+            params![run_id, knobs],
+        )?;
+        Ok(())
+    }
+
+    /// FR-23: the run's hypothesis, written once at run creation.
+    pub fn set_run_hypothesis(&self, run_id: &str, hypothesis: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE runs SET hypothesis = ?2 WHERE id = ?1",
+            params![run_id, hypothesis],
+        )?;
+        Ok(())
     }
 
     pub fn insert_event(
@@ -463,7 +574,7 @@ impl Db {
             "UPDATE workers SET input = ?2, cache_write = ?3, cache_read = ?4, output = ?5,
                                 thinking = ?6, cost_usd = ?7, num_turns = ?8, duration_ms = ?9,
                                 terminal_reason = ?10, outcome = ?11, peak_context = ?12, ended_at = ?13,
-                                start_context = ?14
+                                start_context = ?14, model_id = ?15
              WHERE id = ?1",
             params![
                 id,
@@ -480,6 +591,34 @@ impl Db {
                 as_i64(summary.peak_context),
                 ended_at,
                 as_i64(summary.start_context),
+                summary.model_id,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// The usage half of [`Db::finish_worker`], for `report --recount`
+    /// (PRD-003 FR-21): `outcome`, `terminal_reason`, `duration_ms` and
+    /// `ended_at` say how the worker ended and stay as they are.
+    pub fn update_worker_usage(&self, id: i64, summary: &Summary) -> Result<()> {
+        let u = summary.usage.as_ref();
+        let as_i64 = |v: Option<u64>| v.map(|n| n as i64);
+        self.conn.execute(
+            "UPDATE workers SET input = ?2, cache_write = ?3, cache_read = ?4, output = ?5,
+                                thinking = ?6, cost_usd = ?7, num_turns = ?8, peak_context = ?9,
+                                start_context = ?10
+             WHERE id = ?1",
+            params![
+                id,
+                as_i64(u.and_then(|u| u.input_tokens)),
+                as_i64(u.and_then(|u| u.cache_creation_input_tokens)),
+                as_i64(u.and_then(|u| u.cache_read_input_tokens)),
+                as_i64(u.and_then(|u| u.output_tokens)),
+                as_i64(u.and_then(|u| u.thinking())),
+                summary.cost_usd,
+                as_i64(summary.num_turns),
+                as_i64(summary.peak_context),
+                as_i64(summary.start_context),
             ],
         )?;
         Ok(())
@@ -492,6 +631,17 @@ impl Db {
             .map_err(|e| crate::Error::Msg(format!("pack files as JSON: {e}")))?;
         self.conn.execute(
             "UPDATE workers SET pack_files = ?2 WHERE id = ?1",
+            params![id, text],
+        )?;
+        Ok(())
+    }
+
+    /// The pack's sections and their chars, as JSON (PRD-003 FR-22).
+    pub fn set_worker_pack_parts(&self, id: i64, parts: &[crate::pack::Part]) -> Result<()> {
+        let text = serde_json::to_string(parts)
+            .map_err(|e| crate::Error::Msg(format!("pack parts as JSON: {e}")))?;
+        self.conn.execute(
+            "UPDATE workers SET pack_parts = ?2 WHERE id = ?1",
             params![id, text],
         )?;
         Ok(())
@@ -551,7 +701,8 @@ impl Db {
             "SELECT id, run_id, role, slice, session_id, model, effort, input, cache_write, cache_read,
                     output, thinking, cost_usd, num_turns, duration_ms, terminal_reason, outcome,
                     peak_context, started_at, ended_at, commit_sha, checkpoint, start_context,
-                    pack_files, sub_input, sub_cache_write, sub_cache_read, sub_output, subagents
+                    pack_files, sub_input, sub_cache_write, sub_cache_read, sub_output, subagents, model_id,
+                    pack_parts
              FROM workers WHERE run_id = ?1 ORDER BY id",
         )?;
         let rows = stmt.query_map([run_id], |r| {
@@ -583,11 +734,13 @@ impl Db {
                     .get::<_, Option<String>>(23)?
                     .and_then(|t| serde_json::from_str(&t).ok())
                     .unwrap_or_default(),
+                pack_parts: r.get("pack_parts")?,
                 sub_input: r.get(24)?,
                 sub_cache_write: r.get(25)?,
                 sub_cache_read: r.get(26)?,
                 sub_output: r.get(27)?,
                 subagents: r.get(28)?,
+                model_id: r.get("model_id")?,
             })
         })?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
@@ -672,6 +825,14 @@ impl Db {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// Every `tool_calls` row of the run, before `report --recount` writes
+    /// them again (PRD-003 FR-21).
+    pub fn delete_tool_calls(&self, run_id: &str) -> Result<usize> {
+        Ok(self
+            .conn
+            .execute("DELETE FROM tool_calls WHERE run_id = ?1", [run_id])?)
     }
 
     /// A run's tool calls in insertion order.

@@ -54,11 +54,19 @@
 // dir under $CLAUDE_CONFIG_DIR gets `subagents/agent-<i>.jsonl` with the
 // usage in subagentFixtures(); `subagents_unreadable: true` then makes that
 // dir mode 000. No other step writes a transcript dir.
+// PRD-003 FR-23: `claude --version` alone prints a fixed string and records
+// no call (the driver asks it once per run, for `runs.knobs`), and every
+// assistant line's `message.model` is `init.model`, so `--model` is what
+// answered (`workers.model_id`).
 const fs = require('node:fs')
 const path = require('node:path')
 const crypto = require('node:crypto')
 
 const argv = process.argv.slice(2)
+if (argv.length === 1 && argv[0] === '--version') {
+  process.stdout.write('2.1.296 (Claude Code)\n')
+  process.exit(0)
+}
 const cwd = process.cwd()
 const stubDir = process.env.FACTORY_STUB_DIR
 if (!stubDir) fail(64, 'FACTORY_STUB_DIR is not set — the harness sets it (tests/harness/mod.rs)')
@@ -362,6 +370,7 @@ if (role === 'polish') {
   result([
     'STATUS: done',
     `FIXED: ${rel} — stub polish (spawn ${n})`,
+    ...(skip.has('findings') ? [] : ['FINDINGS high=1 medium=2 low=3 fixed=4 parked=2']),
     skip.has('retro') ? 'RETRO: not written: skipped' : 'RETRO: written',
     skip.has('body') ? 'PR_BODY: not written: skipped' : 'PR_BODY: written',
     'DECISIONS: none',
@@ -690,7 +699,7 @@ function sleep(ms) {
 function assistant(content) {
   return {
     ...tpl.assistant,
-    message: { ...tpl.assistant.message, id: `msg_stub_${n}_${++seq}`, content },
+    message: { ...tpl.assistant.message, model: init.model, id: `msg_stub_${n}_${++seq}`, content },
     session_id: sessionId,
     uuid: crypto.randomUUID(),
     timestamp: new Date().toISOString(),
@@ -708,8 +717,15 @@ function user(toolUseId, text, isError = false) {
   }
 }
 
+// Claude Code keeps every session's transcript at projects/<cwd slug>/<session>.jsonl
+// (src/measure.rs transcript_path); `report --recount` tells a lost one apart (FR-21).
 function emit(event) {
   process.stdout.write(`${JSON.stringify(event)}\n`)
+  const configDir = process.env.CLAUDE_CONFIG_DIR
+  if (!configDir) return
+  const dir = path.join(configDir, 'projects', cwd.replace(/[/.]/g, '-'))
+  fs.mkdirSync(dir, { recursive: true })
+  fs.appendFileSync(path.join(dir, `${sessionId}.jsonl`), `${JSON.stringify(event)}\n`)
 }
 
 function fail(code, msg) {

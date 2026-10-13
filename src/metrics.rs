@@ -26,7 +26,7 @@ use sha2::{Digest, Sha256};
 
 use crate::Result;
 use crate::clock;
-use crate::db::{GateInsert, ToolCallInsert};
+use crate::db::{Db, GateInsert, ToolCallInsert};
 use crate::events::EventKind;
 use crate::measure::{self, Subagents, epoch_secs};
 use crate::paths;
@@ -453,6 +453,19 @@ pub fn pack_doc(t: &ToolUse, kind: Kind, held: &[String], repo: &Path) -> bool {
     })
 }
 
+/// The `workers` subagent columns of what `measure::subagents` read:
+/// `(sub_input, sub_cache_write, sub_cache_read, sub_output, subagents)`.
+pub fn sub_columns(usage: &measure::Measure, count: usize) -> (i64, i64, i64, i64, i64) {
+    let n = |v: u64| v as i64;
+    (
+        n(usage.input_tokens),
+        n(usage.cache_write_tokens),
+        n(usage.cache_read_tokens),
+        n(usage.out_tokens),
+        count as i64,
+    )
+}
+
 /// PRD-003 FR-21: what the worker's subagents used, read from Claude
 /// Code's transcript dir once the worker exited, onto its row. No dir is
 /// zeros; a dir that cannot be read is nulls and one `subagents_unread`
@@ -465,19 +478,9 @@ pub fn record_subagents(run: &mut Run, worker_id: i64, session_id: &str) -> Resu
         Subagents::None => run
             .db()
             .set_worker_subagents(worker_id, Some((0, 0, 0, 0, 0))),
-        Subagents::Read { usage, count } => {
-            let n = |v: u64| v as i64;
-            run.db().set_worker_subagents(
-                worker_id,
-                Some((
-                    n(usage.input_tokens),
-                    n(usage.cache_write_tokens),
-                    n(usage.cache_read_tokens),
-                    n(usage.out_tokens),
-                    count as i64,
-                )),
-            )
-        }
+        Subagents::Read { usage, count } => run
+            .db()
+            .set_worker_subagents(worker_id, Some(sub_columns(&usage, count))),
         Subagents::Unreadable(error) => {
             let _ = run.db().set_worker_subagents(worker_id, None);
             Err(crate::Error::Msg(error))
@@ -494,23 +497,24 @@ pub fn record_subagents(run: &mut Run, worker_id: i64, session_id: &str) -> Resu
     Ok(())
 }
 
-/// Write a settled worker's `tool_calls` rows (one transaction) and its
-/// inner-loop runs as `gates` rows. Called from both `settle`s
-/// (`scheduler`, `checkpoint`) once the `workers` row is closed.
-pub fn record_exit(run: &Run, worker_id: i64, summary: &Summary) -> Result<()> {
-    if summary.tool_uses.is_empty() {
-        return Ok(());
-    }
-    let db = run.db();
-    let run_id = run.id().as_str();
-    let gate = run.gate_cmds();
-    let mut seen_run = db.run_targets(run_id)?;
-    let rows = call_rows(&summary.tool_uses, gate, &mut seen_run);
+/// One worker's `tool_calls` rows, written as one transaction, flags
+/// against `seen_run` (the run's earlier targets, which this extends).
+/// `record_exit` and `report --recount` (PRD-003 FR-21) both write through
+/// it; the rows come back for the gate rows.
+pub fn insert_calls(
+    db: &Db,
+    run_id: &str,
+    worker_id: i64,
+    tool_uses: &[ToolUse],
+    gate: Option<&GateCmds>,
+    repo: &Path,
+    seen_run: &mut HashSet<String>,
+) -> Result<Vec<CallRow>> {
+    let rows = call_rows(tool_uses, gate, seen_run);
     let held = db.worker_pack_files(worker_id)?;
-    let repo = run.state().repo.clone();
     let inserts: Vec<ToolCallInsert> = rows
         .iter()
-        .zip(&summary.tool_uses)
+        .zip(tool_uses)
         .map(|(r, t)| ToolCallInsert {
             run_id,
             worker_id,
@@ -524,11 +528,33 @@ pub fn record_exit(run: &Run, worker_id: i64, summary: &Summary) -> Result<()> {
             ts: r.ts.as_deref(),
             label_followup: r.label_followup,
             label_expanded: r.label_expanded,
-            pack_doc: pack_doc(t, r.kind, &held, &repo),
+            pack_doc: pack_doc(t, r.kind, &held, repo),
             in_subagent: r.in_subagent,
         })
         .collect();
     db.insert_tool_calls(&inserts)?;
+    Ok(rows)
+}
+
+/// Write a settled worker's `tool_calls` rows (one transaction) and its
+/// inner-loop runs as `gates` rows. Called from both `settle`s
+/// (`scheduler`, `checkpoint`) once the `workers` row is closed.
+pub fn record_exit(run: &Run, worker_id: i64, summary: &Summary) -> Result<()> {
+    if summary.tool_uses.is_empty() {
+        return Ok(());
+    }
+    let db = run.db();
+    let run_id = run.id().as_str();
+    let mut seen_run = db.run_targets(run_id)?;
+    let rows = insert_calls(
+        db,
+        run_id,
+        worker_id,
+        &summary.tool_uses,
+        run.gate_cmds(),
+        &run.state().repo,
+        &mut seen_run,
+    )?;
 
     let now = clock::now_rfc3339();
     for (i, (t, r)) in summary.tool_uses.iter().zip(&rows).enumerate() {
