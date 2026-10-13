@@ -20,7 +20,11 @@ _(none)_
 
 ## Decisions
 
-_(none)_
+### AD-1 — Preflight ASK-1: 6 slices, up to 4 of them runnable at once by depends_on, but `lanes: 1` — they will build one after another. Defining lanes is a one-time interview per project (`docs lanes`). · preflight · 2026-10-13
+
+**Chose:** Define lanes first
+**Because:** the owner's answer to a preflight ask, before any slice started.
+**Review:** no
 
 ## Checkpoints
 
