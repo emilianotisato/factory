@@ -1,0 +1,157 @@
+# CP-1 FR-19 store half — a .backup copy of ~/.local/share/factory/factory.db plus a cp -a of runs/003-20261013-4139, never the original
+
+$ sqlite3 $W/store/factory.db SELECT max(version) FROM schema_version
+2
+[exit 0]
+
+installed report exit 0
+installed report --json exit 0
+$ sqlite3 $W/store/factory.db SELECT max(version) FROM schema_version
+2
+[exit 0]
+
+branch report exit 0
+branch report --json exit 0
+installed: factory 0.1.0 — branch: factory 0.1.0
+$ diff $W/report-installed.txt $W/report-branch.txt
+[exit 0]
+
+$ diff $W/report-installed.json $W/report-branch.json
+[exit 0]
+
+$ cat $W/report-branch.txt
+score: 
+gate_runs: 4
+gate_red: 2
+gate_minutes: 2.23
+ci_cycles: 0
+slices: 5
+checkpoints: 2
+build_minutes: 98.51
+polish_minutes: 41.64
+out_tokens: 321597
+cache_read_tokens: 40618667
+start_context: 32244
+peak_context: 167069
+input_tokens: 838
+cache_write_tokens: 1295487
+weighted_tokens: 6966177
+cockpit_tokens: 0 (no --cockpit)
+workers: 10 (build 5, fix 2, checkpoint 2, polish 1)
+lookup_chars: 1219524
+ctx_share: 0.025
+repeat_rate: 0.075
+followup_reads: 1 of 6 ctx calls (17%)
+pack_doc_read_chars: 70718
+worker_gate_runs: 43
+worker_gate_red: 1
+cockpit_peak_context: 0 (no --cockpit)
+cockpit_out_tokens: 0 (no --cockpit)
+cockpit_cache_read_tokens: 0 (no --cockpit)
+cockpit_start_context: 0 (no --cockpit)
+lookup_share_chars: 0.741
+followup_reads_by_role: build 1 of 1 (100%), polish 0 of 5 (0%)
+weighted_by_role: build 4710002+0 · fix 100744+0 · checkpoint 979061+0 · polish 1176371+0
+fix_commits: 2
+ci_red_rounds: 0
+ci_reruns: 0
+findings: —
+decisions: —
+decide: —
+blocks: —
+knobs: —
+hypothesis: —
+pack_by_role: build — · fix — · checkpoint — · polish —
+quality: gate_red 2 · worker_gate_red 1 · fix_commits 2 · ci_red_rounds 0 · ci_reruns 0 · findings: — · decisions — decide — blocks —
+followup threshold 30%: ok
+ctx_share threshold 10%: under
+repeat_rate vs 26.7%: lower
+[exit 0]
+
+$ sqlite3 $W/store/factory.db SELECT max(version) FROM schema_version .schema retros
+3
+CREATE TABLE retros (
+  repo              TEXT    NOT NULL,
+  feature           INTEGER NOT NULL,
+  slug              TEXT    NOT NULL,
+  shipped_at        TEXT,
+  run_id            TEXT    REFERENCES runs(id),
+  score             INTEGER,
+  gate_runs         INTEGER,
+  gate_red          INTEGER,
+  gate_minutes      REAL,
+  ci_cycles         INTEGER,
+  slices            INTEGER,
+  checkpoints       INTEGER,
+  build_minutes     REAL,
+  polish_minutes    REAL,
+  out_tokens        INTEGER,
+  cache_read_tokens INTEGER,
+  start_context     INTEGER,
+  peak_context      INTEGER,
+  written_at        TEXT    NOT NULL,
+  PRIMARY KEY (repo, feature)
+);
+[exit 0]
+
+--- v3 repo: retro --set ---
+$ /mnt/devcache/emiliano/cargo-target/debug/factory docs retro 001 --set score=4
+repo: $W/v3
+feature: 1
+slug: fixture
+shipped_at: 
+run_id: 
+score: 4
+gate_runs: 
+gate_red: 
+gate_minutes: 
+ci_cycles: 
+slices: 
+checkpoints: 
+build_minutes: 
+polish_minutes: 
+out_tokens: 
+cache_read_tokens: 
+start_context: 
+peak_context: 
+written_at: 2026-10-13T14:04:20Z
+[exit 0]
+
+$ /mnt/devcache/emiliano/cargo-target/debug/factory docs retro 001 --set score=high
+score must be an integer, not "high"
+[exit 2]
+
+$ sqlite3 $W/data/factory.db SELECT feature, score FROM retros
+1|4
+[exit 0]
+
+$ /mnt/devcache/emiliano/cargo-target/debug/factory docs retro 001
+repo: $W/v3
+feature: 1
+slug: fixture
+shipped_at: 
+run_id: 
+score: 4
+gate_runs: 
+gate_red: 
+gate_minutes: 
+ci_cycles: 
+slices: 
+checkpoints: 
+build_minutes: 
+polish_minutes: 
+out_tokens: 
+cache_read_tokens: 
+start_context: 
+peak_context: 
+written_at: 2026-10-13T14:04:20Z
+[exit 0]
+
+--- the PRD-003 (installed) binary on the now-version-3 copy ---
+$ FACTORY_DATA_DIR=$W/store factory(installed) report 003-20261013-4139 | diff - report-branch.txt
+[exit 0]
+
+--- the original store, untouched ---
+$ sqlite3 ~/.local/share/factory/factory.db 'SELECT max(version) FROM schema_version'
+2
+[exit 0]

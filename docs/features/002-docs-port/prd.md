@@ -219,12 +219,12 @@ Workflow: one branch, one PR, one commit per slice, the full gate and the Prove 
 <!-- docs:slices -->
 | Slice | Status | Depends on |
 |---|---|---|
-| [01 — v3 model and the factory docs entry (FR-13, FR-15 part, FR-17 routing)](slice-01-v3-model.md) | pending | — |
-| [02 — The log (FR-14)](slice-02-log.md) | pending | 01 |
+| [01 — v3 model and the factory docs entry (FR-13, FR-15 part, FR-17 routing)](slice-01-v3-model.md) | ✅ done | — |
+| [02 — The log (FR-14)](slice-02-log.md) | ✅ done | 01 |
 | [03 — check and doctor (FR-15 part)](slice-03-check-doctor.md) | pending | 02 |
 | [04 — gate, preflight, ship, archive, lanes, renumber (FR-15 rest)](slice-04-lifecycle-verbs.md) | pending | 03 |
 | [05 — Ideas, tool side (FR-20 part)](slice-05-ideas.md) | pending | 03 |
-| [06 — Retros store (FR-19 part)](slice-06-retros-store.md) | pending | 01 |
+| [06 — Retros store (FR-19 part)](slice-06-retros-store.md) | ✅ done | 01 |
 | [07 — migrate (FR-16)](slice-07-migrate.md) | pending | 03, 06 |
 | [08 — Ideas migration (FR-20 rest)](slice-08-ideas-migration.md) | pending | 05, 07 |
 | [09 — Driver switch (FR-18 core)](slice-09-driver-switch.md) | pending | 04 |
