@@ -33,6 +33,8 @@ _(none)_
 - Lanes 1-4 build at once in the same tree: `cargo test` stops at the first red test binary, and a sibling's half-written file breaks it (a missing struct field, a hanging `tests/knobs.rs`). Run `cargo test --no-fail-fast --lib --bins --test <each file but the sibling's>` under `timeout` to see your own targets, and say in Progress which red was not yours.
 - `tests/metrics.rs` `report_prints_the_retro_keys_then_the_run_keys` checks the text report's keys exactly against the test's own `EXTRA_KEYS` copy: every slice that appends a key to `src/cli/report.rs` `EXTRA_KEYS` must append it to the copy in `tests/metrics.rs` too, in the same order.
 
+- `tests/commits.rs` `a_file_git_added_by_name_is_committed_beside_a_live_sibling` failed once under the full `cargo test` load (slice A's commit held slice C's `src/c.txt`) and passed 5 of 5 alone and on the next full run: rerun before chasing it.
+
 ## Blockers
 
 _(none)_
@@ -196,6 +198,41 @@ _(none)_
 **Undo:** `git reset HEAD~1 -- <the eight files>` before the push, then commit them separately.
 **Review:** fyi
 
+### AD-601 — How does the Prove task get a diff of `001-driver/retro.md` from run 024, whose `retro.md` lives in another repo? · slice-06 · 2026-10-13
+**Chose:** `factory retro <run> --file <PATH>` writes the section into the named file instead of the feature's own `retro.md`; without `--file` the subcommand resolves `runs.repo` + `runs.feature` as the slice says.
+**Over:** writing into `/home/emiliano/Projects/Prokey/wt-b/docs/features/024-admin-inspection-ux/retro.md` (another repo, and not the file the Prove task diffs), or a temporary copy of the store with a rewritten `repo`.
+**Because:** run 024 is `repo = /home/emiliano/Projects/Prokey/wt-b`, feature 024; its resolved `retro.md` is Prokey's, while slice-06 task 7 asks for the `git diff` of `docs/features/001-driver/retro.md`. The flag is one optional argument; the default path is unchanged.
+**Undo:** drop `file` from `RetroArgs` in `src/cli/retro.rs`; Prove then diffs Prokey's file.
+**Review:** decide
+
+### AD-602 — Which earlier runs make the cohort when a run starts in the same second the previous one finished? · slice-06 · 2026-10-13
+**Chose:** `Db::earlier_runs(repo, before, except, limit)`: same `repo`, phase `finished`, `finished_at <= started_at`, `id != except`, newest `finished_at` first, then id.
+**Over:** the slice's strict `finished_at < started_at`.
+**Because:** timestamps are whole seconds; a second run started right after the first one finished (the harness does this) shares the second and would miss it. Excluding the run's own id keeps "never the run itself" exact, and the cohort is still fixed by `started_at`, so a rerun picks the same rows.
+**Undo:** `<=` to `<` and drop the `except` argument in `src/db.rs` `earlier_runs`.
+**Review:** no
+
+### AD-603 — What weighted figure do the `total` row and the comparison print? · slice-06 · 2026-10-13
+**Chose:** the role rows sum `--per-worker`'s rounded `weighted_own + weighted_sub` (so each role equals the report's per-worker rows exactly, the harness acceptance); the `total` row and the comparison print the run's `weighted_tokens` (`quota::weighted`, rounded once over the unrounded sum).
+**Over:** a total that sums the role rows.
+**Because:** per-worker rounding drifts: run 024's role rows add up to 18,465,010, its `weighted_tokens` is 18,465,008, the figure prd §7 names and the budget reads. The total may differ from the sum of the rows above it by a few tokens.
+**Undo:** in `src/retro.rs` `numbers`, print `total.weighted()` and use the role sum in `compare_row`.
+**Review:** no
+
+### AD-604 — The old family's files outside the repo still name `measure.py` · slice-06 · 2026-10-13
+**Chose:** leave them and list them here: `~/.claude/skills/feature-docs/templates/retro.md:27` (the retro template the ship step and the polish pack read) tells the writer to run `measure.py`; `feature-docs/MAINTAINING.md` and `deliver/SKILL.md` mention it too.
+**Over:** editing them from this run.
+**Because:** prd §7 and §12 make the old family PRD-002's and the owner's; the run may not write outside the repo. Until the template changes, a polish worker reading it can still be told to run `measure.py`, which is the one live instruction left.
+**Undo:** n/a; the fix is one line in the template, for the owner or PRD-002.
+**Review:** decide
+
+### AD-605 — Repo files naming `measure.py` beyond the acceptance's list · slice-06 · 2026-10-13
+**Chose:** keep them: `001-driver/agent-log.md`, `evidence/cp-2-*.txt`, `evidence/cp-4-*.txt`, `slice-03-one-worker.md`, `slice-09-closeout.md`, `002-docs-port/prd.md`, `docs/index.md`, and the origin citations in `src/stream.rs` and `src/cli/report.rs:93`, beside the ones task 5 names.
+**Over:** rewording records so the grep list matches task 5's exactly.
+**Because:** each is a record of what was done or the origin of a rule, not a step anyone follows; rewriting history would make them wrong. The only instruction, `001-driver/qa-guide.md` step 6, now names `factory report` and `factory retro`.
+**Undo:** n/a.
+**Review:** fyi
+
 ## Checkpoints
 
 ### CP-1 — after slice-05 · 2026-10-12
@@ -204,6 +241,13 @@ _(none)_
 **Gate:** 3 runs, 2 red, 1.1 min — caught: `cargo fmt --check` diffs in `src/cli/report.rs` and `tests/knobs.rs` (attempt 1), and clippy `type_complexity` at `src/cli/report.rs:428` (attempt 2)
 **Prove:** FR-21 (first half: fixture; second half: `--recount` on the real store, 18,465,008 and 8,131,594, both exact), FR-22, FR-23, FR-24, all green. Evidence: `docs/features/003-observatory/evidence/cp-1-fr21-subagents.txt`, `cp-1-fr21-recount.txt`, `cp-1-fr22-pack-parts.txt`, `cp-1-fr23-knobs.txt`, `cp-1-fr24-quality.txt`
 **Fixed:** the two red gates by fix workers, `b8aa493` (fmt) and `6f2bb24` (clippy). No row failed. Slices 04 and 05's uncommitted code goes in this checkpoint's commit (AD-901). For the retro: the A/B's arca cockpit figure 974,031 is slice 01's build worker transcript `f4063ce4`, not the cockpit (`001-driver/ab/runs.md:172`, `:233`). And `--recount` does not fill `model_id`, so `qa-guide.md` step 4 reads `—` for the polish row.
+
+### CP-2 — after slice-06 · 2026-10-13
+
+**Covers:** slices 06
+**Gate:** 1 run, 0 red, 1.1 min — caught: nothing
+**Prove:** FR-25 is green below the UI. On the fixture, each section role row equals `report --json --per-worker`, a second `factory retro` is `unchanged` and byte-identical, and a second run compares with the first. On the real store, `factory retro 024-20261012-e894 --file docs/features/001-driver/retro.md` gives build, fix, checkpoint and polish (1,948,573 own + 2,294,981 subagents) each within 0.35% of `ab/runs.md:223-233`. The total is 18,465,008 and there is no earlier run. The Human half (qa-guide § FR-25) is open for the owner. Evidence: `docs/features/003-observatory/evidence/cp-2-fr25-fixture.txt`, `cp-2-fr25-real.txt`.
+**Fixed:** none. The `## Numbers` section this row wrote into `docs/features/001-driver/retro.md` (+22 lines) belongs in this checkpoint's commit. The slice's Prove task names that file.
 
 ---
 

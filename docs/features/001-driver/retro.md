@@ -241,3 +241,25 @@ No repair commits this time: no BLOCK, no leftovers, no owner question during th
 ## FR-7 — Cockpit from the phone
 
 Not run yet. The guide's steps (start on the laptop, answer a block from the phone, `factory wait --timeout 7200` in a background Bash) are still open.
+
+## Numbers
+
+<!-- factory:numbers -->
+| role | workers | own | subagents | weighted | minutes | turns |
+|---|---:|---:|---:|---:|---:|---:|
+| build | 9 | 9946537 | 0 | 9946537 | 85 | 565 |
+| fix | 2 | 338812 | 0 | 338812 | 3 | 28 |
+| checkpoint | 5 | 3936107 | 0 | 3936107 | 51 | 229 |
+| polish | 1 | 1948573 | 2294981 | 4243554 | 33 | 110 |
+| total | 17 | 16170027 | 2294981 | 18465008 | 172 | 932 |
+
+Knobs: —
+
+Hypothesis: none
+
+quality: gate_red 2 · worker_gate_red 1 · fix_commits 2 · ci_red_rounds 0 · ci_reruns 0 · findings: — · decisions — decide — blocks —
+
+Pack (build): —
+
+Compared with: No earlier finished run in this repo.
+<!-- /factory:numbers -->

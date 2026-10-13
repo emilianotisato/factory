@@ -144,7 +144,7 @@ Workflow: one branch, one PR, one commit per slice, the full gate and the Prove 
 | [03 — Pack composition (FR-22)](slice-03-pack-composition.md) | ✅ done | — |
 | [04 — Knobs (FR-23)](slice-04-knobs.md) | ✅ done | — |
 | [05 — Quality signals (FR-24)](slice-05-quality.md) | ✅ done | — |
-| [06 — Retro numbers (FR-25)](slice-06-retro-numbers.md) | pending | 01, 02, 03, 04, 05 |
+| [06 — Retro numbers (FR-25)](slice-06-retro-numbers.md) | ✅ done | 01, 02, 03, 04, 05 |
 <!-- /docs:slices -->
 
 ## 11. Sequencing risk

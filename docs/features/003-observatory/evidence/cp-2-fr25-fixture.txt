@@ -1,0 +1,116 @@
+# FR-25 — fixture half: after ship the section equals report --json --per-worker per role; a second factory retro is a no-op; a second run compares with the first
+date: 2026-10-13T00:01:56-06:00  branch: feat/observatory  HEAD: 7fbdee5 + the checkpoint's working tree
+$ FACTORY_KEEP_FIXTURE=1 cargo test --no-fail-fast --test closeout -- --exact --nocapture a_finished_board_polishes_ships_pushes_and_opens_the_draft_pr a_second_run_of_the_repo_compares_with_the_first
+
+## transcript
+fixture closeout-green kept at /tmp/factory-closeout-green-J9yTh0
+fixture retro-compare kept at /tmp/factory-retro-compare-VE7HXj
+test a_finished_board_polishes_ships_pushes_and_opens_the_draft_pr ... ok
+test a_second_run_of_the_repo_compares_with_the_first ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 30 filtered out; finished in 3.99s
+
+Then, on the kept fixtures, the debug binary from this tree with each fixture's env (FACTORY_DATA_DIR, FACTORY_CONFIG_DIR, stub PATH):
+
+## A. After ship: the section equals report --json --per-worker (fixture /tmp/factory-closeout-green-J9yTh0)
+$ git checkout -- docs/features/001-fixture/retro.md   # the test deleted it last to prove exit 1; restore the shipped file
+$ git show --stat HEAD | head -12
+commit 1613be3c6d64eabb3b689f0ec3ed88fedf71c15c
+Author: Fixture <fixture@example.invalid>
+Date:   Tue Oct 13 00:00:40 2026 -0600
+
+    docs(001): ship PRD-001
+
+ docs/features/001-fixture/prd.md   |  2 +-
+ docs/features/001-fixture/retro.md | 43 ++++++++++++++++++++++++++++----------
+ docs/index.md                      |  2 +-
+ 3 files changed, 34 insertions(+), 13 deletions(-)
+
+### the shipped section (docs/features/001-fixture/retro.md at HEAD)
+<!-- factory:numbers -->
+| role | workers | own | subagents | weighted | minutes | turns |
+|---|---:|---:|---:|---:|---:|---:|
+| build | 3 | 34827 | 0 | 34827 | 0 | 21 |
+| checkpoint | 2 | 23218 | 0 | 23218 | 0 | 4 |
+| polish | 1 | 11609 | 0 | 11609 | 0 | 7 |
+| total | 6 | 69656 | 0 | 69656 | 0 | 32 |
+
+Knobs: build opus/high default · fix opus/high default · checkpoint opus/high default · polish opus/high default · budget 30000000 default · lanes 2 · factory 0.1.0 · claude 2.1.296
+
+Hypothesis: none
+
+quality: gate_red 0 · worker_gate_red 0 · fix_commits 0 · ci_red_rounds 0 · ci_reruns 0 · findings high=1 medium=2 low=3 fixed=4 parked=2 · decisions 3 decide 0 blocks 0
+
+Pack (build): slice 1702 · prd_sections 89 · outline 98 · lookup 986 · contract 3033 · autonomy 11246 · inner_loop 32 · total 17186 · start_context 24215
+
+Compared with: No earlier finished run in this repo.
+<!-- /factory:numbers -->
+
+$ factory report 001-20261013-0538 --json --per-worker
+(exit 0)   # JSON body omitted; its per_worker array is summed by role below
+
+### per role: sum of --per-worker weighted_own + weighted_sub against the section's weighted column
+build: report 34827  section 34827  equal
+checkpoint: report 23218  section 23218  equal
+polish: report 11609  section 11609  equal
+total weighted_tokens: 69656
+ROLE ROWS EQUAL
+
+### a second factory retro is a no-op
+$ factory retro 001-20261013-0538
+retro: /tmp/factory-closeout-green-J9yTh0/repo/docs/features/001-fixture/retro.md unchanged
+(exit 0)
+sha256 before: c2ccba2280ca6af77da260d67fffb5f27d965ee5de118097c03fdf7b73a53c2b  docs/features/001-fixture/retro.md
+sha256 after:  c2ccba2280ca6af77da260d67fffb5f27d965ee5de118097c03fdf7b73a53c2b  docs/features/001-fixture/retro.md
+BYTE-IDENTICAL
+$ git status --short
+(empty = the restored file equals HEAD)
+
+## B. A second fixture run compares with the first (fixture /tmp/factory-retro-compare-VE7HXj)
+run dir: 001-20261013-9939
+run dir: 001-20261013-9d10
+runs by started_at:
+2026-10-13T06:00:38Z 001-20261013-9d10
+2026-10-13T06:00:40Z 001-20261013-9939
+$ factory retro 001-20261013-9939   # the test regenerated the first run's section last
+retro: /tmp/factory-retro-compare-VE7HXj/repo/docs/features/001-fixture/retro.md updated
+(exit 0)
+$ factory report 001-20261013-9939 --json, then the same for 001-20261013-9d10: the figures the comparison rows print
+  "slices": 3,
+  "weighted_tokens": 69656,
+  "slices": 3,
+  "weighted_tokens": 69656,
+
+### the second run's section
+<!-- factory:numbers -->
+| role | workers | own | subagents | weighted | minutes | turns |
+|---|---:|---:|---:|---:|---:|---:|
+| build | 3 | 34827 | 0 | 34827 | 0 | 21 |
+| checkpoint | 2 | 23218 | 0 | 23218 | 0 | 4 |
+| polish | 1 | 11609 | 0 | 11609 | 0 | 7 |
+| total | 6 | 69656 | 0 | 69656 | 0 | 32 |
+
+Knobs: build opus/high default · fix opus/high default · checkpoint opus/high default · polish opus/high default · budget 30000000 default · lanes 2 · factory 0.1.0 · claude 2.1.296
+
+Hypothesis: none
+
+quality: gate_red 0 · worker_gate_red 0 · fix_commits 0 · ci_red_rounds 0 · ci_reruns 0 · findings high=1 medium=2 low=3 fixed=4 parked=2 · decisions 3 decide 0 blocks 0
+
+Pack (build): slice 1702 · prd_sections 89 · outline 98 · lookup 986 · contract 3033 · autonomy 11246 · inner_loop 32 · total 17186 · start_context 24215
+
+Compared with:
+
+| run | feature | weighted | slices | per slice | lines changed | per line |
+|---|---|---:|---:|---:|---:|---:|
+| 001-20261013-9939 (this run) | 001 | 69656 | 3 | 23219 | 93 | 749 |
+| 001-20261013-9d10 | 001 | 69656 | 3 | 23219 | 89 | 783 |
+<!-- /factory:numbers -->
+
+### again: no-op
+$ factory retro 001-20261013-9939
+retro: /tmp/factory-retro-compare-VE7HXj/repo/docs/features/001-fixture/retro.md unchanged
+(exit 0)
+BYTE-IDENTICAL
+
+### the first run's section, regenerated: its cohort is fixed by its started_at
+Compared with: No earlier finished run in this repo.
+<!-- /factory:numbers -->
