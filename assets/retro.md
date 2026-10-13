@@ -26,7 +26,7 @@ Instructions that contradicted each other, or were silent where a decision was n
 
 ## What I wished existed
 
-## Project friction → `/guardrails audit`
+## Project friction → `/gate audit`
 
 A gate tier, floor or lint rule that cost more than it caught *in this project*. Evidence, not preference.
 

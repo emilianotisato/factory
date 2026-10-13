@@ -100,7 +100,7 @@ pub fn run(root: &Path) -> Report {
     {
         r.warn(
             "W-NO-GATE",
-            "no verify gate declared in docs/project.toml — run /guardrails, or `factory docs gate set \"<cmd>\"` (`factory docs gate --candidates` lists likely ones)",
+            "no verify gate declared in docs/project.toml — run /gate, or `factory docs gate set \"<cmd>\"` (`factory docs gate --candidates` lists likely ones)",
         );
     }
     let limits = project.flatten().unwrap_or(Project {

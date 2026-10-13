@@ -90,7 +90,7 @@ pub fn init(root: &Path, out: &mut dyn Write) -> Result<()> {
     say(out, &format!("created {}", made.join(", ")))?;
     say(
         out,
-        "next: declare the verify gate under [docs] in docs/project.toml (`gate = \"<cmd>\"`), or run /guardrails",
+        "next: declare the verify gate under [docs] in docs/project.toml (`gate = \"<cmd>\"`), or run /gate",
     )
 }
 
@@ -189,7 +189,7 @@ pub fn new_from(
     };
     let gate = match &project.gate {
         Some(g) => format!("`{g}` *(declared in project.toml)*"),
-        None => "_(none declared — run /guardrails before slicing)_".into(),
+        None => "_(none declared — run /gate before slicing)_".into(),
     };
     let mut body = PRD
         .replace("{{NNN}}", &format!("{number:03}"))
@@ -226,7 +226,7 @@ pub fn new_from(
         out,
         &match &project.gate {
             Some(g) => format!("gate: {g}"),
-            None => "⚠ no verify gate declared — mention /guardrails in the hand-off".into(),
+            None => "⚠ no verify gate declared — mention /gate in the hand-off".into(),
         },
     )
 }
@@ -310,7 +310,7 @@ pub fn slice(
     let (gate, inner) = project.map_or((None, None), |p| (p.gate, p.inner));
     let verify = match (&inner, &gate) {
         (Some(c), _) | (None, Some(c)) => format!("`{c}`"),
-        (None, None) => "_(no gate declared — run /guardrails, or declare `gate` under [docs] in docs/project.toml, then name it here)_".into(),
+        (None, None) => "_(no gate declared — run /gate, or declare `gate` under [docs] in docs/project.toml, then name it here)_".into(),
     };
     let prose = if deps.is_empty() {
         "—".to_string()

@@ -298,7 +298,7 @@ fn feature(
     let g = gate::status(root, p.and_then(|p| p.gate.as_deref()));
     match g.status.as_str() {
         "none" => refuse.push(
-            "no verify gate declared — /guardrails builds one (an interview, never unattended)"
+            "no verify gate declared — /gate builds one (an interview, never unattended)"
                 .into(),
         ),
         "missing" => refuse.push(format!("gate {}", gate::line(&g))),
@@ -356,7 +356,7 @@ fn feature(
     // Only a measured false asks. Absent means nobody has looked.
     match p.and_then(|p| p.gate_parallel) {
         Some(false) => ask.push("the gate cannot run parallel workers (`gate_parallel = false`) — every gate run pays full serial wall-clock, and a run pays it dozens of times. One pass at making the suite worker-safe cuts every future run.".into()),
-        None if g.status != "none" => judge.push("gate_parallel not measured — `/guardrails audit` times the suite serial and parallel and writes the answer to docs/project.toml".into()),
+        None if g.status != "none" => judge.push("gate_parallel not measured — `/gate audit` times the suite serial and parallel and writes the answer to docs/project.toml".into()),
         _ => {}
     }
     Ok(())

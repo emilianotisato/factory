@@ -394,7 +394,7 @@ pub fn line(g: &Gate) -> String {
     let declared = g.declared.as_deref().unwrap_or("");
     let detail = g.detail.as_deref().unwrap_or("");
     match g.status.as_str() {
-        "none" => "none declared — run /guardrails, or `factory docs gate set \"<cmd>\"`".into(),
+        "none" => "none declared — run /gate, or `factory docs gate set \"<cmd>\"`".into(),
         "ok" => format!("{declared} ({detail})"),
         "unverified" => format!("{declared} (declared; {detail})"),
         _ => format!("{declared} — {detail}"),
@@ -540,7 +540,7 @@ pub fn run(
         if none {
             say(
                 out,
-                "declare one with `factory docs gate set \"<cmd>\"`, or run /guardrails to build it properly",
+                "declare one with `factory docs gate set \"<cmd>\"`, or run /gate to build it properly",
             )?;
         }
         return Ok(i32::from(none));

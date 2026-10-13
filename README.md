@@ -35,7 +35,7 @@ The inversion is the whole idea. **The binary orchestrates; the model only build
 
 **The skills.** The judgment calls stay in Claude Code as thin skills, shipped from this repo and installed by `factory` into each project: `/prd`, `/slice`, `/deliver` (the cockpit), `/polish`, `/gate`, `/harness`, `/prune`, `/ux`, `/lanes`. Project skills are rendered from a profile plus overlays, never copied, and drift is detected by hash. Three scopes with promotion: project, user, base.
 
-**The gate.** `/guardrails` interviews a project into one command that proves a change is done: tiered checks for lint, types, coverage floors, complexity, mutation, size budgets and architecture rules, measured against reality and proven to fail before they are declared. Every slice's Verify task, every checkpoint and the polish pass run that one command. A fast subset is the inner loop.
+**The gate.** `/gate` interviews a project into one command that proves a change is done: tiered checks for lint, types, coverage floors, complexity, mutation, size budgets and architecture rules, measured against reality and proven to fail before they are declared. Every slice's Verify task, every checkpoint and the polish pass run that one command. A fast subset is the inner loop.
 
 **The app harness.** `/verify-app` writes a project-local skill that drives the real application the way a user does, in a browser, a CLI or an API, and captures proof. Checkpoint workers use it, so "done" means "seen working", not "tests pass".
 
