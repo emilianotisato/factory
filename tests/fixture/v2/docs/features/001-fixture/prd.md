@@ -15,6 +15,8 @@ retired_fr: []
 
 **Owns FR range**: **FR-1 …**. *(Numbers are never reused.)*
 
+**Split from / Related**: the inbox line in [`ideas.md`](../../ideas.md).
+
 ---
 
 ## 1. Why now

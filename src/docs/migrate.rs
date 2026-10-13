@@ -1899,23 +1899,6 @@ mod tests {
             .collect()
     }
 
-    /// A file of this repo's v2 docs as frozen in `tests/fixture/` (its
-    /// README says why: the live `docs/` moves with every commit).
-    fn frozen(rel: &str) -> String {
-        let p = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixture/repo-at-a7e89bf")
-            .join(rel);
-        fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
-    }
-
-    fn head(rel: &str) -> Option<String> {
-        Some(frozen(rel))
-    }
-
-    fn head_log(rel: &str) -> Option<String> {
-        Some(frozen(rel))
-    }
-
     #[test]
     fn a_decision_keeps_its_fence_flag_and_owner_review() {
         let log = "## Decisions\n\n### AD-3 — Why? · slice-02 · 2026-10-10\n\n**Chose:** a\n```md\n### AD-9 — inside · slice-01 · 2026-10-10\n```\n**Review:** yes\n**Owner (2026-10-11):** kept, as refined by AD-7\n\n### AD-4 — Then? · slice-02 · 2026-10-10\n\n**Review:** decide\n\n**Owner (2026-10-12):** changed — the owner's text\n";
@@ -2026,37 +2009,6 @@ mod tests {
     }
 
     #[test]
-    fn prd_001_log_at_head_keeps_every_entry() {
-        let Some(t) = head_log("docs/features/001-driver/agent-log.md") else {
-            return;
-        };
-        let es = parse_agent_log(&t, &[]).unwrap();
-        let n = |k: Kind| es.iter().filter(|e| e.kind == k).count();
-        assert_eq!(n(Kind::Decision) + n(Kind::Ask), 145);
-        assert_eq!(n(Kind::Checkpoint), 7);
-        assert_eq!(n(Kind::Block), 1);
-        assert_eq!(refs(&es, Kind::Answer, "BLOCK-201").len(), 1);
-        assert_eq!(n(Kind::Answer), 1);
-        assert_eq!(n(Kind::Review), 78);
-        for e in es.iter().filter(|e| e.kind.sequence() == Some("AD")) {
-            if e.n().unwrap() < 101 {
-                assert_eq!(e.phase.as_deref(), Some("preflight"), "{:?}", e.id);
-            }
-        }
-        // Each sequence ascending, the polish/checkpoint phase kept.
-        let ads: Vec<u32> = es
-            .iter()
-            .filter(|e| e.kind.sequence() == Some("AD"))
-            .filter_map(Entry::n)
-            .collect();
-        assert!(ads.windows(2).all(|w| w[0] < w[1]));
-        assert!(es.iter().any(|e| e.phase.as_deref() == Some("polish")));
-        // The rules prose after the last CP is a note, not its body.
-        let last = es.iter().rfind(|e| e.kind == Kind::Checkpoint).unwrap();
-        assert!(!last.body.contains("```"), "{}", last.body);
-    }
-
-    #[test]
     fn blame_porcelain_dates_each_line_in_its_zone() {
         let sha = "a".repeat(40);
         let other = "b".repeat(40);
@@ -2071,10 +2023,8 @@ mod tests {
 
     #[test]
     fn index_md_keeps_the_prose_around_the_board() {
-        let Some(t) = head("docs/index.md") else {
-            return;
-        };
-        let (out, rows) = index_md(&t, &[1, 2, 3]);
+        let t = include_str!("../../tests/fixture/v2/docs/index.md");
+        let (out, rows) = index_md(t, &[1, 2, 3]);
         assert!(!out.starts_with("---"), "{out}");
         assert!(out.lines().all(|l| !l.trim_start().starts_with('|')));
         assert!(!out.contains("Next free PRD number"));
@@ -2149,28 +2099,56 @@ mod tests {
             .unwrap()
     }
 
+    /// The v2 prose header shapes: a title with a colon, a `**Type**:` word
+    /// followed by prose, `**Status**:` and `**Owns FR range**:` lines that
+    /// go, a `**Split from / Related**:` line that stays, and `reviewed:`
+    /// dashed or compact.
     #[test]
-    fn this_repos_prds_get_the_seven_keys() {
-        let (Some(index), Some(p1), Some(p2), Some(p3)) = (
-            head("docs/index.md"),
-            head("docs/features/001-driver/prd.md"),
-            head("docs/features/002-docs-port/prd.md"),
-            head("docs/features/003-observatory/prd.md"),
-        ) else {
-            return;
+    fn prds_get_the_seven_keys() {
+        let index = "## Live features\n\n| # | Feature | Notes |\n|---|---|---|\n| 001 | a | the one |\n| 002 | b | ports `log add | show`, then more |\n| 003 | c | the three |\n";
+        let prd = |n: &str, slug: &str, extra: &str, title: &str, ty: &str| {
+            format!(
+                "---\nnumber: {n}\nslug: {slug}\nstatus: ready\nowns_fr: [1-2]\n{extra}---\n\n# PRD-{n} — {title}\n\n**Type**: {ty}\n**Status**: **READY 2026-10-11** — agreed\n**Created**: 2026-10-09\n**Author**: Me (with Claude)\n\n**Owns FR range**: **FR-1 … FR-2**. *(Never reused.)*\n\n**Split from / Related**: the brainstorm in [`ideas.md`](../../ideas.md).\n\n---\n\n## 1. Why now\n\nBody.\n"
+            )
         };
-        let notes = notes_cells(&index);
+        let notes = notes_cells(index);
         let tmp = tempfile::tempdir().unwrap();
-        let mut outs = Vec::new();
-        for (name, text) in [
-            ("001-driver", &p1),
-            ("002-docs-port", &p2),
-            ("003-observatory", &p3),
+        for (name, text, ty, reviewed) in [
+            (
+                "001-one",
+                prd(
+                    "001",
+                    "one",
+                    "reviewed: 2026-10-10\n",
+                    "One: a colon",
+                    "Feature — a new binary",
+                ),
+                "feature",
+                Some("2026-10-10"),
+            ),
+            (
+                "002-two",
+                prd("002", "two", "", "Two", "Refactor — the tool moves"),
+                "refactor",
+                None,
+            ),
+            (
+                "003-three",
+                prd(
+                    "003",
+                    "three",
+                    "reviewed: 20261013\n",
+                    "Three",
+                    "Enhancement batch — six FRs",
+                ),
+                "enhancement",
+                Some("2026-10-13"),
+            ),
         ] {
             fs::create_dir_all(tmp.path().join(name)).unwrap();
-            fs::write(tmp.path().join(name).join("prd.md"), text).unwrap();
+            fs::write(tmp.path().join(name).join("prd.md"), &text).unwrap();
             let f = feature_at(tmp.path(), name);
-            let (out, _, st) = prd_md("prd.md", &f, text, &notes[&f.number]).unwrap();
+            let (out, rows, st) = prd_md("prd.md", &f, &text, &notes[&f.number]).unwrap();
             let fm = frontmatter::parse(&out);
             let keys: Vec<&str> = fm
                 .data
@@ -2185,23 +2163,30 @@ mod tests {
                     "number", "slug", "title", "type", "created", "author", "summary"
                 ]
             );
-            assert!(PRD_TYPES.contains(&fm.str("type").unwrap()));
+            assert_eq!(fm.str("type"), Some(ty), "{name}");
+            assert!(PRD_TYPES.contains(&ty));
+            assert_eq!(fm.str("created"), Some("2026-10-09"));
+            assert_eq!(fm.str("author"), Some("Me (with Claude)"));
             assert_eq!(fm.str("summary").unwrap().trim(), notes[&f.number].trim());
-            outs.push((out, st));
+            assert_eq!(st.reviewed.as_deref(), reviewed, "{name}");
+            assert!(
+                out.contains("\n**Split from / Related**: the brainstorm"),
+                "{out}"
+            );
+            assert!(!out.contains("**Owns FR range**:"), "{out}");
+            assert!(out.lines().all(|l| !l.starts_with("**Status**:")), "{out}");
+            if name == "003-three" {
+                assert!(
+                    rows.iter()
+                        .any(|r| r.verb == "fix" && r.what.contains("reviewed 20261013")),
+                    "{rows:?}"
+                );
+            }
+            if name == "001-one" {
+                assert!(out.contains("title: \"One: a colon\"\n"), "{out}");
+            }
         }
-        assert!(
-            outs[0]
-                .0
-                .contains("title: \"Driver: the unattended deliver loop\"\n")
-        );
-        assert!(outs[0].0.contains("created: 2026-10-09\n"));
-        assert_eq!(
-            state::render(&outs[2].1).lines().nth(1),
-            Some("reviewed = \"2026-10-13\"")
-        );
-        assert!(outs[1].0.contains("**Split from / Related**:"));
-        assert!(!outs[1].0.contains("**Owns FR range**:"));
-        assert!(outs[1].0.lines().all(|l| !l.starts_with("**Status**:")));
+        assert_eq!(notes[&2], "ports `log add | show`, then more");
     }
 
     #[test]
@@ -2376,30 +2361,37 @@ mod tests {
         assert!(e.contains("reviewed \"soon\" is not a date"), "{e}");
     }
 
+    /// A retro's row comes from its frontmatter alone: an empty `score:`
+    /// is NULL, a whole `gate_minutes` is a float, and the `## Numbers`
+    /// table in the body is not read.
     #[test]
-    fn this_repos_retros_at_head() {
-        let (Some(r1), Some(r3)) = (
-            head("docs/features/001-driver/retro.md"),
-            head("docs/features/003-observatory/retro.md"),
-        ) else {
-            return;
-        };
+    fn retros_rows_read_the_frontmatter_only() {
         let tmp = tempfile::tempdir().unwrap();
-        for (name, t) in [("001-driver", &r1), ("003-observatory", &r3)] {
-            fs::create_dir_all(tmp.path().join("docs/features").join(name)).unwrap();
-            fs::write(
-                tmp.path().join("docs/features").join(name).join("retro.md"),
-                t,
-            )
-            .unwrap();
+        for (name, t) in [
+            (
+                "001-one",
+                "---\nscore: 4\ngate_runs: 29\ngate_minutes: 16\nout_tokens: 3772425\npeak_context: 182520\n---\n\n# Retro\n\n## Numbers\n\n| What | Value |\n|---|---|\n| score | 1 |\n| gate_minutes | 99 |\n| out_tokens | 5 |\n",
+            ),
+            (
+                "002-two",
+                "---\nscore:\ngate_minutes: 2.23\nbuild_minutes: 98.51\n---\n\n# Retro\n",
+            ),
+        ] {
+            let dir = tmp.path().join("docs/features").join(name);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("retro.md"), t).unwrap();
         }
         let (rows, _) = retro_rows(tmp.path(), "r").unwrap();
+        assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].score, Some(4));
+        assert_eq!(rows[0].gate_runs, Some(29));
         assert_eq!(rows[0].gate_minutes, Some(16.0));
         assert_eq!(rows[0].out_tokens, Some(3772425));
         assert_eq!(rows[0].peak_context, Some(182520));
+        assert_eq!(rows[0].ci_cycles, None);
         assert_eq!(rows[1].score, None);
         assert_eq!(rows[1].gate_minutes, Some(2.23));
+        assert_eq!(rows[1].build_minutes, Some(98.51));
         assert_eq!(rows[1].shipped_at, None, "not a git repo");
     }
 

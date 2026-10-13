@@ -528,16 +528,14 @@ mod tests {
         );
     }
 
+    /// The inbox shapes: a `**Rules**` list before any `##` heading, bullets
+    /// `- **Title.** body` with no dash, a blank line splitting one section's
+    /// bullets, a bold title opening on a code span that holds `|` and `:`,
+    /// and a placeholder under Graduated.
     #[test]
-    fn this_repos_ideas_at_head() {
-        // Frozen: the live `docs/ideas.md` gains a line with every parked
-        // finding (tests/fixture/repo-at-a7e89bf/README.md).
-        let text = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixture/repo-at-a7e89bf/docs/ideas.md"
-        ))
-        .unwrap();
-        let all = parse(&text);
+    fn an_inbox_parses_bullet_by_bullet() {
+        let text = "# Ideas Inbox\n\nLoose one-liners.\n\n**Rules**\n- One line per idea.\n- No design here.\n\n## Open\n\n- **First idea.** Plain body, no dash.\n- **Second idea.** Another.\n\n- **`tool pull | list | drop`: errors as a list.** After the blank line.\n\n## Graduated → became a feature\n\n- _(move lines here with their `{NNN}`)_\n";
+        let all = parse(text);
         let open: Vec<&Bullet> = all
             .iter()
             .filter(|b| {
@@ -551,21 +549,44 @@ mod tests {
                 )
             })
             .collect();
-        let drops = all
+        assert_eq!(
+            open.iter().map(|b| b.title.as_str()).collect::<Vec<_>>(),
+            [
+                "First idea",
+                "Second idea",
+                "`tool pull | list | drop`: errors as a list"
+            ]
+        );
+        assert_eq!(open[0].body, "Plain body, no dash.\n");
+        assert_eq!(open[2].body, "After the blank line.\n");
+        let drops: Vec<(usize, &Place)> = all
             .iter()
             .filter(|b| matches!(b.place, Place::Dropped(_)))
-            .count();
-        assert_eq!((open.len(), drops, all.len()), (19, 6, 25), "{all:#?}");
-        let line = text
-            .lines()
-            .find(|l| l.starts_with("- **`factory bugs pull"))
-            .unwrap();
-        let bold = &line[4..4 + line[4..].find("**").unwrap()];
-        let bugs = open
+            .map(|b| (b.line, &b.place))
+            .collect();
+        assert_eq!(
+            drops,
+            [
+                (6, &Place::Dropped("before any ## heading")),
+                (7, &Place::Dropped("before any ## heading")),
+                (18, &Place::Dropped("placeholder")),
+            ],
+            "{all:#?}"
+        );
+        assert_eq!(all.len(), open.len() + drops.len(), "{all:#?}");
+
+        // The code-span title survives the idea file's frontmatter.
+        let tmp = tree(text, &[]);
+        let mut p = empty();
+        plan(tmp.path(), &mut p).unwrap();
+        let (f, t) = p
+            .files
             .iter()
-            .find(|b| b.title.starts_with("`factory bugs"))
-            .unwrap();
-        assert_eq!(bugs.title, bold.strip_suffix('.').unwrap());
+            .find(|(f, _)| f.to_string_lossy().contains("tool-pull"))
+            .unwrap_or_else(|| panic!("{:?}", p.files));
+        let f = tmp.path().join(f);
+        fs::write(&f, t.as_deref().unwrap()).unwrap();
+        assert_eq!(ideas::read(&f).unwrap().title, open[2].title);
     }
 
     fn fields_of(text: &str) -> Fields {

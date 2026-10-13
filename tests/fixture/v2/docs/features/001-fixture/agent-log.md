@@ -28,6 +28,14 @@ What this repo does that cost a builder a run and will cost the next one too: a 
 
 ## Decisions
 
+### AD-10001 — Re-run the gate at the checkpoint? · checkpoint · 2026-10-03
+
+**Chose:** one more full run.
+**Over:** trusting the slice runs.
+**Because:** two lanes merged into one tree.
+**Undo:** drop the run.
+**Review:** fyi — a reviewer reading the diff would miss the extra run
+
 ### AD-201 — Name the scenario files by slice · slice-02 · 2026-10-02
 
 **Chose:** `scenario/slice-02.txt`.

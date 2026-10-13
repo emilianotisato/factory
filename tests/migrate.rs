@@ -8,12 +8,10 @@ mod harness;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::Output;
 
 use factory::db::{Db, RetroRow};
 use factory::docs::ideas;
-use factory::docs::migrate::blame_dates;
-use factory::docs::migrate_ideas::{self, Place};
 use factory::run::Run;
 use harness::Fixture;
 use serde_json::Value;
@@ -303,6 +301,10 @@ fn the_v2_fixture_migrates_and_the_undo_restores_it() {
         ("AD-101", "**Review:** decide"),
         ("AD-201", "**Review:** fyi"),
         ("AD-501", "**Review:** decide"),
+        (
+            "AD-10001",
+            "\n**Review:** fyi — a reviewer reading the diff would miss the extra run\n",
+        ),
     ] {
         let at = shown.find(&format!("### {id} ")).unwrap();
         let next = shown[at + 4..]
@@ -326,8 +328,18 @@ fn the_v2_fixture_migrates_and_the_undo_restores_it() {
             by("review"),
             by("checkpoint")
         ),
-        (3, 1, 1, 1, 2, 1)
+        (4, 1, 1, 1, 2, 1)
     );
+    // Each sequence ascending by number, five digits after three.
+    let ads: Vec<&str> = entries
+        .iter()
+        .filter_map(|e| e["id"].as_str())
+        .filter(|id| id.starts_with("AD-"))
+        .collect();
+    assert_eq!(ads, ["AD-1", "AD-101", "AD-201", "AD-501", "AD-10001"]);
+    let cp = entries.iter().find(|e| e["id"] == "AD-10001").unwrap();
+    assert_eq!(cp["phase"], "checkpoint");
+    assert_eq!(cp["flag"], "fyi");
     let block = entries.iter().find(|e| e["id"] == "BLOCK-201").unwrap();
     assert_eq!(
         block["ts"], "2026-09-30T00:00:00Z",
@@ -354,6 +366,20 @@ fn the_v2_fixture_migrates_and_the_undo_restores_it() {
         "{project}"
     );
     assert!(!fx.path().join(LOG).exists());
+    // The prose header's Related line stays, its `ideas.md` link moved.
+    let prd = fx.read("docs/features/001-fixture/prd.md");
+    assert!(
+        prd.contains(
+            "\n**Split from / Related**: the inbox line in [`ideas.md`](../../ideas/README.md).\n"
+        ),
+        "{prd}"
+    );
+    assert!(
+        !prd.contains("**Owns FR range**") && !prd.contains("**Status**:"),
+        "{prd}"
+    );
+    assert!(tree.contains_key("docs/ideas/README.md"));
+    assert!(!tree.contains_key("docs/ideas.md"));
 
     // A re-run's row is the same in every column but `written_at`.
     let first = row(&fx, 1);
@@ -566,172 +592,4 @@ fn ideas_migrate() {
     eprintln!("--- factory docs check\n{out}{err}");
     assert_eq!(o.status.code(), Some(0), "check\n{out}\n{err}");
     assert!(!out.contains("W-") && !err.contains("W-"), "{out}{err}");
-}
-
-/// FR-16 on a copy of this repo's own `docs/` at HEAD: PRD-001's 145
-/// decisions, 7 checkpoints, 1 block and 13 slices. Ignored in the inner
-/// loop because the live docs change with every commit; it runs at the
-/// slice's checkpoint and before the owner's real migration (§14).
-#[test]
-#[ignore]
-fn prd_001_copy_migrates() {
-    let src = tempfile::tempdir().unwrap();
-    let archive = Command::new("git")
-        .args(["archive", "--format=tar", "HEAD", "docs"])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output()
-        .expect("git archive");
-    assert!(archive.status.success());
-    let tar = src.path().join("docs.tar");
-    fs::write(&tar, &archive.stdout).unwrap();
-    let ok = Command::new("tar")
-        .args(["-xf", tar.to_str().unwrap()])
-        .current_dir(src.path())
-        .status()
-        .unwrap()
-        .success();
-    assert!(ok, "tar -x");
-    let project = fs::read_to_string(src.path().join("docs/project.toml")).unwrap_or_default();
-    if project.contains("[docs]") {
-        eprintln!("skipped: docs already v3");
-        return;
-    }
-    // Mid-run, HEAD holds the building slices' unmerged `log-*.md`, which
-    // migrate refuses; merge them in the copy as the refusal tells the owner.
-    let docs_mjs =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixture/v2/.docs/bin/docs.mjs");
-    for e in fs::read_dir(src.path().join("docs/features")).unwrap() {
-        let dir = e.unwrap().path();
-        let fragment = fs::read_dir(&dir).unwrap().any(|f| {
-            let n = f.unwrap().file_name().to_string_lossy().into_owned();
-            n.starts_with("log-") && n.ends_with(".md")
-        });
-        if fragment {
-            let n = &dir.file_name().unwrap().to_string_lossy()[..3];
-            let merged = Command::new("node")
-                .arg(&docs_mjs)
-                .args(["log", "merge", n])
-                .current_dir(src.path())
-                .output()
-                .expect("node docs.mjs log merge");
-            assert!(
-                merged.status.success(),
-                "log merge {n}: {}",
-                String::from_utf8_lossy(&merged.stderr)
-            );
-        }
-    }
-    let fx = Fixture::v2_with_docs("migrate-001", &src.path().join("docs"));
-    let mut live: Vec<String> = fs::read_dir(fx.path().join("docs/features"))
-        .unwrap()
-        .filter_map(|e| {
-            let n = e.unwrap().file_name().to_string_lossy().into_owned();
-            n.get(..3)
-                .filter(|d| d.bytes().all(|b| b.is_ascii_digit()))
-                .map(str::to_string)
-        })
-        .collect();
-    live.sort();
-    let features: Vec<&str> = live.iter().map(String::as_str).collect();
-    let tree = migrate_and_undo(&fx, &features);
-
-    let s = v3_status(&fx, "001");
-    assert_eq!(s["log"]["decisions"], 145);
-    assert_eq!(s["checkpoints"].as_array().unwrap().len(), 7);
-    let shown = fx.docs(&["log", "show", "001"]);
-    // The template's fenced `### BLOCK-1` example stays in a note: skip fences.
-    let blocks: Vec<String> = headings(&shown)
-        .into_iter()
-        .map(|(h, _)| h)
-        .filter(|h| h.starts_with("### BLOCK-"))
-        .collect();
-    assert_eq!(blocks.len(), 1, "{blocks:?}");
-    assert!(blocks[0].ends_with("resolved"), "{}", blocks[0]);
-    // A Review line with a reason after its flag keeps the reason.
-    let old_log =
-        fs::read_to_string(src.path().join("docs/features/001-driver/agent-log.md")).unwrap();
-    let reasons: Vec<&str> = old_log
-        .lines()
-        .filter(|l| l.starts_with("**Review:** ") && l.split_whitespace().count() > 2)
-        .collect();
-    assert!(!reasons.is_empty());
-    for l in reasons {
-        assert!(shown.contains(l), "log show lost {l}");
-    }
-    // A `|` inside a code span in an index Notes cell does not cut it.
-    let old_index = fs::read_to_string(src.path().join("docs/index.md")).unwrap();
-    if old_index.contains("`log add | show`") {
-        let prd = String::from_utf8_lossy(&tree["docs/features/002-docs-port/prd.md"]);
-        assert!(prd.contains("`log add | show`"), "the 002 summary was cut");
-    }
-    let state = String::from_utf8(tree["docs/features/001-driver/state.toml"].clone()).unwrap();
-    assert_eq!(state.matches("[slices.").count(), 13, "{state}");
-    assert_eq!(state.matches("status = \"done\"").count(), 13, "{state}");
-    for (n, dir) in [(1, "001-driver"), (3, "003-observatory")] {
-        let retro =
-            fs::read_to_string(src.path().join(format!("docs/features/{dir}/retro.md"))).unwrap();
-        row_matches(&row(&fx, n), &retro);
-    }
-
-    // FR-20: the ideas, one file each, and the five links on the README.
-    let ideas: Vec<&String> = tree
-        .keys()
-        .filter(|k| k.starts_with("docs/ideas/"))
-        .collect();
-    assert!(tree.contains_key("docs/ideas/README.md"));
-    assert_eq!(ideas.len(), 20, "{ideas:#?}");
-    assert!(!tree.contains_key("docs/ideas.md"));
-    for (file, link, n) in [
-        ("docs/index.md", "](ideas/README.md)", 1),
-        (
-            "docs/features/001-driver/prd.md",
-            "](../../ideas/README.md)",
-            1,
-        ),
-        (
-            "docs/features/002-docs-port/prd.md",
-            "](../../ideas/README.md)",
-            3,
-        ),
-    ] {
-        let text = String::from_utf8_lossy(&tree[file]).into_owned();
-        assert_eq!(text.matches(link).count(), n, "{file}");
-    }
-
-    // The copy has one commit, so its blame dates are the copy's: read the
-    // dates of this repo's own `ideas.md` in place instead, read-only.
-    let here = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let own = here.join(migrate_ideas::FILE);
-    let text = fs::read_to_string(&own).unwrap();
-    let blame = blame_dates(here, &own).unwrap();
-    let head = Command::new("git")
-        .args(["log", "-1", "--format=%cs", "HEAD"])
-        .current_dir(here)
-        .output()
-        .unwrap();
-    let head = String::from_utf8_lossy(&head.stdout).trim().to_string();
-    let (mut phrase, mut blamed) = (0, 0);
-    for b in migrate_ideas::parse(&text) {
-        if !matches!(b.place, Place::Open { .. }) {
-            continue;
-        }
-        let f = migrate_ideas::fields(&b, &blame[b.line - 1]);
-        eprintln!("idea {} {} line {}: {}", f.added, f.from, b.line, b.title);
-        if f.from == "git blame" {
-            blamed += 1;
-            assert!(
-                f.added.as_str() >= "2026-10-09" && f.added <= head,
-                "line {}: {} outside 2026-10-09..{head}",
-                b.line,
-                f.added
-            );
-        } else {
-            phrase += 1;
-            assert!(b.body.contains(&f.added), "line {}: {}", b.line, f.added);
-        }
-    }
-    // Ideas added after the migration was written are blamed too: the count
-    // only grows.
-    assert_eq!(phrase, 8);
-    assert!(blamed >= 11, "{blamed} blamed");
 }
