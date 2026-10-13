@@ -422,10 +422,13 @@ fn in_order<S: serde::Serializer>(
     s.collect_map(sections.iter().map(|(k, n)| (k, n)))
 }
 
+/// One worker's pack sections and its `start_context`.
+type PackRow = (Vec<Part>, Option<i64>);
+
 /// [`PackShare`] per role; `None` for a role with no `pack_parts` row (a run
 /// from before FR-22).
 pub fn pack_by_role(workers: &[WorkerRow]) -> BTreeMap<String, Option<PackShare>> {
-    let mut rows: BTreeMap<String, Vec<(Vec<Part>, Option<i64>)>> = BTreeMap::new();
+    let mut rows: BTreeMap<String, Vec<PackRow>> = BTreeMap::new();
     for w in workers {
         let role = rows.entry(w.role.clone()).or_default();
         if let Some(parts) = w
