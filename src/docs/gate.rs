@@ -406,7 +406,7 @@ pub fn line(g: &Gate) -> String {
 pub fn harness(root: &Path) -> Harness {
     let none = || Harness {
         present: false,
-        detail: Some("none — run /verify-app".into()),
+        detail: Some("none — run /harness".into()),
     };
     let dir = root.join(".claude/skills");
     let Ok(rd) = fs::read_dir(&dir) else {

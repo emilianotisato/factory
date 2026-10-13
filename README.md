@@ -37,7 +37,7 @@ The inversion is the whole idea. **The binary orchestrates; the model only build
 
 **The gate.** `/gate` interviews a project into one command that proves a change is done: tiered checks for lint, types, coverage floors, complexity, mutation, size budgets and architecture rules, measured against reality and proven to fail before they are declared. Every slice's Verify task, every checkpoint and the polish pass run that one command. A fast subset is the inner loop.
 
-**The app harness.** `/verify-app` writes a project-local skill that drives the real application the way a user does, in a browser, a CLI or an API, and captures proof. Checkpoint workers use it, so "done" means "seen working", not "tests pass".
+**The app harness.** `/harness` writes a project-local skill that drives the real application the way a user does, in a browser, a CLI or an API, and captures proof. Checkpoint workers use it, so "done" means "seen working", not "tests pass".
 
 **Lanes.** A lane is a git worktree with its own copy of ignored state (a copy-on-write clone where the filesystem allows it) and a per-lane setup: database, ports, queue prefix, env. `/lanes` interviews a project into those setups and proves two lanes' suites run at once without colliding. The driver assigns a lane per worker, lands each slice on the feature tip, and spawns a merge worker on a conflict.
 
