@@ -609,6 +609,15 @@ fn park_with(
     what: &str,
     out: &mut dyn Write,
 ) -> Result<()> {
+    // The log line goes before the phase: a reader that sees `waiting-owner`
+    // in state.json must find the park in driver.log too.
+    if !*announced {
+        say(
+            out,
+            &format!("run {} parked (waiting-owner): {what}", run.id()),
+        )?;
+        *announced = true;
+    }
     if !*parked {
         run.emit(EventKind::RunWaiting {
             blocked: blocked.to_vec(),
@@ -616,13 +625,6 @@ fn park_with(
         })?;
         run.set_phase(Phase::WaitingOwner)?;
         *parked = true;
-    }
-    if !*announced {
-        say(
-            out,
-            &format!("run {} parked (waiting-owner): {what}", run.id()),
-        )?;
-        *announced = true;
     }
     Ok(())
 }
