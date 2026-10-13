@@ -21,7 +21,7 @@ use harness::{FEATURE_DIR, Fixture};
 use serde_json::{Value, json};
 
 const BIN: &str = env!("CARGO_BIN_EXE_factory");
-const RECORDING: &str = "docs/features/001-driver/recordings/claude-p-oneshot-2.1.280.jsonl";
+const RECORDING: &str = "tests/fixture/recordings/claude-p-oneshot-2.1.280.jsonl";
 const PROMPT: &str =
     "Build slice {NN} of PRD-001 as the appended system prompt says. Return the STATUS block.";
 const LOG: &str = "docs/features/001-fixture/log.jsonl";
