@@ -63,7 +63,7 @@ fn doctor_in(dir: &Path) -> String {
 
 #[test]
 fn doctor_names_the_framework_and_never_writes() {
-    let fx = Fixture::v3("check-doctor-v3");
+    let fx = Fixture::new("check-doctor-v3");
     let out = doctor_in(fx.path());
     assert!(out.starts_with("Framework      v3\n"), "{out}");
     assert!(out.contains("gate           ./gate.sh\n"), "{out}");
@@ -95,8 +95,8 @@ fn doctor_names_the_framework_and_never_writes() {
 
 #[test]
 fn check_exits_on_errors_not_warnings() {
-    let fx = Fixture::v3("check-exits");
-    let out = fx.factory_docs_output(&["check"]);
+    let fx = Fixture::new("check-exits");
+    let out = fx.docs_output(&["check"]);
     assert_eq!(
         (out.status.code(), stdout(&out)),
         (Some(0), "docs check: clean\n".into()),
@@ -105,7 +105,7 @@ fn check_exits_on_errors_not_warnings() {
     );
 
     fs::write(fx.path().join("docs/TODO.md"), "- a\n").unwrap();
-    let out = fx.factory_docs_output(&["check"]);
+    let out = fx.docs_output(&["check"]);
     assert_eq!(out.status.code(), Some(0));
     assert!(
         stderr(&out).contains("! W-SECOND-BOARD"),
@@ -122,12 +122,12 @@ fn check_exits_on_errors_not_warnings() {
     let prd = fx.path().join(FEATURE_DIR).join("prd.md");
     let text = fs::read_to_string(&prd).unwrap();
     fs::write(&prd, text + "\n[gone](slice-09-missing.md)\n").unwrap();
-    let out = fx.factory_docs_output(&["check"]);
+    let out = fx.docs_output(&["check"]);
     assert_eq!(out.status.code(), Some(1));
     assert!(stderr(&out).contains("✗ E-LINK-BROKEN"), "{}", stderr(&out));
 
     for flag in ["--fix", "--strict"] {
-        let out = fx.factory_docs_output(&["check", flag]);
+        let out = fx.docs_output(&["check", flag]);
         assert_eq!(out.status.code(), Some(2), "check {flag}");
     }
 }
@@ -140,12 +140,12 @@ fn a_v2_check_goes_to_docs_mjs_while_doctor_stays_native() {
         fx.path().join(".docs/bin/docs.mjs"),
     )
     .unwrap();
-    let out = fx.factory_docs_output(&["check"]);
+    let out = fx.docs_output(&["check"]);
     assert_eq!(
         (out.status.code(), stdout(&out)),
         (Some(3), "check\n".into())
     );
-    let out = fx.factory_docs_output(&["doctor"]);
+    let out = fx.docs_output(&["doctor"]);
     assert_eq!(out.status.code(), Some(0));
     assert!(
         stdout(&out).starts_with("Framework      v2 (run factory docs migrate --dry)\n"),

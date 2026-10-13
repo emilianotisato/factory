@@ -32,10 +32,7 @@ fn status_and_preflight_come_from_the_fixture() {
     assert_eq!(s.branch.as_deref(), Some("main"));
     assert_eq!(s.log.decisions, 0);
     // In process and through the binary, one board.
-    assert_eq!(
-        serde_json::to_value(&s).unwrap(),
-        fx.factory_docs_json("status")
-    );
+    assert_eq!(serde_json::to_value(&s).unwrap(), fx.docs_json("status"));
 
     let (p, code) = docs.preflight("001").unwrap();
     assert_eq!(code, 0, "{p:?}");

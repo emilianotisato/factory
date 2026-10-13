@@ -18,13 +18,13 @@ fn store(fx: &Fixture) -> PathBuf {
 }
 
 fn run(fx: &Fixture, args: &[&str]) -> (Option<i32>, String, String) {
-    let o: Output = fx.factory_docs_output(args);
+    let o: Output = fx.docs_output(args);
     (o.status.code(), text(&o.stdout), text(&o.stderr))
 }
 
 #[test]
 fn retro_prints_the_row_and_sets_only_an_integer_score() {
-    let fx = Fixture::v3("docs-retro");
+    let fx = Fixture::new("docs-retro");
     let repo = fx.path().canonicalize().unwrap();
     let repo = repo.to_str().unwrap();
 

@@ -11,7 +11,8 @@ use std::process::Command;
 
 use clap::{CommandFactory, Parser, Subcommand};
 
-use crate::docs::{Docs, board, log, project, scaffold, state};
+use crate::docs::doctor::ToolOutput;
+use crate::docs::{board, check, doctor, ideas, log, project, scaffold, state};
 use crate::error::{io, json};
 use crate::{Error, Result, paths};
 
@@ -32,6 +33,9 @@ enum Verb {
         slug: String,
         #[arg(long)]
         title: Option<String>,
+        /// Build on this idea: its body goes in the PRD, its file is deleted
+        #[arg(long)]
+        from_idea: Option<String>,
     },
     /// Add the next slice to a feature
     Slice {
@@ -62,10 +66,93 @@ enum Verb {
         #[arg(long)]
         set: Option<String>,
     },
+    /// Validate the board; exits 1 on any error
+    Check,
+    /// Which framework version the repo is on, and what `check` would say
+    Doctor,
     /// The feature's append-only log.jsonl
     Log {
         #[command(subcommand)]
         action: LogVerb,
+    },
+    /// The open ideas, one file each under docs/ideas/
+    Idea {
+        #[command(subcommand)]
+        action: IdeaVerb,
+    },
+    /// The verify gate; `set <cmd>` declares it, `--inner` the fast subset
+    Gate {
+        args: Vec<String>,
+        #[arg(long)]
+        inner: bool,
+        #[arg(long)]
+        candidates: bool,
+    },
+    /// Can a run start on this feature? Exits 0 pass, 1 refused, 2 asks
+    Preflight {
+        feature: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Mark a feature shipped once every slice is done
+    Ship { feature: String },
+    /// Move a feature whose slices are all done into docs/archive/
+    Archive { feature: String },
+    /// The lanes; `set N --env K=V` writes the lane files
+    Lanes {
+        args: Vec<String>,
+        #[arg(long)]
+        env: Option<String>,
+        #[arg(long)]
+        setup: Option<String>,
+    },
+    /// Give a feature a new number, outside docs/archive/
+    Renumber { from: String, to: String },
+    /// Move a v2 repo's docs to v3 in one uncommitted diff; `--dry` writes nothing
+    Migrate {
+        #[arg(long)]
+        dry: bool,
+    },
+    /// Install the pre-commit hook, or print it when core.hooksPath is set
+    Hook {
+        /// Point this repo's core.hooksPath at .git/hooks first
+        #[arg(long)]
+        here: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum IdeaVerb {
+    /// Write one idea file and print its id
+    Add {
+        #[arg(long)]
+        title: String,
+        /// open, or owed when someone outside the repo owes an answer
+        #[arg(long, default_value = "open")]
+        state: String,
+        /// Where it came from: `owner`, `PRD-016 polish`
+        #[arg(long)]
+        origin: Option<String>,
+        /// The event that should make someone look again
+        #[arg(long)]
+        retrigger: Option<String>,
+        /// Only `high`; absent is normal
+        #[arg(long)]
+        priority: Option<String>,
+        /// The markdown body: a path, or `-` for stdin
+        #[arg(long)]
+        body_file: String,
+    },
+    /// The open ideas; `--json` is what the cross-repo scanner reads
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Delete one idea and commit that one path, the reason as its body
+    Drop {
+        id: String,
+        #[arg(long)]
+        because: String,
     },
 }
 
@@ -142,8 +229,8 @@ fn route(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Result<i3
         return native(&root, args, out, err);
     }
     if root.join("docs/index.md").is_file() {
-        let tool = Docs::locate(&root)?.tool().to_path_buf();
-        let e = Command::new("node").arg(&tool).args(args).exec();
+        let tool = legacy_tool(&root)?;
+        let e = node(&tool).args(args).exec();
         return Err(Error::Msg(format!(
             "could not exec node {}: {e}",
             tool.display()
@@ -181,18 +268,86 @@ fn native(root: &Path, args: &[String], out: &mut dyn Write, err: &mut dyn Write
             return Ok(0);
         }
     };
-    // `retro` is the one verb with an exit code of its own: 1 for no row.
-    if let Verb::Retro { feature, set } = cli.verb {
-        return retro(root, &feature, set.as_deref(), out, err);
+    // The verbs with an exit code of their own: `retro` 1 for no row, `check`
+    // 1 on any error, `gate` 1 with none declared, `preflight` 0/1/2.
+    match cli.verb {
+        Verb::Retro { feature, set } => retro(root, &feature, set.as_deref(), out, err),
+        Verb::Check => {
+            let report = check::run(root);
+            if report.is_clean() {
+                print(out, "docs check: clean")?;
+            } else {
+                report.print(err)?;
+            }
+            Ok(i32::from(!report.errors.is_empty()))
+        }
+        Verb::Doctor => {
+            let text = doctor::run(root, || legacy_check(root));
+            out.write_all(text.as_bytes()).map_err(io("write stdout"))?;
+            Ok(0)
+        }
+        Verb::Gate {
+            args,
+            inner,
+            candidates,
+        } => crate::docs::gate::run(root, &args, inner, candidates, out, err),
+        Verb::Preflight { feature, json } => crate::docs::preflight::cli(root, &feature, json, out),
+        verb => {
+            dispatch(root, verb, out, err)?;
+            Ok(0)
+        }
     }
-    dispatch(root, cli.verb, out, err)?;
-    Ok(0)
+}
+
+/// The v2 `docs.mjs`: the repo's vendored `.docs/bin/docs.mjs`, else the
+/// skill's copy under `~/.claude/skills/feature-docs/bin/`.
+fn legacy_tool(root: &Path) -> Result<PathBuf> {
+    let vendored = root.join(".docs/bin/docs.mjs");
+    let global = paths::home().join(".claude/skills/feature-docs/bin/docs.mjs");
+    if vendored.is_file() {
+        Ok(vendored)
+    } else if global.is_file() {
+        Ok(global)
+    } else {
+        Err(Error::Msg(format!(
+            "no docs.mjs: neither {} nor {} exists",
+            vendored.display(),
+            global.display()
+        )))
+    }
+}
+
+/// The shim's one `node` call: exec'd for a v2 verb, captured for doctor.
+fn node(tool: &Path) -> Command {
+    let mut c = Command::new("node");
+    c.arg(tool);
+    c
+}
+
+/// `docs.mjs check` in a v2 or v1 repo, captured. Never `--fix`: doctor
+/// never writes.
+fn legacy_check(root: &Path) -> Result<ToolOutput> {
+    let tool = legacy_tool(root)?;
+    let o = node(&tool)
+        .arg("check")
+        .current_dir(root)
+        .output()
+        .map_err(io(format!("run node {} check", tool.display())))?;
+    Ok(ToolOutput {
+        stdout: String::from_utf8_lossy(&o.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&o.stderr).into_owned(),
+        code: o.status.code().unwrap_or(-1),
+    })
 }
 
 fn dispatch(root: &Path, verb: Verb, out: &mut dyn Write, err: &mut dyn Write) -> Result<()> {
     match verb {
         Verb::Init => scaffold::init(root, out),
-        Verb::New { slug, title } => scaffold::new(root, &slug, title.as_deref(), out),
+        Verb::New {
+            slug,
+            title,
+            from_idea,
+        } => scaffold::new_from(root, &slug, title.as_deref(), from_idea.as_deref(), out),
         Verb::Slice {
             feature,
             subject,
@@ -208,7 +363,21 @@ fn dispatch(root: &Path, verb: Verb, out: &mut dyn Write, err: &mut dyn Write) -
         ),
         Verb::Status { feature, json } => status(root, feature.as_deref(), json, out),
         Verb::Set { feature, pairs } => set(root, &feature, &pairs, out),
-        Verb::Retro { .. } => unreachable!("`native` runs retro"),
+        Verb::Retro { .. }
+        | Verb::Check
+        | Verb::Doctor
+        | Verb::Gate { .. }
+        | Verb::Preflight { .. } => {
+            unreachable!("`native` runs the verbs with their own exit code")
+        }
+        Verb::Ship { feature } => crate::docs::ship::ship(root, &feature, out),
+        Verb::Archive { feature } => crate::docs::ship::archive(root, &feature, out),
+        Verb::Lanes { args, env, setup } => {
+            crate::docs::lanes::run(root, &args, env.as_deref(), setup.as_deref(), out)
+        }
+        Verb::Renumber { from, to } => crate::docs::renumber::run(root, &from, &to, out),
+        Verb::Migrate { dry } => migrate(root, dry, out),
+        Verb::Hook { here } => print(out, &crate::docs::hook::install(root, here)?.text()),
         Verb::Log { action } => match action {
             LogVerb::Add {
                 feature,
@@ -223,14 +392,7 @@ fn dispatch(root: &Path, verb: Verb, out: &mut dyn Write, err: &mut dyn Write) -
             } => {
                 let body = match body_file.as_deref() {
                     None => String::new(),
-                    Some("-") => {
-                        let mut b = String::new();
-                        std::io::stdin()
-                            .read_to_string(&mut b)
-                            .map_err(io("read stdin"))?;
-                        b
-                    }
-                    Some(p) => std::fs::read_to_string(p).map_err(io(format!("read {p}")))?,
+                    Some(p) => read_body(p)?,
                 };
                 let entry = log::Entry {
                     slice,
@@ -277,6 +439,102 @@ fn dispatch(root: &Path, verb: Verb, out: &mut dyn Write, err: &mut dyn Write) -
                     .map_err(io("write stdout"))
             }
         },
+        Verb::Idea { action } => idea(root, action, out, err),
+    }
+}
+
+/// `migrate [--dry]` (FR-16). The plan comes first, so "already migrated"
+/// wins over "not clean"; `--dry` never opens the store, which would create it.
+fn migrate(root: &Path, dry: bool, out: &mut dyn Write) -> Result<()> {
+    use crate::docs::migrate;
+    let plan = migrate::plan(root)?;
+    if !dry {
+        migrate::clean(root)?;
+    }
+    for row in &plan.rows {
+        print(out, &row.to_string())?;
+    }
+    if dry {
+        return print(out, "dry run: nothing written");
+    }
+    let db = crate::db::Db::open(&crate::run::Run::db_path(&paths::data_dir()))?;
+    migrate::run(root, &plan, &db)?;
+    print(
+        out,
+        &format!(
+            "migrated: {} files, {} rows; review with git diff -- docs; undo with git checkout -- docs && git clean -fd docs",
+            plan.files.len(),
+            plan.retros.len()
+        ),
+    )
+}
+
+/// `--body-file`: a path, or `-` for stdin.
+fn read_body(spec: &str) -> Result<String> {
+    if spec == "-" {
+        let mut b = String::new();
+        std::io::stdin()
+            .read_to_string(&mut b)
+            .map_err(io("read stdin"))?;
+        return Ok(b);
+    }
+    std::fs::read_to_string(spec).map_err(io(format!("read {spec}")))
+}
+
+fn idea(root: &Path, action: IdeaVerb, out: &mut dyn Write, err: &mut dyn Write) -> Result<()> {
+    match action {
+        IdeaVerb::Add {
+            title,
+            state,
+            origin,
+            retrigger,
+            priority,
+            body_file,
+        } => {
+            let idea = ideas::Idea {
+                title,
+                state,
+                added: scaffold::today(),
+                origin,
+                retrigger,
+                priority,
+                body: read_body(&body_file)?,
+            };
+            print(out, &ideas::add(root, &idea)?)
+        }
+        IdeaVerb::List { json: as_json } => {
+            let (rows, skipped) = ideas::list(root);
+            for (path, why) in &skipped {
+                writeln!(err, "! {path}: {why}").map_err(io("write stderr"))?;
+            }
+            if as_json {
+                return print(
+                    out,
+                    &serde_json::to_string_pretty(&rows).map_err(json("serialize ideas"))?,
+                );
+            }
+            if rows.is_empty() {
+                return print(out, "no open ideas");
+            }
+            let lines: Vec<String> = rows
+                .iter()
+                .map(|r| {
+                    let high = if r.priority.is_some() { "  [high]" } else { "" };
+                    format!(
+                        "{}  {}  {}{high}\n    {}",
+                        r.id, r.state, r.title, r.first_sentence
+                    )
+                })
+                .collect();
+            print(out, &lines.join("\n"))
+        }
+        IdeaVerb::Drop { id, because } => {
+            let id = ideas::drop(root, &id, &because)?;
+            print(
+                out,
+                &format!("dropped {id}: docs/ideas/{id}.md deleted and committed"),
+            )
+        }
     }
 }
 

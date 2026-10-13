@@ -47,14 +47,14 @@ fn stderr(o: &Output) -> String {
 
 #[test]
 fn the_v3_board_deserializes_into_status() {
-    let fx = Fixture::v3("v3-board");
+    let fx = Fixture::new("v3-board");
     let porcelain = fx.git(&["status", "--porcelain"]);
     assert_eq!(
         porcelain, "",
         "the fixture tree is clean, no docs.lock listed"
     );
 
-    let s: Status = serde_json::from_value(fx.factory_docs_json("status")).unwrap();
+    let s: Status = serde_json::from_value(fx.docs_json("status")).unwrap();
     assert_eq!((s.number, s.slug.as_str()), (1, "fixture"));
     assert_eq!(s.status.as_deref(), Some("ready"));
     assert_eq!(s.slices.len(), 3);
@@ -73,15 +73,15 @@ fn the_v3_board_deserializes_into_status() {
 
 #[test]
 fn set_rewrites_state_and_refuses_outside_the_vocabulary() {
-    let fx = Fixture::v3("v3-set");
-    fx.factory_docs(&["set", "001", "slices.3.status=building", "slices.3.lane=1"]);
-    let s: Status = serde_json::from_value(fx.factory_docs_json("status")).unwrap();
+    let fx = Fixture::new("v3-set");
+    fx.docs(&["set", "001", "slices.3.status=building", "slices.3.lane=1"]);
+    let s: Status = serde_json::from_value(fx.docs_json("status")).unwrap();
     assert_eq!(s.slices[2].status.as_deref(), Some("building"));
     assert_eq!(s.slices[2].lane, Some(1));
     assert_eq!(s.free_lanes, [2]);
 
     let before = fs::read_to_string(fx.path().join(FEATURE_DIR).join("state.toml")).unwrap();
-    let out = fx.factory_docs_output(&["set", "001", "status=later"]);
+    let out = fx.docs_output(&["set", "001", "status=later"]);
     assert_eq!(out.status.code(), Some(2));
     assert!(
         stderr(&out).contains("idea | draft | ready | in-progress | shipped | archived | retired")
@@ -92,28 +92,25 @@ fn set_rewrites_state_and_refuses_outside_the_vocabulary() {
 
 #[test]
 fn the_board_never_reads_the_index_prose() {
-    let fx = Fixture::v3("v3-index");
-    let summary = fx.factory_docs(&["status"]);
+    let fx = Fixture::new("v3-index");
+    let summary = fx.docs(&["status"]);
     assert!(summary.contains("001  ready"), "{summary}");
     assert!(
         summary.contains("     Fixture PRD, approved for the harness run."),
         "{summary}"
     );
-    let json = stdout(&fx.factory_docs_output(&["status", "001", "--json"]));
+    let json = stdout(&fx.docs_output(&["status", "001", "--json"]));
 
     let index = fx.path().join("docs/index.md");
     let text = fs::read_to_string(&index).unwrap();
     fs::write(&index, format!("{}\n", text.lines().next().unwrap())).unwrap();
-    assert_eq!(fx.factory_docs(&["status"]), summary);
-    assert_eq!(
-        stdout(&fx.factory_docs_output(&["status", "001", "--json"])),
-        json
-    );
+    assert_eq!(fx.docs(&["status"]), summary);
+    assert_eq!(stdout(&fx.docs_output(&["status", "001", "--json"])), json);
 }
 
 #[test]
 fn archive_folders_tell_retired_from_archived() {
-    let fx = Fixture::v3("v3-archive");
+    let fx = Fixture::new("v3-archive");
     let archive = fx.path().join("docs/archive");
     fs::create_dir_all(archive.join("002-gone")).unwrap();
     fs::write(
@@ -127,18 +124,18 @@ fn archive_folders_tell_retired_from_archived() {
         "---\nnumber: 3\nslug: old\nstatus: archived\n---\n\n# PRD-003 — Old\n",
     )
     .unwrap();
-    let summary = fx.factory_docs(&["status"]);
+    let summary = fx.docs(&["status"]);
     assert!(summary.contains("archived: 2 · retired: 002"), "{summary}");
 }
 
 #[test]
 fn slice_checks_its_dependencies() {
-    let fx = Fixture::v3("v3-slice");
-    let out = fx.factory_docs_output(&["slice", "001", "d", "--depends", "9"]);
+    let fx = Fixture::new("v3-slice");
+    let out = fx.docs_output(&["slice", "001", "d", "--depends", "9"]);
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
     assert!(!fx.path().join(FEATURE_DIR).join("slice-04-d.md").exists());
 
-    fx.factory_docs(&["slice", "001", "d", "--depends", "2"]);
+    fx.docs(&["slice", "001", "d", "--depends", "2"]);
     let file = fs::read_to_string(fx.path().join(FEATURE_DIR).join("slice-04-d.md")).unwrap();
     assert!(file.starts_with("# Slice 04 — D\n"), "{file}");
     assert!(
@@ -153,17 +150,17 @@ fn slice_checks_its_dependencies() {
 
 #[test]
 fn v2_repos_pass_through_to_docs_mjs() {
-    let fx = Fixture::new("v3-route");
+    let fx = Fixture::v2("v3-route");
     fs::copy(
         fixture_src().join("stub-docs/docs.mjs"),
         fx.path().join(".docs/bin/docs.mjs"),
     )
     .unwrap();
-    let out = fx.factory_docs_output(&["status", "001", "--json"]);
+    let out = fx.docs_output(&["status", "001", "--json"]);
     assert_eq!(out.status.code(), Some(3));
     assert_eq!(stdout(&out), "status 001 --json\n");
     // v2 keeps the verbs v3 removed: the format decides, not the shim.
-    let out = fx.factory_docs_output(&["render", "--write"]);
+    let out = fx.docs_output(&["render", "--write"]);
     assert_eq!(
         (out.status.code(), stdout(&out)),
         (Some(3), "render --write\n".into())
@@ -172,15 +169,15 @@ fn v2_repos_pass_through_to_docs_mjs() {
 
 #[test]
 fn v3_repos_refuse_the_removed_verbs() {
-    let fx = Fixture::v3("v3-removed");
-    let out = fx.factory_docs_output(&["status", "001", "--json"]);
+    let fx = Fixture::new("v3-removed");
+    let out = fx.docs_output(&["status", "001", "--json"]);
     assert_eq!(out.status.code(), Some(0));
     for args in [
         &["render", "--write"][..],
         &["log", "merge", "001"],
         &["vendor"],
     ] {
-        let out = fx.factory_docs_output(args);
+        let out = fx.docs_output(args);
         assert_eq!(out.status.code(), Some(2), "{args:?}");
         assert!(
             stderr(&out).contains("removed in v3"),
@@ -188,7 +185,7 @@ fn v3_repos_refuse_the_removed_verbs() {
             stderr(&out)
         );
     }
-    assert!(stderr(&fx.factory_docs_output(&["render"])).contains("factory docs status"));
+    assert!(stderr(&fx.docs_output(&["render"])).contains("factory docs status"));
 }
 
 #[test]
@@ -319,4 +316,197 @@ fn concurrent_sets_on_two_slices_never_lose_one() {
     let st = state::read(&feature).unwrap().unwrap();
     assert_eq!(st.slices[&1].status, "building");
     assert_eq!(st.slices[&2].status, "building");
+}
+
+/// The eighteen v3 verbs (PRD-002 FR-15).
+const DOCS_VERBS: [&str; 18] = [
+    "init",
+    "new",
+    "slice",
+    "status",
+    "preflight",
+    "gate",
+    "set",
+    "log",
+    "idea",
+    "ship",
+    "archive",
+    "renumber",
+    "lanes",
+    "check",
+    "doctor",
+    "hook",
+    "migrate",
+    "retro",
+];
+
+/// The first word of each line under `Commands:`, which must be one verb
+/// per line indented two spaces: a wrapped line fails here.
+fn help_verbs(help: &str) -> std::collections::BTreeSet<String> {
+    help.lines()
+        .skip_while(|l| !l.starts_with("Commands:"))
+        .skip(1)
+        .take_while(|l| !l.trim().is_empty())
+        .map(|l| {
+            assert!(
+                l.starts_with("  ") && !l[2..].starts_with(' '),
+                "not a verb line: {l:?}"
+            );
+            l.split_whitespace().next().unwrap().to_string()
+        })
+        .collect()
+}
+
+#[test]
+fn help_lists_the_eighteen_verbs_in_and_out_of_a_repo() {
+    let fx = Fixture::new("docs-help");
+    let none = tempfile::tempdir().unwrap();
+    let want: std::collections::BTreeSet<String> =
+        DOCS_VERBS.iter().map(|v| v.to_string()).collect();
+    for out in [
+        fx.docs_output(&["--help"]),
+        docs_in(none.path(), &["--help"]),
+    ] {
+        assert!(out.status.success(), "{}", stderr(&out));
+        let help = stdout(&out);
+        assert_eq!(help_verbs(&help), want, "in:\n{help}");
+        for gone in ["render", "vendor", "merge"] {
+            assert!(!help.contains(gone), "{gone} in:\n{help}");
+        }
+    }
+}
+
+const HOOK: &str = ".git/hooks/pre-commit";
+
+#[test]
+fn hook_installs_once_prints_under_hooks_path_and_refuses_a_foreign_file() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fx = Fixture::new("hook-install");
+    let out = fx.docs_output(&["hook"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(stdout(&out).trim(), format!("installed {HOOK}"));
+    let file = fx.path().join(HOOK);
+    let text = fs::read_to_string(&file).unwrap();
+    assert!(
+        text.starts_with("#!/bin/sh\n# feature-docs hook\n"),
+        "{text}"
+    );
+    assert_eq!(
+        fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+        0o755
+    );
+    assert_eq!(fx.docs(&["hook"]).trim(), "hook already installed");
+
+    // A configured hooksPath makes .git/hooks dead: print, install nothing.
+    fs::remove_file(&file).unwrap();
+    fx.git(&["config", "core.hooksPath", "/tmp/x"]);
+    let printed = fx.docs(&["hook"]);
+    assert!(printed.contains("core.hooksPath = /tmp/x"), "{printed}");
+    assert!(
+        printed.contains("Append this to /tmp/x/pre-commit"),
+        "{printed}"
+    );
+    assert!(printed.contains("factory docs check"), "{printed}");
+    assert!(!file.exists(), "nothing installed under a hooksPath");
+
+    // --here points the repo back at .git/hooks, then installs.
+    let out = fx.docs(&["hook", "--here"]);
+    assert_eq!(out.trim(), format!("installed {HOOK}"));
+    assert_eq!(
+        fx.git(&["config", "--get", "core.hooksPath"]).trim(),
+        ".git/hooks"
+    );
+
+    // A pre-commit that is not ours: exit 2, the body to append, untouched.
+    fx.git(&["config", "--unset", "core.hooksPath"]);
+    let foreign = "#!/bin/sh\necho mine\n";
+    fs::write(&file, foreign).unwrap();
+    let out = fx.docs_output(&["hook"]);
+    assert_eq!(out.status.code(), Some(2), "{}", stdout(&out));
+    assert!(
+        stderr(&out).contains("exists — append this by hand"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(
+        stderr(&out).contains("# feature-docs hook"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(fs::read_to_string(&file).unwrap(), foreign);
+}
+
+/// `git commit -m <msg>` in the fixture with `path` as PATH.
+fn commit_with_path(fx: &Fixture, path: &str, msg: &str) -> Output {
+    fx.command("git")
+        .args(["commit", "-q", "-m", msg])
+        .env("PATH", path)
+        .output()
+        .expect("run git commit")
+}
+
+#[test]
+fn the_hook_refuses_an_archive_edit_and_a_broken_link_and_skips_without_factory() {
+    let fx = Fixture::new("hook-body");
+    let archived = fx.path().join("docs/archive/001-x/notes.md");
+    fs::create_dir_all(archived.parent().unwrap()).unwrap();
+    fs::write(&archived, "frozen\n").unwrap();
+    fx.git(&["add", "docs/archive"]);
+    fx.git(&["commit", "-q", "-m", "docs: archive a feature"]);
+    fx.docs(&["hook"]);
+
+    let bin_dir = Path::new(env!("CARGO_BIN_EXE_factory")).parent().unwrap();
+    let with_factory = format!("{}:{}", bin_dir.display(), fx.env()["PATH"]);
+    let head = || fx.git(&["rev-parse", "HEAD"]);
+    let before = head();
+
+    // Case one: a staged modification under docs/archive/.
+    fs::write(&archived, "thawed\n").unwrap();
+    fx.git(&["add", "docs/archive"]);
+    let out = commit_with_path(&fx, &with_factory, "docs: edit the archive");
+    assert_ne!(out.status.code(), Some(0));
+    assert!(
+        stderr(&out).contains("docs/archive/** is frozen"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(head(), before);
+    fx.git(&["reset", "-q", "HEAD", "--", "docs/archive"]);
+    fx.git(&["checkout", "--", "docs/archive"]);
+
+    // Case two: a broken link in a staged docs/ change, refused by check.
+    let prd = fx.path().join(FEATURE_DIR).join("prd.md");
+    let mut text = fs::read_to_string(&prd).unwrap();
+    text.push_str("\nSee [the missing file](missing.md).\n");
+    fs::write(&prd, text).unwrap();
+    fx.git(&["add", "docs"]);
+    let out = commit_with_path(&fx, &with_factory, "docs: link a missing file");
+    assert_ne!(out.status.code(), Some(0));
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(said.contains("E-LINK-BROKEN"), "{said}");
+    assert_eq!(head(), before);
+
+    // Case three: the same change with no factory on PATH commits.
+    let dirs: Vec<String> = ["git", "sh"]
+        .iter()
+        .map(|t| {
+            let p = harness::find_in_path(t).unwrap_or_else(|| panic!("{t} on PATH"));
+            p.parent().unwrap().display().to_string()
+        })
+        .collect();
+    let bare = dirs.join(":");
+    let probe = Command::new("sh")
+        .args(["-c", "command -v factory"])
+        .env("PATH", &bare)
+        .output()
+        .unwrap();
+    assert!(
+        !probe.status.success(),
+        "a factory sits on {bare}: {}",
+        stdout(&probe)
+    );
+    let out = commit_with_path(&fx, &bare, "docs: link a missing file");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_ne!(head(), before);
 }

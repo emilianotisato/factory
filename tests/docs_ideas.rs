@@ -65,7 +65,7 @@ fn idea_files(root: &Path) -> Vec<String> {
 }
 
 fn list_json(fx: &Fixture) -> (Vec<Value>, String) {
-    let o = fx.factory_docs_output(&["idea", "list", "--json"]);
+    let o = fx.docs_output(&["idea", "list", "--json"]);
     assert!(o.status.success(), "{}", stderr(&o));
     let v: Value = serde_json::from_str(&stdout(&o)).expect("idea list --json");
     (v.as_array().expect("an array").clone(), stderr(&o))
@@ -73,7 +73,7 @@ fn list_json(fx: &Fixture) -> (Vec<Value>, String) {
 
 #[test]
 fn concurrent_adds_of_one_title_give_one_file_each() {
-    let fx = Fixture::v3("ideas-concurrent");
+    let fx = Fixture::new("ideas-concurrent");
     std::thread::scope(|s| {
         for _ in 0..2 {
             s.spawn(|| {
@@ -91,13 +91,13 @@ fn concurrent_adds_of_one_title_give_one_file_each() {
         assert_eq!(idea.state, "open");
     }
     assert!(files.iter().any(|f| f.ends_with("-same-2.md")));
-    let check = fx.factory_docs_output(&["check"]);
+    let check = fx.docs_output(&["check"]);
     assert_eq!(check.status.code(), Some(0), "{}", stderr(&check));
 }
 
 #[test]
 fn add_slugs_refuses_and_round_trips() {
-    let fx = Fixture::v3("ideas-add");
+    let fx = Fixture::new("ideas-add");
     let long = "A very long title that goes on and on well past fifty characters, really";
     assert!(long.len() >= 70);
     let id = add_ok(&fx, &["--title", long], "x\n");
@@ -145,7 +145,7 @@ fn add_slugs_refuses_and_round_trips() {
 
 #[test]
 fn list_is_the_scanner_contract() {
-    let fx = Fixture::v3("ideas-list");
+    let fx = Fixture::new("ideas-list");
     let body = "Owed by the bank. They answer by mail? Not yet.\n\nSecond paragraph, with recon.\n";
     let owed = add_ok(
         &fx,
@@ -201,7 +201,7 @@ fn list_is_the_scanner_contract() {
     assert_eq!(p["first_sentence"], "Just a line");
     assert_eq!(p["priority"], Value::Null);
 
-    let text = fx.factory_docs_output(&["idea", "list"]);
+    let text = fx.docs_output(&["idea", "list"]);
     let text = stdout(&text);
     assert!(
         text.contains(&format!(
@@ -214,7 +214,7 @@ fn list_is_the_scanner_contract() {
 
 #[test]
 fn drop_commits_one_path_with_the_reason() {
-    let fx = Fixture::v3("ideas-drop");
+    let fx = Fixture::new("ideas-drop");
     let id = add_ok(&fx, &["--title", "Doomed"], "Will go.\n");
     let edited = add_ok(&fx, &["--title", "Edited"], "Stays.\n");
     fx.git(&["add", "docs/ideas"]);
@@ -226,7 +226,7 @@ fn drop_commits_one_path_with_the_reason() {
     text.push_str("\nunstaged edit\n");
     fs::write(&index, text).unwrap();
 
-    let o = fx.factory_docs_output(&["idea", "drop", &id, "--because", "x marks it"]);
+    let o = fx.docs_output(&["idea", "drop", &id, "--because", "x marks it"]);
     assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
     let show = fx.git(&["show", "--name-status", "--format=%B", "HEAD"]);
     assert!(show.contains(&format!("docs: drop idea {id}")), "{show}");
@@ -236,19 +236,19 @@ fn drop_commits_one_path_with_the_reason() {
     assert_eq!(fx.git(&["diff", "--cached", "--name-only"]).trim(), "a.txt");
     assert_eq!(fx.git(&["diff", "--name-only"]).trim(), "docs/index.md");
 
-    let nope = fx.factory_docs_output(&["idea", "drop", "nope", "--because", "x"]);
+    let nope = fx.docs_output(&["idea", "drop", "nope", "--because", "x"]);
     assert_eq!(nope.status.code(), Some(2));
 
     let p = fx.path().join(format!("docs/ideas/{edited}.md"));
     let mut t = fs::read_to_string(&p).unwrap();
     t.push_str("one more line\n");
     fs::write(&p, t).unwrap();
-    let o = fx.factory_docs_output(&["idea", "drop", &edited, "--because", "x"]);
+    let o = fx.docs_output(&["idea", "drop", &edited, "--because", "x"]);
     assert_eq!(o.status.code(), Some(2));
     assert!(p.is_file());
 
     let fresh = add_ok(&fx, &["--title", "Fresh"], "New.\n");
-    let o = fx.factory_docs_output(&["idea", "drop", &format!("{fresh}.md"), "--because", "x"]);
+    let o = fx.docs_output(&["idea", "drop", &format!("{fresh}.md"), "--because", "x"]);
     assert_eq!(o.status.code(), Some(2));
     assert!(stderr(&o).contains("not committed yet"), "{}", stderr(&o));
     assert!(fx.path().join(format!("docs/ideas/{fresh}.md")).is_file());
@@ -256,10 +256,10 @@ fn drop_commits_one_path_with_the_reason() {
 
 #[test]
 fn new_from_idea_carries_the_body_and_deletes_the_file() {
-    let fx = Fixture::v3("ideas-from");
+    let fx = Fixture::new("ideas-from");
     let body = "Why it matters. Recon below.\n\n- `src/x.rs:12` does it twice\n";
     let id = add_ok(&fx, &["--title", "From an idea"], body);
-    fx.factory_docs(&["new", "demo", "--title", "Demo", "--from-idea", &id]);
+    fx.docs(&["new", "demo", "--title", "Demo", "--from-idea", &id]);
     let prd = fs::read_to_string(fx.path().join("docs/features/002-demo/prd.md")).unwrap();
     let fm = frontmatter::parse(&prd);
     let keys: Vec<&str> = fm
@@ -291,11 +291,11 @@ fn new_from_idea_carries_the_body_and_deletes_the_file() {
         "{prd}"
     );
     assert!(!fx.path().join(format!("docs/ideas/{id}.md")).exists());
-    let check = fx.factory_docs_output(&["check"]);
+    let check = fx.docs_output(&["check"]);
     assert_eq!(check.status.code(), Some(0), "{}", stderr(&check));
 
     let id2 = add_ok(&fx, &["--title", "Untitled no more"], "b\n");
-    fx.factory_docs(&["new", "demo2", "--from-idea", &id2]);
+    fx.docs(&["new", "demo2", "--from-idea", &id2]);
     let prd = fs::read_to_string(fx.path().join("docs/features/003-demo2/prd.md")).unwrap();
     assert_eq!(
         frontmatter::parse(&prd).str("title"),
@@ -304,7 +304,7 @@ fn new_from_idea_carries_the_body_and_deletes_the_file() {
 
     let reservation = fx.path().join(".git/docs-next-number");
     let before = fs::read_to_string(&reservation).unwrap();
-    let o = fx.factory_docs_output(&["new", "demo3", "--from-idea", "nope"]);
+    let o = fx.docs_output(&["new", "demo3", "--from-idea", "nope"]);
     assert_eq!(o.status.code(), Some(2));
     assert!(!fx.path().join("docs/features/004-demo3").exists());
     assert_eq!(fs::read_to_string(&reservation).unwrap(), before);
@@ -342,10 +342,10 @@ fn init_writes_the_readme_once() {
 
 #[test]
 fn check_validates_every_idea_and_warns_on_the_v2_inbox() {
-    let fx = Fixture::v3("ideas-check");
+    let fx = Fixture::new("ideas-check");
     add_ok(&fx, &["--title", "Twice"], "a\n");
     add_ok(&fx, &["--title", "Twice"], "b\n");
-    let clean = fx.factory_docs_output(&["check"]);
+    let clean = fx.docs_output(&["check"]);
     assert_eq!(clean.status.code(), Some(0), "{}", stderr(&clean));
 
     let later = fx.path().join("docs/ideas/2026-10-13-later.md");
@@ -354,14 +354,14 @@ fn check_validates_every_idea_and_warns_on_the_v2_inbox() {
         "---\ntitle: \"Later\"\nstate: later\nadded: 2026-10-13\n---\n\nx\n",
     )
     .unwrap();
-    let o = fx.factory_docs_output(&["check"]);
+    let o = fx.docs_output(&["check"]);
     assert_eq!(o.status.code(), Some(1));
     assert!(stderr(&o).contains("E-IDEA-FIELD"), "{}", stderr(&o));
     fs::remove_file(&later).unwrap();
 
     let notes = fx.path().join("docs/ideas/notes.md");
     fs::write(&notes, "---\ntitle: x\n---\n").unwrap();
-    let o = fx.factory_docs_output(&["check"]);
+    let o = fx.docs_output(&["check"]);
     assert_eq!(o.status.code(), Some(1));
     assert!(stderr(&o).contains("E-IDEA-NAME"), "{}", stderr(&o));
     fs::remove_file(&notes).unwrap();
@@ -371,7 +371,7 @@ fn check_validates_every_idea_and_warns_on_the_v2_inbox() {
         "# Ideas\n\n- **Old** — line\n",
     )
     .unwrap();
-    let o = fx.factory_docs_output(&["check"]);
+    let o = fx.docs_output(&["check"]);
     assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
     assert!(stderr(&o).contains("W-IDEAS-V2"), "{}", stderr(&o));
 }

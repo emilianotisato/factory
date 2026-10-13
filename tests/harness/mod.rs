@@ -72,7 +72,9 @@ pub struct Fixture {
 }
 
 impl Fixture {
-    /// A fixture with the default `[docs]` keys.
+    /// The v3 repo (PRD-002 FR-18), built by the binary: `factory docs
+    /// init`, `new`, `slice`, then `set 001 status=ready`, with the default
+    /// `[docs]` keys.
     pub fn new(name: &str) -> Fixture {
         Self::with_index(name, &[])
     }
@@ -81,18 +83,6 @@ impl Fixture {
     /// `extra` keys (`checkpoint_every`, for one); a key it already has is
     /// replaced. Values are TOML: a string is passed quoted.
     pub fn with_index(name: &str, extra: &[(&str, &str)]) -> Fixture {
-        Self::v3_with(name, extra)
-    }
-
-    /// The v3 repo (PRD-002 FR-18), built by the binary: `factory docs
-    /// init`, `new`, `slice`, then `set 001 status=ready`. The same as
-    /// [`Fixture::new`].
-    pub fn v3(name: &str) -> Fixture {
-        Self::v3_with(name, &[])
-    }
-
-    /// A v3 fixture whose `[docs]` table also carries `extra` keys.
-    pub fn v3_with(name: &str, extra: &[(&str, &str)]) -> Fixture {
         let fx = Self::bare(name);
         fx.build_v3(extra);
         fx
@@ -197,7 +187,7 @@ impl Fixture {
 
     fn build_v3(&self, extra: &[(&str, &str)]) {
         self.init_repo();
-        self.factory_docs(&["init"]);
+        self.docs(&["init"]);
         let mut keys: Vec<(&str, &str)> = vec![
             ("framework", "3"),
             ("gate", "\"./gate.sh\""),
@@ -216,12 +206,12 @@ impl Fixture {
             toml.push_str(&format!("{k} = {v}\n"));
         }
         fs::write(self.root.join("docs/project.toml"), toml).unwrap();
-        self.factory_docs(&["new", "fixture", "--title", "Fixture"]);
-        self.factory_docs(&["slice", FEATURE, "a"]);
-        self.factory_docs(&["slice", FEATURE, "b"]);
-        self.factory_docs(&["slice", FEATURE, "c", "--depends", "2"]);
+        self.docs(&["new", "fixture", "--title", "Fixture"]);
+        self.docs(&["slice", FEATURE, "a"]);
+        self.docs(&["slice", FEATURE, "b"]);
+        self.docs(&["slice", FEATURE, "c", "--depends", "2"]);
         self.patch_prd_v3();
-        self.factory_docs(&["set", FEATURE, "status=ready"]);
+        self.docs(&["set", FEATURE, "status=ready"]);
 
         fs::create_dir_all(self.root.join("src")).unwrap();
         fs::write(self.root.join("src/lib.txt"), "fixture code file\n").unwrap();
@@ -264,9 +254,10 @@ impl Fixture {
         fs::write(&p, out.join("\n") + "\n").unwrap();
     }
 
-    /// `factory docs <args>`; panics on a non-zero exit.
-    pub fn factory_docs(&self, args: &[&str]) -> String {
-        let out = self.factory_docs_output(args);
+    /// `factory docs <args>`; panics on a non-zero exit so a shape change in
+    /// the tool fails the fixture, not a test three steps later.
+    pub fn docs(&self, args: &[&str]) -> String {
+        let out = self.docs_output(args);
         assert!(
             out.status.success(),
             "factory docs {args:?} exited {:?}\nstdout:\n{}\nstderr:\n{}",
@@ -278,7 +269,7 @@ impl Fixture {
     }
 
     /// `factory docs <args>` whatever the exit code.
-    pub fn factory_docs_output(&self, args: &[&str]) -> Output {
+    pub fn docs_output(&self, args: &[&str]) -> Output {
         self.command(env!("CARGO_BIN_EXE_factory"))
             .arg("docs")
             .args(args)
@@ -286,9 +277,10 @@ impl Fixture {
             .expect("run factory docs")
     }
 
-    /// `factory docs <cmd> 001 --json` parsed, whatever the exit code.
-    pub fn factory_docs_json(&self, cmd: &str) -> Value {
-        let out = self.factory_docs_output(&[cmd, FEATURE, "--json"]);
+    /// `factory docs <cmd> 001 --json` parsed, whatever the exit code
+    /// (preflight exits 1 or 2 when it refuses or asks, and the JSON says why).
+    pub fn docs_json(&self, cmd: &str) -> Value {
+        let out = self.docs_output(&[cmd, FEATURE, "--json"]);
         let stdout = String::from_utf8_lossy(&out.stdout);
         serde_json::from_str(&stdout).unwrap_or_else(|e| {
             panic!(
@@ -321,22 +313,10 @@ impl Fixture {
         c
     }
 
-    /// `factory docs <args>`; panics on a non-zero exit so a shape change in
-    /// the tool fails the fixture, not a test three steps later.
-    pub fn docs(&self, args: &[&str]) -> String {
-        self.factory_docs(args)
-    }
-
-    /// `factory docs <cmd> 001 --json` parsed, whatever the exit code
-    /// (preflight exits 1 or 2 when it refuses or asks, and the JSON says why).
-    pub fn docs_json(&self, cmd: &str) -> Value {
-        self.factory_docs_json(cmd)
-    }
-
     /// The fixture feature's `log.jsonl` entries, as `log show --json` reads
     /// them; empty when the log is.
     pub fn log_entries(&self) -> Vec<Value> {
-        let out = self.factory_docs(&["log", "show", FEATURE, "--json"]);
+        let out = self.docs(&["log", "show", FEATURE, "--json"]);
         match serde_json::from_str::<Value>(&out).expect("log show --json") {
             Value::Array(a) => a,
             other => panic!("log show --json is not an array: {other}"),
@@ -413,7 +393,7 @@ impl Fixture {
 
     /// `factory docs set 001 slices.N.status=<status>`.
     pub fn set_slice_status(&self, n: u8, status: &str) {
-        self.factory_docs(&["set", FEATURE, &format!("slices.{n}.status={status}")]);
+        self.docs(&["set", FEATURE, &format!("slices.{n}.status={status}")]);
     }
 
     /// Script the full gate: one outcome per line of `scenario/gate`.
@@ -423,7 +403,7 @@ impl Fixture {
     /// the tests of the one-at-a-time loop want them in order.
     pub fn chain(&self) {
         assert!(self.state().slices[&2].depends_on.is_empty());
-        self.factory_docs(&["set", FEATURE, "slices.2.depends_on=1"]);
+        self.docs(&["set", FEATURE, "slices.2.depends_on=1"]);
         self.git(&["add", "-A"]);
         self.git(&["commit", "-q", "-m", "chore: chain the fixture slices"]);
     }

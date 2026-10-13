@@ -1,4 +1,4 @@
-//! The v3 lifecycle verbs against `Fixture::v3` (PRD-002 slice 04): `gate`,
+//! The v3 lifecycle verbs against `Fixture::new` (PRD-002 slice 04): `gate`,
 //! `preflight`, `ship`, `archive`, `lanes`, `renumber`, and the FR-15
 //! equivalence with the v2 fixture test (`tests/docs.rs`).
 #[path = "harness/mod.rs"]
@@ -44,7 +44,7 @@ fn edit_project(fx: &Fixture, from: &str, to: &str) {
 }
 
 fn preflight(fx: &Fixture, feature: &str) -> (Preflight, i32) {
-    let o = fx.factory_docs_output(&["preflight", feature, "--json"]);
+    let o = fx.docs_output(&["preflight", feature, "--json"]);
     let pf: Preflight = serde_json::from_str(&stdout(&o))
         .unwrap_or_else(|e| panic!("{e}\nstdout:\n{}\nstderr:\n{}", stdout(&o), stderr(&o)));
     (pf, exit(&o))
@@ -54,9 +54,9 @@ fn preflight(fx: &Fixture, feature: &str) -> (Preflight, i32) {
 
 #[test]
 fn the_v3_board_and_preflight_match_the_v2_fixture() {
-    let fx = Fixture::v3("v3-equivalence");
+    let fx = Fixture::new("v3-equivalence");
 
-    let s: Status = serde_json::from_value(fx.factory_docs_json("status")).unwrap();
+    let s: Status = serde_json::from_value(fx.docs_json("status")).unwrap();
     assert_eq!((s.number, s.slug.as_str()), (1, "fixture"));
     assert_eq!(s.slices.len(), 3);
     assert_eq!(s.ready.len(), 2);
@@ -87,11 +87,8 @@ fn the_v3_board_and_preflight_match_the_v2_fixture() {
     assert!(!p.branch.feature_exists);
     assert_eq!(p.feature.as_ref().map(|f| f.number), Some(1));
 
-    assert_eq!(fx.factory_docs(&["gate"]).trim(), "./gate.sh");
-    assert_eq!(
-        fx.factory_docs(&["gate", "--inner"]).trim(),
-        "./gate.sh --inner"
-    );
+    assert_eq!(fx.docs(&["gate"]).trim(), "./gate.sh");
+    assert_eq!(fx.docs(&["gate", "--inner"]).trim(), "./gate.sh --inner");
 
     fs::write(fx.path().join("dirty.txt"), "x\n").unwrap();
     let (p, code) = preflight(&fx, "001");
@@ -110,12 +107,12 @@ fn the_v3_board_and_preflight_match_the_v2_fixture() {
 
 #[test]
 fn gate_prints_the_bare_command_and_set_keeps_the_other_tables() {
-    let fx = Fixture::v3("v3-gate");
-    let o = fx.factory_docs_output(&["gate"]);
+    let fx = Fixture::new("v3-gate");
+    let o = fx.docs_output(&["gate"]);
     assert_eq!((exit(&o), stdout(&o).as_str()), (0, "./gate.sh\n"));
     assert_eq!(stderr(&o), "");
-    assert_eq!(fx.factory_docs(&["gate", "--inner"]), "./gate.sh --inner\n");
-    let o = fx.factory_docs_output(&["gate", "--candidates"]);
+    assert_eq!(fx.docs(&["gate", "--inner"]), "./gate.sh --inner\n");
+    let o = fx.docs_output(&["gate", "--candidates"]);
     assert_eq!(exit(&o), 0, "{}", stderr(&o));
     assert!(stdout(&o).contains("candidates:"), "{}", stdout(&o));
 
@@ -123,16 +120,16 @@ fn gate_prints_the_bare_command_and_set_keeps_the_other_tables() {
     let tables = "\n[run]\nbudget = 5\n\n[workers.polish]\nmodel = \"opus\"\n";
     let before = fs::read_to_string(&p).unwrap() + tables;
     fs::write(&p, &before).unwrap();
-    let said = fx.factory_docs(&["gate", "set", "make verify"]);
+    let said = fx.docs(&["gate", "set", "make verify"]);
     assert!(said.contains("make verify"), "{said}");
     let after = fs::read_to_string(&p).unwrap();
     assert!(after.ends_with(tables), "{after}");
     assert!(after.contains("gate = \"make verify\""), "{after}");
-    let o = fx.factory_docs_output(&["gate"]);
+    let o = fx.docs_output(&["gate"]);
     assert_eq!((exit(&o), stdout(&o).as_str()), (0, "make verify\n"));
     assert!(stderr(&o).contains("! no Makefile"), "{}", stderr(&o));
 
-    fx.factory_docs(&["gate", "set", "--inner", "make quick"]);
+    fx.docs(&["gate", "set", "--inner", "make quick"]);
     assert!(
         fs::read_to_string(&p)
             .unwrap()
@@ -140,16 +137,16 @@ fn gate_prints_the_bare_command_and_set_keeps_the_other_tables() {
     );
 
     edit_project(&fx, "gate = \"make verify\"", "");
-    let o = fx.factory_docs_output(&["gate"]);
+    let o = fx.docs_output(&["gate"]);
     assert_eq!(exit(&o), 1);
     assert!(stdout(&o).contains("candidates:"), "{}", stdout(&o));
 }
 
 #[test]
 fn gate_inner_falls_back_to_the_gate_with_the_warning_on_stderr() {
-    let fx = Fixture::v3("v3-gate-inner");
+    let fx = Fixture::new("v3-gate-inner");
     edit_project(&fx, "inner = \"./gate.sh --inner\"", "");
-    let o = fx.factory_docs_output(&["gate", "--inner"]);
+    let o = fx.docs_output(&["gate", "--inner"]);
     assert_eq!((exit(&o), stdout(&o).as_str()), (0, "./gate.sh\n"));
     assert!(
         stderr(&o).contains("no inner loop declared"),
@@ -162,8 +159,8 @@ fn gate_inner_falls_back_to_the_gate_with_the_warning_on_stderr() {
 
 #[test]
 fn preflight_judges_a_building_slices_dirty_tree() {
-    let fx = Fixture::v3("v3-pf-building");
-    fx.factory_docs(&["set", "001", "slices.1.status=building", "slices.1.lane=1"]);
+    let fx = Fixture::new("v3-pf-building");
+    fx.docs(&["set", "001", "slices.1.status=building", "slices.1.lane=1"]);
     fs::write(fx.path().join("dirty.txt"), "x\n").unwrap();
     let (p, code) = preflight(&fx, "001");
     assert_eq!(code, 0, "{p:?}");
@@ -176,7 +173,7 @@ fn preflight_judges_a_building_slices_dirty_tree() {
 
 #[test]
 fn preflight_takes_the_lock_without_dirtying_the_tree() {
-    let fx = Fixture::v3("v3-pf-lock");
+    let fx = Fixture::new("v3-pf-lock");
     let lock = factory::docs::state::lock(&fx.path().join(FEATURE_DIR)).unwrap();
     let (p, code) = preflight(&fx, "001");
     drop(lock);
@@ -186,7 +183,7 @@ fn preflight_takes_the_lock_without_dirtying_the_tree() {
 
 #[test]
 fn preflight_reads_gate_parallel_and_lanes_from_the_project() {
-    let fx = Fixture::v3("v3-pf-project");
+    let fx = Fixture::new("v3-pf-project");
     edit_project(&fx, "gate_parallel = true", "gate_parallel = false");
     let (p, code) = preflight(&fx, "001");
     assert_eq!((code, p.ask.len()), (2, 1), "{p:?}");
@@ -209,8 +206,8 @@ fn preflight_reads_gate_parallel_and_lanes_from_the_project() {
 
 #[test]
 fn preflight_refuses_reviewed_open_blocks_and_unknown_features() {
-    let fx = Fixture::v3("v3-pf-refuse");
-    fx.factory_docs(&["set", "001", "reviewed=2026-10-13"]);
+    let fx = Fixture::new("v3-pf-refuse");
+    fx.docs(&["set", "001", "reviewed=2026-10-13"]);
     commit(&fx);
     let (p, code) = preflight(&fx, "001");
     assert_eq!(code, 1);
@@ -220,20 +217,20 @@ fn preflight_refuses_reviewed_open_blocks_and_unknown_features() {
         p.refuse
     );
 
-    fx.factory_docs(&["set", "001", "reviewed="]);
-    fx.factory_docs(&["log", "add", "001", "--kind", "block", "--title", "stuck"]);
+    fx.docs(&["set", "001", "reviewed="]);
+    fx.docs(&["log", "add", "001", "--kind", "block", "--title", "stuck"]);
     commit(&fx);
     let (p, code) = preflight(&fx, "001");
     assert_eq!(code, 1);
     assert_eq!(p.refuse.len(), 1, "{:?}", p.refuse);
     assert!(p.refuse[0].contains("BLOCK-1"), "{:?}", p.refuse);
 
-    let o = fx.factory_docs_output(&["preflight", "999", "--json"]);
+    let o = fx.docs_output(&["preflight", "999", "--json"]);
     assert_eq!(exit(&o), 1);
     let v: Value = serde_json::from_str(&stdout(&o)).unwrap();
     assert!(v["feature"].is_null(), "{v}");
 
-    let text = fx.factory_docs_output(&["preflight", "001"]);
+    let text = fx.docs_output(&["preflight", "001"]);
     assert!(
         stdout(&text).contains("✗ open blocker(s): BLOCK-1"),
         "{}",
@@ -245,22 +242,22 @@ fn preflight_refuses_reviewed_open_blocks_and_unknown_features() {
 
 #[test]
 fn ship_refuses_open_slices_and_is_a_no_op_the_second_time() {
-    let fx = Fixture::v3("v3-ship");
+    let fx = Fixture::new("v3-ship");
     let state = format!("{FEATURE_DIR}/state.toml");
     let before = fx.read(&state);
-    let o = fx.factory_docs_output(&["ship", "001"]);
+    let o = fx.docs_output(&["ship", "001"]);
     assert_eq!(exit(&o), 2);
     assert!(stderr(&o).contains("01, 02, 03"), "{}", stderr(&o));
     assert_eq!(fx.read(&state), before);
 
-    fx.factory_docs(&[
+    fx.docs(&[
         "set",
         "001",
         "slices.1.status=done",
         "slices.2.status=done",
         "slices.3.status=done",
     ]);
-    let said = fx.factory_docs(&["ship", "001"]);
+    let said = fx.docs(&["ship", "001"]);
     assert!(
         said.lines()
             .any(|l| l.starts_with("⚠") && l.contains("reviewed")),
@@ -275,18 +272,18 @@ fn ship_refuses_open_slices_and_is_a_no_op_the_second_time() {
     let staged = fx.git(&["diff", "--cached", "--name-only"]);
     assert!(staged.contains(&state), "{staged}");
 
-    let said = fx.factory_docs(&["ship", "001"]);
+    let said = fx.docs(&["ship", "001"]);
     assert_eq!(said, "PRD-001 is already shipped\n");
     assert_eq!(fx.read(&state), shipped);
 }
 
 #[test]
 fn archive_moves_the_folder_and_leaves_the_index_alone() {
-    let fx = Fixture::v3("v3-archive");
-    let o = fx.factory_docs_output(&["archive", "001"]);
+    let fx = Fixture::new("v3-archive");
+    let o = fx.docs_output(&["archive", "001"]);
     assert_eq!(exit(&o), 2, "{}", stderr(&o));
 
-    fx.factory_docs(&[
+    fx.docs(&[
         "set",
         "001",
         "slices.1.status=done",
@@ -294,7 +291,7 @@ fn archive_moves_the_folder_and_leaves_the_index_alone() {
         "slices.3.status=done",
     ]);
     let index = fx.read("docs/index.md");
-    fx.factory_docs(&["archive", "001"]);
+    fx.docs(&["archive", "001"]);
     assert!(!fx.path().join(FEATURE_DIR).exists());
     let moved = fx.read("docs/archive/001-fixture/state.toml");
     assert!(moved.contains("status = \"archived\""), "{moved}");
@@ -305,10 +302,10 @@ fn archive_moves_the_folder_and_leaves_the_index_alone() {
     );
     assert_eq!(fx.read("docs/index.md"), index);
 
-    let board: Value = serde_json::from_str(&fx.factory_docs(&["status", "--json"])).unwrap();
+    let board: Value = serde_json::from_str(&fx.docs(&["status", "--json"])).unwrap();
     assert_eq!(board["live"].as_array().unwrap().len(), 0, "{board}");
     assert_eq!(board["archived"].as_array().unwrap().len(), 1, "{board}");
-    let o = fx.factory_docs_output(&["preflight", "001", "--json"]);
+    let o = fx.docs_output(&["preflight", "001", "--json"]);
     assert_eq!(exit(&o), 1);
     assert!(stdout(&o).contains("archived"), "{}", stdout(&o));
 }
@@ -317,12 +314,12 @@ fn archive_moves_the_folder_and_leaves_the_index_alone() {
 
 #[test]
 fn lanes_set_writes_missing_files_only() {
-    let fx = Fixture::v3("v3-lanes");
+    let fx = Fixture::new("v3-lanes");
     let p = fx.path().join("docs/project.toml");
     let tables = "\n[workers.polish]\nmodel = \"opus\"\n";
     fs::write(&p, fs::read_to_string(&p).unwrap() + tables).unwrap();
 
-    fx.factory_docs(&[
+    fx.docs(&[
         "lanes",
         "set",
         "3",
@@ -344,15 +341,15 @@ fn lanes_set_writes_missing_files_only() {
     let one = factory::lanes::file(fx.path(), 1);
     let edited = fs::read_to_string(&one).unwrap() + "\nOnly lane 1 owns the cache dir.\n";
     fs::write(&one, &edited).unwrap();
-    let said = fx.factory_docs(&["lanes", "set", "3", "--env", "DB=app_{n}"]);
+    let said = fx.docs(&["lanes", "set", "3", "--env", "DB=app_{n}"]);
     assert!(said.contains("3 existing lane file(s)"), "{said}");
     assert_eq!(fs::read_to_string(&one).unwrap(), edited);
 
-    let listed = fx.factory_docs(&["lanes"]);
+    let listed = fx.docs(&["lanes"]);
     assert!(listed.contains("lane-1, lane-2, lane-3"), "{listed}");
     assert!(listed.contains("DB=app_2"), "{listed}");
 
-    let o = fx.factory_docs_output(&["lanes", "set", "2"]);
+    let o = fx.docs_output(&["lanes", "set", "2"]);
     assert_eq!(exit(&o), 2);
     assert!(stderr(&o).contains("--env is required"), "{}", stderr(&o));
 }
@@ -361,7 +358,7 @@ fn lanes_set_writes_missing_files_only() {
 
 #[test]
 fn renumber_rewrites_live_docs_and_leaves_the_archive_alone() {
-    let fx = Fixture::v3("v3-renumber");
+    let fx = Fixture::new("v3-renumber");
     let other = "docs/features/002-other/prd.md";
     fs::create_dir_all(fx.path().join("docs/features/002-other")).unwrap();
     fs::write(
@@ -375,7 +372,7 @@ fn renumber_rewrites_live_docs_and_leaves_the_archive_alone() {
     commit(&fx);
     let prd_before = fx.read(&format!("{FEATURE_DIR}/prd.md"));
 
-    let said = fx.factory_docs(&["renumber", "001", "005"]);
+    let said = fx.docs(&["renumber", "001", "005"]);
     assert!(said.contains(&format!("left alone: {frozen}")), "{said}");
     assert!(!fx.path().join(FEATURE_DIR).exists());
     let prd = fx.read("docs/features/005-fixture/prd.md");
@@ -403,10 +400,10 @@ fn renumber_rewrites_live_docs_and_leaves_the_archive_alone() {
     );
     assert_eq!(fx.read(frozen), "# PRD-000\n\nBefore PRD-001.\n");
 
-    let s: Status = serde_json::from_str(&fx.factory_docs(&["status", "005", "--json"])).unwrap();
+    let s: Status = serde_json::from_str(&fx.docs(&["status", "005", "--json"])).unwrap();
     assert_eq!(s.slices.len(), 3);
 
-    let o = fx.factory_docs_output(&["renumber", "005", "002"]);
+    let o = fx.docs_output(&["renumber", "005", "002"]);
     assert_eq!(exit(&o), 2);
     assert!(
         stderr(&o).contains("PRD-002 already exists"),

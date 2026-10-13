@@ -32,7 +32,7 @@ fn docs_stdin(fx: &Fixture, args: &[&str], stdin: &str) -> Output {
 }
 
 fn status(fx: &Fixture) -> Status {
-    serde_json::from_value(fx.factory_docs_json("status")).unwrap()
+    serde_json::from_value(fx.docs_json("status")).unwrap()
 }
 
 fn log_lines(fx: &Fixture) -> Vec<String> {
@@ -44,7 +44,7 @@ fn log_lines(fx: &Fixture) -> Vec<String> {
 
 #[test]
 fn two_processes_append_fifty_each_without_a_gap_or_a_duplicate() {
-    let fx = Fixture::v3("log-concurrent");
+    let fx = Fixture::new("log-concurrent");
     let args = [
         "log",
         "add",
@@ -89,7 +89,7 @@ fn two_processes_append_fifty_each_without_a_gap_or_a_duplicate() {
 
 #[test]
 fn a_body_with_a_title_and_preamble_round_trips() {
-    let fx = Fixture::v3("log-body");
+    let fx = Fixture::new("log-body");
     let body = "# A title\n\nprose before any heading\n\n## A heading\n\ntext";
     let o = docs_stdin(
         &fx,
@@ -110,9 +110,9 @@ fn a_body_with_a_title_and_preamble_round_trips() {
     assert_eq!(String::from_utf8_lossy(&o.stdout), "AD-1\n");
 
     let json: Vec<Entry> =
-        serde_json::from_str(&fx.factory_docs(&["log", "show", "001", "--json"])).unwrap();
+        serde_json::from_str(&fx.docs(&["log", "show", "001", "--json"])).unwrap();
     assert_eq!(json[0].body, body);
-    let shown = fx.factory_docs(&["log", "show", "001"]);
+    let shown = fx.docs(&["log", "show", "001"]);
     let entry = shown
         .split("### AD-1 — t · ")
         .nth(1)
@@ -122,15 +122,15 @@ fn a_body_with_a_title_and_preamble_round_trips() {
 
 #[test]
 fn the_board_reads_its_log_fields_from_log_jsonl() {
-    let fx = Fixture::v3("log-board");
-    fx.factory_docs(&["set", "001", "slices.1.status=done", "slices.2.status=done"]);
+    let fx = Fixture::new("log-board");
+    fx.docs(&["set", "001", "slices.1.status=done", "slices.2.status=done"]);
     let s = status(&fx);
     assert_eq!(s.unverified, [1, 2]);
     assert!(s.checkpoint_due);
     assert_eq!(s.spawnable, 0);
 
     assert_eq!(
-        fx.factory_docs(&[
+        fx.docs(&[
             "log",
             "add",
             "001",
@@ -157,7 +157,7 @@ fn the_board_reads_its_log_fields_from_log_jsonl() {
     let add = |args: &[&str]| {
         let mut a = vec!["log", "add", "001"];
         a.extend_from_slice(args);
-        fx.factory_docs(&a)
+        fx.docs(&a)
     };
     assert_eq!(
         add(&["--kind", "block", "--phase", "checkpoint", "--title", "red"]),
@@ -195,7 +195,7 @@ fn the_board_reads_its_log_fields_from_log_jsonl() {
         "a review leaves decide alone"
     );
     assert!(
-        fx.factory_docs(&["log", "show", "001", "--decide"])
+        fx.docs(&["log", "show", "001", "--decide"])
             .contains("_(none)_"),
         "but log show --decide drops the reviewed one"
     );
@@ -203,13 +203,13 @@ fn the_board_reads_its_log_fields_from_log_jsonl() {
 
 #[test]
 fn refusals_exit_2_and_log_merge_points_at_log_add() {
-    let fx = Fixture::v3("log-refuse");
-    let o = fx.factory_docs_output(&[
+    let fx = Fixture::new("log-refuse");
+    let o = fx.docs_output(&[
         "log", "add", "001", "--kind", "answer", "--ref", "BLOCK-9", "--title", "a",
     ]);
     assert_eq!(o.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&o.stderr).contains("BLOCK-9"));
-    let o = fx.factory_docs_output(&["log", "merge", "001"]);
+    let o = fx.docs_output(&["log", "merge", "001"]);
     assert_eq!(o.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&o.stderr).contains("removed in v3"));
 }
