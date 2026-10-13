@@ -3,7 +3,12 @@
 **Source**: [`prd.md`](prd.md) → §9 FR-7. **Depends on**: — (independent: it touches closeout, the user config and the stub `claude`, none of which slices 01-04 change; its only shared lines are the `TOP_KEYS` entry slice 04 also edits).
 **Created**: 2026-10-13
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+- Built: `[source] path` on the user config (`SourceRepo`, `~/` expanded at load, `"source"` in `TOP_KEYS`); `closeout::file_friction` + `friction` section reader, called once polish's commit and event land; the stub's `step.friction`; three closeout scenarios (with source, no source, placeholder only) and unit tests for the reader and the config key.
+- Inner loop: 1 run, 0 red, ~1 min (67 s).
+- Deviation: the idea's `added` date comes from `docs::scaffold::today()` (`YYYY-MM-DD`). The slice named `clock::today()`, which returns `YYYYMMDD` and `ideas::add` refuses.
+- Deviation: filing runs after the `polish_done` event rather than before it, so a re-entered polish cannot file twice (AD logged).
+- Prove (FR-7 row): left for the checkpoint. Run the three scenarios by name with `--nocapture`; the with-source test prints the idea file and the source's `git status --porcelain`.
 
 **Slice**: After this slice a run's retro friction reaches the skills repo without a copy-paste step. Right after the polish commit, closeout reads the retro's `## Framework friction → skills repo` section. When it holds more than the template's placeholder and `[source] path` in `~/.config/factory/config.toml` names a checkout with `docs/ideas/`, closeout writes one idea there: `friction: <repo> PRD-NNN`, the section verbatim and the retro's path. Nothing is committed, and the run prints the idea's path. With no `[source]`, a placeholder-only section, or any failure, nothing is filed, nothing is printed, and the run goes on. Slice 06 reads the same `[source] path` for its from-source upgrade line.
 

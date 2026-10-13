@@ -2090,3 +2090,136 @@ fn the_slice_contracts_commands_run_on_the_fixture() {
     assert_eq!(fx.log_entries()[0]["flag"], "decide");
     assert_eq!(fx.state().slices[&1].status, "blocked");
 }
+
+// ── PRD-004 FR-7: the retro's friction section, filed as an idea ────────────
+
+const FRICTION: &str = "- /polish § Fix: the stub step one\n- /slice § Tasks: the stub step two";
+const PLACEHOLDER: &str =
+    "A step, rule or template in the framework itself. Name the skill and the section.";
+
+/// A second v3 repo beside the fixture's, named as `[source] path` in the
+/// fixture's user config.
+fn source_repo(fx: &Fixture) -> PathBuf {
+    let src = fx.path().parent().unwrap().join("skills");
+    fs::create_dir_all(&src).unwrap();
+    let git = fx
+        .command("git")
+        .args(["init", "-q"])
+        .arg(&src)
+        .output()
+        .unwrap();
+    assert!(
+        git.status.success(),
+        "{}",
+        String::from_utf8_lossy(&git.stderr)
+    );
+    let init = fx
+        .command(BIN)
+        .current_dir(&src)
+        .args(["docs", "init"])
+        .output()
+        .unwrap();
+    assert!(init.status.success(), "{}", stdout(&init));
+    let cfg = PathBuf::from(&fx.env()["FACTORY_CONFIG_DIR"]).join("config.toml");
+    fs::write(&cfg, format!("[source]\npath = \"{}\"\n", src.display())).unwrap();
+    src
+}
+
+/// The files under `<root>/docs/ideas/` besides the README.
+fn ideas_in(root: &Path) -> Vec<String> {
+    let mut v: Vec<String> = fs::read_dir(root.join("docs/ideas"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n != "README.md" && !n.starts_with('.'))
+        .collect();
+    v.sort();
+    v
+}
+
+fn polish_with_friction(text: &str) -> Vec<Value> {
+    plan_with(&[json!({"outcome": "polish", "friction": text})])
+}
+
+#[test]
+fn a_friction_section_is_filed_as_an_untracked_idea_in_the_source() {
+    let fx = Fixture::new("friction-filed");
+    fx.chain();
+    let src = source_repo(&fx);
+    fx.write_plan(&polish_with_friction(FRICTION));
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "finished", 90);
+
+    let retro = fs::read_to_string(fx.path().join(RETRO)).unwrap();
+    assert!(retro.contains(FRICTION), "{retro}");
+    let today = &factory::clock::now_rfc3339()[..10];
+    let id = format!("{today}-friction-repo-prd-001");
+    assert_eq!(ideas_in(&src), [format!("{id}.md")]);
+    let idea = fs::read_to_string(src.join(format!("docs/ideas/{id}.md"))).unwrap();
+    for want in [
+        "title: \"friction: repo PRD-001\"",
+        &format!("origin: \"repo PRD-001 run {}\"", run_id(&dir)),
+        FRICTION,
+        &format!("From {}", fx.path().join(RETRO).display()),
+    ] {
+        assert!(idea.contains(want), "{want:?} not in\n{idea}");
+    }
+    let porcelain = fx
+        .command("git")
+        .current_dir(&src)
+        .args(["status", "--porcelain", "--untracked-files=all"])
+        .output()
+        .unwrap();
+    let porcelain = stdout(&porcelain);
+    assert!(
+        porcelain.contains(&format!("?? docs/ideas/{id}.md")),
+        "{porcelain}"
+    );
+    assert_eq!(ideas_in(fx.path()), Vec::<String>::new(), "wrong root");
+    let log = driver_log(&dir);
+    assert!(
+        log.contains(&format!(
+            "friction: filed {}",
+            src.join(format!("docs/ideas/{id}.md")).display()
+        )),
+        "{log}"
+    );
+    // The checkpoint's evidence (prd §12 FR-7 row), shown with --nocapture.
+    println!("--- {id}.md\n{idea}--- git status --porcelain\n{porcelain}");
+}
+
+#[test]
+fn no_source_files_no_friction_and_says_nothing() {
+    let fx = Fixture::new("friction-none");
+    fx.chain();
+    fx.write_plan(&polish_with_friction(FRICTION));
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "finished", 90);
+
+    assert!(
+        fs::read_to_string(fx.path().join(RETRO))
+            .unwrap()
+            .contains(FRICTION)
+    );
+    assert_eq!(ideas_in(fx.path()), Vec::<String>::new());
+    let log = driver_log(&dir);
+    assert!(!log.contains("friction:"), "{log}");
+}
+
+#[test]
+fn a_placeholder_only_friction_section_files_nothing() {
+    let fx = Fixture::new("friction-placeholder");
+    fx.chain();
+    let src = source_repo(&fx);
+    fx.write_plan(&polish_with_friction(PLACEHOLDER));
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "finished", 90);
+
+    assert!(
+        fs::read_to_string(fx.path().join(RETRO))
+            .unwrap()
+            .contains(PLACEHOLDER)
+    );
+    assert_eq!(ideas_in(&src), Vec::<String>::new());
+    assert_eq!(ideas_in(fx.path()), Vec::<String>::new());
+    assert!(!driver_log(&dir).contains("friction:"));
+}

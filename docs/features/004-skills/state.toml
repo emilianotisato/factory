@@ -20,7 +20,7 @@ lane = 4
 depends_on = [1]
 
 [slices.5]
-status = "building"
+status = "done"
 lane = 2
 depends_on = []
 
