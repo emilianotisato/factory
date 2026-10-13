@@ -203,3 +203,15 @@ Run A answered by the owner 2026-10-12 at 17:18, before seeing any token or cost
 - The owner ran QA on run B's own harness stack while polish ran, and called it good.
 - Review interview: run B had no decision to make (18 fyi, 0 decide). The owner chose "Review all 18" (run A got only its 3 decide ADs, so run B's review was the closer look) and kept all 18 in the session; owner notes in `b50cbcb`, no code change. Yet the questionnaire says 2–3 decisions the owner would overturn: a judgment formed after QA, not voiced as a change in the review.
 - PR #65 still a draft at 20:36; CI re-running after the review push.
+
+### Blind PR review, both runs
+
+At the owner's request, after both questionnaires (the owner: UI better in B, code quality "satisfactory, gets the job done" but unsure it matches A). Same shape as the icg round: 8 dimension reviewers side by side, a skeptic per high or medium defect, one judge. 19 agents, 1.48M subagent tokens, 5.0 min. Blinding was tighter this time: reviewers read `git archive` exports labelled X (run B, `b50cbcb`) and Y (run A, `9288cc1`) with no history, PR, agent log or branch name, plus the spec and the base. The harness again copied the owner's message ("UI is better in B") into the agent transcripts, but nothing told them which label was B.
+
+**Verdict: X (run B) 32 to 30**, a narrow win, no merge blocker on either side, skeptics refuted none of the 25 checked defects. Scores tied on six dimensions; X led on correctness (4–3) and Go design (4–3).
+
+- Run A's weak spot, systematic: about ten record loads turn any database error into an unlogged 404 "no encontrado" (e.g. `cmd/admin/handlers_taxpayer.go:83`, re-checked), though slice 09 asks for a logged 500 and run A wrote the helper for it. Also a dropped `?error=` banner on Comprobantes, a raw `UploadFormat` enum on the certificate page, and a migration that cannot recover a broken index.
+- Run B's worst, local: no label for the `parameter_value` audit subject (re-checked: run A has it at `labels.go:222`), and "Todas" for the organization does not clear a stale taxpayer filter (FR-84). Smaller: a malformed UUID now gives a 500, `TestCaptureBodies` deleted.
+- Run A was stronger on consistent list helpers, failing closed on unknown form errors, and a leaked-key check in the harness; run B on error-path care, less duplication and tighter test assertions.
+
+Unlike the icg round, the code review agrees with the owner's UI read rather than reversing it.
