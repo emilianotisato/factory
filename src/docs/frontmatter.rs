@@ -152,10 +152,11 @@ fn scalar(raw: &str) -> Value {
         return Value::Str(raw[1..raw.len() - 1].to_string());
     }
     let digits = raw.strip_prefix('-').unwrap_or(raw);
-    if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) {
-        if let Ok(n) = raw.parse() {
-            return Value::Num(n);
-        }
+    if !digits.is_empty()
+        && digits.bytes().all(|b| b.is_ascii_digit())
+        && let Ok(n) = raw.parse()
+    {
+        return Value::Num(n);
     }
     Value::Str(raw.to_string())
 }
