@@ -1,0 +1,77 @@
+---
+slice: 06
+status: pending
+depends_on: [1, 2, 3, 4, 5]
+---
+
+# Slice 06 — Retro numbers (FR-25)
+
+**Source**: [`prd.md`](prd.md) → §7 FR-25, four decisions ("`factory retro <run>` writes a `## Numbers` section", "Changed lines are stored", "Comparison stays within the repo", "`measure.py` and `weigh.py` are retired"). **Depends on**: slices 01-05 — the section prints every figure they store: the own/subagent split (01, 02), the pack composition (03), the knobs and hypothesis (04), the quality block (05). Building it earlier would print `—` for most of its columns and need a second pass.
+**Created**: 2026-10-13 · **Status**: pending
+
+**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+
+**Slice**: After this slice the driver drafts the numbers of every retro itself, at ship, between markers it owns, and the owner can regenerate them for any stored run. Changed lines become a column so cost per line is a figure, not a shell call. The old `measure.py` step leaves the QA guide. It leaves the judgment to the prose above the section (prd §7, accepted cost) and the learning loop to a later PRD.
+
+**The highest-risk work in this slice is task 2**, the section writer: it must be byte-idempotent and must find the right `retro.md` for a stored run whose feature may since have shipped or archived. Write it as a library function first, test it on a file, then wire the subcommand and the ship step to it.
+
+## Current code / environment
+
+- **Ship today**: `src/closeout.rs:526+` `ship()`: `report::compute(run.db(), run.id().as_str(), None)` (`:574`), `retro.md` created from `retro_template()` (`:2134-2155`, reads `templates/retro.md` beside the docs tool, else bare frontmatter) if missing, `fill_retro(&retro, &report)` (`:590`, `:617-621` → `set_frontmatter`, `src/scheduler.rs:1861`), `docs.render_write()`, then one commit `docs(NNN): ship PRD-NNN` over `board.dir` and `docs/index.md` (`commit::expand`, `:592-596`). `RETRO_KEYS: [&str; 12]` (`:48-62`); `retro_values()` (`:623-638`). `ci_cycles` is bumped per CI fix with `set_frontmatter` (`:1685-1695`). **Ship runs after the polish worker has exited** (`run()` `:87-185`: `polish(...)` returns before `ship(...)` is called), so a section write cannot race the prose. The template's body (`~/.claude/skills/feature-docs/templates/retro.md`) ends with the `## Cost vs catch` table; the polish worker fills that prose (`assets/contract-polish.md:12`, `src/pack.rs:394-402`) and must leave the frontmatter alone.
+- **The branch and its base**: `default_branch(run, docs)` (`src/closeout.rs:2110`), used by the polish pack (`src/pack.rs:369`, `git log --oneline {default_branch}..HEAD`) and the PR (`:733`, `:818`). `RunState.branch` is the feature branch.
+- **Subcommands**: `src/main.rs:19-42` `enum Command { Run, Wait, Answer, Status, Stop, Report, Ctx, Hook, Daemon(hidden) }` with the dispatch match at `:46-56`; modules under `src/cli/mod.rs` (answer, hook, report, run, status, stop, wait); `tests/cli.rs:12` lists the subcommand names a test iterates. `report()` (`src/cli/report.rs:522-550`) is the pattern for a subcommand that opens the store for a stored run.
+- **Finding a stored run's files**: `RunRow { repo, feature, branch, started_at, finished_at, phase, … }` (`src/db.rs:111-122`, `run_row` `:345`); `Docs::locate(repo_root)` (`src/docs.rs:35`), `docs.status(feature)` (`:109`, `docs status NNN --json`) gives `Status.dir` (`docs/features/NNN-slug`). An archived feature's folder has moved to the archived table (`/prd-to-tasks` §9): fall back to a glob of `docs/features/<NNN>-*` and say so when neither resolves.
+- **The per-role figures after slices 01-05**: `weighted_by_role` (01), `--json --per-worker` rows with `weighted_own`, `weighted_sub`, `subagents`, `model_id` (02, 04), `pack_by_role` (03), `knobs` and `hypothesis` (04), the quality keys (05); `build_minutes`, `polish_minutes` and the role durations come from `workers.duration_ms` (`src/cli/report.rs:396-400`); `num_turns` is own-only after slice 01.
+- **The real figures to reproduce**: `001-driver/ab/runs.md:223-233`: build (9 workers) 9.95M, checkpoints (5) 3.94M, fixes 0.34M (2 workers), polish 1.95M own, cockpit apart; total with the polish subagents **18,465,008** (prd §7 acceptance, corrected: no row for `018-20261011-6490`, which is icg-cloud, a different repo). Run 024's `repo` is `/home/emiliano/Projects/Prokey/wt-b`; no other finished run in the store has that repo, so its comparison block says there is no earlier run.
+- **The old tools' mentions**: `docs/features/001-driver/qa-guide.md:40-41` step 6 ("Run A: `measure.py --retro` …", "FR-8 cross-check … `measure.py --retro` on run B's cockpit session") is the one live instruction; `001-driver/prd.md`, `slice-08-*.md` Progress, `retro.md` and `ab/runs.md` mention them as records of what was done. `src/measure.rs` doc comments cite `measure.py:148` as the origin of a rule (keep: a citation, not an instruction). The `/deliver` skill under `~/.claude/skills/deliver/` belongs to the old family PRD-002 and the owner delete (prd §7: "Deleting the old family is PRD-002's and the owner's").
+- **Harness**: `tests/closeout.rs:464-481` asserts the retro frontmatter after ship (`slices 3`, `checkpoints 2`, `gate_runs 2`, `gate_red 0`, `ci_cycles 0`, "## Cost vs catch" present); the stub polish writes `retro.md` from the template under `# Retro` (`tests/stubs/claude:333`). `Fixture` has one feature, `docs/features/001-fixture` (`tests/harness/mod.rs:20`); a second run on the same fixture repo needs the first run finished and a second feature or a reset board.
+- **Deliberate non-changes** — *(prd §7: "Comparison stays within the repo. The section never prints a cross-repo ratio"; "The twelve frontmatter keys stay, since PRD-002 reads them"; accepted cost: "the section is a table, not judgment". §11: PRD-002's twelve-key `## Numbers` table is superseded by this section, and its `retros` table lands at schema v3; do not create a `retros` table here. §12: no learning loop, no `factory grade`.)*
+
+## Tasks
+
+### 1. Store the changed lines at ship — high — blocked by: —
+**Source**: §7 FR-25: "Changed lines are stored: `runs.lines_added`, `lines_removed`, from `git diff --shortstat <base>..<head>` at ship, so cost per changed line is a column, not a retro-time shell call."
+
+`src/db.rs`: `("runs", "lines_added", "INTEGER")`, `("runs", "lines_removed", "INTEGER")`, `set_run_lines`, both on `RunRow`. `src/closeout.rs` `ship()`, before `report::compute` (`:574`): run `git diff --shortstat <default_branch(run, docs)>..HEAD` in the repo and parse ` N files changed, A insertions(+), D deletions(-)`, where either the insertions or the deletions part may be absent and an empty diff prints nothing (both zero). A git failure stores nulls and prints one `ship:` line, never fails the ship.
+
+**Acceptance:** a unit test parses `" 3 files changed, 10 insertions(+), 2 deletions(-)"`, `" 1 file changed, 4 deletions(-)"` and `""` into `(10, 2)`, `(0, 4)` and `(0, 0)`; after a shipped fixture run the row's `lines_added` equals the insertions `git diff --shortstat main..HEAD` prints in the fixture repo at that point.
+
+### 2. The `## Numbers` section writer — high — blocked by: 1
+**Source**: §7 FR-25: "`factory retro <run>` writes a `## Numbers` section into the feature's `retro.md`, between `<!-- factory:numbers -->` and `<!-- /factory:numbers -->` markers it owns, replacing what is there: a per-role table (own, subagents, weighted, minutes, turns), the knobs with their sources and the hypothesis, the quality block, the builders' pack composition, and a comparison with the same repo's last three runs that finished before this run started (never the run itself, so a rerun after `RunFinished` picks the same cohort), as weighted per slice shipped and weighted per changed line (`lines_added + lines_removed`, below); with no earlier run the block says so. … Rerunning it changes nothing else in the file."
+
+New `src/retro.rs` (add to `src/lib.rs`): `pub fn numbers(db, run_id) -> Result<String>` builds the section text from `report::compute`, `per_worker`, the `runs` row and `db.earlier_runs(repo, before: started_at, limit 3)` (phase `finished`, same `repo`, `finished_at < started_at`, newest first); `pub fn write(retro: &Path, section: &str) -> Result<bool>` replaces the text between the markers, or appends `\n## Numbers\n\n<!-- factory:numbers -->\n…\n<!-- /factory:numbers -->\n` at the end of the file when absent, and returns whether the file changed. Section content, in order: the per-role table `| role | workers | own | subagents | weighted | minutes | turns |` (`ROLE_ORDER`, integers, `—` for null); a `Knobs` line per role with its source, the budget with its source, lanes, both versions, and `Hypothesis: …` or `Hypothesis: none`; the quality block as the report's `quality:` line; `Pack (build)` with the mean chars per section and total beside mean `start_context`; `Compared with` a table of up to three earlier runs `| run | feature | weighted | slices | per slice | lines changed | per line |` with this run first, or the sentence `No earlier finished run in this repo.`. Nothing in the section may vary between two calls on the same store: no timestamp, no "generated by" line with a version.
+
+The trap: `set_frontmatter` and the polish worker both edit `retro.md`; the writer touches only the bytes between its markers (or appends) and must preserve the file's final newline and everything else byte for byte, or the "byte-identical on rerun" acceptance fails on the trailing newline.
+
+**Acceptance:** unit tests: `write` on a file without markers appends the section once and returns `true`; a second `write` with the same section returns `false` and leaves the bytes identical; `write` on a file with stale content between the markers replaces only that span (prose before and after unchanged); `numbers` on a store with one finished run prints `No earlier finished run in this repo.` and with three earlier runs of the same repo prints exactly three rows, the newest first, never the run itself.
+
+### 3. `factory retro <run>` and the ship step call it — high — blocked by: 2
+**Source**: §7 FR-25: "The driver calls it at ship after `fill_retro`; the owner runs it by hand for any stored run, after a `--recount` or a schema fix."
+
+`src/cli/retro.rs` (`RetroArgs { run }`), `src/cli/mod.rs`, `src/main.rs` (`Command::Retro`, dispatch; `tests/cli.rs:12` list). The subcommand opens the store, resolves the feature dir from `runs.repo` and `runs.feature` (`Docs::locate` + `docs.status(feature).dir`, else the `docs/features/<NNN>-*` glob), writes the section, prints `retro: <path> updated` or `retro: <path> unchanged`, exit 1 with the path when `retro.md` does not exist (the ship path creates it first). `src/closeout.rs` `ship()`: after `fill_retro` (`:590`) and before `docs.render_write()`, call `retro::write(&retro, &retro::numbers(db, run_id)?)`; the ship commit already includes `board.dir`.
+
+**Acceptance:** `tests/closeout.rs` after a shipped fixture run: `retro.md` holds the markers and a per-role table whose `weighted` per role equals the sum of `weighted_own + weighted_sub` of `factory report <id> --json --per-worker` rows of that role; `factory retro <id>` run again prints `unchanged` and the file is byte-identical; the retro frontmatter assertions at `:464-481` still hold; `factory retro` on a run id with no `retro.md` exits 1 naming the path.
+
+### 4. The comparison on a second run of the same repo — high — blocked by: 3
+**Source**: §7 FR-25 Acceptance: "a second fixture run on the same repo gets a comparison block naming the first, per slice and per changed line".
+
+`tests/closeout.rs` (or `tests/metrics.rs`): one fixture repo, two runs to ship. Use the harness's way of adding a second feature to the fixture board, or ship feature 001, reset its slices and run again, whichever `Fixture` supports with the least new helper code; both runs must have the same `runs.repo`. Assert the second run's section names the first run's id with `per slice` = its weighted over its `slices` and `per line` = its weighted over `lines_added + lines_removed` (or `—` when zero lines changed), and the first run's own section still says `No earlier finished run in this repo.` when regenerated (`factory retro <first>`: the cohort is fixed by `started_at`).
+
+**Acceptance:** the test asserts the two sentences above and that the comparison table has exactly two rows (this run, the earlier run).
+
+### 5. Retire `measure.py` and `weigh.py` from the live instructions — medium — blocked by: 3
+**Source**: §7 FR-25: "`measure.py` and `weigh.py` are retired: no QA guide or skill step names them after this ships. Deleting the old family is PRD-002's and the owner's (§12)."
+
+`docs/features/001-driver/qa-guide.md:40-41`: rewrite step 6 so run A's figures are a record (the A/B is over, prd §1) and run B's come from `factory report <run> --per-worker` and `factory retro <run>`; the FR-8 cross-check compares `--cockpit` figures with `factory report`'s own worker rows, not with `measure.py`. Grep `docs/ skills/ assets/ src/` for `measure.py` and `weigh.py`: leave the records (001 `prd.md`, `slice-08`, `retro.md`, `ab/runs.md`, 003 `prd.md`) and the `src/measure.rs` origin citations; no instruction may remain.
+
+**Acceptance:** `grep -rn "measure.py\|weigh.py" docs skills assets src` lists only the record files named above and `src/measure.rs` doc comments; `docs/features/001-driver/qa-guide.md` step 6 names `factory report` and `factory retro` only.
+
+### 6. Verify — medium — blocked by: 1-5
+`cargo test` (the inner loop; the full gate `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test` runs at this slice's checkpoint).
+
+**Acceptance:** inner loop green, one commit.
+
+### 7. Prove — at the checkpoint — blocked by: 6
+Rows from [`prd.md`](prd.md) §9 this slice must prove: the **FR-25 row**, below the UI: `run` the shipped fixture scenario (section equal to `report --json --per-worker` per role, second `factory retro` a no-op, second fixture run compares with the first); then on this machine, after slice 02's recount, `factory retro 024-20261012-e894` reproduces run B's per-role rows from `001-driver/ab/runs.md:223-233` within 1%, the polish row split into about 1.95M own plus 2.29M subagents, total 18,465,008, and a comparison block saying no earlier run in this repo. The Human half of the row ("does the section read well beside the polish prose") is the one entry in this feature's [`qa-guide.md`](qa-guide.md). Driven at CP-3 together with the full gate; the test transcript and the real `retro.md` diff go in this slice's **Progress**.
+
+**Acceptance:** the FR-25 row has its test transcript and the `git diff` of `docs/features/001-driver/retro.md` after `factory retro 024-20261012-e894` attached in Progress, and the qa-guide entry is answered by the owner.

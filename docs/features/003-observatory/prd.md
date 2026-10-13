@@ -130,9 +130,21 @@ Because the collector ignores `parent_tool_use_id`, `start_context`, `peak_conte
 
 ## 10. Slices
 
-Not sliced yet.
+Sliced 2026-10-13 into six, by FR with FR-21 cut in two. **Slice 01** is the spine and the highest-risk work: schema v1 → v2 (whichever 003 slice lands first bumps the constant; every other one appends its own columns to the same guarded `ALTER` list), the collector telling a worker's own lines from its subagents' lines, the transcript reader split in two with the path builder, the record at every worker exit, totals and the per-role `own + subagents` split, plus the harness's `CLAUDE_CONFIG_DIR` and the "polish with subagents" scenario. **Slice 02** depends on it: `report --recount` and the token columns on `--per-worker`, proven by the replay on the two stored A/B runs. **Slices 03, 04 and 05** are mutually independent and independent of 01 and 02: pack composition (`pack_parts`, per-role report line), the knobs (`docs/project.toml`, `runs.knobs`, `--hypothesis`, `model_id`) and the quality signals (`FINDINGS` line, fix and CI counts, decision counts, the `quality:` block). Each adds its own columns, its own report keys at the end of `EXTRA_KEYS`, and nothing the others read. 04 and 02 both touch the per-worker line (one column each, a few-line merge). **Slice 06** needs all five: `factory retro <run>` prints every figure they store, so building it earlier would print dashes and need a second pass. It also stores the changed lines at ship and retires the `measure.py` step from the 001 QA guide.
+
+Ordering argument: 01 first and alone, because every count the PRD exists for is wrong until the subagents are in the store, and because the schema bump should be proven at the first checkpoint, not carried unproven under three parallel slices. 02 right after it so CP-1 covers the whole of FR-21 with the real replay. 03, 04 and 05 can run in parallel lanes; CP-2 after two of them, CP-3 after 05 and 06. Checkpoints with the default `checkpoint_every` 2: after 02, after 04, after 06.
+
+Workflow: one branch, one PR, one commit per slice, the full gate and the Prove rows at each checkpoint, `/polish` before ship. Build order across features: 003 before 002 (§11). The [`qa-guide.md`](qa-guide.md) holds the one Human row (FR-25, how the section reads beside the polish prose) and the ten-minute replay on the stored runs that FR-21 and FR-25 name; every other row is proven under `cargo test`.
 
 <!-- docs:slices -->
+| Slice | Status | Depends on |
+|---|---|---|
+| [01 — Subagent counts (FR-21, core)](slice-01-subagent-counts.md) | pending | — |
+| [02 — Recount and per-worker tokens (FR-21, rest)](slice-02-recount-per-worker.md) | pending | 01 |
+| [03 — Pack composition (FR-22)](slice-03-pack-composition.md) | pending | — |
+| [04 — Knobs (FR-23)](slice-04-knobs.md) | pending | — |
+| [05 — Quality signals (FR-24)](slice-05-quality.md) | pending | — |
+| [06 — Retro numbers (FR-25)](slice-06-retro-numbers.md) | pending | 01, 02, 03, 04, 05 |
 <!-- /docs:slices -->
 
 ## 11. Sequencing risk
