@@ -1120,3 +1120,78 @@ fn every_worker_row_records_what_its_pack_was_made_of() {
     assert!(line.contains(" · checkpoint gate_transcript "), "{line}");
     assert!(line.contains(" · polish branch "), "{line}");
 }
+
+/// PRD-002 FR-19: a store the PRD-003 binary made (version 2, no `retros`)
+/// gains the table on its first open, and `factory report` on an old run
+/// prints what it printed before. "Before" is read from a copy made while the
+/// store was still at version 2, so the compare is not v3 against itself.
+#[test]
+fn a_version_2_store_gains_retros_and_reports_the_same() {
+    let (fx, id) = finished_run();
+    let data = data_dir(&fx);
+    let path = data.join("factory.db");
+    // Back to the shape PRD-003 left: no `retros`, version rows 1 and 2.
+    db(&fx)
+        .conn()
+        .execute_batch(
+            "DROP TABLE retros;
+             DELETE FROM schema_version;
+             INSERT INTO schema_version (version, applied_at) VALUES (1, 'then'), (2, 'later');",
+        )
+        .unwrap();
+    let raw_shape = || {
+        let c = rusqlite::Connection::open(&path).unwrap();
+        let retros: i64 = c
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE name = 'retros'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let version: i64 = c
+            .query_row("SELECT max(version) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        (retros, version)
+    };
+    assert_eq!(raw_shape(), (0, 2));
+
+    let copy = tempfile::tempdir().unwrap();
+    let cp = std::process::Command::new("cp")
+        .arg("-a")
+        .arg(data.join("."))
+        .arg(copy.path())
+        .status()
+        .unwrap();
+    assert!(cp.success());
+    let report = |dir: &Path, json: bool| {
+        let mut args = vec!["report", id.as_str()];
+        if json {
+            args.push("--json");
+        }
+        let out = fx
+            .command(BIN)
+            .env("FACTORY_DATA_DIR", dir)
+            .args(&args)
+            .output()
+            .unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out.stdout
+    };
+    let before = (report(copy.path(), false), report(copy.path(), true));
+    assert_eq!(raw_shape(), (0, 2), "the original is untouched so far");
+
+    let after = (report(&data, false), report(&data, true));
+    let db = db(&fx);
+    assert!(db.tables().unwrap().contains(&"retros".to_string()));
+    assert_eq!(db.schema_version().unwrap(), 3);
+    assert_eq!(
+        String::from_utf8_lossy(&after.0),
+        String::from_utf8_lossy(&before.0)
+    );
+    assert_eq!(after.1, before.1);
+}

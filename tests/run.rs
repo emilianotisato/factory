@@ -279,6 +279,7 @@ fn opening_the_store_twice_applies_the_schema_once() {
         [
             "events",
             "gates",
+            "retros",
             "runs",
             "schema_version",
             "tool_calls",

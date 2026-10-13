@@ -4,14 +4,14 @@
 //! hands every argument to `docs.mjs` by `exec`, so stdin, stdout, stderr and
 //! the exit code are the tool's own. Later slices add one arm each to
 //! [`Verb`] and [`dispatch`].
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use clap::{CommandFactory, Parser, Subcommand};
 
-use crate::docs::{Docs, board, project, scaffold, state};
+use crate::docs::{Docs, board, log, project, scaffold, state};
 use crate::error::{io, json};
 use crate::{Error, Result, paths};
 
@@ -56,6 +56,60 @@ enum Verb {
         #[arg(required = true)]
         pairs: Vec<String>,
     },
+    /// A feature's retros row in the metrics store; `--set score=4` sets its score
+    Retro {
+        feature: String,
+        #[arg(long)]
+        set: Option<String>,
+    },
+    /// The feature's append-only log.jsonl
+    Log {
+        #[command(subcommand)]
+        action: LogVerb,
+    },
+}
+
+#[derive(Subcommand)]
+enum LogVerb {
+    /// Append one entry under the feature's docs.lock and print its id
+    Add {
+        feature: String,
+        #[arg(long, value_enum)]
+        kind: log::Kind,
+        #[arg(long)]
+        title: String,
+        /// The slice it belongs to; for a checkpoint, the last one it covers
+        #[arg(long)]
+        slice: Option<u32>,
+        /// Decisions only
+        #[arg(long, value_enum)]
+        flag: Option<log::Flag>,
+        /// The id an answer or a review points at
+        #[arg(long = "ref")]
+        reference: Option<String>,
+        /// Reviews only
+        #[arg(long, value_enum)]
+        verdict: Option<log::Verdict>,
+        /// preflight, slicing, checkpoint, polish, pr or ci
+        #[arg(long)]
+        phase: Option<String>,
+        /// The markdown body: a path, or `-` for stdin
+        #[arg(long)]
+        body_file: Option<String>,
+    },
+    /// Render the log in the agent-log.md shape
+    Show {
+        feature: String,
+        /// Only `decide` decisions no review answers
+        #[arg(long)]
+        decide: bool,
+        /// Only blocks no answer resolves
+        #[arg(long, conflicts_with = "decide")]
+        open: bool,
+        /// The entries as read, a JSON array in file order
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// Verbs v2 had and v3 drops, each with where its job went.
@@ -66,7 +120,7 @@ const REMOVED: [(&str, &str); 3] = [
 ];
 
 pub fn docs(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Result<i32> {
-    match route(args, out) {
+    match route(args, out, err) {
         Err(Error::Msg(m)) => {
             writeln!(err, "{m}").map_err(io("write stderr"))?;
             Ok(2)
@@ -75,7 +129,7 @@ pub fn docs(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Result
     }
 }
 
-fn route(args: &[String], out: &mut dyn Write) -> Result<i32> {
+fn route(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Result<i32> {
     let root = paths::repo_root(Path::new(".")).unwrap_or_else(|_| PathBuf::from("."));
     let verb = args.first().map(String::as_str);
     if matches!(verb, None | Some("-h" | "--help")) {
@@ -85,7 +139,7 @@ fn route(args: &[String], out: &mut dyn Write) -> Result<i32> {
     }
     // `migrate` and `doctor` run natively in both formats (slices 03, 07).
     if matches!(verb, Some("migrate" | "doctor")) || project::is_v3(&root) {
-        return native(&root, args, out);
+        return native(&root, args, out, err);
     }
     if root.join("docs/index.md").is_file() {
         let tool = Docs::locate(&root)?.tool().to_path_buf();
@@ -97,7 +151,7 @@ fn route(args: &[String], out: &mut dyn Write) -> Result<i32> {
     }
     // A repo with no board at all has nothing to route on; `init` makes one.
     if verb == Some("init") {
-        return native(&root, args, out);
+        return native(&root, args, out, err);
     }
     Err(Error::Msg(format!(
         "not on the framework: {} has neither docs/project.toml with [docs] framework = 3 nor docs/index.md — run `factory docs init`",
@@ -105,7 +159,7 @@ fn route(args: &[String], out: &mut dyn Write) -> Result<i32> {
     )))
 }
 
-fn native(root: &Path, args: &[String], out: &mut dyn Write) -> Result<i32> {
+fn native(root: &Path, args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Result<i32> {
     let joined = args
         .iter()
         .take(2)
@@ -127,11 +181,15 @@ fn native(root: &Path, args: &[String], out: &mut dyn Write) -> Result<i32> {
             return Ok(0);
         }
     };
-    dispatch(root, cli.verb, out)?;
+    // `retro` is the one verb with an exit code of its own: 1 for no row.
+    if let Verb::Retro { feature, set } = cli.verb {
+        return retro(root, &feature, set.as_deref(), out, err);
+    }
+    dispatch(root, cli.verb, out, err)?;
     Ok(0)
 }
 
-fn dispatch(root: &Path, verb: Verb, out: &mut dyn Write) -> Result<()> {
+fn dispatch(root: &Path, verb: Verb, out: &mut dyn Write, err: &mut dyn Write) -> Result<()> {
     match verb {
         Verb::Init => scaffold::init(root, out),
         Verb::New { slug, title } => scaffold::new(root, &slug, title.as_deref(), out),
@@ -150,6 +208,100 @@ fn dispatch(root: &Path, verb: Verb, out: &mut dyn Write) -> Result<()> {
         ),
         Verb::Status { feature, json } => status(root, feature.as_deref(), json, out),
         Verb::Set { feature, pairs } => set(root, &feature, &pairs, out),
+        Verb::Retro { .. } => unreachable!("`native` runs retro"),
+        Verb::Log { action } => match action {
+            LogVerb::Add {
+                feature,
+                kind,
+                title,
+                slice,
+                flag,
+                reference,
+                verdict,
+                phase,
+                body_file,
+            } => {
+                let body = match body_file.as_deref() {
+                    None => String::new(),
+                    Some("-") => {
+                        let mut b = String::new();
+                        std::io::stdin()
+                            .read_to_string(&mut b)
+                            .map_err(io("read stdin"))?;
+                        b
+                    }
+                    Some(p) => std::fs::read_to_string(p).map_err(io(format!("read {p}")))?,
+                };
+                let entry = log::Entry {
+                    slice,
+                    flag,
+                    reference,
+                    verdict,
+                    phase,
+                    ..log::Entry::new(kind, &title, &body)
+                };
+                let dir = live_dir(root, &feature)?;
+                match log::add(&dir, entry)? {
+                    Some(id) => print(out, &id),
+                    None => Ok(()),
+                }
+            }
+            LogVerb::Show {
+                feature,
+                decide,
+                open,
+                json: as_json,
+            } => {
+                let board = board::scan(root)?;
+                let f = board.resolve(&feature)?;
+                let (entries, skipped) = log::entries(&f.dir)?;
+                for (n, e) in &skipped {
+                    writeln!(err, "{}/{}:{n}: skipped, {e}", f.dir_name, log::FILE)
+                        .map_err(io("write stderr"))?;
+                }
+                let filter = if decide {
+                    log::Filter::Decide
+                } else if open {
+                    log::Filter::Open
+                } else {
+                    log::Filter::All
+                };
+                if as_json {
+                    let v = log::select(&entries, filter);
+                    return print(
+                        out,
+                        &serde_json::to_string_pretty(&v).map_err(json("serialize log"))?,
+                    );
+                }
+                out.write_all(log::render(&entries, filter, f.number).as_bytes())
+                    .map_err(io("write stdout"))
+            }
+        },
+    }
+}
+
+/// `retro NNN [--set score=N]`: the row, or 1 with no row.
+fn retro(
+    root: &Path,
+    feature: &str,
+    set: Option<&str>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<i32> {
+    let row = match set {
+        Some(pair) => Some(crate::docs::retro::set_score(root, feature, pair)?),
+        None => crate::docs::retro::show(root, feature)?,
+    };
+    match row {
+        Some(r) => {
+            print(out, &crate::docs::retro::lines(&r).join("\n"))?;
+            Ok(0)
+        }
+        None => {
+            let n = board::scan(root)?.resolve(feature)?.number;
+            writeln!(err, "no retro row for PRD-{n:03}").map_err(io("write stderr"))?;
+            Ok(1)
+        }
     }
 }
 
@@ -256,7 +408,8 @@ fn status(root: &Path, feature: Option<&str>, as_json: bool, out: &mut dyn Write
     print(out, &lines.join("\n"))
 }
 
-fn set(root: &Path, feature: &str, pairs: &[String], out: &mut dyn Write) -> Result<()> {
+/// A live feature's folder: the archive is frozen.
+fn live_dir(root: &Path, feature: &str) -> Result<PathBuf> {
     let board = board::scan(root)?;
     let f = board.resolve(feature)?;
     if f.kind == board::Kind::Archive {
@@ -265,6 +418,11 @@ fn set(root: &Path, feature: &str, pairs: &[String], out: &mut dyn Write) -> Res
             f.dir_name
         )));
     }
+    Ok(f.dir.clone())
+}
+
+fn set(root: &Path, feature: &str, pairs: &[String], out: &mut dyn Write) -> Result<()> {
+    let dir = live_dir(root, feature)?;
     let mut kv = Vec::new();
     for p in pairs {
         let Some(pair) = p.split_once('=') else {
@@ -272,9 +430,7 @@ fn set(root: &Path, feature: &str, pairs: &[String], out: &mut dyn Write) -> Res
         };
         kv.push(pair);
     }
-    state::set(&f.dir, &kv)?;
-    print(
-        out,
-        &format!("docs/features/{}/state.toml updated", f.dir_name),
-    )
+    state::set(&dir, &kv)?;
+    let name = dir.file_name().unwrap_or_default().to_string_lossy();
+    print(out, &format!("docs/features/{name}/state.toml updated"))
 }
