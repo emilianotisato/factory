@@ -4,9 +4,9 @@
 //!
 //! Polish is one worker (`/polish` Unattended) that writes the retro prose
 //! and the PR body in its last turn; the driver commits what it wrote as
-//! `fix(NNN): polish review fixes`. Ship is `docs ship NNN`, the twelve numeric retro
-//! keys from the store (`factory report`'s rows, FR-8), the `## Numbers`
-//! section (PRD-003 FR-25, [`crate::retro`]), `render --write` and
+//! `fix(NNN): polish review fixes`. Ship is `docs ship NNN`, the feature's
+//! `retros` row from the store (`factory report`'s numbers, PRD-002 FR-19),
+//! the `## Numbers` section (PRD-003 FR-25, [`crate::retro`]) and
 //! `docs(NNN): ship PRD-NNN`. The PR is `gh pr create --draft --head <branch>`; a
 //! resume after `pr_opened` edits it instead. Ship and push happen only from
 //! the run's feature branch, never the default one. CI is bounded polls of
@@ -16,8 +16,8 @@
 //!
 //! Every step is idempotent on re-entry: the events say what landed
 //! (`polish_done`, `shipped`), `state.json` keeps the PR URL, and an open
-//! closeout block (`· polish ·`, `· pr ·`, `· ci ·`) keeps the park until the
-//! owner answers.
+//! closeout block (a `block` entry with phase `polish`, `pr` or `ci`) keeps
+//! the park until the owner answers.
 use std::collections::{BTreeSet, HashSet};
 use std::fs;
 use std::io::Write;
@@ -25,19 +25,20 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::answers;
-use crate::checkpoint::{Outcome, lowest_free_block};
+use crate::checkpoint::Outcome;
 use crate::ci::{self, CheckRow, Checks, CiRun, Verdict};
 use crate::cli::report::{self, Report};
 use crate::cli::run::load_preflight;
 use crate::commit::{self, Pathspec};
 use crate::config::Config;
-use crate::docs::{Docs, Status};
+use crate::db::RetroRow;
+use crate::docs::{Docs, Ship, Status};
 use crate::error::io;
 use crate::events::EventKind;
 use crate::pack::Pack;
 use crate::quota::{self, Hold, Limit};
 use crate::run::{Phase, Run, WorkerOutcome, WorkerRef};
-use crate::scheduler::{self, DEATH_CAP, append_under, say, set_frontmatter, short};
+use crate::scheduler::{self, DEATH_CAP, say, short};
 use crate::stream::{Findings, Summary};
 use crate::worker::{self, Exit, Job, Worker};
 use crate::{Result, clock, metrics, retro};
@@ -45,22 +46,6 @@ use crate::{Result, clock, metrics, retro};
 /// The phases a closeout block names in its heading (autonomy § Blocker
 /// protocol step 2).
 pub const PHASES: [&str; 3] = ["polish", "pr", "ci"];
-
-/// The retro keys the driver fills (`retro.md:3-14`); `score` is the owner's.
-pub const RETRO_KEYS: [&str; 12] = [
-    "gate_runs",
-    "gate_red",
-    "gate_minutes",
-    "ci_cycles",
-    "slices",
-    "checkpoints",
-    "build_minutes",
-    "polish_minutes",
-    "out_tokens",
-    "cache_read_tokens",
-    "start_context",
-    "peak_context",
-];
 
 /// The PR body the polish worker writes, in the run dir.
 pub const PR_BODY_FILE: &str = "pr-body.md";
@@ -92,10 +77,8 @@ pub fn run(
     board: &Status,
     out: &mut dyn Write,
 ) -> Result<Outcome> {
-    let feature = run.state().feature.clone();
     let repo = run.state().repo.clone();
     let feature_dir = repo.join(&board.dir);
-    let agent_log = feature_dir.join("agent-log.md");
 
     // A closeout block the owner has not answered: the park stands.
     if let Some(open) = open_blocks(&feature_dir)?.into_iter().next() {
@@ -104,12 +87,6 @@ pub fn run(
             id: open.id,
             fresh: false,
         });
-    }
-    // A second check: `docs new` creates agent-log.md now (AD-503), but a
-    // feature made by a vendored docs.mjs older than that fix has none.
-    if !agent_log.exists() {
-        fs::write(&agent_log, format!("# Agent log — PRD-{feature}\n"))
-            .map_err(io(format!("write {}", agent_log.display())))?;
     }
 
     // A PRD `shipped` on the board has had its polish: `docs ship` runs only
@@ -192,10 +169,9 @@ fn polish(
 ) -> Result<Option<Outcome>> {
     let repo = run.state().repo.clone();
     let feature_dir = repo.join(&board.dir);
-    let agent_log = feature_dir.join("agent-log.md");
     let default_branch = default_branch(run, docs);
     let feature_branch = feature_branch(run, &repo)?;
-    let template = retro_template(docs, board);
+    let template = retro_template();
     loop {
         if let Some(o) = await_quota(run, out)? {
             return Ok(Some(o));
@@ -227,7 +203,7 @@ fn polish(
                  Streams and stderr are under `{}/`.\n\
                  **Options:**\n\
                  1. read the last worker's `.stderr` and `.jsonl`, fix the environment (login, PATH, quota) and answer this block — a fresh polish worker runs\n\
-                 2. run `/polish` by hand, write `retro.md` and `runs/<id>/pr-body.md`, set `reviewed:` in `prd.md`, commit, and answer this block with `proceed` — the driver ships from there, no polish worker\n\
+                 2. run `/polish` by hand, write `retro.md` and `runs/<id>/pr-body.md`, run `factory docs set NNN reviewed=<date>`, commit, and answer this block with `proceed` — the driver ships from there, no polish worker\n\
                  **Recommended:** 1 — a worker that dies before its first tool call is the environment's fault, not the review's.\n",
                 dead.len(),
                 sessions.join(", "),
@@ -298,7 +274,7 @@ fn polish(
             say(
                 out,
                 &format!(
-                    "polish: worker {session_id} blocked — {} in agent-log.md: {}",
+                    "polish: worker {session_id} blocked — {} in log.jsonl: {}",
                     b.id, b.title
                 ),
             )?;
@@ -329,7 +305,7 @@ fn polish(
             continue;
         }
         if exit.summary.is_dead() {
-            settle_dead(run, &agent_log, "polish", &session_id, row_id, &exit, out)?;
+            settle_dead(run, &feature_dir, "polish", &session_id, row_id, &exit, out)?;
             continue;
         }
         settle(run, row_id, &session_id, &exit.summary, WorkerOutcome::Done)?;
@@ -356,9 +332,9 @@ fn polish(
     }
 }
 
-/// `fix(NNN): polish review fixes`: the paths the stream named plus `prd.md`
-/// (`reviewed:`) and `retro.md` — the polish worker is the one worker allowed
-/// to write those two; `docs/index.md` stays the ship's. A missing `retro.md`
+/// `fix(NNN): polish review fixes`: the paths the stream named plus
+/// `state.toml` (`reviewed`) and `retro.md` — the polish worker is the one
+/// worker allowed to write `retro.md`; `docs/index.md` stays the ship's. A missing `retro.md`
 /// is created from the template first, a missing PR body from a fallback, so
 /// the ship and the PR never wait on a worker that skipped its last turn —
 /// but each stand-in is flagged (AD-904): a `template_stand_in` event the
@@ -407,7 +383,7 @@ fn commit_polish(
             paths.push(p.clone());
         }
     }
-    for p in [format!("{}/prd.md", board.dir), retro_rel] {
+    for p in [format!("{}/state.toml", board.dir), retro_rel] {
         if !paths.contains(&p) {
             paths.push(p);
         }
@@ -527,15 +503,15 @@ fn fallback_body(board: &Status, feature: &str) -> String {
          PRD: `{}/prd.md`\n\n\
          > Opened by `factory`, unattended. **Not merged — that is yours.** \
          The polish worker left no PR body; the agent log and the retro in `{}/` carry the decisions and the numbers.\n\n\
-         ### Needs your review\n\n- see `{}/agent-log.md` § Decisions, the `Review: decide` entries\n\n\
+         ### Needs your review\n\n- `factory docs log show {feature} --decide`: the `decide` entries\n\n\
          ### Human QA\n\n- see `{}/prd.md` § QA plan\n",
-        board.slug, board.dir, board.dir, board.dir, board.dir
+        board.slug, board.dir, board.dir, board.dir
     )
 }
 
 // ── ship ────────────────────────────────────────────────────────────────────
 
-/// `docs ship`, the retro keys, `render --write`, `docs(NNN): ship PRD-NNN`. A
+/// `docs ship`, the `retros` row, `docs(NNN): ship PRD-NNN`. A
 /// refusal (a slice not `done`) blocks with phase `polish` and the tool's
 /// text. `None` when the ship commit landed.
 fn ship(
@@ -550,41 +526,35 @@ fn ship(
     if let Some(o) = branch_guard(run, docs, &feature_dir, "polish", "ship", out)? {
         return Ok(Some(o));
     }
-    let shipped = docs.ship(&feature)?;
-    if shipped.code != 0 {
-        let text = {
-            let err = shipped.stderr.trim();
-            if err.is_empty() {
-                shipped.stdout.trim().to_string()
-            } else {
-                err.to_string()
-            }
-        };
-        let first = text
-            .lines()
-            .map(str::trim)
-            .find(|l| !l.is_empty())
-            .unwrap_or("docs ship failed")
-            .to_string();
-        let quoted: String = text.lines().map(|l| format!("  {l}\n")).collect();
-        let body = format!(
-            "**Happened:** the polish commit is in and `docs ship {feature}` refused (exit {}):\n{quoted}\
+    let shipped = match docs.ship(&feature)? {
+        Ship::Done(stdout) => stdout,
+        Ship::Refused(text) => {
+            let text = text.trim().to_string();
+            let first = text
+                .lines()
+                .map(str::trim)
+                .find(|l| !l.is_empty())
+                .unwrap_or("docs ship failed")
+                .to_string();
+            let quoted: String = text.lines().map(|l| format!("  {l}\n")).collect();
+            let body = format!(
+                "**Happened:** the polish commit is in and `docs ship {feature}` refused:\n{quoted}\
              **Options:**\n\
              1. fix what it names (a slice not `done`, a missing frontmatter), commit, and answer this block — the ship runs again\n\
              2. revert the polish commit and set the feature back to `building` if the board is wrong about being done\n\
-             **Recommended:** 1 — the tool refuses only when the board and the tree disagree; the board is the truth to fix.\n",
-            shipped.code
-        );
-        return Ok(Some(block(
-            run,
-            &feature_dir,
-            "polish",
-            &format!("docs ship PRD-{feature} refused: {first}"),
-            &body,
-            out,
-        )?));
-    }
-    for line in shipped.stdout.lines().filter(|l| l.starts_with('⚠')) {
+             **Recommended:** 1 — the tool refuses only when the board and the tree disagree; the board is the truth to fix.\n"
+            );
+            return Ok(Some(block(
+                run,
+                &feature_dir,
+                "polish",
+                &format!("docs ship PRD-{feature} refused: {first}"),
+                &body,
+                out,
+            )?));
+        }
+    };
+    for line in shipped.lines().filter(|l| l.starts_with('⚠')) {
         say(out, &format!("ship: {}", line.trim()))?;
     }
     // FR-24: polish wrote `AD` entries after `board` was read; a fresh
@@ -613,11 +583,8 @@ fn ship(
     let report = report::compute(run.db(), run.id().as_str(), None)?;
     let retro = feature_dir.join("retro.md");
     if !retro.exists() {
-        fs::write(
-            &retro,
-            retro_template(docs, board).replace("{NNN}", &feature),
-        )
-        .map_err(io(format!("write {}", retro.display())))?;
+        fs::write(&retro, retro_template().replace("{NNN}", &feature))
+            .map_err(io(format!("write {}", retro.display())))?;
         let retro_rel = format!("{}/retro.md", board.dir);
         say(
             out,
@@ -625,13 +592,12 @@ fn ship(
         )?;
         stood_in(run, STAND_IN_RETRO, &retro_rel)?;
     }
-    fill_retro(&retro, &report)?;
+    retro_row(run, board, &report)?;
     // A section the markers refuse is a line in the log, never a stopped ship.
     if let Err(e) = retro::write(&retro, &retro::numbers(run.db(), run.id().as_str())?) {
         say(out, &format!("ship: no ## Numbers written — {e}"))?;
     }
-    docs.render_write()?;
-    let want = commit::expand(&repo, &[board.dir.clone(), "docs/index.md".to_string()])?;
+    let want = commit::expand(&repo, std::slice::from_ref(&board.dir))?;
     let committed = commit::commit(
         &repo,
         &want,
@@ -654,29 +620,32 @@ fn ship(
     Ok(None)
 }
 
-/// The twelve numeric keys of `retro.md` from the report, by name; `score`
-/// untouched. Minutes keep two decimals, counts are integers.
-pub fn fill_retro(retro: &Path, r: &Report) -> Result<()> {
-    let values = retro_values(r);
-    let pairs: Vec<(&str, &str)> = values.iter().map(|(k, v)| (*k, v.as_str())).collect();
-    set_frontmatter(retro, &pairs)
-}
-
-fn retro_values(r: &Report) -> Vec<(&'static str, String)> {
-    vec![
-        ("gate_runs", r.gate_runs.to_string()),
-        ("gate_red", r.gate_red.to_string()),
-        ("gate_minutes", format!("{:.2}", r.gate_minutes)),
-        ("ci_cycles", r.ci_cycles.to_string()),
-        ("slices", r.slices.to_string()),
-        ("checkpoints", r.checkpoints.to_string()),
-        ("build_minutes", format!("{:.2}", r.build_minutes)),
-        ("polish_minutes", format!("{:.2}", r.polish_minutes)),
-        ("out_tokens", r.out_tokens.to_string()),
-        ("cache_read_tokens", r.cache_read_tokens.to_string()),
-        ("start_context", r.start_context.to_string()),
-        ("peak_context", r.peak_context.to_string()),
-    ]
+/// The feature's `retros` row (PRD-002 FR-19) from the report: the twelve
+/// numbers, this run's id and today as `shipped_at`. `score` is left null,
+/// so the upsert keeps one the polish worker or the owner already set.
+fn retro_row(run: &Run, board: &Status, r: &Report) -> Result<()> {
+    let n = |v: u64| Some(v as i64);
+    run.db().upsert_retro(&RetroRow {
+        repo: run.state().repo.to_string_lossy().into_owned(),
+        feature: board.number,
+        slug: board.slug.clone(),
+        shipped_at: Some(crate::docs::scaffold::today()),
+        run_id: Some(run.id().as_str().to_string()),
+        score: None,
+        gate_runs: n(r.gate_runs),
+        gate_red: n(r.gate_red),
+        gate_minutes: Some(r.gate_minutes),
+        ci_cycles: n(r.ci_cycles),
+        slices: n(r.slices),
+        checkpoints: n(r.checkpoints),
+        build_minutes: Some(r.build_minutes),
+        polish_minutes: Some(r.polish_minutes),
+        out_tokens: n(r.out_tokens),
+        cache_read_tokens: n(r.cache_read_tokens),
+        start_context: n(r.start_context),
+        peak_context: n(r.peak_context),
+        written_at: String::new(),
+    })
 }
 
 // ── push and PR ─────────────────────────────────────────────────────────────
@@ -883,7 +852,12 @@ fn branch_guard(
 /// The PRD's h1 without its `PRD-NNN — ` prefix; the slug when it has none.
 pub fn pr_title(prd: &Path, feature: &str, slug: &str) -> String {
     let text = fs::read_to_string(prd).unwrap_or_default();
-    let h1 = text
+    // A v3 frontmatter carries `# ` comment lines; the H1 is below it.
+    let body = text
+        .strip_prefix("---\n")
+        .and_then(|t| t.find("\n---").map(|end| &t[end + 4..]))
+        .unwrap_or(&text);
+    let h1 = body
         .lines()
         .find_map(|l| l.strip_prefix("# "))
         .map(str::trim)
@@ -1544,8 +1518,8 @@ fn indent(text: &str) -> String {
 }
 
 /// One CI fix round: a fix worker (once more after a death, then block),
-/// its files committed as `fix(NNN): CI <check>` with `ci_cycles` bumped in the
-/// same commit. `None` when the round is committed (or changed nothing).
+/// its files committed as `fix(NNN): CI <check>`. `None` when the round is
+/// committed (or changed nothing).
 #[allow(clippy::too_many_arguments)]
 fn fix_round(
     run: &mut Run,
@@ -1559,7 +1533,6 @@ fn fix_round(
 ) -> Result<Option<Outcome>> {
     let repo = run.state().repo.clone();
     let feature_dir = repo.join(&board.dir);
-    let agent_log = feature_dir.join("agent-log.md");
     // The fix commits: a HEAD moved during the watch blocks before a worker
     // spends the round on another branch.
     if let Some(o) = branch_guard(run, docs, &feature_dir, "ci", "CI fix", out)? {
@@ -1654,7 +1627,7 @@ fn fix_round(
             continue;
         }
         if exit.summary.is_dead() {
-            settle_dead(run, &agent_log, "CI fix", &session_id, row_id, &exit, out)?;
+            settle_dead(run, &feature_dir, "CI fix", &session_id, row_id, &exit, out)?;
             continue;
         }
         if let Some(b) = open_blocks(&feature_dir)?
@@ -1701,8 +1674,8 @@ fn fix_round(
     }
 }
 
-/// `fix(NNN): CI <check>`: the stream's paths plus `retro.md` with `ci_cycles`
-/// bumped to the rounds committed, this one included (`retro.md:11`). What
+/// `fix(NNN): CI <check>`: the stream's paths, never `retro.md` (the CI
+/// count is the `ci_fix_committed` events, `factory report` reads them). What
 /// the worker changed unnamed since `before` is swept or listed (AD-50002).
 #[allow(clippy::too_many_arguments)]
 fn commit_ci_fix(
@@ -1724,19 +1697,6 @@ fn commit_ci_fix(
         )?;
     }
     let mut paths = spec.paths.clone();
-    let retro_rel = format!("{}/retro.md", board.dir);
-    let retro = repo.join(&retro_rel);
-    if retro.exists() {
-        let committed = run
-            .events()?
-            .iter()
-            .filter(|e| matches!(e.kind, EventKind::CiFixCommitted { .. }))
-            .count() as u64;
-        set_frontmatter(&retro, &[("ci_cycles", &(committed + 1).to_string())])?;
-        if !paths.contains(&retro_rel) {
-            paths.push(retro_rel);
-        }
-    }
     let skip: HashSet<String> = paths.iter().chain(&spec.protected).cloned().collect();
     let found = scheduler::unnamed(run, board, before, &skip, &spec.dirs, true)?;
     note_leftovers(run, "ci-fix", "ci: fix worker", &found, out)?;
@@ -1833,8 +1793,7 @@ pub fn settle_orphan(
         ),
     )?;
     if w.role == "polish" {
-        let docs = Docs::locate(&run.state().repo)?;
-        let template = retro_template(&docs, board);
+        let template = retro_template();
         let before = scheduler::load_baseline(run.dir(), POLISH_KEY)?;
         let committed = commit_polish(run, board, w.row_id, &summary, &template, &before, out)?;
         run.emit(EventKind::PolishDone {
@@ -1921,27 +1880,22 @@ pub struct OpenBlock {
     pub phase: String,
 }
 
-/// Every unresolved `BLOCK-n` with a closeout phase in the feature's log
-/// files (fragments first, then `agent-log.md`), in file order.
+/// Every unanswered block with a closeout phase in the feature's
+/// `log.jsonl`, in file order.
 pub fn open_blocks(feature_dir: &Path) -> Result<Vec<OpenBlock>> {
-    let mut out = Vec::new();
-    for file in answers::log_files(feature_dir)? {
-        out.extend(
-            answers::entries(&file)?
-                .into_iter()
-                .filter(|e| !e.resolved && e.phase.as_deref().is_some_and(|p| PHASES.contains(&p)))
-                .map(|e| OpenBlock {
-                    id: e.id,
-                    title: e.title,
-                    phase: e.phase.unwrap_or_default(),
-                }),
-        );
-    }
-    Ok(out)
+    Ok(answers::entries(feature_dir)?
+        .into_iter()
+        .filter(|e| !e.resolved && e.phase.as_deref().is_some_and(|p| PHASES.contains(&p)))
+        .map(|e| OpenBlock {
+            id: e.id,
+            title: e.title,
+            phase: e.phase.unwrap_or_default(),
+        })
+        .collect())
 }
 
-/// Write `BLOCK-n` (lowest free number) under `## Blockers` in `agent-log.md`
-/// with the phase in its heading, emit `closeout_blocked`, hand back the park.
+/// Add a `block` entry with `phase` to the feature's log, emit
+/// `closeout_blocked`, hand back the park.
 fn block(
     run: &mut Run,
     feature_dir: &Path,
@@ -1950,13 +1904,10 @@ fn block(
     body: &str,
     out: &mut dyn Write,
 ) -> Result<Outcome> {
-    let agent_log = feature_dir.join("agent-log.md");
-    let id = format!("BLOCK-{}", lowest_free_block(feature_dir)?);
-    // Titles carry tool output (a refusal's first line, a check's name): a
-    // `·` or a newline there would break the heading's fields.
+    // Titles carry tool output (a refusal's first line, a check's name):
+    // one line, capped, as `log show` renders it in a heading.
     let title = answers::block_title(title);
-    let entry = format!("### {id} — {title} · {phase} · open\n\n{body}");
-    append_under(&agent_log, "## Blockers", &entry)?;
+    let id = answers::add_block(feature_dir, None, Some(phase), &title, body)?;
     run.emit(EventKind::CloseoutBlocked {
         phase: phase.to_string(),
         block_id: id.clone(),
@@ -1964,7 +1915,7 @@ fn block(
     })?;
     say(
         out,
-        &format!("closeout ({phase}) blocked — {id} written to agent-log.md: {title}"),
+        &format!("closeout ({phase}) blocked — {id} written to log.jsonl: {title}"),
     )?;
     Ok(Outcome::Parked {
         what: park_line(&id, &title, phase),
@@ -1975,7 +1926,7 @@ fn block(
 
 fn park_line(id: &str, title: &str, phase: &str) -> String {
     format!(
-        "closeout blocked ({phase}) — {title}: {id} in agent-log.md waits for the owner: `factory answer {id} \"<text>\"`"
+        "closeout blocked ({phase}) — {title}: {id} in log.jsonl waits for the owner: `factory answer {id} \"<text>\"`"
     )
 }
 
@@ -1990,10 +1941,9 @@ struct Answered {
     proceed: bool,
 }
 
-/// The run's closeout blocks (its `closeout_blocked` events, in order) whose
-/// entry is resolved, with the answer read from the entry's
-/// `**Resolution (…):**` line — written with the `resolved` heading in one
-/// write, so a resolved entry always has it.
+/// The run's closeout blocks (its `closeout_blocked` events, in order) that
+/// have an `answer` entry, with the answer read from the entry's rendered
+/// `**Resolution (…):**` line.
 fn answered(run: &Run, feature_dir: &Path) -> Result<Vec<Answered>> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
@@ -2015,7 +1965,7 @@ fn answered(run: &Run, feature_dir: &Path) -> Result<Vec<Answered>> {
         if !entry.resolved {
             continue;
         }
-        let text = resolution(&answers::entry_text(&entry)?).unwrap_or_default();
+        let text = resolution(&answers::entry_text(&entry)).unwrap_or_default();
         out.push(Answered {
             seq: e.seq,
             id: block_id,
@@ -2047,20 +1997,15 @@ fn is_proceed(text: &str) -> bool {
     word.eq_ignore_ascii_case("proceed")
 }
 
-/// HEAD's `prd.md` says `status: shipped`: the ship commit is in.
+/// HEAD's `state.toml` says `status = "shipped"`: the ship commit is in.
 fn shipped_at_head(repo: &Path, dir: &str) -> Result<bool> {
-    let out = ci::git(repo, &["show", &format!("HEAD:{dir}/prd.md")])?;
-    Ok(out.ok() && frontmatter_value(&out.stdout, "status").as_deref() == Some("shipped"))
+    let out = ci::git(repo, &["show", &format!("HEAD:{dir}/state.toml")])?;
+    Ok(out.ok() && shipped_in(&out.stdout))
 }
 
-/// `key:` of a markdown file's frontmatter, unquoted.
-fn frontmatter_value(text: &str, key: &str) -> Option<String> {
-    let body = text.strip_prefix("---\n")?;
-    let end = body.find("\n---")?;
-    body[..end].lines().find_map(|l| {
-        let (k, v) = l.split_once(':')?;
-        (k.trim() == key).then(|| v.trim().trim_matches(['"', '\'']).to_string())
-    })
+/// A `state.toml` text whose `status` is `shipped`; a torn file is not.
+fn shipped_in(state_toml: &str) -> bool {
+    crate::docs::state::parse(state_toml).is_ok_and(|s| s.status == "shipped")
 }
 
 /// `at` of the latest answer to a block naming no slice: a checkpoint's or
@@ -2101,11 +2046,11 @@ fn await_quota(run: &mut Run, out: &mut dyn Write) -> Result<Option<Outcome>> {
     }
 }
 
-/// A worker gone without a result: a Traps line in `agent-log.md`; the caller
-/// respawns or blocks on the count.
+/// A worker gone without a result: a `note` entry in the feature's log; the
+/// caller respawns or blocks on the count.
 fn settle_dead(
     run: &mut Run,
-    agent_log: &Path,
+    feature_dir: &Path,
     what: &str,
     session_id: &str,
     row_id: i64,
@@ -2121,11 +2066,11 @@ fn settle_dead(
     let code = exit.code.map_or("exited (code unknown)".to_string(), |c| {
         format!("exited {c}")
     });
-    let date = clock::today();
-    append_under(
-        agent_log,
-        "## Traps",
-        &format!("- **Dead {what} worker ({date})**: session {session_id} {code} with no result."),
+    answers::add_note(
+        feature_dir,
+        None,
+        &format!("Dead {what} worker"),
+        &format!("session {session_id} {code} with no result."),
     )?;
     say(
         out,
@@ -2173,29 +2118,10 @@ fn feature_branch(run: &Run, repo: &Path) -> Result<String> {
     Ok(out.stdout.trim().to_string())
 }
 
-/// `templates/retro.md` beside the docs tool, else a bare frontmatter with
-/// the keys and the heading.
-fn retro_template(docs: &Docs, board: &Status) -> String {
-    let path = docs
-        .tool()
-        .parent()
-        .and_then(Path::parent)
-        .map(|d| d.join("templates").join("retro.md"));
-    if let Some(text) = path.and_then(|p| fs::read_to_string(p).ok()) {
-        return text;
-    }
-    let mut t = String::from("---\nscore:\n");
-    for k in RETRO_KEYS {
-        t.push_str(&format!(
-            "{k}:{}\n",
-            if k == "ci_cycles" { " 0" } else { "" }
-        ));
-    }
-    t.push_str(&format!(
-        "---\n\n# Retro — PRD-{{NNN}}\n\nWritten by `factory` in the closeout commit of `{}`.\n",
-        board.slug
-    ));
-    t
+/// The retro template, this repo's asset (PRD-002 FR-19): the heading and
+/// the prose sections, no frontmatter. `{NNN}` is the feature's number.
+pub fn retro_template() -> String {
+    crate::pack::RETRO.to_string()
 }
 
 fn first_line(text: &str) -> String {
@@ -2304,7 +2230,7 @@ mod tests {
         let prd = dir.path().join("prd.md");
         fs::write(
             &prd,
-            "---\nstatus: ready\n---\n\n# PRD-001 — Fixture\n\ntext\n",
+            "---\n# type: feature | bugfix\ntitle: Fixture\n---\n\n# PRD-001 — Fixture\n\ntext\n",
         )
         .unwrap();
         assert_eq!(pr_title(&prd, "001", "fixture"), "Fixture");
@@ -2312,32 +2238,6 @@ mod tests {
         assert_eq!(pr_title(&prd, "001", "driver"), "The driver");
         fs::write(&prd, "no heading\n").unwrap();
         assert_eq!(pr_title(&prd, "001", "driver"), "driver");
-    }
-
-    #[test]
-    fn the_retro_keys_are_filled_by_name_and_score_stays() {
-        let dir = tempfile::tempdir().unwrap();
-        let retro = dir.path().join("retro.md");
-        fs::write(
-            &retro,
-            "---\nscore:\ngate_runs:\ngate_red:\ngate_minutes:\nci_cycles: 0\nslices:\ncheckpoints:\nbuild_minutes:\npolish_minutes:\nout_tokens:\ncache_read_tokens:\nstart_context:\npeak_context:\n---\n\n# Retro\n",
-        )
-        .unwrap();
-        let r = Report {
-            gate_runs: 2,
-            gate_red: 1,
-            gate_minutes: 1.5,
-            slices: 3,
-            checkpoints: 2,
-            build_minutes: 0.25,
-            out_tokens: 7,
-            peak_context: 9,
-            ..Report::default()
-        };
-        fill_retro(&retro, &r).unwrap();
-        let text = fs::read_to_string(&retro).unwrap();
-        assert!(text.starts_with("---\nscore:\ngate_runs: 2\ngate_red: 1\ngate_minutes: 1.50\nci_cycles: 0\nslices: 3\ncheckpoints: 2\nbuild_minutes: 0.25\npolish_minutes: 0.00\nout_tokens: 7\ncache_read_tokens: 0\nstart_context: 0\npeak_context: 9\n---\n"), "{text}");
-        assert!(text.ends_with("# Retro\n"));
     }
 
     #[test]
@@ -2375,26 +2275,27 @@ mod tests {
     }
 
     #[test]
-    fn the_frontmatter_status_is_read_unquoted() {
-        let prd =
-            "---\nstatus: \"shipped\"\nreviewed: 2026-10-10\n---\n\n# PRD-001\n\nstatus: draft\n";
-        assert_eq!(frontmatter_value(prd, "status").as_deref(), Some("shipped"));
-        assert_eq!(frontmatter_value(prd, "score"), None);
-        assert_eq!(frontmatter_value("# no frontmatter\n", "status"), None);
+    fn the_state_status_is_read_from_the_toml() {
+        let state = "status = \"shipped\"\nreviewed = \"2026-10-10\"\nshipped = \"2026-10-11\"\n";
+        assert!(shipped_in(state));
+        assert!(!shipped_in("status = \"in-progress\"\n"));
+        assert!(!shipped_in("# no state\nstatus = shipped\n"));
     }
 
     #[test]
-    fn the_fallback_template_has_every_key() {
-        let t = {
-            let mut t = String::from("---\nscore:\n");
-            for k in RETRO_KEYS {
-                t.push_str(&format!("{k}:\n"));
-            }
-            t
-        };
-        for k in RETRO_KEYS {
-            assert!(t.contains(&format!("\n{k}:")));
+    fn the_retro_template_has_no_key_list() {
+        let t = retro_template();
+        assert!(t.starts_with("# Retro — PRD-{NNN}\n"), "{t}");
+        let head = &t[..t.find("\n#").unwrap_or(0)];
+        assert!(
+            !head.lines().any(|l| l.trim_end().ends_with(':')),
+            "a key line before the first heading: {head}"
+        );
+        for gone in ["score:", "measure.py", "**Frontmatter**"] {
+            assert!(!t.contains(gone), "{gone}");
         }
-        assert_eq!(RETRO_KEYS.len(), 12);
+        for want in ["## Cost vs catch", "## Where I guessed", "## Score"] {
+            assert!(t.contains(want), "{want}");
+        }
     }
 }

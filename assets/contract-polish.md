@@ -3,19 +3,22 @@ You are the polish worker of PRD-{NNN}, unattended, inside a `factory` run. Nobo
 Read first, in order:
 1. the `# Autonomy` section below — what you decide, what you log, when you block, what you never do
 2. the `# Branch` section below — the default and feature branch names and the commits this branch adds; the review is of that diff
-3. the feature folder's `agent-log.md` § Traps and § Decisions, and `prd.md`
+3. the `# Log` section below, its `## Notes` and `## Decisions` first, and `prd.md`
+
+The feature's `state.toml` and `log.jsonl` are written through the tool only, never by hand. Each command below is one shell line; a body goes on stdin (`--body-file -`).
 
 Do:
 - run `/polish` **Unattended** on this branch, in full: the local review, the security and UX passes where they apply, the second opinion, the fixes. Every Unattended marker in the skill applies; no step waits for a human.
 - fix what the review finds in place, by the Autonomy § Tokens rules: batch lookups, read each file once, keep command output small. Run the inner-loop command when you change code; never background it.
-- in your last turn, before you return, write three things:
-  1. `{feature dir}/retro.md` — the prose sections of the template under `# Retro` (Cost vs catch, Where I guessed, What I wished existed, Project friction, Framework friction, Score). Keep the frontmatter block exactly as the template has it: the driver fills the numeric keys after you return and `score` is the owner's. Never put a number on those lines yourself.
-  2. the PR body, at the path named under `# PR body`, in the shape given there. It is outside the repo: write it with the Write tool at that absolute path.
-  3. `reviewed: {date}` in `{feature dir}/prd.md`'s frontmatter — the one line of `prd.md` the review is allowed to touch.
-- a decision the skill does not settle → an AD entry under `## Decisions` in `{feature dir}/agent-log.md`, shape `### AD-n — {question} · polish · {date}` with `**Chose:**`, `**Over:**`, `**Because:**`, `**Undo:**`, `**Review:** decide | fyi | no`. **Your AD numbers start at AD-{seed}** and count up.
+- in your last turn, before you return, do four things:
+  1. `{feature dir}/retro.md` — the prose sections of the template under `# Retro` (Cost vs catch, Where I guessed, What I wished existed, Project friction, Framework friction, Score). It has no frontmatter: the driver writes the numbers after you return.
+  2. the score, 1 to 5, through the store: `{factory} docs retro {NNN} --set score=4`, your own number in place of the 4. The `## Score` section of `retro.md` says why in one line.
+  3. the PR body, at the path named under `# PR body`, in the shape given there. It is outside the repo: write it with the Write tool at that absolute path.
+  4. `{factory} docs set {NNN} reviewed={date}`
+- a decision the skill does not settle → a decision in the log: `{factory} docs log add {NNN} --kind decision --phase polish --flag decide|fyi --title "{question}" --body-file -`, the body holding the `**Chose:**`, `**Over:**`, `**Because:**` and `**Undo:**` lines. `--flag` is the Autonomy `Review:` value: `decide` or `fyi`, left out for `no`.
 - do not commit: the driver commits what you wrote as `fix({NNN}): polish review fixes` when you return, then ships, pushes and opens the draft PR itself. A file you made with a command is yours only if you `git add` it by name or by its folder. Never run `docs ship`, `git push` or `gh`; never merge or mark a PR ready.
 
-Blocked → Autonomy § Blocker protocol steps 1-2, writing the `BLOCK-n` entry (lowest free number) under `## Blockers` in `{feature dir}/agent-log.md`, shape `### BLOCK-n — {what} · polish · open` with `**Happened:**`, `**Options:**`, `**Recommended:**`, and return. Do not push and do not notify.
+Blocked → Autonomy § Blocker protocol steps 1-2: `{factory} docs log add {NNN} --kind block --phase polish --title "{what}" --body-file -`, the body holding `**Happened:**`, `**Options:**` and `**Recommended:**`, and return. Do not push and do not notify.
 
 `FINDINGS` counts the review's findings after dedupe and triage: by severity as found, then how many this pass fixed and how many it parked. The driver stores the five numbers as a trend; leave the line out and they stay blank.
 
