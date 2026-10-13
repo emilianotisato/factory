@@ -3,7 +3,7 @@ score:
 gate_runs: 5
 gate_red: 2
 gate_minutes: 3.10
-ci_cycles: 0
+ci_cycles: 1
 slices: 11
 checkpoints: 3
 build_minutes: 98.35
