@@ -1,7 +1,8 @@
 ---
 slice: 06
-status: pending
+status: done
 depends_on: [1, 2, 3, 4, 5]
+lane: 1
 ---
 
 # Slice 06 — Retro numbers (FR-25)
@@ -9,7 +10,7 @@ depends_on: [1, 2, 3, 4, 5]
 **Source**: [`prd.md`](prd.md) → §7 FR-25, four decisions ("`factory retro <run>` writes a `## Numbers` section", "Changed lines are stored", "Comparison stays within the repo", "`measure.py` and `weigh.py` are retired"). **Depends on**: slices 01-05 — the section prints every figure they store: the own/subagent split (01, 02), the pack composition (03), the knobs and hypothesis (04), the quality block (05). Building it earlier would print `—` for most of its columns and need a second pass.
 **Created**: 2026-10-13 · **Status**: pending
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**: built 2026-10-13 · `runs.lines_added`, `lines_removed` (`Db::set_run_lines`), filled at ship from `git diff --shortstat <default_branch>..HEAD` (`retro::changed_lines`; a failed diff stores nulls and prints `ship: no changed lines stored — …`) · `src/retro.rs`: `numbers` (per-role table with a `total` row, knobs, hypothesis, the report's `quality:` line, `Pack (build)`, `Compared with` this run plus up to three earlier finished runs of the repo, from `Db::earlier_runs`), `write` (replaces between the markers or appends `## Numbers` once, a no-op when equal), `feature_dir` (`docs status` dir, else the `docs/features/<NNN>-*` glob) · `factory retro <run> [--file PATH]` (`src/cli/retro.rs`; `updated`/`unchanged`, exit 1 naming a missing `retro.md`) · `ship()` writes the section after `fill_retro` · `001-driver/qa-guide.md` step 6 names `factory report` and `factory retro` only. Tests: 4 unit tests in `src/retro.rs`; `tests/closeout.rs` ship test (lines, section per role = `--per-worker`, rerun `unchanged` byte-identical, exit 1 on a missing file) and `a_second_run_of_the_repo_compares_with_the_first`; `tests/cli.rs` lists nine subcommands. Inner loop: 3 runs, 1 red, 3.2 min; the red was `tests/commits.rs` `a_file_git_added_by_name_is_committed_beside_a_live_sibling` under load, untouched by this diff, green 5 of 5 alone and on the next full run (Trap). Preview on this machine, before CP-3: `factory retro 024-20261012-e894 --file <scratch>` prints build 9 / 9,946,537, fix 2 / 338,812, checkpoint 5 / 3,936,107, polish 1,948,573 own + 2,294,981 subagents = 4,243,554, total **18,465,008**, `Compared with: No earlier finished run in this repo.`; a second call prints `unchanged`. Deviations: `--file` (AD-601, decide), the cohort bound `<=` plus the run's own id excluded (AD-602), the `total` row is `weighted_tokens` (AD-603), the feature-docs retro template outside the repo still names `measure.py` (AD-604, decide), record files beyond task 5's list keep their mentions (AD-605). Left for CP-3: the FR-25 row (harness transcript, `factory retro 024-20261012-e894 --file docs/features/001-driver/retro.md` and its `git diff`, the qa-guide entry).
 
 **Slice**: After this slice the driver drafts the numbers of every retro itself, at ship, between markers it owns, and the owner can regenerate them for any stored run. Changed lines become a column so cost per line is a figure, not a shell call. The old `measure.py` step leaves the QA guide. It leaves the judgment to the prose above the section (prd §7, accepted cost) and the learning loop to a later PRD.
 

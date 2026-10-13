@@ -131,6 +131,10 @@ pub struct RunRow {
     pub decisions: Option<u32>,
     pub decide: Option<u32>,
     pub blocks: Option<u32>,
+    /// PRD-003 FR-25: the branch's changed lines against its base, stored at
+    /// ship; `None` before it or when `git diff` failed.
+    pub lines_added: Option<u64>,
+    pub lines_removed: Option<u64>,
 }
 
 /// One `workers` row.
@@ -318,6 +322,9 @@ impl Db {
             ("runs", "decisions", "INTEGER"),
             ("runs", "decide", "INTEGER"),
             ("runs", "blocks", "INTEGER"),
+            // FR-25: `git diff --shortstat <base>..HEAD` at ship.
+            ("runs", "lines_added", "INTEGER"),
+            ("runs", "lines_removed", "INTEGER"),
         ] {
             if !self.has_column(table, column)? {
                 tx.execute(
@@ -402,47 +409,46 @@ impl Db {
             .query_row(
                 "SELECT id, repo, feature, branch, started_at, finished_at, phase, budget_weighted_tokens, pr_url,
                         findings_high, findings_medium, findings_low, findings_fixed, findings_parked,
-                        decisions, decide, blocks, knobs, hypothesis
+                        decisions, decide, blocks, knobs, hypothesis, lines_added, lines_removed
                  FROM runs WHERE id = ?1",
                 [id],
-                |r| {
-                    Ok(RunRow {
-                        id: r.get(0)?,
-                        repo: r.get(1)?,
-                        feature: r.get(2)?,
-                        branch: r.get(3)?,
-                        started_at: r.get(4)?,
-                        finished_at: r.get(5)?,
-                        phase: r.get(6)?,
-                        budget_weighted_tokens: r.get::<_, i64>(7)? as u64,
-                        pr_url: r.get(8)?,
-                        knobs: r.get("knobs")?,
-                        hypothesis: r.get("hypothesis")?,
-                        findings: match (
-                            r.get(9)?,
-                            r.get(10)?,
-                            r.get(11)?,
-                            r.get(12)?,
-                            r.get(13)?,
-                        ) {
-                            (Some(high), Some(medium), Some(low), Some(fixed), Some(parked)) => {
-                                Some(Findings {
-                                    high,
-                                    medium,
-                                    low,
-                                    fixed,
-                                    parked,
-                                })
-                            }
-                            _ => None,
-                        },
-                        decisions: r.get(14)?,
-                        decide: r.get(15)?,
-                        blocks: r.get(16)?,
-                    })
-                },
+                run_from_row,
             )
             .optional()?)
+    }
+
+    /// PRD-003 FR-25: the `limit` runs of `repo` that finished by `before`
+    /// (a run's `started_at`), newest first, never `except` itself. A run
+    /// that finished later is never in it, so a rerun picks the same cohort.
+    /// The bound is inclusive: the store keeps whole seconds, and a run can
+    /// start in the second the one before it finished.
+    pub fn earlier_runs(
+        &self,
+        repo: &str,
+        before: &str,
+        except: &str,
+        limit: u32,
+    ) -> Result<Vec<RunRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, repo, feature, branch, started_at, finished_at, phase, budget_weighted_tokens, pr_url,
+                    findings_high, findings_medium, findings_low, findings_fixed, findings_parked,
+                    decisions, decide, blocks, knobs, hypothesis, lines_added, lines_removed
+             FROM runs
+             WHERE repo = ?1 AND phase = 'finished' AND finished_at IS NOT NULL AND finished_at <= ?2
+               AND id != ?3
+             ORDER BY finished_at DESC, id DESC LIMIT ?4",
+        )?;
+        let rows = stmt.query_map(params![repo, before, except, limit], run_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// FR-25: the changed lines at ship, or two nulls when `git diff` failed.
+    pub fn set_run_lines(&self, run_id: &str, lines: Option<(u64, u64)>) -> Result<()> {
+        self.conn.execute(
+            "UPDATE runs SET lines_added = ?2, lines_removed = ?3 WHERE id = ?1",
+            params![run_id, lines.map(|l| l.0 as i64), lines.map(|l| l.1 as i64)],
+        )?;
+        Ok(())
     }
 
     /// FR-24: the polish `FINDINGS` counts, or five nulls.
@@ -883,6 +889,43 @@ impl Db {
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
+}
+
+/// A `runs` row read by [`Db::run_row`] and [`Db::earlier_runs`]'s shared
+/// column list.
+fn run_from_row(r: &rusqlite::Row) -> rusqlite::Result<RunRow> {
+    Ok(RunRow {
+        id: r.get(0)?,
+        repo: r.get(1)?,
+        feature: r.get(2)?,
+        branch: r.get(3)?,
+        started_at: r.get(4)?,
+        finished_at: r.get(5)?,
+        phase: r.get(6)?,
+        budget_weighted_tokens: r.get::<_, i64>(7)? as u64,
+        pr_url: r.get(8)?,
+        knobs: r.get("knobs")?,
+        hypothesis: r.get("hypothesis")?,
+        findings: match (r.get(9)?, r.get(10)?, r.get(11)?, r.get(12)?, r.get(13)?) {
+            (Some(high), Some(medium), Some(low), Some(fixed), Some(parked)) => Some(Findings {
+                high,
+                medium,
+                low,
+                fixed,
+                parked,
+            }),
+            _ => None,
+        },
+        decisions: r.get(14)?,
+        decide: r.get(15)?,
+        blocks: r.get(16)?,
+        lines_added: r
+            .get::<_, Option<i64>>("lines_added")?
+            .map(|n| n.max(0) as u64),
+        lines_removed: r
+            .get::<_, Option<i64>>("lines_removed")?
+            .map(|n| n.max(0) as u64),
+    })
 }
 
 #[cfg(test)]

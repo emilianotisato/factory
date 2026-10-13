@@ -515,7 +515,7 @@ pub struct Workers {
     pub by_role: BTreeMap<String, u64>,
 }
 
-const ROLE_ORDER: [&str; 4] = ["build", "fix", "checkpoint", "polish"];
+pub const ROLE_ORDER: [&str; 4] = ["build", "fix", "checkpoint", "polish"];
 
 impl Workers {
     /// `5 (build 3, fix 1, checkpoint 1)`.
@@ -817,7 +817,7 @@ fn findings_text(f: Option<Findings>) -> String {
 /// `build opus/high default · … · polish sonnet/high project · budget
 /// 30000000 user · lanes 1 · factory 0.1.0 · claude 2.1.296`. A role whose
 /// effort came from another scope reads `project/user`; `—` for no knobs.
-fn knobs_text(k: Option<&Value>) -> String {
+pub fn knobs_text(k: Option<&Value>) -> String {
     let Some(k) = k else {
         return "—".to_string();
     };

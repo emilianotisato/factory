@@ -5,7 +5,8 @@
 //! Polish is one worker (`/polish` Unattended) that writes the retro prose
 //! and the PR body in its last turn; the driver commits what it wrote as
 //! `fix(NNN): polish review fixes`. Ship is `docs ship NNN`, the twelve numeric retro
-//! keys from the store (`factory report`'s rows, FR-8), `render --write` and
+//! keys from the store (`factory report`'s rows, FR-8), the `## Numbers`
+//! section (PRD-003 FR-25, [`crate::retro`]), `render --write` and
 //! `docs(NNN): ship PRD-NNN`. The PR is `gh pr create --draft --head <branch>`; a
 //! resume after `pr_opened` edits it instead. Ship and push happen only from
 //! the run's feature branch, never the default one. CI is bounded polls of
@@ -39,7 +40,7 @@ use crate::run::{Phase, Run, WorkerOutcome, WorkerRef};
 use crate::scheduler::{self, DEATH_CAP, append_under, say, set_frontmatter, short};
 use crate::stream::{Findings, Summary};
 use crate::worker::{self, Exit, Job, Worker};
-use crate::{Result, clock, metrics};
+use crate::{Result, clock, metrics, retro};
 
 /// The phases a closeout block names in its heading (autonomy § Blocker
 /// protocol step 2).
@@ -598,6 +599,17 @@ fn ship(
         log.decide.len() as u32,
         log.blocks,
     )?;
+    // FR-25: the changed lines against the base; a failed diff stores nulls
+    // and never stops the ship.
+    let base = default_branch(run, docs);
+    let lines = match retro::changed_lines(&repo, &base) {
+        Ok(l) => Some(l),
+        Err(e) => {
+            say(out, &format!("ship: no changed lines stored — {e}"))?;
+            None
+        }
+    };
+    run.db().set_run_lines(run.id().as_str(), lines)?;
     let report = report::compute(run.db(), run.id().as_str(), None)?;
     let retro = feature_dir.join("retro.md");
     if !retro.exists() {
@@ -614,6 +626,7 @@ fn ship(
         stood_in(run, STAND_IN_RETRO, &retro_rel)?;
     }
     fill_retro(&retro, &report)?;
+    retro::write(&retro, &retro::numbers(run.db(), run.id().as_str())?)?;
     docs.render_write()?;
     let want = commit::expand(&repo, &[board.dir.clone(), "docs/index.md".to_string()])?;
     let committed = commit::commit(

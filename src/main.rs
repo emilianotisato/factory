@@ -29,6 +29,8 @@ enum Command {
     Stop(cli::stop::StopArgs),
     /// Print the metrics report of a run
     Report(cli::report::ReportArgs),
+    /// Write a run's numbers into its feature's retro.md
+    Retro(cli::retro::RetroArgs),
     /// Code lookups for workers: definitions, references, outlines
     Ctx {
         #[command(subcommand)]
@@ -49,6 +51,7 @@ fn main() -> ExitCode {
         Command::Daemon(a) => cli::run::daemon(&a, &mut stdout(), &mut stderr()),
         Command::Answer(a) => cli::answer::answer(&a, &mut stdout()),
         Command::Report(a) => cli::report::report(&a, &mut stdout()),
+        Command::Retro(a) => cli::retro::retro(&a, &mut stdout()),
         Command::Wait(a) => cli::wait::wait(&a, &mut stdout(), &mut stderr()),
         Command::Status(a) => cli::status::status(&a, &mut stdout(), &mut stderr()),
         Command::Ctx { verb } => ctx::run(&verb, Path::new("."), &mut stdout(), &mut stderr()),

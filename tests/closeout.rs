@@ -8,6 +8,7 @@
 #[path = "harness/mod.rs"]
 mod harness;
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Output;
@@ -483,6 +484,44 @@ fn a_finished_board_polishes_ships_pushes_and_opens_the_draft_pr() {
         fx.read(RETRO).contains("## Cost vs catch"),
         "the worker's prose"
     );
+    // PRD-003 FR-25: the changed lines at ship, and the `## Numbers` section
+    // after the prose, its weighted figures `--per-worker`'s summed per role.
+    let ship_sha = sha_of(&fx, "docs(001): ship PRD-001");
+    let stat = fx.git(&["diff", "--shortstat", &format!("main..{ship_sha}^")]);
+    let row = db(&fx).run_row(&run_id(&dir)).unwrap().unwrap();
+    assert_eq!(
+        (row.lines_added, row.lines_removed),
+        (
+            Some(factory::retro::shortstat(&stat).0),
+            Some(factory::retro::shortstat(&stat).1)
+        ),
+        "{stat}"
+    );
+    assert!(row.lines_added.unwrap() > 0, "{stat}");
+    let text = fx.read(RETRO);
+    assert!(
+        text.find("## Cost vs catch") < text.find("## Numbers\n\n<!-- factory:numbers -->\n"),
+        "{text}"
+    );
+    let numbers = section(&text);
+    assert_eq!(
+        role_weighted(numbers),
+        per_worker_weighted(&fx, &run_id(&dir))
+    );
+    assert!(
+        numbers.contains("Compared with: No earlier finished run in this repo.\n"),
+        "{numbers}"
+    );
+    assert!(numbers.contains("Hypothesis: none\n"), "{numbers}");
+    assert!(numbers.contains("\nquality: gate_red 0 · "), "{numbers}");
+    let before = fs::read(fx.path().join(RETRO)).unwrap();
+    let out = factory(&fx, &["retro", &run_id(&dir)]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    assert_eq!(
+        stdout(&out),
+        format!("retro: {} unchanged\n", fx.path().join(RETRO).display())
+    );
+    assert_eq!(fs::read(fx.path().join(RETRO)).unwrap(), before);
     let body = fs::read_to_string(dir.join("pr-body.md")).unwrap();
     assert!(body.starts_with("## PRD-001 — Fixture\n"), "{body}");
 
@@ -554,6 +593,128 @@ fn a_finished_board_polishes_ships_pushes_and_opens_the_draft_pr() {
         "{}",
         stdout(&out)
     );
+
+    // No `retro.md`: `factory retro` refuses, naming the path.
+    fs::remove_file(fx.path().join(RETRO)).unwrap();
+    let out = factory(&fx, &["retro", &run_id(&dir)]);
+    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+    assert!(
+        stdout(&out).contains(&fx.path().join(RETRO).display().to_string()),
+        "{}",
+        stdout(&out)
+    );
+}
+
+/// PRD-003 FR-25: two runs of feature 001 in one repo, the board reset
+/// from `main` between them. The second run's section compares with the
+/// first, per slice and per changed line; the first's, regenerated, still
+/// has no earlier run, since its cohort is fixed by its `started_at`.
+#[test]
+fn a_second_run_of_the_repo_compares_with_the_first() {
+    let fx = Fixture::new("retro-compare");
+    fx.chain();
+    let plan = plan_with(&[step("polish")]);
+    fx.write_plan(&plan);
+    let first_dir = start(&fx);
+    wait_phase(&fx, &first_dir, "finished", 90);
+    let first = run_id(&first_dir);
+
+    // The board as `main` has it: PRD ready, slices pending, no checkpoints.
+    fx.git(&["rm", "-r", "-q", "docs"]);
+    fx.git(&["checkout", "main", "--", "docs"]);
+    fx.git(&["commit", "-q", "-m", "chore: reset the board"]);
+    fx.write_plan(&[plan.clone(), plan].concat());
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let mut dirs: Vec<PathBuf> = fs::read_dir(data_dir(&fx).join("runs"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| *p != first_dir)
+        .collect();
+    assert_eq!(dirs.len(), 1, "{dirs:?}");
+    let second_dir = dirs.remove(0);
+    wait_phase(&fx, &second_dir, "finished", 90);
+    let second = run_id(&second_dir);
+
+    let store = db(&fx);
+    let (a, b) = (
+        store.run_row(&first).unwrap().unwrap(),
+        store.run_row(&second).unwrap().unwrap(),
+    );
+    assert_eq!(a.repo, b.repo);
+    let report = factory(&fx, &["report", &first, "--json"]);
+    let weighted = serde_json::from_slice::<Value>(&report.stdout).unwrap()["weighted_tokens"]
+        .as_u64()
+        .unwrap();
+    let lines = a.lines_added.unwrap() + a.lines_removed.unwrap();
+    assert!(lines > 0, "{a:?}");
+    let text = fx.read(RETRO);
+    let numbers = section(&text);
+    let rows: Vec<&str> = numbers
+        .lines()
+        .skip_while(|l| *l != "Compared with:")
+        .filter(|l| l.starts_with("| 001-"))
+        .collect();
+    assert_eq!(rows.len(), 2, "{numbers}");
+    assert!(
+        rows[0].starts_with(&format!("| {second} (this run) | 001 | ")),
+        "{numbers}"
+    );
+    let per_slice = (weighted as f64 / 3.0).round();
+    let per_line = (weighted as f64 / lines as f64).round();
+    assert_eq!(
+        rows[1],
+        format!("| {first} | 001 | {weighted} | 3 | {per_slice} | {lines} | {per_line} |"),
+        "{numbers}"
+    );
+
+    let out = factory(&fx, &["retro", &first]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    assert!(stdout(&out).ends_with(" updated\n"), "{}", stdout(&out));
+    let text = fx.read(RETRO);
+    let numbers = section(&text);
+    assert!(
+        numbers.contains("Compared with: No earlier finished run in this repo.\n"),
+        "{numbers}"
+    );
+    assert!(!numbers.contains(&second), "{numbers}");
+}
+
+/// The text between the `## Numbers` markers.
+fn section(retro: &str) -> &str {
+    let open = "<!-- factory:numbers -->\n";
+    let from = retro.find(open).expect("no numbers marker") + open.len();
+    let to = retro
+        .find("<!-- /factory:numbers -->")
+        .expect("no end marker");
+    &retro[from..to]
+}
+
+/// The section's role rows: role → weighted (the fifth column).
+fn role_weighted(numbers: &str) -> BTreeMap<String, u64> {
+    numbers
+        .lines()
+        .take_while(|l| !l.is_empty())
+        .skip(2)
+        .map(|l| l.split('|').map(str::trim).collect::<Vec<_>>())
+        .filter(|cells| cells[1] != "total")
+        .map(|cells| (cells[1].to_string(), cells[5].parse().expect(cells[5])))
+        .collect()
+}
+
+/// `factory report <id> --json --per-worker`: `weighted_own + weighted_sub`
+/// summed per role.
+fn per_worker_weighted(fx: &Fixture, id: &str) -> BTreeMap<String, u64> {
+    let out = factory(fx, &["report", id, "--json", "--per-worker"]);
+    let r: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let mut by_role = BTreeMap::new();
+    for w in r["per_worker"].as_array().unwrap() {
+        *by_role
+            .entry(w["role"].as_str().unwrap().to_string())
+            .or_insert(0) +=
+            w["weighted_own"].as_u64().unwrap() + w["weighted_sub"].as_u64().unwrap_or(0);
+    }
+    by_role
 }
 
 /// AD-904: a polish worker that leaves out `skip` (`retro`, `body` or both)

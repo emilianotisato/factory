@@ -4,6 +4,7 @@
 pub mod answer;
 pub mod hook;
 pub mod report;
+pub mod retro;
 pub mod run;
 pub mod status;
 pub mod stop;

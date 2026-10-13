@@ -1,19 +1,20 @@
 //! The `factory` CLI surface (slice 01 task 1): the eight subcommands. Each
 //! said "not built yet" until its slice shaped it; `hook`, the last, left
 //! that list in slice 13 and is tested here by piping PreToolUse JSON into
-//! the binary with `FACTORY_PACK` set (slice 13 task 1).
+//! the binary with `FACTORY_PACK` set (slice 13 task 1). PRD-003 FR-25 adds
+//! `retro`, the ninth.
 use std::io::Write;
 use std::process::{Command, Stdio};
 
 use serde_json::{Value, json};
 
 const BIN: &str = env!("CARGO_BIN_EXE_factory");
-const SUBCOMMANDS: [&str; 8] = [
-    "run", "wait", "answer", "status", "stop", "report", "ctx", "hook",
+const SUBCOMMANDS: [&str; 9] = [
+    "run", "wait", "answer", "status", "stop", "report", "retro", "ctx", "hook",
 ];
 
 #[test]
-fn help_lists_the_eight_subcommands() {
+fn help_lists_every_subcommand() {
     let out = Command::new(BIN).arg("--help").output().unwrap();
     assert!(out.status.success());
     let help = String::from_utf8(out.stdout).unwrap();
