@@ -180,23 +180,25 @@ Run A launched as in the icg round: `claude --model opus --effort high --dangero
 - Review interview: the owner chose "only the 3 decisions" (AD-506, AD-901, AD-10001), all settled by 17:12. The 17 notes and 6 rubric proposals stay open. Run A parked one related gap in `ideas.md` (a padrón hit with no single condición fiscal still shows "Responsable inscripto").
 - QA stack: run A's harness stack had stopped after the build; restarted for the owner's QA (doctor clean, `arca_harness`, ARCA stub).
 
-### Questionnaire, run A
+### Questionnaire
 
-Answered by the owner 2026-10-12 at 17:18, before seeing any token or cost number, after manual QA in `wt-a` against the QA guide.
+Run A answered by the owner 2026-10-12 at 17:18, before seeing any token or cost number, after manual QA in `wt-a` against the QA guide. Run B answered at 20:36, after QA on run B's stack and its review, same conditions.
 
 | # | question | run A | run B |
 |---|---|---|---|
-| 1 | Does the result do what the PRD asked? | yes | |
-| 2 | Merge after normal review, at most small fixes? | yes | |
-| 3 | Decisions you would overturn | 1 | |
-| 4 | Code quality against the project's standard (1–5) | 5 | |
-| 5 | Tests prove the FRs, or only pass? | prove | |
-| 6 | Built but not asked for | none | |
-| 7 | Asked for but missing | none | |
-| 8 | Overall | ship as is | |
+| 1 | Does the result do what the PRD asked? | yes || yes |
+| 2 | Merge after normal review, at most small fixes? | yes || yes |
+| 3 | Decisions you would overturn | 1 || 2–3 |
+| 4 | Code quality against the project's standard (1–5) | 5 || 5 |
+| 5 | Tests prove the FRs, or only pass? | prove || prove |
+| 6 | Built but not asked for | none || none |
+| 7 | Asked for but missing | none || none |
+| 8 | Overall | ship as is || ship after minor fixes |
 - Run B launched at 17:19 after the owner's QA and questionnaire for run A; run A's QA stack was stopped first (fixed ports). Same flags and preflight answer as run A.
 
 ### Run B outcome
 
 - 9 slices, 5 checkpoints, two red gates fixed by the driver (`1d6c866` at CP-4, `be543a8` at CP-5), no owner question during the build. All slices built by about 19:50; polish fixes `e7bfca1`, ship `2e1727a`. Draft PR #65 at 20:17, about 3 h after launch. CI running at open.
 - The owner ran QA on run B's own harness stack while polish ran, and called it good.
+- Review interview: run B had no decision to make (18 fyi, 0 decide). The owner chose "Review all 18" (run A got only its 3 decide ADs, so run B's review was the closer look) and kept all 18 in the session; owner notes in `b50cbcb`, no code change. Yet the questionnaire says 2–3 decisions the owner would overturn: a judgment formed after QA, not voiced as a change in the review.
+- PR #65 still a draft at 20:36; CI re-running after the review push.
