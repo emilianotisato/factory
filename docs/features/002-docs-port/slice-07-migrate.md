@@ -1,7 +1,8 @@
 ---
 slice: 07
-status: pending
+status: done
 depends_on: [3, 6]
+lane: 4
 ---
 
 # Slice 07 — migrate (FR-16)
@@ -9,7 +10,12 @@ depends_on: [3, 6]
 **Source**: [`prd.md`](prd.md) → §6 FR-16 (all four decisions and the acceptance), §3 FR-13 (the target layout), §4 FR-14 (the entry fields), §9 FR-19 (`retros` rows, archive included), §7 FR-17 (`migrate` runs natively in v2), §12 QA plan (the FR-16 row), §14 (the owner migrates this repo, never the build). **Depends on**: 03 (the acceptance is "`factory docs check` is clean"), 06 (`Db::upsert_retro` writes the rows). It reads slice 01's `frontmatter.rs`, `project.rs`, `board.rs` and slice 02's `log::Entry`.
 **Created**: 2026-10-13 · **Status**: pending
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+- **Built**: `src/docs/migrate.rs` (the v2 log reader with bodies, Owner, Resolution and notes; `project_toml`, `index_md`, `prd_md`, `slice_state`; `blame_dates`; link `unlink`; `retro_rows`; `plan`, `clean`, `run`; 18 unit tests), the `migrate [--dry]` arm in `src/cli/docs.rs`, `Fixture::v2`, `Fixture::v2_with_docs` and `Fixture::data_dir` in `tests/harness/mod.rs`, the checked-in `tests/fixture/v2/` (built by node, then hand-edited as task 7 lists; its `README.md` says how), and `tests/migrate.rs` (task 7 steps 1-5, plus the `#[ignore]` PRD-001 copy proof).
+- **Plan order**: refusals first (no index, v3, v1, `[docs]` present, an unmerged fragment, a duplicate id, a non-date `reviewed`), then every rewrite, `docs/.gitignore`, the `retros` rows, and `project.toml` last. `run` opens the store before any write; `--dry` never opens it (the test checks the data dir stays empty).
+- **The PRD-001 copy** (`cargo test --test migrate -- --include-ignored`, on `git archive HEAD docs` with the building slices' fragments merged in the copy, AD-706): green. 001 has 145 decisions, 7 checkpoints, one resolved `BLOCK-201`, 13 `[slices.N]` all `done`; the 001 and 003 `retros` rows equal their frontmatter. `factory docs check` after it: `0 errors, 2 warnings`, `W-STATUS-BEHIND` (002 is `ready` while slices build, true of this repo's docs at HEAD) and `W-IDEAS-V2` (slice 08's).
+- **Inner loop** (`cargo test`): 3 foreground runs, 2 red, about 2.5 min (6 s, 82 s, 52 s). Both reds were slice 09's driver switch in flight in the shared worktree (`tests/checkpoints.rs`, `lanes.rs`, `run.rs` …, reading `agent-log.md` on the v3 fixture); the green run is 409 passed, 0 failed. Before it, 7 targeted runs on my targets (a private `CARGO_TARGET_DIR`, and a scratch copy for the lib tests while slice 09's `commit.rs` tests did not build), 3 red. They caught a double `&mut` borrow in `retro_rows`; the copy test meeting the building slices' unmerged fragments (AD-706); a fenced template `### BLOCK-1` counted as a heading; and three unit-test assumptions about this repo's HEAD (lifecycle prose saying "Next free number wins", 002's log no longer the bare template, `**Status**:` inside 002's body prose). `rustfmt` and `clippy` clean on my files.
+- **Deviations**: AD-701 (`type` takes the first word when it is one of the four, else `check` fails on every v2 PRD of this repo), AD-702 (flagged and decide ids come out ascending), AD-706 (the copy test merges fragments first).
 
 **Slice**: After this slice `factory docs migrate --dry` prints, for any v2 repo, every file it would create, rewrite or delete and every `retros` row it would write, and writes nothing. `factory docs migrate` on a clean `docs/` turns that plan into one uncommitted diff: the v3 layout of FR-13, no `agent-log.md`, and one `retros` row per `retro.md`. `retro.md`, the archive and `docs/ideas.md` (slice 08) are left as they are. Undo is git; a re-run after the undo is byte-identical. It is proven on a v2 fixture checked in at `tests/fixture/v2/` and on a copy of this repo's `docs/`.
 
