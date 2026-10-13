@@ -1,7 +1,8 @@
 ---
 slice: 03
-status: pending
+status: done
 depends_on: []
+lane: 2
 ---
 
 # Slice 03 — Pack composition (FR-22)
@@ -9,7 +10,11 @@ depends_on: []
 **Source**: [`prd.md`](prd.md) → §4 FR-22 ("`workers.pack_parts`, JSON, one entry per section the pack wrote"). **Depends on**: — (independent of slices 01, 02, 04 and 05: its own column, its own report line; it only appends a tuple to the shared migration list in `src/db.rs`).
 **Created**: 2026-10-13 · **Status**: pending
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**: 2026-10-12, built tasks 1-4; task 5 (Prove) waits for CP-2.
+- **Built**: `pack::Part { section, chars }` and `Pack.parts`. The five builders now write their body through one `assemble(header, sections)`: each section runs from its `# Heading` to the blank line before the next, the last one ends with the final newline, and its name is the heading in lower snake case. The pack text is byte-for-byte what it was, so the stub's role and run-dir reads are untouched. `workers.pack_parts` (TEXT, JSON) is set by `Db::set_worker_pack_parts` from `record()`, beside `pack_files`, and read into `WorkerRow.pack_parts`. `report` has a new last key, `pack_by_role`. The text reads `build slice … outline … total … start_context … · checkpoint … · polish …`. The JSON is role → `{sections: {name: mean} in pack order, total, start_context}`, or null for a role with no `pack_parts` row.
+- **Tests**: `pack::tests::every_pack_kind_measures_the_sections_it_wrote` builds all five kinds against a temp repo with the vendored `docs.mjs`. It checks that the parts sum to the text after the header (including non-ASCII chars), that a slice pack without a block has no `block_and_answer` entry and with one has it, and that the polish pack starts at `branch`. `report::tests::pack_by_role_means_each_section_in_pack_order` covers the means, the order, null rows and `—`. `tests/metrics.rs` `every_worker_row_records_what_its_pack_was_made_of` covers every row of `finished_run()` against the pack text the stub logged for its session, the three section lists (`slice…`, `gate_transcript…`, `branch…`), and `pack_by_role` in both `--json` and text.
+- **Inner loop**: 2 full runs, 1 red, about 11 min. Run 1 (`cargo test`, 9m50s) was red and then SIGTERMed in `tests/knobs.rs`, slice 04's untracked in-progress file (`a_project_file_sets_the_polish_model_and_the_row_says_so` asserts `effort_source`, nothing of this slice). Run 2, every target except `knobs`, was green in 1m03s: 137 lib tests and 17 test binaries. The new tests each passed on their first run.
+- **Deviations**: none from the tasks. AD-301 to AD-303 cover what the slice left open.
 
 **Slice**: After this slice every worker row says how many characters each section of its pack held, and `report` prints per role the mean per section and the pack total beside `start_context`, so the next pack experiment can see what the 45k start is made of. It leaves the retro table that prints the builders' composition to slice 06.
 

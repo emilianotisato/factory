@@ -62,6 +62,41 @@ pub struct Pack {
     /// `§n` sections the slice cites that `prd.md` does not have (§4: a
     /// warning event, not a crash).
     pub missing_sections: Vec<u32>,
+    /// Each section the pack wrote, in order, with its size (PRD-003 §4
+    /// FR-22): what the worker's starting context is made of.
+    pub parts: Vec<Part>,
+}
+
+/// One `# Heading` section of a written pack: its name in lower snake case
+/// and its characters, heading through the blank line before the next one.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Part {
+    pub section: String,
+    pub chars: usize,
+}
+
+/// `header` then `sections`, each starting at its `# Heading` line, joined
+/// by a blank line that counts toward the section before it; the final
+/// newline counts toward the last. The header is no part, so the parts sum
+/// to the text after it.
+fn assemble(header: String, sections: Vec<String>) -> (String, Vec<Part>) {
+    let mut text = header;
+    let mut parts = Vec::new();
+    let last = sections.len().saturating_sub(1);
+    for (i, mut section) in sections.into_iter().enumerate() {
+        section.push_str(if i == last { "\n" } else { "\n\n" });
+        let heading = section.lines().next().unwrap_or("");
+        parts.push(Part {
+            section: heading
+                .trim_start_matches('#')
+                .trim()
+                .to_lowercase()
+                .replace(' ', "_"),
+            chars: section.chars().count(),
+        });
+        text.push_str(&section);
+    }
+    (text, parts)
 }
 
 /// The `# Block and answer` section of an answered slice's pack (PRD §5
@@ -114,13 +149,13 @@ impl Pack {
         let nn = format!("{slice:02}");
 
         let cited = cited_sections(&slice_text);
-        let mut sections = String::new();
+        let mut prd_sections = String::new();
         let mut missing = Vec::new();
         for n in &cited {
             match cut_section(&prd_text, *n) {
                 Some(text) => {
-                    sections.push_str(text.trim_end());
-                    sections.push_str("\n\n");
+                    prd_sections.push_str(text.trim_end());
+                    prd_sections.push_str("\n\n");
                 }
                 None => missing.push(*n),
             }
@@ -142,18 +177,20 @@ impl Pack {
             .replace("{NN}", &nn)
             .replace("{seed}", &format!("{slice}01"));
 
-        let mut text = format!("<!-- factory-pack files: {} -->\n\n", files.join(","));
-        text.push_str(&format!("# Slice\n\n<!-- {slice_rel} -->\n\n"));
-        text.push_str(slice_text.trim_end());
+        let mut sections = vec![format!(
+            "# Slice\n\n<!-- {slice_rel} -->\n\n{}",
+            slice_text.trim_end()
+        )];
         if let Some(b) = block {
-            text.push_str(&format!(
-                "\n\n# Block and answer\n\n<!-- {}: {} -->\n\n",
-                b.source, b.id
+            sections.push(format!(
+                "# Block and answer\n\n<!-- {}: {} -->\n\n{}",
+                b.source,
+                b.id,
+                b.text.trim_end()
             ));
-            text.push_str(b.text.trim_end());
         }
-        text.push_str(&format!(
-            "\n\n# PRD sections\n\n<!-- {prd_rel}: {} -->\n\n",
+        sections.push(format!(
+            "# PRD sections\n\n<!-- {prd_rel}: {} -->\n\n{}",
             if cited.is_empty() {
                 "the slice cites no section".to_string()
             } else {
@@ -162,20 +199,18 @@ impl Pack {
                     .map(|n| format!("§{n}"))
                     .collect::<Vec<_>>()
                     .join(", ")
-            }
+            },
+            prd_sections.trim_end()
         ));
-        text.push_str(sections.trim_end());
-        text.push_str("\n\n# Outline\n\n");
-        text.push_str(recon.text.trim_end());
-        text.push_str("\n\n# Lookup\n\n");
-        text.push_str(&lookup());
-        text.push_str("\n\n# Contract\n\n");
-        text.push_str(contract.trim_end());
-        text.push_str("\n\n# Autonomy\n\n");
-        text.push_str(AUTONOMY.trim_end());
-        text.push_str("\n\n# Inner loop\n\n");
-        text.push_str(inner.trim());
-        text.push('\n');
+        sections.push(format!("# Outline\n\n{}", recon.text.trim_end()));
+        sections.push(format!("# Lookup\n\n{}", lookup()));
+        sections.push(format!("# Contract\n\n{}", contract.trim_end()));
+        sections.push(format!("# Autonomy\n\n{}", AUTONOMY.trim_end()));
+        sections.push(format!("# Inner loop\n\n{}", inner.trim()));
+        let (text, parts) = assemble(
+            format!("<!-- factory-pack files: {} -->\n\n", files.join(",")),
+            sections,
+        );
 
         fs::create_dir_all(packs_dir).map_err(io(format!("mkdir {}", packs_dir.display())))?;
         let path = packs_dir.join(format!("slice-{nn}-{spawn}.md"));
@@ -187,6 +222,7 @@ impl Pack {
             ),
             files,
             missing_sections: missing,
+            parts,
         })
     }
 }
@@ -214,26 +250,22 @@ impl Pack {
             .replace("{n}", &n.to_string())
             .replace("{seed}", &format!("9{n}01"));
 
-        let mut text = String::from("<!-- factory-pack files: -->\n\n");
-        text.push_str(&format!(
-            "# Gate failure\n\n<!-- checkpoint {n}, gate attempt {attempt}: {} -->\n\n",
-            gate_log.display()
-        ));
-        text.push_str(&format!(
-            "Gate command: `{}`\nInner command: `{}`\n\n",
-            gate.trim(),
-            inner.trim()
-        ));
-        text.push_str("```\n");
-        text.push_str(tail(&log_text, TAIL_LINES).trim_end());
-        text.push_str("\n```");
-        text.push_str("\n\n# Contract\n\n");
-        text.push_str(contract.trim_end());
-        text.push_str("\n\n# Autonomy\n\n");
-        text.push_str(AUTONOMY.trim_end());
-        text.push_str("\n\n# Inner loop\n\n");
-        text.push_str(inner.trim());
-        text.push('\n');
+        let (text, parts) = assemble(
+            "<!-- factory-pack files: -->\n\n".to_string(),
+            vec![
+                format!(
+                    "# Gate failure\n\n<!-- checkpoint {n}, gate attempt {attempt}: {} -->\n\n\
+                     Gate command: `{}`\nInner command: `{}`\n\n```\n{}\n```",
+                    gate_log.display(),
+                    gate.trim(),
+                    inner.trim(),
+                    tail(&log_text, TAIL_LINES).trim_end()
+                ),
+                format!("# Contract\n\n{}", contract.trim_end()),
+                format!("# Autonomy\n\n{}", AUTONOMY.trim_end()),
+                format!("# Inner loop\n\n{}", inner.trim()),
+            ],
+        );
 
         fs::create_dir_all(packs_dir).map_err(io(format!("mkdir {}", packs_dir.display())))?;
         let path = packs_dir.join(format!("fix-{n}-{spawn}.md"));
@@ -245,6 +277,7 @@ impl Pack {
             ),
             files: Vec::new(),
             missing_sections: Vec::new(),
+            parts,
         })
     }
 
@@ -311,26 +344,24 @@ impl Pack {
         }
         files.push(prd_rel.clone());
 
-        let mut text = format!("<!-- factory-pack files: {} -->\n\n", files.join(","));
-        text.push_str(&format!(
-            "# Gate transcript\n\n<!-- checkpoint {n}, {}: {} -->\n\n",
-            if cached { "cached green" } else { "green" },
-            gate_log.display()
-        ));
-        text.push_str("```\n");
-        text.push_str(tail(&log_text, TAIL_LINES).trim_end());
-        text.push_str("\n```");
-        text.push_str("\n\n# Covered slices\n\n");
-        text.push_str(slices.trim_end());
-        text.push_str(&format!(
-            "\n\n# QA rows\n\n<!-- {prd_rel}: § QA plan -->\n\n"
-        ));
-        text.push_str(qa_rows(&prd_text, &named).trim_end());
-        text.push_str("\n\n# Contract\n\n");
-        text.push_str(contract.trim_end());
-        text.push_str("\n\n# Autonomy\n\n");
-        text.push_str(AUTONOMY.trim_end());
-        text.push('\n');
+        let (text, parts) = assemble(
+            format!("<!-- factory-pack files: {} -->\n\n", files.join(",")),
+            vec![
+                format!(
+                    "# Gate transcript\n\n<!-- checkpoint {n}, {}: {} -->\n\n```\n{}\n```",
+                    if cached { "cached green" } else { "green" },
+                    gate_log.display(),
+                    tail(&log_text, TAIL_LINES).trim_end()
+                ),
+                format!("# Covered slices\n\n{}", slices.trim_end()),
+                format!(
+                    "# QA rows\n\n<!-- {prd_rel}: § QA plan -->\n\n{}",
+                    qa_rows(&prd_text, &named).trim_end()
+                ),
+                format!("# Contract\n\n{}", contract.trim_end()),
+                format!("# Autonomy\n\n{}", AUTONOMY.trim_end()),
+            ],
+        );
 
         fs::create_dir_all(packs_dir).map_err(io(format!("mkdir {}", packs_dir.display())))?;
         let path = packs_dir.join(format!("checkpoint-{n}-{spawn}.md"));
@@ -342,6 +373,7 @@ impl Pack {
             ),
             files,
             missing_sections: Vec::new(),
+            parts,
         })
     }
 
@@ -382,35 +414,40 @@ impl Pack {
             .replace("{seed}", "9901");
         let files = vec![prd_rel.clone()];
 
-        let mut text = format!(
-            "<!-- factory-pack files: {} -->\n<!-- run dir: {} -->\n\n",
-            files.join(","),
-            run_dir.display()
-        );
-        text.push_str(&format!(
+        let branch = format!(
             "# Branch\n\nDefault branch: `{default_branch}` · feature branch: `{feature_branch}`\n\n\
              Commits this branch adds (`git log --oneline {default_branch}..HEAD`):\n\n```\n{log}\n```"
-        ));
-        text.push_str(&format!(
-            "\n\n# Retro\n\n<!-- {}/retro.md -->\n\n\
+        );
+        let retro = format!(
+            "# Retro\n\n<!-- {}/retro.md -->\n\n\
              Write the prose sections. The driver fills `gate_runs`, `gate_red`, `gate_minutes`, \
              `ci_cycles`, `slices`, `checkpoints`, `build_minutes`, `polish_minutes`, `out_tokens`, \
              `cache_read_tokens`, `start_context` and `peak_context` from its store after you return; \
              `score` is the owner's. The template:\n\n````markdown\n{}\n````",
             board.dir,
             retro_template.replace("{NNN}", &feature).trim_end()
-        ));
-        text.push_str(&format!(
-            "\n\n# PR body\n\n<!-- write: {} -->\n\nWrite the PR body to `{}` (outside the repo) in this shape:\n\n{}",
+        );
+        let pr_body = format!(
+            "# PR body\n\n<!-- write: {} -->\n\nWrite the PR body to `{}` (outside the repo) in this shape:\n\n{}",
             body_path.display(),
             body_path.display(),
             PR_BODY.trim_end()
-        ));
-        text.push_str("\n\n# Contract\n\n");
-        text.push_str(contract.trim_end());
-        text.push_str("\n\n# Autonomy\n\n");
-        text.push_str(AUTONOMY.trim_end());
-        text.push('\n');
+        );
+        // Two header lines: the polish stub reads the run dir from the second.
+        let (text, parts) = assemble(
+            format!(
+                "<!-- factory-pack files: {} -->\n<!-- run dir: {} -->\n\n",
+                files.join(","),
+                run_dir.display()
+            ),
+            vec![
+                branch,
+                retro,
+                pr_body,
+                format!("# Contract\n\n{}", contract.trim_end()),
+                format!("# Autonomy\n\n{}", AUTONOMY.trim_end()),
+            ],
+        );
 
         fs::create_dir_all(packs_dir).map_err(io(format!("mkdir {}", packs_dir.display())))?;
         let path = packs_dir.join(format!("polish-{spawn}.md"));
@@ -420,6 +457,7 @@ impl Pack {
             prompt: "/polish".to_string(),
             files,
             missing_sections: Vec::new(),
+            parts,
         })
     }
 
@@ -447,25 +485,21 @@ impl Pack {
             .replace("{check}", check)
             .replace("{seed}", &format!("8{round}01"));
 
-        let mut text = String::from("<!-- factory-pack files: -->\n\n");
-        text.push_str(&format!(
-            "# CI failure\n\n<!-- round {round}, attempt {attempt}, check: {check} -->\n\n"
-        ));
-        text.push_str(&format!(
-            "Failing check: `{check}`\nGate command: `{}`\nInner command: `{}`\n\n",
-            gate.trim(),
-            inner.trim()
-        ));
-        text.push_str("```\n");
-        text.push_str(tail(log_text, TAIL_LINES).trim_end());
-        text.push_str("\n```");
-        text.push_str("\n\n# Contract\n\n");
-        text.push_str(contract.trim_end());
-        text.push_str("\n\n# Autonomy\n\n");
-        text.push_str(AUTONOMY.trim_end());
-        text.push_str("\n\n# Inner loop\n\n");
-        text.push_str(inner.trim());
-        text.push('\n');
+        let (text, parts) = assemble(
+            "<!-- factory-pack files: -->\n\n".to_string(),
+            vec![
+                format!(
+                    "# CI failure\n\n<!-- round {round}, attempt {attempt}, check: {check} -->\n\n\
+                     Failing check: `{check}`\nGate command: `{}`\nInner command: `{}`\n\n```\n{}\n```",
+                    gate.trim(),
+                    inner.trim(),
+                    tail(log_text, TAIL_LINES).trim_end()
+                ),
+                format!("# Contract\n\n{}", contract.trim_end()),
+                format!("# Autonomy\n\n{}", AUTONOMY.trim_end()),
+                format!("# Inner loop\n\n{}", inner.trim()),
+            ],
+        );
 
         fs::create_dir_all(packs_dir).map_err(io(format!("mkdir {}", packs_dir.display())))?;
         let path = packs_dir.join(format!("ci-fix-{round}-{spawn}.md"));
@@ -477,6 +511,7 @@ impl Pack {
             ),
             files: Vec::new(),
             missing_sections: Vec::new(),
+            parts,
         })
     }
 }
@@ -866,5 +901,111 @@ mod tests {
         assert_eq!(cut_section(prd, 2), Some("## 2. Users\n\nthem\n"));
         assert_eq!(cut_section(prd, 3), None);
         assert_eq!(cut_section(prd, 11), None);
+    }
+
+    /// The parts' chars against the pack file: its text after the header
+    /// comment lines and the blank line that ends them.
+    fn sections_of(pack: &Pack) -> Vec<&str> {
+        let text = fs::read_to_string(&pack.path).unwrap();
+        let (_, body) = text.split_once("\n\n").unwrap();
+        let sum: usize = pack.parts.iter().map(|p| p.chars).sum();
+        assert_eq!(sum, body.chars().count(), "{}", pack.path.display());
+        pack.parts.iter().map(|p| p.section.as_str()).collect()
+    }
+
+    #[test]
+    fn every_pack_kind_measures_the_sections_it_wrote() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        let dir = "docs/features/001-x";
+        fs::create_dir_all(repo.join(".docs/bin")).unwrap();
+        fs::create_dir_all(repo.join(dir)).unwrap();
+        fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixture/.docs/bin/docs.mjs"),
+            repo.join(".docs/bin/docs.mjs"),
+        )
+        .unwrap();
+        fs::write(repo.join("gate.sh"), "").unwrap();
+        fs::write(
+            repo.join("docs/index.md"),
+            "---\nframework: 2\ngate: ./gate.sh\ninner: ./gate.sh --inner\n---\n# Index\n",
+        )
+        .unwrap();
+        fs::write(
+            repo.join(dir).join("prd.md"),
+            "# PRD — é\n\n## 4. FR-1\n\nthe rule — ünïcode\n\n## 9. QA plan\n\n| FR-1 | run → ok | t | no |\n",
+        )
+        .unwrap();
+        fs::write(
+            repo.join(dir).join("slice-01-a.md"),
+            "# Slice 01 — a\n\n**Source**: §4\n\n### 2. Prove\nFR-1 row\n",
+        )
+        .unwrap();
+        let docs = Docs::locate(repo).unwrap();
+        let board = Status {
+            number: 1,
+            dir: dir.to_string(),
+            slices: vec![crate::docs::Slice {
+                number: 1,
+                file: "001-x/slice-01-a.md".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let packs = repo.join("packs");
+        let log = repo.join("gate.log");
+        fs::write(&log, "ok — done\n").unwrap();
+
+        let slice = Pack::for_slice(&docs, &board, 1, &packs, 1).unwrap();
+        assert_eq!(
+            sections_of(&slice),
+            [
+                "slice",
+                "prd_sections",
+                "outline",
+                "lookup",
+                "contract",
+                "autonomy",
+                "inner_loop"
+            ]
+        );
+        let block = BlockSection {
+            id: "BLOCK-101".to_string(),
+            source: format!("{dir}/agent-log.md"),
+            text: "### BLOCK-101 — x\n\n**Resolution**: y".to_string(),
+        };
+        let answered = Pack::for_slice_with(&docs, &board, 1, &packs, 2, Some(&block)).unwrap();
+        assert_eq!(
+            sections_of(&answered)[..3],
+            ["slice", "block_and_answer", "prd_sections"]
+        );
+
+        let fix = Pack::for_fix(&docs, &board, 1, 1, &log, &packs, 1).unwrap();
+        assert_eq!(
+            sections_of(&fix),
+            ["gate_failure", "contract", "autonomy", "inner_loop"]
+        );
+        let cp = Pack::for_checkpoint(&docs, &board, 1, &[1], &log, false, &packs, 1).unwrap();
+        assert_eq!(
+            sections_of(&cp),
+            [
+                "gate_transcript",
+                "covered_slices",
+                "qa_rows",
+                "contract",
+                "autonomy"
+            ]
+        );
+        let polish =
+            Pack::for_polish(&docs, &board, repo, "main", "feat/x", "# Retro", &packs, 1).unwrap();
+        assert_eq!(
+            sections_of(&polish),
+            ["branch", "retro", "pr_body", "contract", "autonomy"]
+        );
+        let ci = Pack::for_ci_fix(&docs, &board, 1, 1, "test", "red — ✗\n", &packs, 1).unwrap();
+        assert_eq!(
+            sections_of(&ci),
+            ["ci_failure", "contract", "autonomy", "inner_loop"]
+        );
     }
 }

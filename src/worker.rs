@@ -404,6 +404,7 @@ fn record(
         &started_at,
     )?;
     run.db().set_worker_pack_files(row_id, &pack.files)?;
+    run.db().set_worker_pack_parts(row_id, &pack.parts)?;
     run.add_worker(WorkerRef {
         slice,
         checkpoint: job.checkpoint(),
