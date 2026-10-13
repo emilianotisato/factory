@@ -11,6 +11,9 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 use factory::db::{Db, RetroRow};
+use factory::docs::ideas;
+use factory::docs::migrate::blame_dates;
+use factory::docs::migrate_ideas::{self, Place};
 use factory::run::Run;
 use harness::Fixture;
 use serde_json::Value;
@@ -378,6 +381,186 @@ fn the_v2_fixture_migrates_and_the_undo_restores_it() {
     assert!(!project.contains("[docs]"), "a refused run wrote {project}");
 }
 
+/// A bullet's body as `ideas.md` holds it: the bytes after the bold title,
+/// one separator stripped, then its continuation lines.
+fn source_body(src: &str, title: &str) -> String {
+    let lines: Vec<&str> = src.lines().collect();
+    let at = lines
+        .iter()
+        .position(|l| l.starts_with(&format!("- **{title}")))
+        .unwrap_or_else(|| panic!("no bullet {title}"));
+    let first = &lines[at][4..];
+    let rest = &first[first.find("**").unwrap() + 2..];
+    let rest = rest
+        .strip_prefix(" — ")
+        .or_else(|| rest.strip_prefix(' '))
+        .unwrap_or(rest);
+    let mut body = format!("{rest}\n");
+    for l in &lines[at + 1..] {
+        if l.trim().is_empty() || l.starts_with("- ") || l.starts_with('#') {
+            break;
+        }
+        body.push_str(l);
+        body.push('\n');
+    }
+    body
+}
+
+/// FR-20's migration half on the fixture's `ideas.md` (slice 08): one
+/// bullet per placement rule, the Parked guess listed first, the Graduated
+/// bullet left out, each body byte for byte. The undo and re-run of
+/// `docs/ideas/` is the fixture test's snapshot, which covers all of `docs/`.
+#[test]
+fn ideas_migrate() {
+    let fx = Fixture::v2("migrate-ideas");
+    let source = fx.git(&["show", "HEAD:docs/ideas.md"]);
+
+    // 1. The dry run: the guess first, every bullet and drop named.
+    let o = migrate(&fx, true);
+    let (plan, err) = text(&o);
+    assert_eq!(o.status.code(), Some(0), "migrate --dry\n{plan}\n{err}");
+    eprintln!("--- migrate --dry\n{plan}");
+    let rows: Vec<&str> = plan.lines().collect();
+    assert!(
+        rows[0].starts_with("guess ") && rows[0].contains("\"Echo\""),
+        "{plan}"
+    );
+    let row = |title: &str| {
+        let q = format!("\"{title}\"");
+        let hits: Vec<&&str> = rows.iter().filter(|r| r.contains(&q)).collect();
+        assert_eq!(hits.len(), 1, "{title}:\n{plan}");
+        hits[0].to_string()
+    };
+    for (title, start) in [
+        ("Alpha", "idea 2026-09-01-alpha open \""),
+        ("Bravo", "idea 2026-09-30-bravo open high \""),
+        ("Charlie", "idea 2026-09-15-charlie owed \""),
+        ("Echo", "guess 2026-09-22-echo open \""),
+        ("Delta", "idea not migrated \""),
+    ] {
+        assert!(row(title).starts_with(start), "{}", row(title));
+    }
+    let drops: Vec<&&str> = rows
+        .iter()
+        .filter(|r| r.starts_with("drop docs/ideas.md:"))
+        .collect();
+    assert_eq!(
+        drops.len(),
+        7,
+        "five rules and two placeholders: {drops:#?}"
+    );
+    assert_eq!(
+        drops.iter().filter(|r| r.contains("_(")).count(),
+        2,
+        "{drops:#?}"
+    );
+    assert!(rows.contains(&"delete docs/ideas.md"), "{plan}");
+
+    // 2. The real run: four files and the README, the fields, the bodies.
+    let o = migrate(&fx, false);
+    assert_eq!(o.status.code(), Some(0), "migrate: {:?}", text(&o));
+    let mut names: Vec<String> = fs::read_dir(fx.path().join("docs/ideas"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        [
+            "2026-09-01-alpha.md",
+            "2026-09-15-charlie.md",
+            "2026-09-22-echo.md",
+            "2026-09-30-bravo.md",
+            "README.md"
+        ]
+    );
+    assert!(!fx.path().join("docs/ideas.md").exists());
+    let list = json(
+        fx.factory_docs_output(&["idea", "list", "--json"]),
+        "idea list --json",
+    );
+    let list = list.as_array().unwrap();
+    assert_eq!(list.len(), 4, "{list:#?}");
+    let null = Value::Null;
+    for (id, title, state, added, origin, retrigger, priority) in [
+        (
+            "2026-09-01-alpha",
+            "Alpha",
+            "open",
+            "2026-09-01",
+            None,
+            None,
+            None,
+        ),
+        (
+            "2026-09-30-bravo",
+            "Bravo",
+            "open",
+            "2026-09-30",
+            None,
+            Some("when PRD-002 ships."),
+            Some("high"),
+        ),
+        (
+            "2026-09-15-charlie",
+            "Charlie",
+            "owed",
+            "2026-09-15",
+            Some("PRD-001 polish"),
+            None,
+            None,
+        ),
+        (
+            "2026-09-22-echo",
+            "Echo",
+            "open",
+            "2026-09-22",
+            Some("PRD-001 polish review"),
+            None,
+            None,
+        ),
+    ] {
+        let r = list
+            .iter()
+            .find(|r| r["id"] == id)
+            .unwrap_or_else(|| panic!("{id}"));
+        let opt = |k: &str, v: Option<&str>| {
+            let want = v.map_or(null.clone(), Value::from);
+            assert_eq!(r[k], want, "{id} {k}");
+        };
+        assert_eq!(
+            (&r["title"], &r["state"], &r["added"]),
+            (
+                &Value::from(title),
+                &Value::from(state),
+                &Value::from(added)
+            ),
+            "{id}"
+        );
+        opt("origin", origin);
+        opt("retrigger", retrigger);
+        opt("priority", priority);
+        let idea = ideas::read(&fx.path().join(format!("docs/ideas/{id}.md"))).unwrap();
+        assert_eq!(idea.body, source_body(&source, title), "{id} body");
+    }
+    assert!(
+        source_body(&source, "Alpha").contains("\n  and its second line"),
+        "the multi-line body"
+    );
+    let index = fx.read("docs/index.md");
+    assert!(
+        index.contains("[`ideas.md`](ideas/README.md)") && !index.contains("](ideas.md"),
+        "the index link"
+    );
+
+    // 3. `check` is clean, with no warning at all.
+    let o = fx.factory_docs_output(&["check"]);
+    let (out, err) = text(&o);
+    eprintln!("--- factory docs check\n{out}{err}");
+    assert_eq!(o.status.code(), Some(0), "check\n{out}\n{err}");
+    assert!(!out.contains("W-") && !err.contains("W-"), "{out}{err}");
+}
+
 /// FR-16 on a copy of this repo's own `docs/` at HEAD: PRD-001's 145
 /// decisions, 7 checkpoints, 1 block and 13 slices. Ignored in the inner
 /// loop because the live docs change with every commit; it runs at the
@@ -465,4 +648,63 @@ fn prd_001_copy_migrates() {
             fs::read_to_string(src.path().join(format!("docs/features/{dir}/retro.md"))).unwrap();
         row_matches(&row(&fx, n), &retro);
     }
+
+    // FR-20: the ideas, one file each, and the five links on the README.
+    let ideas: Vec<&String> = tree
+        .keys()
+        .filter(|k| k.starts_with("docs/ideas/"))
+        .collect();
+    assert!(tree.contains_key("docs/ideas/README.md"));
+    assert_eq!(ideas.len(), 20, "{ideas:#?}");
+    assert!(!tree.contains_key("docs/ideas.md"));
+    for (file, link, n) in [
+        ("docs/index.md", "](ideas/README.md)", 1),
+        (
+            "docs/features/001-driver/prd.md",
+            "](../../ideas/README.md)",
+            1,
+        ),
+        (
+            "docs/features/002-docs-port/prd.md",
+            "](../../ideas/README.md)",
+            3,
+        ),
+    ] {
+        let text = String::from_utf8_lossy(&tree[file]).into_owned();
+        assert_eq!(text.matches(link).count(), n, "{file}");
+    }
+
+    // The copy has one commit, so its blame dates are the copy's: read the
+    // dates of this repo's own `ideas.md` in place instead, read-only.
+    let here = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let own = here.join(migrate_ideas::FILE);
+    let text = fs::read_to_string(&own).unwrap();
+    let blame = blame_dates(here, &own).unwrap();
+    let head = Command::new("git")
+        .args(["log", "-1", "--format=%cs", "HEAD"])
+        .current_dir(here)
+        .output()
+        .unwrap();
+    let head = String::from_utf8_lossy(&head.stdout).trim().to_string();
+    let (mut phrase, mut blamed) = (0, 0);
+    for b in migrate_ideas::parse(&text) {
+        if !matches!(b.place, Place::Open { .. }) {
+            continue;
+        }
+        let f = migrate_ideas::fields(&b, &blame[b.line - 1]);
+        eprintln!("idea {} {} line {}: {}", f.added, f.from, b.line, b.title);
+        if f.from == "git blame" {
+            blamed += 1;
+            assert!(
+                f.added.as_str() >= "2026-10-09" && f.added <= head,
+                "line {}: {} outside 2026-10-09..{head}",
+                b.line,
+                f.added
+            );
+        } else {
+            phrase += 1;
+            assert!(b.body.contains(&f.added), "line {}: {}", b.line, f.added);
+        }
+    }
+    assert_eq!((phrase, blamed), (8, 11));
 }
