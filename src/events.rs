@@ -46,8 +46,8 @@ pub enum EventKind {
     },
     /// The board read `blocked` after the worker exited, or the driver blocked
     /// the slice itself after a second dead worker (FR-1). `block_id` and
-    /// `question` come from the open `BLOCK-n` entry in the slice's fragment
-    /// (FR-3); absent when the fragment has none.
+    /// `question` come from the slice's open `block` entry in `log.jsonl`
+    /// (FR-3); absent when the log has none.
     SliceBlocked {
         slice: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -114,14 +114,15 @@ pub enum EventKind {
         error: String,
     },
     /// FR-5: the slice's commit — the stream's written paths plus the slice
-    /// file and its fragment, by pathspec; `files` is what was staged.
+    /// file, `state.toml` and `log.jsonl`, by pathspec; `files` is what was
+    /// staged.
     SliceCommitted {
         slice: u32,
         sha: String,
         files: Vec<String>,
     },
     /// Files that appeared in the tree while the worker ran and that no tool
-    /// call named: listed in the fragment under `## Untracked leftovers`,
+    /// call named: listed in a `note` entry of `log.jsonl`,
     /// never committed (FR-5).
     UntrackedLeftovers {
         slice: u32,
@@ -152,19 +153,20 @@ pub enum EventKind {
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         blobs: BTreeMap<String, String>,
     },
-    /// The stream names one of the three files no worker may write
-    /// (`prd.md`, `agent-log.md`, `docs/index.md`); left out of the commit.
+    /// The stream names one of the files no worker may write
+    /// ([`crate::commit::protected_files`]: the feature's `prd.md`, and
+    /// `docs/index.md` from v2 runs); left out of the commit.
     WorkerWroteProtectedFile {
         slice: u32,
         path: String,
     },
-    /// The gate is green at a checkpoint: `docs log merge` folded the
-    /// fragments into `agent-log.md` (FR-5); the checkpoint commit lands them.
+    /// Emitted by runs before PRD-002 (`docs log merge` folded the slice
+    /// logs); kept so old event logs read.
     LogMerged {
         fragments: Vec<String>,
     },
-    /// `docs log merge` refused (an AD clash): `block_id` is the `BLOCK-n`
-    /// written to `agent-log.md` for the owner; the run parks on it.
+    /// Emitted by runs before PRD-002 (`docs log merge` refused); kept so
+    /// old event logs read.
     MergeRefused {
         block_id: String,
         detail: String,
@@ -220,9 +222,9 @@ pub enum EventKind {
         session_id: String,
         pid: u32,
     },
-    /// The checkpoint stopped on the owner: three reds in a row, a refused
-    /// merge, two dead checkpoint workers or the worker's own block.
-    /// `block_id` is the `BLOCK-n` in `agent-log.md`.
+    /// The checkpoint stopped on the owner: three reds in a row, two dead
+    /// checkpoint workers or the worker's own block. `block_id` is the
+    /// `BLOCK-n` in `log.jsonl`.
     CheckpointBlocked {
         n: u32,
         block_id: String,
@@ -580,5 +582,19 @@ mod tests {
         assert_eq!(fs::read_to_string(run.dir().join(FILE)).unwrap(), "");
         assert!(run.db().events(run.id().as_str()).unwrap().is_empty());
         assert_eq!(EventKind::Unknown.name(), "unknown");
+    }
+
+    /// Lines copied from PRD-003's and PRD-001's `events.jsonl`: kinds no
+    /// run emits since PRD-002, still read by `factory report` and the cockpit.
+    #[test]
+    fn the_legacy_log_merge_events_still_read() {
+        let merged = r#"{"fragments":["docs/features/003-observatory/log-slice-01.md","docs/features/003-observatory/log-slice-02.md"],"kind":"log_merged","seq":26,"ts":"2026-10-13T05:42:10Z"}"#;
+        let refused = r#"{"block_id":"BLOCK-1","detail":"✗ log-slice-03.md has content above its first `## ` heading\n2 problem(s) — nothing merged.","kind":"merge_refused","seq":26,"ts":"2026-10-11T22:55:57Z"}"#;
+        let e: Event = serde_json::from_str(merged).unwrap();
+        assert!(matches!(e.kind, EventKind::LogMerged { ref fragments } if fragments.len() == 2));
+        let e: Event = serde_json::from_str(refused).unwrap();
+        assert!(
+            matches!(e.kind, EventKind::MergeRefused { ref block_id, .. } if block_id == "BLOCK-1")
+        );
     }
 }

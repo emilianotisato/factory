@@ -61,13 +61,15 @@ pub fn line(ev: &Event, feature: &str) -> Option<String> {
                 &format!("slice {slice:02}"),
                 question.as_deref().unwrap_or(""),
             ),
-            None => format!("slice {slice:02} blocked with no BLOCK-n in its fragment"),
+            None => format!("slice {slice:02} blocked with no open block in the log"),
         },
         EventKind::CheckpointBlocked {
             n,
             block_id,
             question,
         } => block_line(block_id, &format!("checkpoint {n}"), question),
+        // Legacy: only runs before PRD-002 merged fragment logs, so only
+        // their event logs hold this kind.
         EventKind::MergeRefused { block_id, detail } => block_line(
             block_id,
             "log merge refused",

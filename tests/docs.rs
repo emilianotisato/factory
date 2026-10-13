@@ -1,21 +1,20 @@
-//! The `docs.mjs` wrapper against the fixture (PRD-001 slice 02 task 1).
+//! `crate::docs::Docs`, the driver's in-process docs library, against the v3
+//! fixture (PRD-002 FR-18, slice 09 task 1). It replaced the `docs.mjs`
+//! subprocess wrapper PRD-001 slice 02 tested here.
 #[path = "harness/mod.rs"]
 mod harness;
 
 use std::fs;
 
-use factory::docs::Docs;
+use factory::docs::log::{Entry, Kind};
+use factory::docs::{Docs, Ship, V2_HINT};
+use factory::error::Error;
 use harness::Fixture;
 
 #[test]
-fn status_and_preflight_deserialize_from_the_fixture() {
+fn status_and_preflight_come_from_the_fixture() {
     let fx = Fixture::new("docs");
-    let docs = Docs::locate(fx.path()).unwrap();
-    assert!(
-        docs.tool().starts_with(fx.path()),
-        "the vendored tool wins: {}",
-        docs.tool().display()
-    );
+    let docs = Docs::open(fx.path()).unwrap();
 
     let s = docs.status("001").unwrap();
     assert_eq!((s.number, s.slug.as_str()), (1, "fixture"));
@@ -32,17 +31,18 @@ fn status_and_preflight_deserialize_from_the_fixture() {
     assert!(!s.checkpoint_due && !s.all_done && s.sliced && s.qa_plan);
     assert_eq!(s.branch.as_deref(), Some("main"));
     assert_eq!(s.log.decisions, 0);
+    // In process and through the binary, one board.
+    assert_eq!(
+        serde_json::to_value(&s).unwrap(),
+        fx.factory_docs_json("status")
+    );
 
     let (p, code) = docs.preflight("001").unwrap();
     assert_eq!(code, 0, "{p:?}");
     assert!(p.pass && p.refuse.is_empty() && p.ask.is_empty(), "{p:?}");
-    // The tool always has something to judge (the harness line is unconditional).
     assert!(!p.judge.is_empty(), "{p:?}");
     assert_eq!(p.branch.current.as_deref(), Some("main"));
-    assert_eq!(p.branch.default.as_deref(), Some("main"));
     assert_eq!(p.branch.feature.as_deref(), Some("feat/fixture"));
-    assert_eq!(p.branch.alt.as_deref(), Some("feat/001-fixture"));
-    assert!(!p.branch.feature_exists);
     assert_eq!(p.feature.as_ref().map(|f| f.number), Some(1));
 
     assert_eq!(docs.gate().unwrap(), "./gate.sh");
@@ -63,30 +63,67 @@ fn status_and_preflight_deserialize_from_the_fixture() {
 }
 
 #[test]
-fn errors_name_the_command_and_quote_stderr() {
-    let fx = Fixture::new("docs-err");
-    let docs = Docs::locate(fx.path()).unwrap();
-    let err = docs.status("999").unwrap_err().to_string();
-    assert!(err.contains("docs status 999 --json"), "{err}");
-    assert!(err.contains("999"), "{err}");
-    // `docs new` creates agent-log.md (AD-503), so a fresh fixture has a log
-    // and no fragments: the tool says so and exits 0.
-    let log = fx.path().join("docs/features/001-fixture/agent-log.md");
-    assert!(log.exists(), "docs new created the log");
-    let merge = docs.log_merge("001").unwrap();
-    assert_eq!(merge.code, 0, "{merge:?}");
-    assert!(merge.stdout.contains("nothing to merge"), "{merge:?}");
-    // `log merge` hands back the tool's verdict rather than erroring: with
-    // the log gone, the tool says so and exits 2.
-    fs::remove_file(&log).unwrap();
-    let merge = docs.log_merge("001").unwrap();
-    assert_eq!(merge.code, 2, "{merge:?}");
-    assert!(merge.stderr.contains("nothing to merge into"), "{merge:?}");
+fn the_driver_writes_state_and_log_in_process() {
+    let fx = Fixture::new("docs-write");
+    let docs = Docs::open(fx.path()).unwrap();
 
-    let missing = Docs::locate(fx.path().join("nowhere").as_path());
-    // Either the skill's global copy exists on this machine or nothing does;
-    // both are a located tool or a clear error, never a panic.
-    if let Err(e) = missing {
-        assert!(e.to_string().contains("no docs.mjs"), "{e}");
+    docs.set_slice_status("001", 2, "building").unwrap();
+    let s = docs.status("001").unwrap();
+    assert_eq!(s.slices[1].status.as_deref(), Some("building"));
+    assert_eq!(fx.slice_status(2), "building");
+
+    let mut block = Entry::new(Kind::Block, "Which row?", "**Happened:** x");
+    block.phase = Some("checkpoint".into());
+    assert_eq!(
+        docs.log_add("001", block).unwrap().as_deref(),
+        Some("BLOCK-1")
+    );
+    let s = docs.status("001").unwrap();
+    assert_eq!(s.open_blocks.len(), 1, "{:?}", s.open_blocks);
+    assert_eq!(s.open_blocks[0].n, 1);
+    assert_eq!(s.open_blocks[0].phase.as_deref(), Some("checkpoint"));
+    let entries = docs.log_entries("001").unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].id.as_deref(), Some("BLOCK-1"));
+
+    docs.set_reviewed("001", "2026-10-13").unwrap();
+    assert_eq!(fx.state().reviewed.as_deref(), Some("2026-10-13"));
+}
+
+#[test]
+fn ship_refuses_a_feature_with_a_pending_slice() {
+    let fx = Fixture::new("docs-ship");
+    let docs = Docs::open(fx.path()).unwrap();
+    match docs.ship("001").unwrap() {
+        Ship::Refused(text) => assert!(text.contains("(01, 02, 03)"), "{text}"),
+        other => panic!("ship with three pending slices: {other:?}"),
     }
+    assert_eq!(fx.state().status, "ready");
+}
+
+#[test]
+fn a_v2_repo_is_refused_with_the_migrate_hint() {
+    let fx = Fixture::v2("docs-v2");
+    match Docs::open(fx.path()) {
+        Err(Error::NotV3(hint)) => {
+            assert_eq!(hint, V2_HINT);
+            assert_eq!(hint, "docs are v2: run `factory docs migrate --dry`");
+        }
+        Err(e) => panic!("a v2 repo: {e}"),
+        Ok(_) => panic!("a v2 repo opened"),
+    }
+}
+
+#[test]
+fn a_repo_off_the_framework_is_refused_and_an_unknown_feature_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    match Docs::open(dir.path()) {
+        Err(Error::NotV3(text)) => assert_ne!(text, V2_HINT),
+        Err(e) => panic!("no docs at all: {e}"),
+        Ok(_) => panic!("a bare dir opened"),
+    }
+    let fx = Fixture::new("docs-err");
+    let docs = Docs::open(fx.path()).unwrap();
+    let err = docs.status("999").unwrap_err().to_string();
+    assert!(err.contains("999"), "{err}");
 }

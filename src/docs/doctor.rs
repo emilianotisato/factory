@@ -4,8 +4,16 @@
 use std::fs;
 use std::path::Path;
 
-use super::{ToolOutput, check, frontmatter, project};
+use super::{check, frontmatter, project};
 use crate::Result;
+
+/// What `docs.mjs check` returned in a v2 or v1 repo.
+#[derive(Debug, Clone)]
+pub struct ToolOutput {
+    pub stdout: String,
+    pub stderr: String,
+    pub code: i32,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Framework {

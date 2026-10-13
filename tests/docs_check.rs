@@ -69,7 +69,7 @@ fn doctor_names_the_framework_and_never_writes() {
     assert!(out.contains("gate           ./gate.sh\n"), "{out}");
     assert!(out.contains("drift          clean\n"), "{out}");
 
-    let fx = Fixture::new("check-doctor-v2");
+    let fx = Fixture::v2("check-doctor-v2");
     let out = doctor_in(fx.path());
     assert!(
         out.starts_with("Framework      v2 (run factory docs migrate --dry)\n"),
@@ -134,7 +134,7 @@ fn check_exits_on_errors_not_warnings() {
 
 #[test]
 fn a_v2_check_goes_to_docs_mjs_while_doctor_stays_native() {
-    let fx = Fixture::new("check-v2-route");
+    let fx = Fixture::v2("check-v2-route");
     fs::copy(
         fixture_src().join("stub-docs/docs.mjs"),
         fx.path().join(".docs/bin/docs.mjs"),
@@ -160,10 +160,10 @@ fn a_v2_check_goes_to_docs_mjs_while_doctor_stays_native() {
     );
 }
 
-/// FR-18: the shim keeps one `node` call site; `src/docs/mod.rs` holds the
-/// wrapper's until slice 09 removes it.
+/// FR-18, slice 09 task 8: the v2 shim in `src/cli/docs.rs` is the one
+/// `node` call site left in `src/` — one line, one file.
 #[test]
-fn node_is_spawned_in_one_place_per_module() {
+fn node_is_spawned_in_one_place() {
     fn walk(dir: &Path, hits: &mut Vec<String>) {
         for e in fs::read_dir(dir).unwrap() {
             let p = e.unwrap().path();
@@ -190,5 +190,5 @@ fn node_is_spawned_in_one_place_per_module() {
         })
         .collect();
     hits.sort();
-    assert_eq!(hits, ["cli/docs.rs", "docs/mod.rs"]);
+    assert_eq!(hits, ["cli/docs.rs"]);
 }

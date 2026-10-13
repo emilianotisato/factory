@@ -22,6 +22,29 @@ pub const FEATURE: &str = "001";
 pub const FEATURE_DIR: &str = "docs/features/001-fixture";
 
 /// `tests/stubs/`: the stub `claude` and `gh`.
+/// PRD-002 FR-18: a worker pack's contract calls the tool through the
+/// driver binary's absolute path, and names nothing of the v2 log: no seed,
+/// no `agent-log.md`, no fragment, no render.
+pub fn assert_v3_contract(pack: &str) {
+    let contract = &pack[pack.find("\n# Contract\n").expect("a # Contract section")..];
+    let bin = env!("CARGO_BIN_EXE_factory");
+    assert!(
+        contract.contains(&format!("`{bin} docs ")),
+        "no `{bin} docs …` in the contract:\n{contract}"
+    );
+    for bad in [
+        "{seed}",
+        "{factory}",
+        "agent-log.md",
+        "log-slice-",
+        "log-fix-",
+        "log-ci-",
+        "render --write",
+    ] {
+        assert!(!pack.contains(bad), "{bad:?} in the pack:\n{pack}");
+    }
+}
+
 pub fn stubs_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/stubs")
 }

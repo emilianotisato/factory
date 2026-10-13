@@ -16,7 +16,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::ctx::{def, outline, print, walk};
-use crate::docs::{Docs, Status};
+use crate::docs::{Docs, Status, log};
 use crate::error::io;
 use crate::{Error, Result};
 
@@ -28,6 +28,9 @@ pub const CONTRACT_CI_FIX: &str = include_str!("../assets/contract-ci-fix.md");
 /// The PR body shape `/deliver` fills (`deliver/pr-body.md`), this repo's copy.
 pub const PR_BODY: &str = include_str!("../assets/pr-body.md");
 pub const AUTONOMY: &str = include_str!("../assets/autonomy.md");
+/// The retro template (PRD-002 FR-19): the heading and the prose sections,
+/// no frontmatter. The numbers live in the store and the `## Numbers` section.
+pub const RETRO: &str = include_str!("../assets/retro.md");
 /// The `# Lookup` section: the three `ctx` verbs, an example each, the rule.
 pub const LOOKUP: &str = include_str!("../assets/lookup.md");
 
@@ -39,6 +42,29 @@ pub fn lookup() -> String {
         "`factory ctx ",
         &format!("`{} ctx ", crate::paths::factory_command()),
     )
+}
+
+/// A contract with each `{factory}` spelled as [`lookup`] spells the `ctx`
+/// verbs: the running binary's absolute path (PRD-002 FR-18).
+fn contract(text: &str) -> String {
+    text.replace("{factory}", &crate::paths::factory_command())
+}
+
+/// The `# Log` section: the feature's `log.jsonl` as `factory docs log show
+/// NNN` prints it, byte for byte, or "none yet" for an empty log. It takes
+/// the place of the `agent-log.md` a worker used to open (PRD-002 FR-18).
+fn log_section(docs: &Docs, board: &Status) -> Result<String> {
+    let (entries, _) = log::entries(&docs.root().join(&board.dir))?;
+    let text = if entries.is_empty() {
+        "none yet".to_string()
+    } else {
+        log::render(&entries, log::Filter::All, board.number)
+    };
+    Ok(format!(
+        "# Log\n\n<!-- factory docs log show {:03} -->\n\n{}",
+        board.number,
+        text.trim_end()
+    ))
 }
 
 /// The most characters of outlines `# Outline` carries (§14 decision 3).
@@ -172,10 +198,10 @@ impl Pack {
                 files.push(f.clone());
             }
         }
-        let contract = CONTRACT
+        let contract = contract(CONTRACT)
             .replace("{NNN}", &feature)
             .replace("{NN}", &nn)
-            .replace("{seed}", &format!("{slice}01"));
+            .replace("{N}", &slice.to_string());
 
         let mut sections = vec![format!(
             "# Slice\n\n<!-- {slice_rel} -->\n\n{}",
@@ -202,6 +228,7 @@ impl Pack {
             },
             prd_sections.trim_end()
         ));
+        sections.push(log_section(docs, board)?);
         sections.push(format!("# Outline\n\n{}", recon.text.trim_end()));
         sections.push(format!("# Lookup\n\n{}", lookup()));
         sections.push(format!("# Contract\n\n{}", contract.trim_end()));
@@ -245,10 +272,9 @@ impl Pack {
         let gate = docs.gate()?;
         let inner = docs.gate_inner()?;
         let log_text = read(gate_log)?;
-        let contract = CONTRACT_FIX
+        let contract = contract(CONTRACT_FIX)
             .replace("{NNN}", &feature)
-            .replace("{n}", &n.to_string())
-            .replace("{seed}", &format!("9{n}01"));
+            .replace("{n}", &n.to_string());
 
         let (text, parts) = assemble(
             "<!-- factory-pack files: -->\n\n".to_string(),
@@ -261,6 +287,7 @@ impl Pack {
                     inner.trim(),
                     tail(&log_text, TAIL_LINES).trim_end()
                 ),
+                log_section(docs, board)?,
                 format!("# Contract\n\n{}", contract.trim_end()),
                 format!("# Autonomy\n\n{}", AUTONOMY.trim_end()),
                 format!("# Inner loop\n\n{}", inner.trim()),
@@ -308,7 +335,7 @@ impl Pack {
             .map(|c| format!("{c:02}"))
             .collect::<Vec<_>>()
             .join(", ");
-        let contract = CONTRACT_CHECKPOINT
+        let contract = contract(CONTRACT_CHECKPOINT)
             .replace("{NNN}", &feature)
             .replace("{n}", &n.to_string())
             .replace("{NN}", &format!("{last:02}"))
@@ -358,6 +385,7 @@ impl Pack {
                     "# QA rows\n\n<!-- {prd_rel}: § QA plan -->\n\n{}",
                     qa_rows(&prd_text, &named).trim_end()
                 ),
+                log_section(docs, board)?,
                 format!("# Contract\n\n{}", contract.trim_end()),
                 format!("# Autonomy\n\n{}", AUTONOMY.trim_end()),
             ],
@@ -407,11 +435,10 @@ impl Pack {
             .filter(|t| !t.is_empty())
             .unwrap_or_else(|| "(no commits listed)".to_string());
         let body_path = run_dir.join("pr-body.md");
-        let contract = CONTRACT_POLISH
+        let contract = contract(CONTRACT_POLISH)
             .replace("{NNN}", &feature)
             .replace("{feature dir}", &board.dir)
-            .replace("{date}", &crate::clock::today())
-            .replace("{seed}", "9901");
+            .replace("{date}", &crate::docs::scaffold::today());
         let files = vec![prd_rel.clone()];
 
         let branch = format!(
@@ -420,10 +447,9 @@ impl Pack {
         );
         let retro = format!(
             "# Retro\n\n<!-- {}/retro.md -->\n\n\
-             Write the prose sections. The driver fills `gate_runs`, `gate_red`, `gate_minutes`, \
-             `ci_cycles`, `slices`, `checkpoints`, `build_minutes`, `polish_minutes`, `out_tokens`, \
-             `cache_read_tokens`, `start_context` and `peak_context` from its store after you return; \
-             `score` is the owner's. The template:\n\n````markdown\n{}\n````",
+             Write the prose sections. After you return, the driver writes the `## Numbers` \
+             section and the feature's row in its store; put no number of its in the file. \
+             The template:\n\n````markdown\n{}\n````",
             board.dir,
             retro_template.replace("{NNN}", &feature).trim_end()
         );
@@ -442,6 +468,7 @@ impl Pack {
             ),
             vec![
                 branch,
+                log_section(docs, board)?,
                 retro,
                 pr_body,
                 format!("# Contract\n\n{}", contract.trim_end()),
@@ -479,11 +506,10 @@ impl Pack {
         let feature = format!("{:03}", board.number);
         let gate = docs.gate()?;
         let inner = docs.gate_inner()?;
-        let contract = CONTRACT_CI_FIX
+        let contract = contract(CONTRACT_CI_FIX)
             .replace("{NNN}", &feature)
             .replace("{round}", &round.to_string())
-            .replace("{check}", check)
-            .replace("{seed}", &format!("8{round}01"));
+            .replace("{check}", check);
 
         let (text, parts) = assemble(
             "<!-- factory-pack files: -->\n\n".to_string(),
@@ -495,6 +521,7 @@ impl Pack {
                     inner.trim(),
                     tail(log_text, TAIL_LINES).trim_end()
                 ),
+                log_section(docs, board)?,
                 format!("# Contract\n\n{}", contract.trim_end()),
                 format!("# Autonomy\n\n{}", AUTONOMY.trim_end()),
                 format!("# Inner loop\n\n{}", inner.trim()),
@@ -918,17 +945,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let repo = tmp.path();
         let dir = "docs/features/001-x";
-        fs::create_dir_all(repo.join(".docs/bin")).unwrap();
         fs::create_dir_all(repo.join(dir)).unwrap();
-        fs::copy(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixture/.docs/bin/docs.mjs"),
-            repo.join(".docs/bin/docs.mjs"),
-        )
-        .unwrap();
         fs::write(repo.join("gate.sh"), "").unwrap();
         fs::write(
-            repo.join("docs/index.md"),
-            "---\nframework: 2\ngate: ./gate.sh\ninner: ./gate.sh --inner\n---\n# Index\n",
+            repo.join("docs/project.toml"),
+            "[docs]\nframework = 3\ngate = \"./gate.sh\"\ninner = \"./gate.sh --inner\"\n",
         )
         .unwrap();
         fs::write(
@@ -941,7 +962,7 @@ mod tests {
             "# Slice 01 — a\n\n**Source**: §4\n\n### 2. Prove\nFR-1 row\n",
         )
         .unwrap();
-        let docs = Docs::locate(repo).unwrap();
+        let docs = Docs::open(repo).unwrap();
         let board = Status {
             number: 1,
             dir: dir.to_string(),
@@ -962,6 +983,7 @@ mod tests {
             [
                 "slice",
                 "prd_sections",
+                "log",
                 "outline",
                 "lookup",
                 "contract",
@@ -970,9 +992,9 @@ mod tests {
             ]
         );
         let block = BlockSection {
-            id: "BLOCK-101".to_string(),
-            source: format!("{dir}/agent-log.md"),
-            text: "### BLOCK-101 — x\n\n**Resolution**: y".to_string(),
+            id: "BLOCK-1".to_string(),
+            source: format!("{dir}/log.jsonl"),
+            text: "### BLOCK-1 — x\n\n**Resolution**: y".to_string(),
         };
         let answered = Pack::for_slice_with(&docs, &board, 1, &packs, 2, Some(&block)).unwrap();
         assert_eq!(
@@ -983,7 +1005,7 @@ mod tests {
         let fix = Pack::for_fix(&docs, &board, 1, 1, &log, &packs, 1).unwrap();
         assert_eq!(
             sections_of(&fix),
-            ["gate_failure", "contract", "autonomy", "inner_loop"]
+            ["gate_failure", "log", "contract", "autonomy", "inner_loop"]
         );
         let cp = Pack::for_checkpoint(&docs, &board, 1, &[1], &log, false, &packs, 1).unwrap();
         assert_eq!(
@@ -992,6 +1014,7 @@ mod tests {
                 "gate_transcript",
                 "covered_slices",
                 "qa_rows",
+                "log",
                 "contract",
                 "autonomy"
             ]
@@ -1000,12 +1023,17 @@ mod tests {
             Pack::for_polish(&docs, &board, repo, "main", "feat/x", "# Retro", &packs, 1).unwrap();
         assert_eq!(
             sections_of(&polish),
-            ["branch", "retro", "pr_body", "contract", "autonomy"]
+            ["branch", "log", "retro", "pr_body", "contract", "autonomy"]
         );
         let ci = Pack::for_ci_fix(&docs, &board, 1, 1, "test", "red — ✗\n", &packs, 1).unwrap();
         assert_eq!(
             sections_of(&ci),
-            ["ci_failure", "contract", "autonomy", "inner_loop"]
+            ["ci_failure", "log", "contract", "autonomy", "inner_loop"]
+        );
+        let text = fs::read_to_string(&slice.path).unwrap();
+        assert!(
+            text.contains("# Log\n\n<!-- factory docs log show 001 -->\n\nnone yet\n\n# Outline"),
+            "{text}"
         );
     }
 }
