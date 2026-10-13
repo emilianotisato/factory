@@ -15,7 +15,7 @@ Written by `/deliver` in the closeout commit, from the agent's side of the run.
 | Polish — security pass | | | |
 | Polish — UX pass | | | |
 | Polish — second opinion ({model}) | | | |
-| test-cleanup | | | |
+| prune | | | |
 | {any other step, tier or lint rule that cost real time} | | | |
 
 **A "cut" or "tune" names what the step failed to catch.** A step that caught a real defect is never "cut" on cost alone — say "tune", and how.
