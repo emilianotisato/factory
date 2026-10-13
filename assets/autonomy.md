@@ -31,8 +31,8 @@ Ask it of every choice the work forces that nobody wrote down: **does the PRD, t
 | Where | Attended | Unattended |
 |---|---|---|
 | `/polish` **Fix** | fix without asking | same |
-| `/polish`, `/ux-review` **Ask** | one AskUserQuestion round | the test above: an `AD` when local and reversible — taste always lands here — otherwise **block** |
-| `/polish`, `/ux-review` **Park** | `factory docs idea add` or a new slice | `factory docs idea add` only; a new slice changes the plan the owner approved |
+| `/polish`, `/ux` **Ask** | one AskUserQuestion round | the test above: an `AD` when local and reversible — taste always lands here — otherwise **block** |
+| `/polish`, `/ux` **Park** | `factory docs idea add` or a new slice | `factory docs idea add` only; a new slice changes the plan the owner approved |
 | `prune`, "genuinely in doubt" | ask in-session | **keep the test** and write an `AD` — keeping never loses coverage |
 | `/harness` confirm round | one AskUserQuestion round | take what the code shows; an `AD` for each finding it had to choose between. A test-framework major upgrade the PRD does not name is a **block**: it touches the whole suite |
 | a `DEC-n` candidate | recommend, owner chooses | list it in the PR body; **never write `docs/decisions.md`** |

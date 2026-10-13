@@ -8,7 +8,7 @@ Read first, in order:
 The feature's `state.toml` and `log.jsonl` are written through the tool only, never by hand. Each command below is one shell line; a body goes on stdin (`--body-file -`).
 
 Do:
-- run `/polish` **Unattended** on this branch, in full: the local review, the security and UX passes where they apply, the second opinion, the fixes. Every Unattended marker in the skill applies; no step waits for a human.
+- run `/polish` **Unattended** on this branch, in full: the local review, the security and UX passes where they apply, the second opinion, the fixes. The `# Autonomy` section below is the only copy of the unattended rules; no step waits for a human.
 - fix what the review finds in place, by the Autonomy § Tokens rules: batch lookups, read each file once, keep command output small. Run the inner-loop command when you change code; never background it.
 - in your last turn, before you return, do four things:
   1. `{feature dir}/retro.md` — the prose sections of the template under `# Retro` (Cost vs catch, Where I guessed, What I wished existed, Project friction, Framework friction, Score). It has no frontmatter: the driver writes the numbers after you return.
