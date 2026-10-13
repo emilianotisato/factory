@@ -139,11 +139,11 @@ Workflow: one branch, one PR, one commit per slice, the full gate and the Prove 
 <!-- docs:slices -->
 | Slice | Status | Depends on |
 |---|---|---|
-| [01 — Subagent counts (FR-21, core)](slice-01-subagent-counts.md) | pending | — |
-| [02 — Recount and per-worker tokens (FR-21, rest)](slice-02-recount-per-worker.md) | pending | 01 |
-| [03 — Pack composition (FR-22)](slice-03-pack-composition.md) | pending | — |
-| [04 — Knobs (FR-23)](slice-04-knobs.md) | pending | — |
-| [05 — Quality signals (FR-24)](slice-05-quality.md) | pending | — |
+| [01 — Subagent counts (FR-21, core)](slice-01-subagent-counts.md) | ✅ done | — |
+| [02 — Recount and per-worker tokens (FR-21, rest)](slice-02-recount-per-worker.md) | ✅ done | 01 |
+| [03 — Pack composition (FR-22)](slice-03-pack-composition.md) | ✅ done | — |
+| [04 — Knobs (FR-23)](slice-04-knobs.md) | ✅ done | — |
+| [05 — Quality signals (FR-24)](slice-05-quality.md) | ✅ done | — |
 | [06 — Retro numbers (FR-25)](slice-06-retro-numbers.md) | pending | 01, 02, 03, 04, 05 |
 <!-- /docs:slices -->
 

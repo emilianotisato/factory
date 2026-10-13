@@ -246,6 +246,11 @@ pub enum EventKind {
         sha: Option<String>,
         files: Vec<String>,
     },
+    /// PRD-003 FR-24: the polish return had a `STATUS` but no `FINDINGS`
+    /// line; the run's five `findings_*` stay null. Never a failure.
+    PolishFindingsMissing {
+        session_id: String,
+    },
     /// A closeout file no worker wrote, filled from a template so the ship
     /// and the PR go on (AD-904): `what` is `retro` or `pr_body`, `path` the
     /// file filled. The cockpit relays it and the PR body's first line flags

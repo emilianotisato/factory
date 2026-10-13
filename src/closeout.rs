@@ -37,7 +37,7 @@ use crate::pack::Pack;
 use crate::quota::{self, Hold, Limit};
 use crate::run::{Phase, Run, WorkerOutcome, WorkerRef};
 use crate::scheduler::{self, DEATH_CAP, append_under, say, set_frontmatter, short};
-use crate::stream::Summary;
+use crate::stream::{Findings, Summary};
 use crate::worker::{self, Exit, Job, Worker};
 use crate::{Result, clock, metrics};
 
@@ -332,6 +332,20 @@ fn polish(
             continue;
         }
         settle(run, row_id, &session_id, &exit.summary, WorkerOutcome::Done)?;
+        // FR-24: only a return block has a `FINDINGS` line to miss.
+        if exit.summary.status_hint.is_some() {
+            let findings = exit
+                .summary
+                .result_text
+                .as_deref()
+                .and_then(Findings::from_result);
+            run.db().set_run_findings(run.id().as_str(), findings)?;
+            if findings.is_none() {
+                run.emit(EventKind::PolishFindingsMissing {
+                    session_id: session_id.clone(),
+                })?;
+            }
+        }
         let committed = commit_polish(run, board, row_id, &exit.summary, &template, &before, out)?;
         run.emit(EventKind::PolishDone {
             sha: committed.as_ref().map(|c| c.sha.clone()),
@@ -572,6 +586,18 @@ fn ship(
     for line in shipped.stdout.lines().filter(|l| l.starts_with('⚠')) {
         say(out, &format!("ship: {}", line.trim()))?;
     }
+    // FR-24: polish wrote `AD` entries after `board` was read; a fresh
+    // status counts them, the held one stands in if the tool cannot answer.
+    let log = docs
+        .status(&feature)
+        .map(|s| s.log)
+        .unwrap_or_else(|_| board.log.clone());
+    run.db().set_run_log_counts(
+        run.id().as_str(),
+        log.decisions,
+        log.decide.len() as u32,
+        log.blocks,
+    )?;
     let report = report::compute(run.db(), run.id().as_str(), None)?;
     let retro = feature_dir.join("retro.md");
     if !retro.exists() {

@@ -1,0 +1,96 @@
+# FR-21 (first half) — a polish with 2 subagents: sub_* columns, subagents, in_subagent rows, own-only peak_context
+date: 2026-10-12T23:42:48-06:00  branch: feat/observatory  HEAD: 6f2bb24 + the checkpoint's working tree
+$ FACTORY_KEEP_FIXTURE=1 cargo test --no-fail-fast --test metrics --test knobs --test checkpoints --test closeout -- --exact --nocapture <the eight tests below>
+
+## transcript
+test a_polish_with_subagents_counts_them_apart_from_its_own ... ok
+fixture metrics-subagents kept at /tmp/factory-metrics-subagents-x6HxKw
+
+fixture: /tmp/factory-metrics-subagents-x6HxKw  run: 001-20261013-ae5d
+
+## store read-back
+sqlite> select id, role, slice, input, cache_write, cache_read, output, peak_context, sub_input, sub_cache_write, sub_cache_read, sub_output, subagents from workers where run_id='001-20261013-ae5d' order by id
+id | role | slice | input | cache_write | cache_read | output | peak_context | sub_input | sub_cache_write | sub_cache_read | sub_output | subagents
+1 | build | 1 | 18 | 6514 | 41674 | 182 | 24215 | 0 | 0 | 0 | 0 | 0
+2 | build | 2 | 18 | 6514 | 41674 | 182 | 24215 | 0 | 0 | 0 | 0 | 0
+3 | build | 3 | 18 | 6514 | 41674 | 182 | 24215 | 0 | 0 | 0 | 0 | 0
+4 | checkpoint | NULL | 18 | 6514 | 41674 | 182 | 24215 | 0 | 0 | 0 | 0 | 0
+5 | polish | NULL | 18 | 6514 | 41674 | 182 | 89526 | 16 | 3600 | 102000 | 1000 | 2
+
+sqlite> select w.role, c.in_subagent, count(*) as calls from tool_calls c join workers w on w.id=c.worker_id where c.run_id='001-20261013-ae5d' group by w.role, c.in_subagent order by w.role, c.in_subagent
+role | in_subagent | calls
+build | 0 | 18
+checkpoint | 0 | 1
+polish | 0 | 9
+polish | 1 | 3
+
+sqlite> select c.seq, c.tool, c.kind, c.in_subagent from tool_calls c join workers w on w.id=c.worker_id where c.run_id='001-20261013-ae5d' and w.role='polish' order by c.seq
+seq | tool | kind | in_subagent
+1 | Bash | run | 0
+2 | Agent | other | 0
+3 | Skill | other | 1
+4 | Bash | run | 1
+5 | Agent | other | 0
+6 | Skill | other | 1
+7 | Read | read | 0
+8 | Write | edit | 0
+9 | Bash | run-gate | 0
+10 | Write | edit | 0
+11 | Edit | edit | 0
+12 | Write | edit | 0
+
+The polish row's peak_context 89526 is its own largest message; the stub's subagent lines run 221k-237k (AD-101), so a mixed peak would read above 220k.
+
+## report
+$ factory report 001-20261013-ae5d --per-worker   (exit 0)
+score: 
+gate_runs: 1
+gate_red: 0
+gate_minutes: 0.00
+ci_cycles: 0
+slices: 3
+checkpoints: 1
+build_minutes: 0.19
+polish_minutes: 0.06
+out_tokens: 1910
+cache_read_tokens: 310370
+start_context: 24215
+peak_context: 89526
+input_tokens: 106
+cache_write_tokens: 36170
+weighted_tokens: 76863
+cockpit_tokens: 0 (no --cockpit)
+workers: 5 (build 3, checkpoint 1, polish 1)
+lookup_chars: 14124
+ctx_share: 0.000
+repeat_rate: 0.000
+followup_reads: 0 of 0 ctx calls (0%)
+pack_doc_read_chars: 14124
+worker_gate_runs: 4
+worker_gate_red: 0
+cockpit_peak_context: 0 (no --cockpit)
+cockpit_out_tokens: 0 (no --cockpit)
+cockpit_cache_read_tokens: 0 (no --cockpit)
+cockpit_start_context: 0 (no --cockpit)
+lookup_share_chars: 0.915
+followup_reads_by_role: none
+weighted_by_role: build 34828+0 · checkpoint 11609+0 · polish 11609+18816
+fix_commits: 0
+ci_red_rounds: 0
+ci_reruns: 0
+findings: high=1 medium=2 low=3 fixed=4 parked=2
+decisions: 3
+decide: 0
+blocks: 0
+knobs: build opus/high default · fix opus/high default · checkpoint opus/high default · polish opus/high default · budget 70000000 flag · lanes 2 · factory 0.1.0 · claude 2.1.296
+hypothesis: —
+pack_by_role: build slice 1702 prd_sections 89 outline 98 lookup 986 contract 3033 autonomy 11246 inner_loop 32 total 17186 start_context 24215 · checkpoint gate_transcript 140 covered_slices 2127 qa_rows 415 contract 2974 autonomy 11245 total 16901 start_context 24215 · polish branch 258 retro 2845 pr_body 2362 contract 3264 autonomy 11245 total 19974 start_context 50552
+quality: gate_red 0 · worker_gate_red 0 · fix_commits 0 · ci_red_rounds 0 · ci_reruns 0 · findings high=1 medium=2 low=3 fixed=4 parked=2 · decisions 3 decide 0 blocks 0
+followup threshold 30%: n/a
+ctx_share threshold 10%: under
+repeat_rate vs 26.7%: lower
+worker 1 build slice 01 (e4c9190c): lookups 2, ctx_share 0.000, repeat_rate 0.000, own 11609 sub 0 subagents 0, model_id opus
+worker 2 build slice 02 (bdd62c99): lookups 2, ctx_share 0.000, repeat_rate 0.000, own 11609 sub 0 subagents 0, model_id opus
+worker 3 build slice 03 (92c57c8a): lookups 2, ctx_share 0.000, repeat_rate 0.000, own 11609 sub 0 subagents 0, model_id opus
+worker 4 checkpoint (0d044883): lookups 0, ctx_share 0.000, repeat_rate 0.000, own 11609 sub 0 subagents 0, model_id opus
+worker 5 polish (06085083): lookups 1, ctx_share 0.000, repeat_rate 0.000, own 11609 sub 18816 subagents 2, model_id claude-opus-5-5

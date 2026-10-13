@@ -17,9 +17,12 @@ Do:
 
 Blocked → Autonomy § Blocker protocol steps 1-2, writing the `BLOCK-n` entry (lowest free number) under `## Blockers` in `{feature dir}/agent-log.md`, shape `### BLOCK-n — {what} · polish · open` with `**Happened:**`, `**Options:**`, `**Recommended:**`, and return. Do not push and do not notify.
 
+`FINDINGS` counts the review's findings after dedupe and triage: by severity as found, then how many this pass fixed and how many it parked. The driver stores the five numbers as a trend; leave the line out and they stay blank.
+
 Return exactly:
 STATUS: done | blocked
 FIXED: {what the review changed, one line | nothing}
+FINDINGS high=<n> medium=<n> low=<n> fixed=<n> parked=<n>
 RETRO: written | not written: why
 PR_BODY: written | not written: why
 DECISIONS: {AD numbers added | none}

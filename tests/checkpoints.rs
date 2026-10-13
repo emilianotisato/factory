@@ -710,6 +710,10 @@ fn red_red_green_runs_two_fix_workers_and_three_gates_before_the_cp() {
         assert_eq!(w.outcome.as_deref(), Some("done"));
         assert_eq!(w.commit_sha.as_deref(), Some(fixes[i].as_str()));
     }
+    // FR-24: the two fix commits are the report's `fix_commits`.
+    let out = factory(&fx, &["report", &run_id(&dir), "--json"]);
+    let r: Value = serde_json::from_str(&stdout(&out)).expect("one JSON object");
+    assert_eq!(r["fix_commits"], 2, "{r}");
 
     // The fix pack: the failing tail, both commands, the fix contract.
     let calls = fx.calls();

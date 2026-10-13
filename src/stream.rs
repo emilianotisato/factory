@@ -6,7 +6,7 @@
 //! `input + cache_creation + cache_read`, peak is the maximum.
 use std::collections::{HashMap, HashSet};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 /// One line of the stream.
@@ -141,6 +141,56 @@ impl StatusHint {
     }
 }
 
+/// The polish return's `FINDINGS high=<n> medium=<n> low=<n> fixed=<n>
+/// parked=<n>` line (PRD-003 FR-24): a trend, not an audit.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct Findings {
+    pub high: u32,
+    pub medium: u32,
+    pub low: u32,
+    pub fixed: u32,
+    pub parked: u32,
+}
+
+impl Findings {
+    /// The first `FINDINGS` line of a result text, colon or not, its
+    /// `key=<digits>` pairs in any order; `None` unless all five are there.
+    pub fn from_result(text: &str) -> Option<Findings> {
+        let rest = text
+            .lines()
+            .map(str::trim)
+            .find_map(|l| l.strip_prefix("FINDINGS"))?;
+        let rest = rest.strip_prefix(':').unwrap_or(rest);
+        let mut f = [None; 5];
+        for (k, v) in rest.split_whitespace().filter_map(|p| p.split_once('=')) {
+            let i = match k {
+                "high" => 0,
+                "medium" => 1,
+                "low" => 2,
+                "fixed" => 3,
+                "parked" => 4,
+                _ => continue,
+            };
+            f[i] = Some(v.parse::<u32>().ok()?);
+        }
+        Some(Findings {
+            high: f[0]?,
+            medium: f[1]?,
+            low: f[2]?,
+            fixed: f[3]?,
+            parked: f[4]?,
+        })
+    }
+
+    /// `high=1 medium=2 low=3 fixed=4 parked=2`.
+    pub fn text(&self) -> String {
+        format!(
+            "high={} medium={} low={} fixed={} parked={}",
+            self.high, self.medium, self.low, self.fixed, self.parked
+        )
+    }
+}
+
 /// One `tool_use` block and the size of its result — what slice 05 (the
 /// pathspec) and slice 08 (`tool_calls`) consume.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -207,6 +257,9 @@ pub struct Summary {
     /// The first assistant message's context (`measure.py` start): what the
     /// worker read before it did anything (FR-8 `start_context`).
     pub start_context: Option<u64>,
+    /// `message.model` of the first own assistant line: the model that
+    /// answered, not the one asked for (PRD-003 FR-23).
+    pub model_id: Option<String>,
     pub tool_uses: Vec<ToolUse>,
     /// The last `rate_limit_event` seen (FR-9); `None` when the stream had none.
     pub rate_limit: Option<RateLimit>,
@@ -304,6 +357,9 @@ impl Collector {
         match ev {
             StreamEvent::Assistant { message, rest } => {
                 let in_subagent = in_subagent(rest);
+                if !in_subagent && self.summary.model_id.is_none() {
+                    self.summary.model_id = message.model.clone();
+                }
                 if let (Some(u), false) = (&message.usage, in_subagent) {
                     let ctx = u.context();
                     self.summary.peak_context =
@@ -464,6 +520,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_findings_line_needs_all_five_keys_colon_or_not() {
+        let f = Findings::from_result(
+            "STATUS: done\nFINDINGS high=1 medium=2 low=3 fixed=4 parked=2\nBLOCK: none",
+        );
+        assert_eq!(
+            f,
+            Some(Findings {
+                high: 1,
+                medium: 2,
+                low: 3,
+                fixed: 4,
+                parked: 2
+            })
+        );
+        assert_eq!(
+            Findings::from_result("FINDINGS high=1 medium=2 low=3 fixed=4"),
+            None
+        );
+        let f = Findings::from_result("FINDINGS: parked=0 high=0 medium=5 low=0 fixed=5").unwrap();
+        assert_eq!((f.high, f.medium, f.fixed), (0, 5, 5));
+        assert_eq!(Findings::from_result("STATUS: done\nBLOCK: none"), None);
+        assert_eq!(f.text(), "high=0 medium=5 low=0 fixed=5 parked=0");
+    }
+
+    #[test]
     fn a_rate_limit_event_carries_the_named_windows_utilization() {
         let line =
             |info: &str| format!(r#"{{"type":"rate_limit_event","rate_limit_info":{info}}}"#);
@@ -504,5 +585,23 @@ mod tests {
         let flags: Vec<_> = s.tool_uses.iter().map(|t| t.in_subagent).collect();
         assert_eq!(flags, [false, true, false]);
         assert_eq!(s.tool_uses[1].result_chars, Some(3));
+    }
+
+    #[test]
+    fn model_id_is_the_first_own_assistant_lines_model() {
+        let line = |parent: &str, model: &str| {
+            format!(
+                r#"{{"type":"assistant","parent_tool_use_id":{parent},"message":{{"model":"{model}","content":[]}}}}"#
+            )
+        };
+        let text = [
+            line(r#""toolu_x""#, "claude-sonnet-x"),
+            line("null", "claude-opus-x"),
+            line("null", "claude-haiku-x"),
+        ]
+        .join("\n");
+        let (_, s) = parse(&text);
+        assert_eq!(s.model_id.as_deref(), Some("claude-opus-x"));
+        assert_eq!(parse("").1.model_id, None);
     }
 }

@@ -775,6 +775,14 @@ fn a_red_check_gets_one_fix_round_then_green() {
     assert_eq!(fm_value(&fx, RETRO, "ci_cycles"), "1");
     assert_eq!(fm_value(&fx, PRD, "status"), "shipped");
     assert_eq!(origin_head(&fx, "feat/fixture"), Some(head(&fx)));
+    // FR-24: one red round, no rerun, one fix cycle.
+    let out = factory(&fx, &["report", &run_id(&dir), "--json"]);
+    let r: Value = serde_json::from_str(&stdout(&out)).expect("one JSON object");
+    assert_eq!(
+        (&r["ci_red_rounds"], &r["ci_reruns"], &r["ci_cycles"]),
+        (&json!(1), &json!(0), &json!(1)),
+        "{r}"
+    );
 
     // Two `pr checks`, one run list, one log read, no rerun, one PR.
     assert_eq!(gh_calls(&fx, "pr checks").len(), 2, "{:?}", fx.gh_log());

@@ -32,6 +32,7 @@ lane: 3
   - Run 8 caught `tests/metrics.rs` missing slice 03's `pack_by_role` (AD-403).
   - Run 9 was green in 1m02s: 137 lib tests and every test binary.
 - **Deviations**: the knobs text shows a split scope as `project/default` (AD-401). The hypothesis test resumes a parked run, not a live one (AD-402).
+- **Prove (task 7), driven at CP-1 (2026-10-12)**: the FR-23 row, green. Only polish call 5 gets `--model sonnet`; calls 1-4 get `--model opus`. The knobs line reads `polish sonnet/high project/default` and `build opus/high default`, and the `hypothesis` is on the row. A second `--hypothesis` is refused. Evidence: `evidence/cp-1-fr23-knobs.txt` (test transcript, call log, run row, `report --per-worker`). This slice's `src/config.rs` and `src/cli/run.rs` were left uncommitted under Untracked leftovers; they are in the CP-1 commit (AD-901).
 
 **Slice**: After this slice a project can set model, effort and budget per role in `docs/project.toml`, every run row says which scope each knob came from and which model actually answered, and a run can carry the one-line hypothesis it tests. It turns no knob itself (prd §1) and leaves the retro's knobs block to slice 06.
 

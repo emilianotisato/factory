@@ -17,6 +17,7 @@ lane: 1
 - **Accepted cost**: the stored A/B baselines (`ctx_share` 0.025, the lookup shares, `followup_reads`) mixed own and subagent calls. The own-only figures are not comparable with them; the next runs re-baseline.
 - **Deviations**: none from the tasks. ADs 101-105 in `log-slice-01.md`.
 - **Prove (task 8)**: the FR-21 row, first half, is left for CP-1 with the full gate. The scenario is `tests/metrics.rs` `a_polish_with_subagents_counts_them_apart_from_its_own`.
+- **Prove (task 8), driven at CP-1 (2026-10-12)**: the FR-21 row, first half, green. The polish row stores `sub_*` (16, 3600, 102000, 1000), `subagents` 2 and own-only `peak_context` 89,526; 3 of its 12 `tool_calls` rows are `in_subagent`; the build and checkpoint rows are all zeros. Evidence: `evidence/cp-1-fr21-subagents.txt` (test transcript, store read-back, `report --per-worker`). The accepted cost above stands: the A/B lookup baselines were mixed figures, and the next runs re-baseline.
 
 **Slice**: After this slice every worker row carries what its subagents cost, apart from its own usage, and the run's `weighted_tokens` and budget count both. The collector stops mixing a subagent's lines into the worker's own `start_context`, `peak_context` and `tool_calls`. The stub harness gains a projects dir and one "polish with subagents" scenario. It leaves `--recount` and the per-worker token columns to slice 02, and the retro to slice 06.
 

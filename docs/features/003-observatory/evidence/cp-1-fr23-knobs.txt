@@ -1,0 +1,93 @@
+# FR-23 — docs/project.toml [workers.polish] model = "sonnet": --model sonnet on polish only, knobs sources, --hypothesis on the row
+date: 2026-10-12T23:42:48-06:00  branch: feat/observatory  HEAD: 6f2bb24 + the checkpoint's working tree
+$ FACTORY_KEEP_FIXTURE=1 cargo test --no-fail-fast --test metrics --test knobs --test checkpoints --test closeout -- --exact --nocapture <the eight tests below>
+
+## transcript
+test a_hypothesis_is_written_once_at_creation ... ok
+test a_project_file_sets_the_polish_model_and_the_row_says_so ... ok
+fixture knobs-hypothesis kept at /tmp/factory-knobs-hypothesis-78HvEd
+fixture knobs-project kept at /tmp/factory-knobs-project-si1hGG
+
+fixture: /tmp/factory-knobs-project-si1hGG  run: 001-20261013-e6ce
+$ cat repo/docs/project.toml
+[workers.polish]
+model = "sonnet"
+
+## the stub's call log: --model per call
+call 1 build: --model opus
+call 2 build: --model opus
+call 3 build: --model opus
+call 4 checkpoint: --model opus
+call 5 polish: --model sonnet
+
+## run row
+sqlite> select id, hypothesis, knobs from runs where id='001-20261013-e6ce'
+id | hypothesis | knobs
+001-20261013-e6ce | sonnet polish costs less | {"budget":{"source":"default","value":30000000},"claude_version":"2.1.296 (Claude Code)","factory_version":"0.1.0","lanes":1,"workers":{"build":{"effort":"high","model":"opus","source":"default"},"checkpoint":{"effort":"high","model":"opus","source":"default"},"fix":{"effort":"high","model":"opus","source":"default"},"polish":{"effort":"high","effort_source":"default","model":"sonnet","source":"project"}}}
+
+sqlite> select id, role, slice, model, model_id from workers where run_id='001-20261013-e6ce' order by id
+id | role | slice | model | model_id
+1 | build | 1 | opus | opus
+2 | build | 2 | opus | opus
+3 | build | 3 | opus | opus
+4 | checkpoint | NULL | opus | opus
+5 | polish | NULL | sonnet | sonnet
+
+## report
+$ factory report 001-20261013-e6ce --per-worker   (exit 0)
+score: 
+gate_runs: 1
+gate_red: 0
+gate_minutes: 0.00
+ci_cycles: 0
+slices: 3
+checkpoints: 1
+build_minutes: 0.19
+polish_minutes: 0.06
+out_tokens: 910
+cache_read_tokens: 208370
+start_context: 24215
+peak_context: 24215
+input_tokens: 90
+cache_write_tokens: 32570
+weighted_tokens: 58047
+cockpit_tokens: 0 (no --cockpit)
+workers: 5 (build 3, checkpoint 1, polish 1)
+lookup_chars: 14124
+ctx_share: 0.000
+repeat_rate: 0.000
+followup_reads: 0 of 0 ctx calls (0%)
+pack_doc_read_chars: 14124
+worker_gate_runs: 4
+worker_gate_red: 0
+cockpit_peak_context: 0 (no --cockpit)
+cockpit_out_tokens: 0 (no --cockpit)
+cockpit_cache_read_tokens: 0 (no --cockpit)
+cockpit_start_context: 0 (no --cockpit)
+lookup_share_chars: 0.920
+followup_reads_by_role: none
+weighted_by_role: build 34828+0 · checkpoint 11609+0 · polish 11609+0
+fix_commits: 0
+ci_red_rounds: 0
+ci_reruns: 0
+findings: high=1 medium=2 low=3 fixed=4 parked=2
+decisions: 3
+decide: 0
+blocks: 0
+knobs: build opus/high default · fix opus/high default · checkpoint opus/high default · polish sonnet/high project/default · budget 30000000 default · lanes 1 · factory 0.1.0 · claude 2.1.296
+hypothesis: sonnet polish costs less
+pack_by_role: build slice 1702 prd_sections 89 outline 98 lookup 986 contract 3033 autonomy 11246 inner_loop 32 total 17186 start_context 24215 · checkpoint gate_transcript 136 covered_slices 2127 qa_rows 415 contract 2974 autonomy 11245 total 16897 start_context 24215 · polish branch 258 retro 2845 pr_body 2354 contract 3264 autonomy 11245 total 19966 start_context 24215
+quality: gate_red 0 · worker_gate_red 0 · fix_commits 0 · ci_red_rounds 0 · ci_reruns 0 · findings high=1 medium=2 low=3 fixed=4 parked=2 · decisions 3 decide 0 blocks 0
+followup threshold 30%: n/a
+ctx_share threshold 10%: under
+repeat_rate vs 26.7%: lower
+worker 1 build slice 01 (fa32d0f0): lookups 2, ctx_share 0.000, repeat_rate 0.000, own 11609 sub 0 subagents 0, model_id opus
+worker 2 build slice 02 (5bb92a22): lookups 2, ctx_share 0.000, repeat_rate 0.000, own 11609 sub 0 subagents 0, model_id opus
+worker 3 build slice 03 (df04f030): lookups 2, ctx_share 0.000, repeat_rate 0.000, own 11609 sub 0 subagents 0, model_id opus
+worker 4 checkpoint (cd7b44fa): lookups 0, ctx_share 0.000, repeat_rate 0.000, own 11609 sub 0 subagents 0, model_id opus
+worker 5 polish (ce3b4ce6): lookups 1, ctx_share 0.000, repeat_rate 0.000, own 11609 sub 0 subagents 0, model_id sonnet
+
+## --hypothesis written once (fixture /tmp/factory-knobs-hypothesis-78HvEd, run 001-20261013-d252)
+sqlite> select id, phase, hypothesis from runs where id='001-20261013-d252'
+id | phase | hypothesis
+001-20261013-d252 | waiting-owner | sonnet polish costs less

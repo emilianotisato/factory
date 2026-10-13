@@ -14,7 +14,7 @@
 use std::fs;
 use std::io::Write;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use clap::Args;
 
@@ -28,12 +28,16 @@ use crate::{Error, Result, commit, config, daemon, paths, scheduler};
 pub struct RunArgs {
     /// The feature: its number (`001`) or slug
     pub feature: String,
-    /// Weighted-token budget for this run; overrides `config.toml`
+    /// Weighted-token budget for this run; overrides `config.toml` and
+    /// `docs/project.toml`
     #[arg(long, value_name = "N")]
     pub budget: Option<u64>,
     /// Keep the driver attached to this terminal instead of detaching it
     #[arg(long)]
     pub foreground: bool,
+    /// The one line this run tests, stored on its row (PRD-003 FR-23)
+    #[arg(long, value_name = "TEXT")]
+    pub hypothesis: Option<String>,
 }
 
 /// `factory daemon <run>`: the detached driver `factory run` starts. Hidden.
@@ -47,15 +51,20 @@ pub fn run(args: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i
     let cwd = std::env::current_dir().map_err(io("current directory"))?;
     let repo = paths::repo_root(&cwd)?;
     let data_dir = paths::data_dir();
-    let loaded = config::load(&paths::config_dir())?;
+    let mut loaded = config::load_with_project(&paths::config_dir(), &repo)?;
     for w in &loaded.warnings {
         writeln!(err, "factory: {w}").map_err(io("stderr"))?;
     }
-    let budget = args.budget.unwrap_or(loaded.config.budget_weighted_tokens);
+    if let Some(b) = args.budget {
+        loaded.config.budget_weighted_tokens = b;
+        loaded.sources.budget = config::Source::Flag;
+    }
+    let budget = loaded.config.budget_weighted_tokens;
     let docs = Docs::locate(&repo)?;
     let feature = feature_number(&docs, &args.feature)?;
 
     if let Some(live) = Run::find_live(&data_dir, &repo, &feature)? {
+        hypothesis_ignored(args, live.id().as_str(), err)?;
         writeln!(
             out,
             "run {id} is live (pid {pid}) — stop it first: factory stop {id}",
@@ -76,6 +85,7 @@ pub fn run(args: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i
                 return Ok(1);
             }
         }
+        hypothesis_ignored(args, run.id().as_str(), err)?;
         run.adopt()?;
         if let Some(b) = args.budget {
             run.set_budget(b)?;
@@ -96,6 +106,7 @@ pub fn run(args: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i
     }
     if !pf.ask.is_empty() {
         let mut run = Run::create(&data_dir, &repo, &feature, None, budget)?;
+        record_start(&run, &docs, &loaded, args.hypothesis.as_deref(), err)?;
         save_preflight(run.dir(), &pf)?;
         for (i, text) in pf.ask.iter().enumerate() {
             let id = format!("ASK-{}", i + 1);
@@ -119,6 +130,7 @@ pub fn run(args: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i
 
     let branch = ensure_branch(&repo, &pf.branch)?;
     let mut run = Run::create(&data_dir, &repo, &feature, Some(branch), budget)?;
+    record_start(&run, &docs, &loaded, args.hypothesis.as_deref(), err)?;
     // The closeout reads `branch.default` from here (FR-6: `--base`).
     save_preflight(run.dir(), &pf)?;
     // The driver is the judge: each line is noted for the cockpit and the run
@@ -159,7 +171,8 @@ pub fn launch(
 pub fn daemon(args: &DaemonArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i32> {
     let mut run = Run::open(&paths::data_dir(), &args.run)?;
     run.adopt()?;
-    let loaded = config::load(&paths::config_dir())?;
+    // The project file of the run's repo, as `factory run` resolved it.
+    let loaded = config::load_with_project(&paths::config_dir(), &run.state().repo)?;
     for w in &loaded.warnings {
         writeln!(err, "factory: {w}").map_err(io("stderr"))?;
     }
@@ -180,6 +193,63 @@ pub fn daemon(args: &DaemonArgs, out: &mut dyn Write, err: &mut dyn Write) -> Re
             Ok(1)
         }
     }
+}
+
+/// A `--hypothesis` given to a run that already exists keeps the stored
+/// one: it is written once, at creation (PRD-003 FR-23).
+fn hypothesis_ignored(args: &RunArgs, id: &str, err: &mut dyn Write) -> Result<()> {
+    if args.hypothesis.is_some() {
+        writeln!(err, "hypothesis ignored: run {id} already exists").map_err(io("stderr"))?;
+    }
+    Ok(())
+}
+
+/// A new run's row gets what it resolved (`runs.knobs`) and its
+/// hypothesis (PRD-003 FR-23). Lanes come from the board; `null` when it
+/// cannot be read, as is the claude version when `claude --version` fails.
+fn record_start(
+    run: &Run,
+    docs: &Docs,
+    loaded: &config::Loaded,
+    hypothesis: Option<&str>,
+    err: &mut dyn Write,
+) -> Result<()> {
+    let lanes = docs.status(&run.state().feature).ok().map(|s| s.lanes);
+    let claude = claude_version(err)?;
+    let knobs = config::knobs(loaded, lanes, claude.as_deref());
+    let id = run.id().as_str();
+    run.db().set_run_knobs(id, &knobs.to_string())?;
+    if let Some(h) = hypothesis {
+        run.db().set_run_hypothesis(id, h)?;
+    }
+    Ok(())
+}
+
+/// The trimmed stdout of `claude --version`; one stderr line and `None`
+/// when it cannot be run or fails.
+fn claude_version(err: &mut dyn Write) -> Result<Option<String>> {
+    let why = match Command::new("claude")
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+    {
+        Ok(o) if o.status.success() => {
+            let v = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if !v.is_empty() {
+                return Ok(Some(v));
+            }
+            "printed nothing".to_string()
+        }
+        Ok(o) => format!("exited {}", o.status),
+        Err(e) => e.to_string(),
+    };
+    writeln!(
+        err,
+        "factory: claude --version: {why}; the run records no claude version"
+    )
+    .map_err(io("stderr"))?;
+    Ok(None)
 }
 
 /// The `pass` path once the branch is right: `run_started`, then the board.
