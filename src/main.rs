@@ -31,6 +31,11 @@ enum Command {
     Report(cli::report::ReportArgs),
     /// Write a run's numbers into its feature's retro.md
     Retro(cli::retro::RetroArgs),
+    /// Ask a reviewer from another vendor
+    Review {
+        #[command(subcommand)]
+        verb: cli::review::ReviewVerb,
+    },
     /// Code lookups for workers: definitions, references, outlines
     Ctx {
         #[command(subcommand)]
@@ -62,6 +67,7 @@ fn main() -> ExitCode {
         Command::Retro(a) => cli::retro::retro(&a, &mut stdout()),
         Command::Wait(a) => cli::wait::wait(&a, &mut stdout(), &mut stderr()),
         Command::Status(a) => cli::status::status(&a, &mut stdout(), &mut stderr()),
+        Command::Review { verb } => cli::review::review(&verb, &mut stdout(), &mut stderr()),
         Command::Ctx { verb } => ctx::run(&verb, Path::new("."), &mut stdout(), &mut stderr()),
         Command::Hook => cli::hook::hook(&mut stdin(), &mut stdout(), &mut stderr()),
         // One code path: `factory init` routes exactly as `factory docs init`.

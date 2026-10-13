@@ -1,0 +1,54 @@
+#!/usr/bin/env node
+'use strict'
+// Stub `cursor-agent` for `factory review second` (PRD-004 FR-6). Records
+// every call to $FACTORY_STUB_DIR/cursor-agent.log, one JSON argv array per
+// line, and answers from $FACTORY_STUB_DIR/cursor-agent.json when present:
+//
+//   list_models: "ok" (default) | "auth" | "no-model"
+//     `--list-models` prints a list holding grok-4.7-high and exits 0, the
+//     expired-login line and exits 1, or a list without it and exits 0.
+//   sleep_after_assistant: n
+//     a review call replays up to and including the n-th `assistant` event,
+//     then sleeps 60 s (the caller's timeout kills it).
+//
+// Otherwise a review call replays cursor-review.jsonl, a recorded stream,
+// to stdout line by line and exits 0.
+const fs = require('node:fs')
+const path = require('node:path')
+
+const argv = process.argv.slice(2)
+const stubDir = process.env.FACTORY_STUB_DIR
+let scenario = {}
+if (stubDir) {
+  fs.mkdirSync(stubDir, { recursive: true })
+  fs.appendFileSync(path.join(stubDir, 'cursor-agent.log'), `${JSON.stringify(argv)}\n`)
+  const p = path.join(stubDir, 'cursor-agent.json')
+  if (fs.existsSync(p)) scenario = JSON.parse(fs.readFileSync(p, 'utf8'))
+} else {
+  console.error('stub cursor-agent: FACTORY_STUB_DIR is not set — the call is not recorded')
+}
+
+if (argv.includes('--list-models')) {
+  const mode = scenario.list_models ?? 'ok'
+  if (mode === 'auth') {
+    console.log("Error: Authentication required. Run 'agent login' first, or set CURSOR_API_KEY.")
+    process.exit(1)
+  }
+  const models = ['auto - Auto', 'gpt-5.6-sol-xhigh - GPT 5.6 Sol XHigh', 'gemini-3.7-flash-high - Gemini 3.7 Flash High']
+  if (mode !== 'no-model') models.splice(1, 0, 'grok-4.7-high - Grok 4.7 High')
+  console.log(`Available models\n\n${models.join('\n')}`)
+  process.exit(0)
+}
+
+const lines = fs.readFileSync(path.join(__dirname, 'cursor-review.jsonl'), 'utf8').split('\n')
+if (lines[lines.length - 1] === '') lines.pop()
+const stop = scenario.sleep_after_assistant
+let seen = 0
+for (const line of lines) {
+  fs.writeSync(1, `${line}\n`)
+  if (stop && JSON.parse(line).type === 'assistant' && ++seen === stop) {
+    setTimeout(() => process.exit(0), 60_000)
+    return
+  }
+}
+process.exit(0)

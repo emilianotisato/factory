@@ -63,3 +63,32 @@ fn this_repos_claude_skills_link_into_the_source() {
         assert!(link.join(file).is_file(), "{name}/{file} does not resolve");
     }
 }
+
+/// PRD-004 FR-1 and FR-6: `models.md` names roles, not a machine's setup, and
+/// the two skills that run the second opinion call the command.
+#[test]
+fn models_md_holds_no_invocation_and_the_skills_call_review_second() {
+    let read = |p: &str| fs::read_to_string(root().join("skills").join(p)).unwrap();
+    let models = read("_shared/models.md");
+    for bad in [
+        "```bash",
+        "grok-",
+        "gpt-",
+        "gemini-",
+        "~/.local/bin",
+        "--trust",
+        "cursor-agent -p",
+    ] {
+        assert!(!models.contains(bad), "{bad:?} in models.md");
+    }
+    for skill in ["polish/SKILL.md", "prd/SKILL.md"] {
+        assert!(read(skill).contains("factory review second"), "{skill}");
+    }
+    let mut files = BTreeSet::new();
+    let skills = root().join("skills");
+    walk(&skills, &skills, &mut files);
+    for f in files {
+        let text = fs::read_to_string(skills.join(&f)).unwrap_or_default();
+        assert!(!text.contains("\"A diff\" invocation"), "{f}");
+    }
+}
