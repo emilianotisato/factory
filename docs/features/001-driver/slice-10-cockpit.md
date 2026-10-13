@@ -1,10 +1,3 @@
----
-slice: 10
-status: done
-lane: 1
-depends_on: [9]
----
-
 # Slice 10 — Cockpit: wait, replay, status, skill file (FR-7)
 
 **Source**: [`prd.md`](prd.md) → §9 FR-7 (all five decisions); §3 FR-1 bullet 4 (`factory stop` ends a run cleanly). **Depends on**: 09 (`wait` must see every event kind, including `run_finished` and the closeout blocks; the skill's review interview needs a finished run).

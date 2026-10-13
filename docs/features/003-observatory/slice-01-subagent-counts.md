@@ -1,10 +1,3 @@
----
-slice: 01
-status: done
-depends_on: []
-lane: 1
----
-
 # Slice 01 — Subagent counts (FR-21, core)
 
 **Source**: [`prd.md`](prd.md) → §3 FR-21, decisions 1 and 2 ("Subagent usage is read from the worker's transcript dir after it exits", "The collector tells main lines from subagent lines"); §2 Blast radius (schema v1 → v2, added columns only). **Depends on**: —

@@ -1,10 +1,3 @@
----
-slice: 06
-status: done
-depends_on: [1]
-lane: 3
----
-
 # Slice 06 — Retros store (FR-19 part)
 
 **Source**: [`prd.md`](prd.md) → §9 FR-19 (the `retros` table, `SCHEMA_VERSION` 3, `factory docs retro NNN [--set score=N]`, "`factory report` is unchanged"), §11 OPEN-11 (kept thin). **Depends on**: 01 (the `docs retro` arm goes into slice 01's flat `DocsCli` match and resolves `NNN` through slice 01's board scan).

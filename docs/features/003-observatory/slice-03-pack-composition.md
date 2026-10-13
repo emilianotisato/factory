@@ -1,10 +1,3 @@
----
-slice: 03
-status: done
-depends_on: []
-lane: 2
----
-
 # Slice 03 — Pack composition (FR-22)
 
 **Source**: [`prd.md`](prd.md) → §4 FR-22 ("`workers.pack_parts`, JSON, one entry per section the pack wrote"). **Depends on**: — (independent of slices 01, 02, 04 and 05: its own column, its own report line; it only appends a tuple to the shared migration list in `src/db.rs`).

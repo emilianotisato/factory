@@ -1,10 +1,3 @@
----
-slice: 07
-status: done
-depends_on: [3, 6]
-lane: 4
----
-
 # Slice 07 — migrate (FR-16)
 
 **Source**: [`prd.md`](prd.md) → §6 FR-16 (all four decisions and the acceptance), §3 FR-13 (the target layout), §4 FR-14 (the entry fields), §9 FR-19 (`retros` rows, archive included), §7 FR-17 (`migrate` runs natively in v2), §12 QA plan (the FR-16 row), §14 (the owner migrates this repo, never the build). **Depends on**: 03 (the acceptance is "`factory docs check` is clean"), 06 (`Db::upsert_retro` writes the rows). It reads slice 01's `frontmatter.rs`, `project.rs`, `board.rs` and slice 02's `log::Entry`.
@@ -85,9 +78,9 @@ Per live feature with an `agent-log.md`: `pub fn blame_dates(root, path) -> Resu
 
 **Refuse** when a live feature holds a `log-*.md` fragment: it was never merged, and migration would drop it. Say "`log-slice-NN.md` is not merged: run `factory docs log merge NNN` first", which the shim routes to node in a v2 repo. A feature with no `agent-log.md` gets no `log.jsonl`; slice 02 creates it on first append.
 
-**Links**: in every `.md` under `docs/` outside `docs/archive/`, a markdown link whose target resolves to a deleted `agent-log.md` (with or without `#anchor`) is replaced by its link text alone, and each one is listed (`unlink docs/features/001-driver/prd.md:334 [the log](agent-log.md)`). prd §6 forbids rewriting prose, not links that would point at nothing. This is the smallest edit that keeps `check` clean.
+**Links**: in every `.md` under `docs/` outside `docs/archive/`, a markdown link whose target resolves to a deleted `agent-log.md` (with or without `#anchor`) is replaced by its link text alone, and each one is listed (`unlink docs/features/001-driver/prd.md:334 the log`). prd §6 forbids rewriting prose, not links that would point at nothing. This is the smallest edit that keeps `check` clean.
 
-**Acceptance:** unit test: a feature folder with `log-slice-02.md` refuses and the plan holds no rows. Over this repo's 001 log at HEAD, `parse_agent_log` gives 145 `decision`/`ask` entries, 7 `checkpoint`, 1 `block` and 1 `answer` with `ref BLOCK-201`, 78 `review` entries, and no id below `AD-101` except the preflight ones. `unlink` on `See [the log](agent-log.md#ad-3).` gives `See the log.`
+**Acceptance:** unit test: a feature folder with `log-slice-02.md` refuses and the plan holds no rows. Over this repo's 001 log at HEAD, `parse_agent_log` gives 145 `decision`/`ask` entries, 7 `checkpoint`, 1 `block` and 1 `answer` with `ref BLOCK-201`, 78 `review` entries, and no id below `AD-101` except the preflight ones. `unlink` on `See the log.` gives `See the log.`
 
 ### 5. `retros` rows from every `retro.md` — high — blocked by: —
 **Source**: §6 FR-16: "`retro.md` frontmatter → one `retros` row (FR-19), **and the retro file is left as it is**." "**Archive folders are read for `retros` rows and never written.**" §9 FR-19: "`migrate` inserts rows for every `retro.md` frontmatter it finds, archive included, with `run_id` NULL, and leaves the files alone". Acceptance: "the retro row matches the old frontmatter, `retro.md` is byte-identical… a second `migrate` reproduces… the same rows in every column but `written_at`."

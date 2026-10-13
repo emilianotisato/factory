@@ -1,10 +1,3 @@
----
-slice: 02
-status: done
-depends_on: [1]
-lane: 1
----
-
 # Slice 02 — Recount and per-worker tokens (FR-21, rest)
 
 **Source**: [`prd.md`](prd.md) → §3 FR-21, decisions 3 and 4 ("`factory report <run> --recount`", "`report --per-worker` prints tokens") and the FR-21 acceptance targets. **Depends on**: slice 01 — it rewrites the `sub_*` columns and reuses the split collector and the transcript reader; without them there is nothing to recount.

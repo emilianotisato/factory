@@ -1,10 +1,3 @@
----
-slice: 03
-status: done
-depends_on: [2]
-lane: 1
----
-
 # Slice 03 — check and doctor (FR-15 part)
 
 **Source**: [`prd.md`](prd.md) → §5 FR-15 (the `check` and `doctor` bullets, the exit codes), §4 FR-14 (the "`check` on the log" bullet). **Depends on**: 02 (the log rules read `log::entries`, and the lifecycle warnings read the open blocks and checkpoints slice 02 computes).

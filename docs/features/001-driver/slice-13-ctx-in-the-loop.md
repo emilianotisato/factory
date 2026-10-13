@@ -1,10 +1,3 @@
----
-slice: 13
-status: done
-lane: 1
-depends_on: [10, 12]
----
-
 # Slice 13 — ctx in the loop: pack sections, hook hints, follow-up labels (FR-12 slice 3, FR-2 pack-doc hint, FR-8 tail)
 
 **Source**: [`prd.md`](prd.md) → §14 FR-12 decisions 3 and 4 (the pack's Outline and Lookup sections, the hook hints, the follow-up labels and report keys, the reversal rule) and decision 5 ("(3) pack sections, the two hook hints (lookup verb, pack doc), `tool_calls` table with the follow-up labels, and report keys"); §4 FR-2 permissions bullet as corrected 2026-10-09 (a new PreToolUse hook `factory hook` injected through `--settings`, carrying the two deny rules); §10 FR-8 (`followup_reads`, `pack_doc_read_chars`). **Depends on**: 10 (the whole driver loop and the report) and 12 (`outline` and `def` with bodies). The join of the spine and the branch.

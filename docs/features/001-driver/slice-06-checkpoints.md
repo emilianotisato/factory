@@ -1,10 +1,3 @@
----
-slice: 06
-status: done
-depends_on: [5]
-lane: 1
----
-
 # Slice 06 — Checkpoints: driver-run gate, cache, fix workers (FR-4)
 
 **Source**: [`prd.md`](prd.md) → §6 FR-4 (all bullets and acceptance); §3 FR-1 bullet 3 ("an unverified checkpoint runs first"); §10 FR-8 bullet 2 (`gates` rows, driver source). **Depends on**: 05 (a checkpoint commits the merge and the fix worker's files; both are slice 05's commit path).

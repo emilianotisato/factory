@@ -1,10 +1,3 @@
----
-slice: 05
-status: done
-depends_on: [3]
-lane: 3
----
-
 # Slice 05 — Ideas, tool side (FR-20 part)
 
 **Source**: [`prd.md`](prd.md) → §10 FR-20 (the file format, "leaving is deleting", `idea add|list|drop`, `new --from-idea`, `init`, `check` on ideas, the tool half of the acceptance), §15 (the ideas non-goals). **Depends on**: 03 (the ideas rules and `W-IDEAS-V2` are a new function in slice 03's `src/docs/check.rs`, and the PRD-key rule that must learn `from_idea` is slice 03's).

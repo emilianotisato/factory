@@ -1,10 +1,3 @@
----
-slice: 09
-status: done
-depends_on: [4]
-lane: 1
----
-
 # Slice 09 — Driver switch (FR-18 core)
 
 **Source**: [`prd.md`](prd.md) → §8 FR-18 (the library decision, the workarounds decision, the harness decision, the Acceptance), §4 FR-14 (the "driver's own writes" bullet and the `phase` bullet), §3 FR-13 ("The driver calls the same function in process"). **Depends on**: 04 (the driver calls `gate`, `gate_inner`, `preflight` and `ship`; they must run natively on v3 before the subprocess goes. Slices 01-03 come with it: `state::set`, `log::add`/`log::entries`, `check`).

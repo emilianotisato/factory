@@ -1,0 +1,8 @@
+[docs]
+framework = 3
+gate = "cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test"
+inner = "cargo test"
+lanes = 4
+checkpoint_every = 2
+prd_max_kb = 120
+slice_max_kb = 30

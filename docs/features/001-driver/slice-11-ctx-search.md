@@ -1,10 +1,3 @@
----
-slice: 11
-status: done
-lane: 1
-depends_on: [1]
----
-
 # Slice 11 — ctx search: grep crates, definition regexes, printer (FR-12 slice 1)
 
 **Source**: [`prd.md`](prd.md) → §14 FR-12 decision 1 (three verbs, plain text, exit 0 on empty, caps and context lines), decision 2 (the engine: ripgrep crates; the tree-sitter half is slice 12), decision 5 ("Three slices … (1) grep-crate walker, per-language definition regexes, compact capped printer"), and its acceptance. **Depends on**: 01 only (the crate). Independent of 02 to 10: §14 "Slices 1 and 2 touch no driver code and can run beside FR-1/FR-2."

@@ -1,10 +1,3 @@
----
-slice: 04
-status: done
-depends_on: [3]
-lane: 1
----
-
 # Slice 04 — Lanes and parking (FR-3)
 
 **Source**: [`prd.md`](prd.md) → §5 FR-3 (all bullets and acceptance); §3 FR-1 bullet 2 ("`ask[]` and `judge[]` go to the cockpit … a run never starts on an unanswered one") *(FR-1 corrected 2026-10-09 by the owner, BLOCK-201: only `ask[]` parks; `judge[]` is logged as `judge_noted` and never waited on.)*. **Depends on**: 03 (the serial loop and the worker spawn this slice widens to N lanes).

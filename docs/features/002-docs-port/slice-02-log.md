@@ -1,10 +1,3 @@
----
-slice: 02
-status: done
-depends_on: [1]
-lane: 2
----
-
 # Slice 02 — The log (FR-14)
 
 **Source**: [`prd.md`](prd.md) → §4 FR-14 (all six decisions, the `phase` field added at slicing included), §5 FR-15 (`log add|show` in the verb list). **Depends on**: 01 (it takes slice 01's `state::lock`, writes into the feature folder slice 01's `new` creates, and fills the `Status` log fields slice 01 leaves empty).

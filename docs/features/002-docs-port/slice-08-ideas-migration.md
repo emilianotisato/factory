@@ -1,10 +1,3 @@
----
-slice: 08
-status: done
-depends_on: [5, 7]
-lane: 1
----
-
 # Slice 08 — Ideas migration (FR-20 rest)
 
 **Source**: [`prd.md`](prd.md) → §10 FR-20 (the Migration bullet, the file format, the migration half of the acceptance), §6 FR-16 (`--dry`, the clean-tree refusal, git as the undo), §12 QA plan (the FR-20 row), §14 (`W-IDEAS-V2` for lines an old skill writes after the migration). **Depends on**: 05 (the idea file format, `slug`, the writer and `check`'s ideas rules), 07 (`migrate::plan`/`run`, the plan rows, the blame helper, the v2 fixture and `tests/migrate.rs`).
@@ -44,7 +37,7 @@ lane: 1
   ```
 
   8 take a phrase's date and 11 take blame, all from 2026-10-09 to HEAD.
-- **Deviations**: two, AD-801 and AD-802 in [`agent-log.md`](agent-log.md). Plan rows carry the title, the line and where `added` came from. A stray non-bullet line under a heading is a `drop` row. Slice 05's round-trip of a title holding `"` already exists (`tests/docs_ideas.rs`), so that test needed no change.
+- **Deviations**: two, AD-801 and AD-802 in `agent-log.md`. Plan rows carry the title, the line and where `added` came from. A stray non-bullet line under a heading is a `drop` row. Slice 05's round-trip of a title holding `"` already exists (`tests/docs_ideas.rs`), so that test needed no change.
 - **Left for the checkpoint**: task 7, the migration half of the QA plan's FR-20 row.
 
 **Slice**: After this slice `factory docs migrate` also turns `docs/ideas.md` into one file per open idea under `docs/ideas/`, writes `docs/ideas/README.md`, and deletes `ideas.md`. Each bullet is placed by its heading. Graduated bullets are not migrated. Bullets whose placement is a guess (a `### Parked…` heading below `## Graduated`, or an unknown heading) migrate as `open` and are printed first in `--dry`, so the owner reads the risky rows before anything else. Each body is the bullet's text after the title, byte for byte. A migrated fixture then passes `factory docs check` with no warning at all. The tool side of ideas (`idea add|list|drop`, `new --from-idea`, `check`) is slice 05's.

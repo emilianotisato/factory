@@ -1,10 +1,3 @@
----
-slice: 01
-status: done
-depends_on: []
-lane: 1
----
-
 # Slice 01 — v3 model and the factory docs entry (FR-13, FR-15 part, FR-17 routing)
 
 **Source**: [`prd.md`](prd.md) → §3 FR-13 (all five decisions), §5 FR-15 (the `docs` subcommand, `init`, `new`, `slice`, `status`, `set`, exit codes, "removed in v3"), §7 FR-17 (the routing bullet). **Depends on**: — (the spine: every later slice reads the v3 model this one lands).

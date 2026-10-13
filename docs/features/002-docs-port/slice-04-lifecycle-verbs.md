@@ -1,10 +1,3 @@
----
-slice: 04
-status: done
-depends_on: [3]
-lane: 2
----
-
 # Slice 04 — gate, preflight, ship, archive, lanes, renumber (FR-15 rest)
 
 **Source**: [`prd.md`](prd.md) → §5 FR-15 (`gate`, `preflight`, `ship`, `archive`, `renumber`, `lanes`, the exit codes, the `Status`/`Preflight` output contract and the equivalence acceptance), §3 FR-13 (`project.toml` defaults, `gate_parallel` tri-state, `state.toml` as the status store). **Depends on**: 03 (preflight's first bucket is `docs check: no errors`, so `check::run` must exist; the log fields of `Status` from 02 feed preflight's open-block refusal and its shipped-resume line).

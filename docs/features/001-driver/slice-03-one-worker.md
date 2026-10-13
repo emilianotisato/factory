@@ -1,10 +1,3 @@
----
-slice: 03
-status: done
-lane: 1
-depends_on: [2]
----
-
 # Slice 03 — One worker end to end (FR-1, FR-2)
 
 **Source**: [`prd.md`](prd.md) → §4 FR-2 bullets 1, 5 and 6 (the `claude -p` command and pack, the stream is the record, slash commands verified at entry); §3 FR-1 bullets 1, 3 and 4 (detached process, resume is the default start, session death is not run death) and its acceptance. **Depends on**: 02 (the wrapper, the run dir, the events and the `workers` table are the things this slice fills).

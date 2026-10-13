@@ -1,10 +1,3 @@
----
-slice: 10
-status: done
-depends_on: [5, 6, 9]
-lane: 2
----
-
 # Slice 10 — Closeout and worker-facing rest (FR-18 rest, FR-19 write path)
 
 **Source**: [`prd.md`](prd.md) → §8 FR-18 (the closeout half of the removals bullet, the worker-contracts bullet, the `/factory-deliver` bullet), §9 FR-19 (the write-paths bullet, the `factory retro` line, the closeout half of the acceptance), §10 FR-20 (the "worker contracts and assets move with it" bullet). **Depends on**: 05 (the contracts and `autonomy.md` name `factory docs idea add`, which must exist), 06 (the `retros` table, its upsert and `docs retro NNN --set score=`), 09 (the driver runs in process on v3: `Docs::open`, `log_add`, `set_slice_status`, the v3 harness and stub, and no `render_write`).

@@ -1,20 +1,15 @@
 ---
 number: 003
 slug: observatory
-status: shipped
-owns_fr: [21-25]
-retired_fr: []
-reviewed: 20261013
+title: "Observatory: measure, experiment and correct factory runs"
+type: enhancement
+created: 2026-10-13
+author: Emiliano Tisato (with Claude)
+summary: |
+  **Agreed 2026-10-13** (three interview rounds, eight forks; Cursor `grok-4.7-high` adversarial pass, 25 findings, 20 corrected inline; the cut kept all nine extras). The eyes for the full switch decided 2026-10-12: no more A/B, experiments are knob changes measured by the store. FR-21 counts the subagents a worker spawns (read from the Claude Code transcript dir after exit; `report` under-counted both A/B rounds by 2.3M and 2.1M), `in_subagent` on `tool_calls`, `report --recount` to fix stored runs, token columns on `--per-worker`. FR-22 `pack_parts`: chars per pack section, printed per role beside `start_context`. FR-23 project scope `docs/project.toml` `[workers.<role>]` and `[run]`, `runs.knobs` with each value's source, `--hypothesis`, `model_id` from the stream. FR-24 quality at zero tokens: a `FINDINGS high= medium= low= fixed= parked=` line in the polish return, `fix_commits`, `ci_red_rounds`, `ci_reruns`, decision counts; no composite score. FR-25 `factory retro <run>` writes a `## Numbers` section into `retro.md` between markers (per-role own/subagent, knobs, quality, pack composition, comparison with the repo's last three runs per slice and per changed line); retires `measure.py`/`weigh.py`. Schema v1 → v2 (added columns only). Proof: gate + stub with a subagent recording, then a replay on the stored arca (18,465,008) and icg (8,131,594) runs. Not handled: learn loop, `factory grade`, owner signals, post-merge churn, stream fallback, per-turn series. **Sliced 2026-10-13, six slices:** 01 subagent counts (spine: schema v2, split collector, transcript reader, exit record, totals, harness scenario) → 02 recount + per-worker tokens (depends 01; replay on the stored runs) ▲ · 03 pack composition, 04 knobs, 05 quality signals (independent of each other and of 01/02) ▲ · 06 retro numbers (depends 01-05; `factory retro`, changed lines, retires `measure.py` step) ▲. QA guide: FR-25 Human row + the ten-minute replay.
 ---
 
 # PRD-003 — Observatory: measure, experiment and correct factory runs
-
-**Type**: Enhancement batch — the metrics store (schema v1 → v2, added columns only), `factory report`, a new `factory retro`, a project-scope config file, one new line in the polish contract. No public API. The driver's own ship step changes; nothing a worker does changes except one line of its return.
-**Status**: **DRAFT, agreed 2026-10-13** — interviewed (three rounds, seven forks settled, §8). Adversarial pass 2026-10-13 by Cursor `grok-4.7-high`: 25 findings, 20 corrected inline (dated), 5 rebutted (§8 note). The cut kept all nine extras. Not sliced.
-**Created**: 2026-10-13
-**Author**: Emiliano Tisato (with Claude)
-
-**Owns FR range**: **FR-21 … FR-25**. *(Numbers are never reused.)*
 
 **Split from / Related**: PRD-001 [`retro.md`](../001-driver/retro.md) § "FR-11 — A/B, arca-api" and its Correction and Next sections; PRD-001 §10 FR-8 (the store this extends) and §13 FR-11 (the A/B this replaces as the measuring method); PRD-002 FR-19 (the `retros` table, see §11). The learning loop from the 2026-10-09 brainstorm is deliberately a later PRD (§8 OPEN-3).
 
