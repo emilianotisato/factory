@@ -336,9 +336,16 @@ fn the_v2_fixture_migrates_and_the_undo_restores_it() {
     let polish = entries.iter().find(|e| e["id"] == "AD-501").unwrap();
     assert_eq!(polish["phase"], "polish");
 
-    // The retro: a row equal to the frontmatter, the file untouched.
+    // The retro: a row equal to the frontmatter; only its two links moved.
     row_matches(&row(&fx, 1), &old_retro);
-    assert_eq!(fx.read(RETRO), old_retro, "retro.md changed");
+    assert_eq!(
+        fx.read(RETRO),
+        old_retro
+            .replace("[the log](agent-log.md#ad-201)", "the log")
+            .replace("](../../ideas.md)", "](../../ideas/README.md)"),
+        "retro.md"
+    );
+    assert_ne!(fx.read(RETRO), old_retro, "the fixture retro has the links");
     let project = fx.read("docs/project.toml");
     assert!(
         project.starts_with(

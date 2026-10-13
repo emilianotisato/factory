@@ -1644,23 +1644,6 @@ pub fn plan(root: &Path) -> Result<Plan> {
             true => relink(&new, dir, &normalize(&ideas_md)),
             false => (new, Vec::new()),
         };
-        // FR-16: a retro is left as it is, byte for byte, its stale links
-        // included; the plan names each one instead of rewriting it.
-        if p.file_name().is_some_and(|n| n == "retro.md") {
-            let stale = hits
-                .into_iter()
-                .chain(rehits.into_iter().map(|(l, old, _)| (l, old)));
-            for (line, link) in stale {
-                rows.push(PlanRow::new(
-                    "warn",
-                    format!(
-                        "{}:{line} {link} left as it is: retro.md is not rewritten",
-                        rel.display()
-                    ),
-                ));
-            }
-            continue;
-        }
         let mut why = Vec::new();
         if !hits.is_empty() {
             why.push("links to a deleted agent-log.md");
@@ -1835,7 +1818,10 @@ pub fn plan(root: &Path) -> Result<Plan> {
         .to_string_lossy()
         .into_owned();
     let (retros, retro_plan) = retro_rows(root, &repo)?;
-    rows.extend(retro_plan);
+    // A retro whose links were rewritten above is not kept as it is.
+    rows.extend(retro_plan.into_iter().filter(|r| {
+        r.verb != "keep" || !files.iter().any(|(p, _)| p.as_os_str() == r.what.as_str())
+    }));
 
     let mut plan = Plan {
         rows,
@@ -2499,38 +2485,59 @@ mod tests {
     }
 
     #[test]
-    fn a_retro_keeps_its_links_byte_for_byte() {
-        let retro = "---\nscore: 3\n---\n# Retro\n\nSee [the log](agent-log.md) and [ideas](../../ideas.md).\n";
+    fn a_retros_links_are_rewritten_like_any_other() {
+        let fm = "---\nscore: 3\n---\n";
+        let retro = format!(
+            "{fm}# Retro\n\nSee [the log](agent-log.md#ad-1) and [ideas](../../ideas.md).\n"
+        );
         let tmp = v2_tree_with(&[
-            ("docs/features/001-x/retro.md", retro),
+            ("docs/features/001-x/retro.md", &retro),
             ("docs/ideas.md", "## Open\n\n- **A.** a\n"),
-            (
-                "docs/reference/x.md",
-                "[log](../features/001-x/agent-log.md) [i](../ideas.md)\n",
-            ),
         ]);
         let p = plan(tmp.path()).unwrap();
-        let retro_rel = Path::new("docs/features/001-x/retro.md");
-        assert!(p.files.iter().all(|(f, _)| f != retro_rel), "{:?}", p.files);
-        for link in ["[the log](agent-log.md)", "[ideas](../../ideas.md)"] {
-            let want = format!(
-                "docs/features/001-x/retro.md:6 {link} left as it is: retro.md is not rewritten"
-            );
-            assert!(
-                p.rows.contains(&PlanRow::new("warn", want)),
-                "{:#?}",
-                p.rows
-            );
+        let rel = "docs/features/001-x/retro.md";
+        let (_, text) = p
+            .files
+            .iter()
+            .find(|(f, _)| f == Path::new(rel))
+            .unwrap_or_else(|| panic!("{:?}", p.files));
+        assert_eq!(
+            text.as_deref(),
+            Some(
+                format!("{fm}# Retro\n\nSee the log and [ideas](../../ideas/README.md).\n")
+                    .as_str()
+            ),
+            "the frontmatter stays, the two links move"
+        );
+        for (verb, what) in [
+            ("unlink", format!("{rel}:6 [the log](agent-log.md#ad-1)")),
+            (
+                "relink",
+                format!("{rel}:6 [ideas](../../ideas.md) → [ideas](../../ideas/README.md)"),
+            ),
+        ] {
+            assert!(p.rows.contains(&PlanRow::new(verb, what)), "{:#?}", p.rows);
         }
         assert!(
             p.rows
                 .iter()
-                .any(|r| r.verb == "unlink" && r.what.starts_with("docs/reference/x.md:1 "))
+                .any(|r| r.verb == "rewrite" && r.what.starts_with(rel)),
+            "{:#?}",
+            p.rows
         );
         assert!(
             p.rows
                 .iter()
-                .any(|r| r.verb == "relink" && r.what.starts_with("docs/reference/x.md:1 "))
+                .all(|r| r.verb != "warn" || !r.what.starts_with(rel)),
+            "{:#?}",
+            p.rows
         );
+        assert!(
+            !p.rows.contains(&PlanRow::new("keep", rel)),
+            "{:#?}",
+            p.rows
+        );
+        let row = p.retros.iter().find(|r| r.feature == 1).unwrap();
+        assert_eq!(row.score, Some(3), "its numbers still make a row");
     }
 }

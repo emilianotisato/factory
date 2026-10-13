@@ -16,4 +16,4 @@ peak_context: 98765
 
 # Retro — PRD-001
 
-The fixture's retro: its frontmatter becomes one `retros` row, and the file itself stays as it is.
+The fixture's retro: its frontmatter becomes one `retros` row, and its links move like any other file's: [the log](agent-log.md#ad-201) is cut to its text, [the ideas](../../ideas.md) point at the folder's README.
