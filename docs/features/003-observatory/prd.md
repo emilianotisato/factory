@@ -1,7 +1,7 @@
 ---
 number: 003
 slug: observatory
-status: draft
+status: shipped
 owns_fr: [21-25]
 retired_fr: []
 reviewed: 20261013

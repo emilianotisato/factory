@@ -233,6 +233,41 @@ _(none)_
 **Undo:** n/a.
 **Review:** fyi
 
+### AD-9901 — Which range counts a run's changed lines? · polish · 20261013
+**Chose:** `git diff --shortstat <default_branch>...HEAD` (three dots: from the merge base) in `retro::changed_lines`.
+**Over:** `<default_branch>..HEAD`, as slice-06 task 1 and FR-25 wrote it.
+**Because:** with two dots, `git diff` compares the two tips, so every commit that landed on the default branch after the feature branched counts as this run's lines, reversed. Any run whose base moved stores a wrong cost per line. Three dots is the branch's own diff, which is what FR-25 means by changed lines.
+**Undo:** one character in `src/retro.rs` `changed_lines`.
+**Review:** decide
+
+### AD-9902 — Which characters does the transcript path turn into `-`? · polish · 20261013
+**Chose:** every character that is not an ASCII letter or digit, in `measure::transcript_path` and in the stub.
+**Over:** only `/` and `.`, as FR-21 wrote it.
+**Because:** Claude Code's own dirs on this machine show `_` and spaces become `-` too (`ICG/apk_fiscal_arca` is stored as `-home-emiliano-Projects-ICG-apk-fiscal-arca`). With the narrower rule, such a repo's subagents read as "no dir", which is zeros. The PRD's §13 had this rule on the confirm list.
+**Undo:** the closure in `transcript_path` and the stub's two regexes.
+**Review:** fyi
+
+### AD-9903 — Does a stopped run join the comparison cohort? · polish · 20261013
+**Chose:** no: `Db::earlier_runs` skips a run with a `run_stopped` event.
+**Over:** every run whose phase is `finished`.
+**Because:** a stopped run is phase `finished` too, with a fraction of a feature's tokens. In the "Compared with" table it reads as a cheap run.
+**Undo:** drop the `NOT EXISTS` clause in `earlier_runs`.
+**Review:** fyi
+
+### AD-9904 — What does `retro::write` do with markers that are not one pair in order? · polish · 20261013
+**Chose:** refuse, leave the file as it was, and return the counts in the error. At ship that error is one `ship: no ## Numbers written — …` line, never a stopped ship.
+**Over:** replacing from the first open marker to the first close one, which could eat the prose in between, and failing the ship on it.
+**Because:** the markers sit in a file the owner and the polish worker both write. A quoted marker in the prose must not cost a paragraph or a shipped run.
+**Undo:** the marker count in `retro::write` and the `if let Err` in `closeout::ship`.
+**Review:** fyi
+
+### AD-9905 — How are a fork's copied messages counted? · polish · 20261013
+**Chose:** once per session: `measure::subagents` drops a subagent message whose `message.id` the parent or an earlier subagent file already holds.
+**Over:** summing every file.
+**Because:** a forked subagent's transcript starts with copies of the parent's and its siblings' assistant messages, same ids. Session `788a618e` counted them twice. Run 024's polish session (`ddbb0927`) has no copies, so the CP-1 and CP-2 evidence figures stand.
+**Undo:** the `seen` set in `measure::subagents`.
+**Review:** fyi
+
 ## Checkpoints
 
 ### CP-1 — after slice-05 · 2026-10-12

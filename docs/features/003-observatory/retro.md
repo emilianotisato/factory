@@ -1,17 +1,17 @@
 ---
 score:
-gate_runs:
-gate_red:
-gate_minutes:
+gate_runs: 4
+gate_red: 2
+gate_minutes: 2.23
 ci_cycles: 0
-slices:
-checkpoints:
-build_minutes:
-polish_minutes:
-out_tokens:
-cache_read_tokens:
-start_context:
-peak_context:
+slices: 5
+checkpoints: 2
+build_minutes: 98.51
+polish_minutes: 41.64
+out_tokens: 321597
+cache_read_tokens: 40618667
+start_context: 32244
+peak_context: 167069
 ---
 
 # Retro — PRD-003
