@@ -12,6 +12,7 @@ use std::os::unix::fs::symlink;
 use std::path::Path;
 use std::process::{Command, Output};
 
+use factory::cli::upgrade::INSTALLER;
 use factory::skills::{self, FILES, MANIFEST, Manifest};
 use harness::Fixture;
 
@@ -23,9 +24,14 @@ fn run(dir: &Path, program: &str, args: &[&str]) -> Output {
     } else {
         program
     };
+    // The config and the install receipt live under `.git`, where git does
+    // not see them: never the owner's real `~/.config/factory`.
     Command::new(program)
         .args(args)
         .current_dir(dir)
+        .env("FACTORY_CONFIG_DIR", dir.join(".git/fence-config"))
+        .env("AXOUPDATER_CONFIG_PATH", dir.join(".git/fence-receipt"))
+        .env_remove("AXOUPDATER_CONFIG_WORKING_DIR")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_AUTHOR_NAME", "Fence")
@@ -177,7 +183,7 @@ fn doctor_prints_one_line_per_verdict() {
         ),
         (
             "ahead",
-            format!("ahead (repo 999.0.0, binary {V}) → factory upgrade"),
+            format!("ahead (repo 999.0.0, binary {V}) → {INSTALLER}"),
         ),
         (
             "differs",
@@ -299,8 +305,29 @@ fn update_refuses_ahead_and_writes_nothing() {
     let before = snapshot(dir.path());
     let (code, out) = update(dir.path());
     assert_eq!(code, 1);
-    assert!(out.contains("factory upgrade"), "{out}");
+    assert_eq!(
+        out,
+        format!("ahead (repo 999.0.0, binary {V}) → {INSTALLER}\n")
+    );
     assert_eq!(snapshot(dir.path()), before);
+}
+
+/// A binary built from source with `[source] path` set: doctor and `skills
+/// update` both point at `cargo install --path` (FR-8).
+#[test]
+fn ahead_from_source_points_at_the_checkout() {
+    let dir = fixture("ahead");
+    let root = dir.path();
+    let config = root.join(".git/fence-config");
+    fs::create_dir_all(&config).unwrap();
+    fs::write(
+        config.join("config.toml"),
+        "[source]\npath = \"/src/factory\"\n",
+    )
+    .unwrap();
+    let line = format!("ahead (repo 999.0.0, binary {V}) → cargo install --path /src/factory");
+    assert_eq!(doctor_skills(root), [padded(&line)]);
+    assert_eq!(update(root), (1, format!("{line}\n")));
 }
 
 #[test]

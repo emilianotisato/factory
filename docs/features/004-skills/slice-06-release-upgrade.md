@@ -3,7 +3,34 @@
 **Source**: [`prd.md`](prd.md) → §10 FR-8 (the release workflow, `factory upgrade`, the README), and §5 FR-3's `ahead` hint ("or the `cargo install --path <source>` line when the binary was not installed from a release, FR-8"). **Depends on**: 03 (it rewrites the `ahead` hint slice 03 prints, in `skills::verdict`), 05 (it reads `[source] path`, which slice 05 adds to the user config).
 **Created**: 2026-10-13
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**: `dist init` (cargo-dist 0.32.0, installed locally) wrote `.github/workflows/release.yml` and **`dist-workspace.toml`**, not `[workspace.metadata.dist]` (PRD FR-8 acceptance carries the dated correction); its "good defaults" added `x86_64-pc-windows-msvc`, removed by hand before `dist generate`. `Cargo.toml` gains `repository`, `[package.metadata.dist] dist = true` (without it `publish = false` leaves dist nothing to release) and `[profile.dist]`; `ci.yml` is byte-identical. **aarch64**: the plan's matrix builds `aarch64-unknown-linux-gnu` on a native `ubuntu-22.04-arm` runner (macOS on `macos-14` and `macos-15-intel`, x86_64 Linux on `ubuntu-22.04`), so nothing cross-compiles. **TLS**: `cargo tree -i aws-lc-sys` → `aws-lc-rs` → `rustls` → `reqwest 0.13.5` → `axoasset 2.0.1` → `axoupdater 0.10.2`; `cargo tree -i openssl-sys` matches no package. A C TLS crate on native runners only, so the stack stays. `factory upgrade [--check]` in `src/cli/upgrade.rs` (`from_release`, `source_line`, `ahead_hint`, `INSTALLER`), `axoupdater` with `blocking` and `tokio` (`rt`) for the local `--check` runtime; doctor, preflight and `skills update` print the `ahead` hint through `Verdict::lines`, which asks `ahead_hint` only on `ahead`. `tests/upgrade.rs` (5, a stub release on `127.0.0.1:0`): source line from `[source]`, the installer line without, a receipt for `/nonexistent`, `--check` → `0.2.0 → 999.0.0` with the binary's mtime unchanged, `--check` on `v0.2.0` → `already current`. `tests/release.rs` (3): the four targets, `installers = ["shell"]`, `install-updater = false`, no `pc-windows`, the tag pattern `'**[0-9]+.[0-9]+.[0-9]+*'`, the installer before `cargo install` in the README. `tests/skills_fence.rs` (9): `ahead` ends with the installer line, a new test with `[source] path = "/src/factory"` for doctor and `update` (exit 1); config and receipt dirs under the fixture's `.git`. `tests/harness/mod.rs` sets `AXOUPDATER_CONFIG_PATH`. Both fence and upgrade tests pass with a receipt for the test binary under `XDG_CONFIG_HOME`. Inner loop: 1 run, 0 red, 1.5 min. The fresh binary on this machine, no receipt: `installed from source — curl --proto '=https' --tlsv1.2 -LsSf https://github.com/emilianotisato/factory/releases/latest/download/factory-installer.sh | sh`, exit 0; with a receipt and no server, `factory: error sending request …`, exit 1. Release machinery files: AD-10. Prove rows (FR-8 machine row) left for the checkpoint.
+
+`dist plan`, 2026-10-13:
+
+```
+announcing v0.2.0
+  factory 0.2.0
+    source.tar.gz
+      [checksum] source.tar.gz.sha256
+    factory-installer.sh
+    sha256.sum
+    factory-aarch64-apple-darwin.tar.xz
+      [bin] factory
+      [misc] README.md
+      [checksum] factory-aarch64-apple-darwin.tar.xz.sha256
+    factory-aarch64-unknown-linux-gnu.tar.xz
+      [bin] factory
+      [misc] README.md
+      [checksum] factory-aarch64-unknown-linux-gnu.tar.xz.sha256
+    factory-x86_64-apple-darwin.tar.xz
+      [bin] factory
+      [misc] README.md
+      [checksum] factory-x86_64-apple-darwin.tar.xz.sha256
+    factory-x86_64-unknown-linux-gnu.tar.xz
+      [bin] factory
+      [misc] README.md
+      [checksum] factory-x86_64-unknown-linux-gnu.tar.xz.sha256
+```
 
 **Slice**: After this slice a developer without Rust can install `factory`, and an installed binary can update itself. `dist init` writes a release workflow that, on a `v*` tag, builds four Linux and macOS archives, checksums and `factory-installer.sh` onto a GitHub release. `factory upgrade` reads the installer's receipt through `axoupdater`, replaces the binary and prints `<old> → <new>` or `already current`; `--check` only prints. A binary not installed from a release prints the `cargo install --path <source>` line, or the installer line when no `[source]` is set, and doctor's `ahead` hint follows the same rule. The tag itself, and so the first real release, is the owner's after the merge (qa-guide).
 

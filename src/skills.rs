@@ -395,7 +395,15 @@ fn verdict_for(root: &Path, binary: &str) -> Verdict {
 impl Verdict {
     /// Doctor's `skills` lines: the version line unless current, then the
     /// hand-edit and missing lines; `current (<v>)` only when none applies.
+    /// `ahead` points at `factory upgrade` or, for a binary built from
+    /// source, the line that rebuilds it (FR-8).
     pub fn lines(&self) -> Vec<String> {
+        self.lines_with(crate::cli::upgrade::ahead_hint)
+    }
+
+    /// [`Verdict::lines`] with the `ahead` hint given; read only on `ahead`,
+    /// since it looks for the install receipt.
+    fn lines_with(&self, ahead_hint: impl FnOnce() -> String) -> Vec<String> {
         let (version, hand_edited, missing) = match self {
             Verdict::SourceCheckout => return vec!["source checkout".into()],
             Verdict::None => return vec!["none → factory init".into()],
@@ -413,7 +421,8 @@ impl Verdict {
                 "behind (repo {repo}, binary {binary}) → factory skills update"
             )),
             Version::Ahead { repo, binary } => out.push(format!(
-                "ahead (repo {repo}, binary {binary}) → factory upgrade"
+                "ahead (repo {repo}, binary {binary}) → {}",
+                ahead_hint()
             )),
             Version::Differs(v) => out.push(format!(
                 "differs ({v} both, bundle differs: a dev build) → factory skills update"
@@ -552,7 +561,7 @@ mod tests {
         let dir = rendered();
         edit_manifest(dir.path(), |m| m.version = "999.0.0".into());
         assert_eq!(
-            verdict(dir.path()).lines(),
+            verdict(dir.path()).lines_with(|| "factory upgrade".into()),
             [format!(
                 "ahead (repo 999.0.0, binary {V}) → factory upgrade"
             )]
@@ -564,7 +573,7 @@ mod tests {
         let dir = rendered();
         edit_manifest(dir.path(), |m| m.version = "0.10.0".into());
         assert_eq!(
-            verdict_for(dir.path(), "0.9.0").lines(),
+            verdict_for(dir.path(), "0.9.0").lines_with(|| "factory upgrade".into()),
             ["ahead (repo 0.10.0, binary 0.9.0) → factory upgrade"]
         );
     }

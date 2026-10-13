@@ -554,6 +554,12 @@ fn build_env(
         ),
         ("FACTORY_DATA_DIR".to_string(), s(&base.join("data"))),
         ("FACTORY_CONFIG_DIR".to_string(), s(&base.join("config"))),
+        // Never the owner's real install receipt: a test binary is always
+        // "from source" to `factory upgrade` and doctor's `ahead` hint.
+        (
+            "AXOUPDATER_CONFIG_PATH".to_string(),
+            s(&base.join("axoupdater")),
+        ),
         ("GIT_CONFIG_GLOBAL".to_string(), s(gitconfig)),
         ("GIT_CONFIG_NOSYSTEM".to_string(), "1".to_string()),
         // Claude Code's config dir: where the stub writes a session's

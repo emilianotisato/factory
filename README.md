@@ -63,10 +63,21 @@ It is built for one developer so far. What a team repo commits, and what stays o
 
 ## Trying it
 
-You need Rust, the `claude` CLI logged in, and `gh` authenticated.
+You need the `claude` CLI logged in and `gh` authenticated. On Linux or macOS:
+
+```
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/emilianotisato/factory/releases/latest/download/factory-installer.sh | sh
+```
+
+or, from a checkout, with Rust:
 
 ```
 cargo install --path .
+```
+
+`factory upgrade` updates an installed binary to the latest release.
+
+```
 factory --help
 factory init             # in a project: the docs layout, the skills in .claude/skills/, the convention block
 factory docs gate set "<the command that proves a change is done>"

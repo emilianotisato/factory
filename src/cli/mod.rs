@@ -11,4 +11,5 @@ pub mod run;
 pub mod skills;
 pub mod status;
 pub mod stop;
+pub mod upgrade;
 pub mod wait;
