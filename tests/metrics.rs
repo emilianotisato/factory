@@ -148,12 +148,13 @@ fn every_tool_call_is_a_row_with_its_kind_and_repeat_flags() {
     let builds: Vec<&WorkerRow> = workers.iter().filter(|w| w.role == "build").collect();
     assert_eq!(builds.len(), 3);
 
-    // Each build: Read prd, Read slice, Write code, Write fragment, Bash inner, Edit slice.
+    // Each build: Read prd, Read slice, Write code, Bash `factory docs log
+    // add` (its AD), Bash inner, Bash `factory docs set` (the slice's status).
     for b in &builds {
         let mine: Vec<&ToolCallRow> = rows.iter().filter(|r| r.worker_id == b.id).collect();
         assert_eq!(
             mine.iter().map(|r| r.kind.as_str()).collect::<Vec<_>>(),
-            ["read", "read", "edit", "edit", "run-gate", "edit"],
+            ["read", "read", "edit", "run", "run-gate", "run"],
             "worker {}",
             b.id
         );
@@ -166,19 +167,20 @@ fn every_tool_call_is_a_row_with_its_kind_and_repeat_flags() {
             assert_eq!(r.target_hash.len(), 64);
             assert!(r.ts.is_some());
         }
-        // Read slice then Edit slice: the same file, so the Edit repeats.
-        assert!(
-            !mine[1].repeat_in_worker && mine[5].repeat_in_worker,
-            "{mine:?}"
-        );
+        // No build touches one target twice: the slice file is read once
+        // and never edited (its status goes through `factory docs set`), and
+        // the two `factory docs` calls differ. A repeat inside one worker is
+        // covered by src/metrics.rs `repeat_flags_are_per_worker_and_per_run`.
+        assert!(mine.iter().all(|r| !r.repeat_in_worker), "{mine:?}");
     }
-    // The checkpoint worker writes agent-log.md: one row of its own.
+    // The checkpoint worker logs its CP entry (`factory docs log add`): one
+    // row of its own.
     let cp = workers.iter().find(|w| w.role == "checkpoint").unwrap();
     let cp_rows: Vec<&ToolCallRow> = rows.iter().filter(|r| r.worker_id == cp.id).collect();
     assert_eq!(cp_rows.len(), 1);
-    assert_eq!(cp_rows[0].kind, "edit");
+    assert_eq!(cp_rows[0].kind, "run");
     // The polish worker (slice 09): Read prd, Write code, Bash inner, Write
-    // retro, Edit prd, Write the PR body.
+    // retro, Bash `factory docs set 001 reviewed=…`, Write the PR body.
     let polish = workers.iter().find(|w| w.role == "polish").unwrap();
     let polish_rows: Vec<&ToolCallRow> = rows.iter().filter(|r| r.worker_id == polish.id).collect();
     assert_eq!(
@@ -186,7 +188,7 @@ fn every_tool_call_is_a_row_with_its_kind_and_repeat_flags() {
             .iter()
             .map(|r| r.kind.as_str())
             .collect::<Vec<_>>(),
-        ["read", "edit", "run-gate", "edit", "edit", "edit"]
+        ["read", "edit", "run-gate", "edit", "run", "edit"]
     );
     assert_eq!(rows.len(), 3 * 6 + 1 + 6);
 
@@ -526,9 +528,9 @@ fn ctx_calls_are_labelled_and_the_report_reads_the_reversal_rule() {
             "read",
             "ctx-outline",
             "edit",
-            "edit",
+            "run",
             "run-gate",
-            "edit"
+            "run"
         ]
     );
     let labels: Vec<(Option<bool>, Option<bool>, bool)> = mine

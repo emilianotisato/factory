@@ -1,9 +1,9 @@
 //! The v3 board (PRD-002 FR-13): computed from the folders, `project.toml`
 //! and each feature's `state.toml`, never from `docs/index.md`. A port of
 //! `docs.mjs:158 scanFolder`, `:1374 featureState` and `:1343 statusCmd`.
-//! The log fields (`checkpoints`, `unverified`, `openBlocks`, `log`) stay
-//! empty until slice 02; the gate fields (`gate`, `harness`, `rubric`) stay
-//! at their defaults until slice 04.
+//! The log fields (`checkpoints`, `unverified`, `openBlocks`, `log`) come
+//! from the feature's `log.jsonl` (FR-14); the foundations (`gate`, `harness`,
+//! `rubric`) from `gate.rs`.
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -12,9 +12,11 @@ use std::process::Command;
 use serde_json::{Value, json};
 
 use super::frontmatter::{self, Frontmatter};
+use super::gate;
+use super::log::{self, Flag};
 use super::project::{self, Project};
 use super::state::{self, State};
-use super::{Building, Slice, SliceRef, Status};
+use super::{Building, Checkpoint, LogSummary, OpenBlock, Slice, SliceRef, Status};
 use crate::error::io;
 use crate::{Error, Result};
 
@@ -166,7 +168,9 @@ pub fn folder_name(name: &str) -> Option<(u32, &str)> {
         .flatten()
 }
 
-fn scan_folder(base: &Path, kind: Kind) -> Result<Vec<Feature>> {
+/// One of `features/` or `archive/`; a `state.toml` that does not parse is
+/// kept as its error on the feature, never a reason to fail.
+pub fn scan_folder(base: &Path, kind: Kind) -> Result<Vec<Feature>> {
     let Ok(rd) = fs::read_dir(base) else {
         return Ok(Vec::new());
     };
@@ -322,11 +326,49 @@ pub fn feature_state(board: &Board, f: &Feature) -> Result<Status> {
         .collect();
     let lanes = board.lanes();
     let free_lanes: Vec<u32> = (1..=lanes).filter(|l| !held.contains(l)).collect();
-    // The log fills these (slice 02); with no checkpoint logged every done
-    // slice is unverified, but nothing is due until the log can say so.
-    let unverified: Vec<u32> = Vec::new();
-    let checkpoint_due = false;
     let all_done = !slices.is_empty() && slices.iter().all(|s| is(s, "done"));
+    let (entries, _) = log::entries(&f.dir)?;
+    let of = |k: log::Kind| entries.iter().filter(move |e| e.kind == k);
+    let checkpoints: Vec<Checkpoint> = of(log::Kind::Checkpoint)
+        .filter_map(|e| {
+            Some(Checkpoint {
+                n: e.n()?,
+                after: e.slice,
+            })
+        })
+        .collect();
+    // Every done slice above the last one a checkpoint covered.
+    let last_cp = checkpoints
+        .iter()
+        .filter_map(|c| c.after)
+        .max()
+        .unwrap_or(0);
+    let unverified: Vec<u32> = done.iter().copied().filter(|n| *n > last_cp).collect();
+    let checkpoint_due =
+        !unverified.is_empty() && (unverified.len() as u32 >= board.checkpoint_every() || all_done);
+    let open_blocks: Vec<OpenBlock> = log::select(&entries, log::Filter::Open)
+        .into_iter()
+        .filter_map(|e| {
+            Some(OpenBlock {
+                n: e.n()?,
+                slice: e.slice,
+                phase: e.phase.clone(),
+                title: Some(e.title.clone()),
+            })
+        })
+        .collect();
+    let decisions = || of(log::Kind::Decision).filter(|e| e.flag.is_some());
+    // `decide` counts reviewed decisions too, as v2 does (`docs.mjs:1428`):
+    // the ship step stores it on the run row (`closeout.rs:599`).
+    let summary = LogSummary {
+        decisions: (of(log::Kind::Decision).count() + of(log::Kind::Ask).count()) as u32,
+        flagged: decisions().filter_map(|e| e.n()).collect(),
+        decide: decisions()
+            .filter(|e| e.flag == Some(Flag::Decide))
+            .filter_map(|e| e.n())
+            .collect(),
+        blocks: of(log::Kind::Block).count() as u32,
+    };
     let text = f.prd.as_ref().map(|(_, t)| t.as_str()).unwrap_or("");
     Ok(Status {
         number: f.number,
@@ -346,8 +388,14 @@ pub fn feature_state(board: &Board, f: &Feature) -> Result<Status> {
             .state()
             .and_then(|s| s.reviewed.clone())
             .map_or(Value::Null, Value::String),
+        gate: gate::status(
+            &board.root,
+            board.project.as_ref().and_then(|p| p.gate.as_deref()),
+        ),
         qa_plan: has_qa_plan(text),
         harness_line: harness_line(text),
+        harness: gate::harness(&board.root),
+        rubric: gate::rubric(&board.root),
         sliced: !slices.is_empty(),
         all_done,
         checkpoint_every: board.checkpoint_every(),
@@ -375,12 +423,14 @@ pub fn feature_state(board: &Board, f: &Feature) -> Result<Status> {
             .filter(|s| is(s, "blocked"))
             .map(|s| s.number)
             .collect(),
+        open_blocks,
         open_opens: open_opens(text).into_iter().map(Value::from).collect(),
+        checkpoints,
         unverified,
+        log: summary,
         retro: Value::Null,
         branch: branch(&board.root),
         slices,
-        ..Status::default()
     })
 }
 

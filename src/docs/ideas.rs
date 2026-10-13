@@ -357,7 +357,10 @@ pub fn drop(root: &Path, id: &str, because: &str) -> Result<String> {
     if because.trim().is_empty() {
         return refuse("--because is empty: the reason is what the commit keeps");
     }
-    let st = git(root, &["status", "--porcelain", "--", &rel])?;
+    // A literal pathspec: an id is a file name, and `*` or `[` in one must
+    // not widen the commit to other ideas.
+    let spec = format!(":(literal){rel}");
+    let st = git(root, &["status", "--porcelain", "--", &spec])?;
     if !st.status.success() {
         return refuse(format!(
             "git status failed: {}",
@@ -380,12 +383,12 @@ pub fn drop(root: &Path, id: &str, because: &str) -> Result<String> {
     let msg = format!("docs: drop idea {id}");
     let o = git(
         root,
-        &["commit", "-q", "-m", &msg, "-m", because, "--", &rel],
+        &["commit", "-q", "-m", &msg, "-m", because, "--", &spec],
     )?;
     if !o.status.success() {
         // Put the file back: a refused commit (a hook) must not leave the
         // idea deleted with its reason nowhere.
-        let _ = git(root, &["checkout", "--", &rel]);
+        let _ = git(root, &["checkout", "--", &spec]);
         return refuse(format!(
             "git commit failed, {rel} restored: {}",
             String::from_utf8_lossy(&o.stderr).trim()

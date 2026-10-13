@@ -11,10 +11,15 @@ use super::{scaffold, state};
 use crate::error::io;
 use crate::{Error, Result};
 
-/// The live feature `reference` names; an archived one is refused.
+/// The live feature `reference` names; an archived one is refused. A
+/// `state.toml` that does not parse is named here: read past, the board
+/// falls back to slice frontmatter and reports every slice "not done".
 fn live(root: &Path, reference: &str) -> Result<Feature> {
     let b = board::scan(root)?;
     let f = b.resolve(reference)?;
+    if let Err(e) = &f.state {
+        return Err(Error::Msg(e.clone()));
+    }
     if f.kind == Kind::Archive {
         return Err(Error::Msg(format!(
             "PRD-{:03} is already in docs/archive/",

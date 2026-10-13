@@ -6,6 +6,7 @@ use std::path::Path;
 use std::process::Command;
 
 use super::board::{self, Kind};
+use super::ideas;
 use super::project;
 use super::state;
 use crate::config::PROJECT_FILE;
@@ -15,6 +16,8 @@ use crate::{Error, Result, clock};
 pub const INDEX: &str = include_str!("../../assets/docs/index.md");
 pub const PRD: &str = include_str!("../../assets/docs/prd.scaffold.md");
 pub const SLICE: &str = include_str!("../../assets/docs/slice.scaffold.md");
+/// `docs/ideas/README.md`: the inbox rules for one file per idea (FR-20).
+pub const IDEAS_README: &str = include_str!("../../assets/docs/ideas-README.md");
 
 /// `docs/.gitignore`: the feature locks never show in `git status`, so
 /// preflight's clean-tree check and the driver's folder commits ignore them.
@@ -63,6 +66,11 @@ pub fn init(root: &Path, out: &mut dyn Write) -> Result<()> {
             fs::create_dir_all(&p).map_err(io(format!("mkdir {}", p.display())))?;
             made.push(format!("docs/{d}/"));
         }
+    }
+    let readme = docs.join("ideas").join(ideas::README);
+    if !readme.exists() {
+        write_new(&readme, IDEAS_README)?;
+        made.push(format!("{}/{}", ideas::DIR, ideas::README));
     }
     let ignore = docs.join(".gitignore");
     let text = fs::read_to_string(&ignore).unwrap_or_default();
@@ -146,7 +154,22 @@ fn name_ok(what: &str, s: &str) -> Result<()> {
 /// `docs new <slug> [--title T]`: `prd.md` from the v3 scaffold and
 /// `state.toml` with `status = "draft"`. No log: the first append makes it.
 pub fn new(root: &Path, slug: &str, title: Option<&str>, out: &mut dyn Write) -> Result<()> {
+    new_from(root, slug, title, None, out)
+}
+
+/// `new` with `--from-idea ID`: the PRD carries `from_idea` and the idea's
+/// body, and the idea file goes. Nothing is committed, so the PRD's first
+/// commit carries the deletion too.
+pub fn new_from(
+    root: &Path,
+    slug: &str,
+    title: Option<&str>,
+    from_idea: Option<&str>,
+    out: &mut dyn Write,
+) -> Result<()> {
     name_ok("slug", slug)?;
+    // Before the number is allocated: a bad id leaves nothing behind.
+    let idea = from_idea.map(|id| ideas::open(root, id)).transpose()?;
     let Some(project) = project::load(root)? else {
         return refuse(format!(
             "no [docs] in {PROJECT_FILE} — run `factory docs init` first"
@@ -159,23 +182,35 @@ pub fn new(root: &Path, slug: &str, title: Option<&str>, out: &mut dyn Write) ->
     if dir.exists() {
         return refuse(format!("docs/features/{name} already exists"));
     }
-    let title = title.map_or_else(|| title_case(slug), str::to_string);
+    let title = match (title, &idea) {
+        (Some(t), _) => t.to_string(),
+        (None, Some((_, _, i))) => i.title.clone(),
+        (None, None) => title_case(slug),
+    };
     let gate = match &project.gate {
         Some(g) => format!("`{g}` *(declared in project.toml)*"),
         None => "_(none declared — run /guardrails before slicing)_".into(),
     };
-    let body = PRD
+    let mut body = PRD
         .replace("{{NNN}}", &format!("{number:03}"))
         .replace("{{SLUG}}", slug)
         .replace("{{TITLE}}", &title)
         .replace("{{DATE}}", &today())
         .replace("{{GATE}}", &gate);
+    if let Some((id, _, i)) = &idea {
+        body = with_idea(&body, id, &i.body);
+    }
     write_new(&dir.join("prd.md"), &body)?;
     state::set(&dir, &[("status", "draft")])?;
     say(
         out,
         &format!("created docs/features/{name}/prd.md, state.toml"),
     )?;
+    if let Some((_, rel, _)) = &idea {
+        let p = root.join(rel);
+        fs::remove_file(&p).map_err(io(format!("delete {}", p.display())))?;
+        say(out, &format!("deleted {rel}: commit it with the PRD"))?;
+    }
     say(
         out,
         &format!(
@@ -194,6 +229,32 @@ pub fn new(root: &Path, slug: &str, title: Option<&str>, out: &mut dyn Write) ->
             None => "⚠ no verify gate declared — mention /guardrails in the hand-off".into(),
         },
     )
+}
+
+/// The scaffold with `from_idea` as its last frontmatter key and the idea's
+/// body under `## From idea <id>` right after the H1, for the author to fold
+/// in at the interview.
+fn with_idea(prd: &str, id: &str, body: &str) -> String {
+    let mut out = String::with_capacity(prd.len() + body.len() + 64);
+    let mut fences = 0;
+    let mut placed = false;
+    for line in prd.split_inclusive('\n') {
+        if line == "---\n" {
+            fences += 1;
+            if fences == 2 {
+                out.push_str(&format!("from_idea: \"{id}\"\n"));
+            }
+        }
+        out.push_str(line);
+        if fences >= 2 && !placed && line.starts_with("# ") {
+            placed = true;
+            out.push_str(&format!("\n## From idea {id}\n\n{body}"));
+            if !body.is_empty() && !body.ends_with('\n') {
+                out.push('\n');
+            }
+        }
+    }
+    out
 }
 
 /// `docs slice NNN <subject> [--depends a,b] [--title T]`: the next slice

@@ -131,3 +131,9 @@ Extend slice 07's `#[ignore]` `prd_001_copy_migrates`: after the migration, `doc
 Rows from [`prd.md`](prd.md) § QA plan: the migration half of the **FR-20** row, "`migrate` on the v2 fixture's `ideas.md`: four files, the Graduated bullet not migrated, the Parked bullet listed first as a guess, bodies byte for byte". Drive it on the real surface with the branch binary in a temp copy of `tests/fixture/v2`: `factory docs migrate --dry` (the head of its output), `factory docs migrate`, `ls docs/ideas`, `cat` of each idea file, `diff` of each body against the source bytes, `factory docs idea list --json`, `factory docs check`. Also run it in a `git archive HEAD docs` copy of this repo and list its `guess` and `drop` rows. The human half is in [`qa-guide.md`](qa-guide.md), not here: the owner reads the guess rows of `migrate --dry` on arca-api and decides which Parked bullets are still open.
 
 **Acceptance:** Progress holds each transcript with its exit code, the four file names, four empty body `diff`s, and the `check` output with no warning line.
+
+**Code-review fixes (2026-10-13).**
+
+- A fence at the margin under an idea bullet ended the bullet (AD-802), but its lines vanished from the plan. FR-20 says dropped text is listed. Each line now gets a `drop` row ("in a fence under no bullet"). Test: `bounds_fences_and_drops`.
+- `this_repos_ideas_at_head` counted the live `docs/ideas.md`, so any parked idea would turn it red. It reads the frozen copy now (AD-9906).
+- The migration half of FR-20 is proven in `evidence/polish-fr20.txt`. `migrate --dry` lists the Echo guess first and leaves `git status` empty. `migrate` writes the four idea files and does not migrate Delta, and `check` is clean.

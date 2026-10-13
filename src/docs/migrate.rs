@@ -16,14 +16,16 @@ use crate::db::{Db, RetroRow};
 use crate::docs::board::{self, Feature, Kind as Place};
 use crate::docs::frontmatter::{self, Frontmatter, Value};
 use crate::docs::log::{self, Entry, Flag, Kind, Verdict};
+use crate::docs::migrate_ideas;
 use crate::docs::project;
 use crate::docs::state::{self, SliceState, State};
 use crate::error::{io, json};
 use crate::scheduler::write_atomic;
 use crate::{Error, Result};
 
-/// One line of the plan: `create`, `rewrite`, `delete`, `keep`, `row`,
-/// `unlink`, `drop`, `fix` or `warn`, then the path or the key.
+/// One line of the plan: `guess`, `create`, `rewrite`, `delete`, `keep`,
+/// `row`, `unlink`, `relink`, `idea`, `drop`, `fix` or `warn`, then the path
+/// or the key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlanRow {
     pub verb: &'static str,
@@ -31,7 +33,7 @@ pub struct PlanRow {
 }
 
 impl PlanRow {
-    fn new(verb: &'static str, what: impl Into<String>) -> PlanRow {
+    pub(crate) fn new(verb: &'static str, what: impl Into<String>) -> PlanRow {
         PlanRow {
             verb,
             what: what.into(),
@@ -162,8 +164,9 @@ fn ends_entry(line: &str) -> bool {
 }
 
 /// `^\*\*Review:?\*\*:?\s*(decide|fyi|yes|no)\b`, case-insensitive
-/// (`docs.mjs:289-290`): `Some(None)` is a `no`.
-fn review_flag(line: &str) -> Option<Option<Flag>> {
+/// (`docs.mjs:289-290`): `Some((None, _))` is a `no`; the `bool` says text
+/// follows the flag word (`decide — because …`).
+fn review_flag(line: &str) -> Option<(Option<Flag>, bool)> {
     let lower = line.trim().to_ascii_lowercase();
     let r = lower.strip_prefix("**review")?;
     let r = r.strip_prefix(':').unwrap_or(r).strip_prefix("**")?;
@@ -175,11 +178,11 @@ fn review_flag(line: &str) -> Option<Option<Flag>> {
         ("no", None),
     ]
     .into_iter()
-    .find(|(w, _)| {
-        r.strip_prefix(w)
-            .is_some_and(|a| !a.starts_with(|c: char| c.is_alphanumeric() || c == '_'))
+    .find_map(|(w, f)| {
+        let a = r.strip_prefix(w)?;
+        (!a.starts_with(|c: char| c.is_alphanumeric() || c == '_'))
+            .then(|| (f, !a.trim().is_empty()))
     })
-    .map(|(_, f)| f)
 }
 
 /// `^\*\*{label} \((\d{4}-\d{2}-\d{2})\):\*\*\s*(.+)`: the date and the rest.
@@ -357,13 +360,34 @@ fn read_log(text: &str, dates: &[String]) -> Result<Parsed> {
             ));
         }
         let ps = parts(h.rest);
-        let title = ps[0].to_string();
         let tail = &ps[1..];
-        let place = tail.iter().find(|p| slice_field(p).is_some() || is_word(p));
+        let at = tail
+            .iter()
+            .position(|p| slice_field(p).is_some() || is_word(p));
+        let place = at.map(|i| &tail[i]);
         let slice = place.and_then(|p| slice_field(p));
         let phase = place
             .filter(|p| slice_field(p).is_none() && !matches!(**p, "open" | "resolved"))
             .map(|p| p.to_string());
+        // A middle part that is no field (a ` · ` inside the title) stays in
+        // the title: the place, the date `heading_date` reads and a BLOCK's
+        // state are the fields.
+        let date_at_part = tail.iter().rposition(|p| day(p).is_some());
+        let state_at = (h.prefix == "BLOCK")
+            .then(|| tail.len().checked_sub(1))
+            .flatten()
+            .filter(|&i| matches!(tail[i], "open" | "resolved"));
+        let title = std::iter::once(ps[0])
+            .chain(
+                tail.iter()
+                    .enumerate()
+                    .filter(|(i, _)| {
+                        Some(*i) != at && Some(*i) != date_at_part && Some(*i) != state_at
+                    })
+                    .map(|(_, p)| *p),
+            )
+            .collect::<Vec<_>>()
+            .join(" · ");
         if let Some(p) = &phase
             && !log::PHASES.contains(&p.as_str())
         {
@@ -410,11 +434,13 @@ fn read_log(text: &str, dates: &[String]) -> Result<Parsed> {
                 continue;
             }
             if h.prefix == "AD"
-                && let Some(f) = review_flag(line)
+                && let Some((f, tail)) = review_flag(line)
             {
-                // The last Review line wins, as in v2; a `no` stays visible.
+                // The last Review line wins, as in v2. A `no`, and a line
+                // with text after its flag word, stay in the body verbatim:
+                // `flag` holds the word, the body the reason.
                 flag = f;
-                if f.is_none() {
+                if f.is_none() || tail {
                     kept.push(line);
                 }
                 j += 1;
@@ -575,23 +601,43 @@ fn git_out(root: &Path, args: &[&str]) -> std::result::Result<String, String> {
 
 /// Each line's `git blame` author date, `YYYY-MM-DD` in the author's zone.
 pub fn blame_dates(root: &Path, path: &Path) -> Result<Vec<String>> {
+    Ok(blame_lines(root, path)?
+        .into_iter()
+        .map(|(d, _)| d)
+        .collect())
+}
+
+/// [`blame_dates`], and whether each line is committed: git dates a line
+/// that is not with the current time.
+pub(crate) fn blame_lines(root: &Path, path: &Path) -> Result<Vec<(String, bool)>> {
     let rel = path.strip_prefix(root).unwrap_or(path).to_string_lossy();
     match git_out(root, &["blame", "--porcelain", "--", &rel]) {
-        Ok(out) => Ok(parse_blame(&out)),
+        Ok(out) => Ok(parse_blame_lines(&out)),
         Err(e) => refuse(format!(
-            "git blame {rel}: {e} — migrate dates log entries from git, commit the file first"
+            "git blame {rel}: {e} — migrate dates from git, commit the file first"
         )),
     }
 }
 
+#[cfg(test)]
 fn parse_blame(text: &str) -> Vec<String> {
+    parse_blame_lines(text)
+        .into_iter()
+        .map(|(d, _)| d)
+        .collect()
+}
+
+fn parse_blame_lines(text: &str) -> Vec<(String, bool)> {
     let mut when: HashMap<&str, (i64, i64)> = HashMap::new();
     let mut sha = "";
     let mut out = Vec::new();
     for line in text.split('\n') {
         if line.starts_with('\t') {
             let (t, tz) = when.get(sha).copied().unwrap_or_default();
-            out.push(clock::rfc3339((t + tz).max(0) as u64)[..10].to_string());
+            out.push((
+                clock::rfc3339((t + tz).max(0) as u64)[..10].to_string(),
+                sha.bytes().any(|b| b != b'0'),
+            ));
             continue;
         }
         let first = line.split(' ').next().unwrap_or_default();
@@ -910,19 +956,54 @@ fn index_md(text: &str, numbers: &[u32]) -> (String, Vec<PlanRow>) {
     (join_lines(&out, nl || body.is_empty()), rows)
 }
 
-/// `\|`-aware cells of a `| a | b |` row.
+/// `\|`-aware cells of a `| a | b |` row. A `|` inside a code span (a run
+/// of backticks up to the next run of the same length) is literal, so a
+/// Notes cell holding `` `log add | show` `` stays whole.
 fn cells(row: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();
-    let mut chars = row.trim().chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '\\' if chars.peek() == Some(&'|') => {
+    let chars: Vec<char> = row.trim().chars().collect();
+    let run_at = |i: usize| chars[i..].iter().take_while(|&&c| c == '`').count();
+    // The length of the open code span's backtick run, if one is open.
+    let mut code: Option<usize> = None;
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            '\\' if chars.get(i + 1) == Some(&'|') => {
                 cur.push('|');
-                chars.next();
+                i += 2;
             }
-            '|' => out.push(std::mem::take(&mut cur)),
-            c => cur.push(c),
+            '`' => {
+                let n = run_at(i);
+                cur.extend(&chars[i..i + n]);
+                code = match code {
+                    Some(open) if open == n => None,
+                    Some(open) => Some(open),
+                    // Opens only when a run of the same length closes it.
+                    None => {
+                        let mut j = i + n;
+                        let mut closes = false;
+                        while j < chars.len() {
+                            let m = run_at(j);
+                            if m == n {
+                                closes = true;
+                                break;
+                            }
+                            j += m.max(1);
+                        }
+                        closes.then_some(n)
+                    }
+                };
+                i += n;
+            }
+            '|' if code.is_none() => {
+                out.push(std::mem::take(&mut cur));
+                i += 1;
+            }
+            c => {
+                cur.push(c);
+                i += 1;
+            }
         }
     }
     out.push(cur);
@@ -974,12 +1055,25 @@ fn notes_cells(index: &str) -> HashMap<u32, String> {
 
 // ─────────────────────────────────────────────────────── per live feature
 
-/// A frontmatter scalar `parseScalar` reads back as written.
+/// A frontmatter scalar that both `frontmatter::parse` (which strips one
+/// pair of quotes and has no escapes) and a standard YAML reader read back
+/// as written: plain when nothing in it needs quoting, else double quotes
+/// when it holds no `"` or `\` (YAML's escapes), else single quotes when it
+/// holds no `'` (as the ideas writer does), else a `|-` block scalar, which
+/// both read verbatim.
 fn yaml(v: &str) -> String {
-    if v.starts_with(['[', '"', '\'']) || v.contains(": ") || v.contains(" #") || v.ends_with(':') {
-        format!("\"{v}\"")
-    } else {
+    let plain = !v.starts_with(['[', '"', '\'', '{', '|', '>', '&', '*', '!', '%', '@', '`'])
+        && !v.contains(": ")
+        && !v.contains(" #")
+        && !v.ends_with(':');
+    if plain {
         v.to_string()
+    } else if !v.contains(['"', '\\']) {
+        format!("\"{v}\"")
+    } else if !v.contains('\'') {
+        format!("'{v}'")
+    } else {
+        format!("|-\n  {v}")
     }
 }
 
@@ -1243,6 +1337,30 @@ fn normalize(p: &Path) -> PathBuf {
 /// Every link in `text` (the file at `dir`) whose target is one of `gone`
 /// replaced by its text alone; the `(line, link)` of each.
 fn unlink(text: &str, dir: &Path, gone: &[PathBuf]) -> (String, Vec<(usize, String)>) {
+    let (out, hits) = edit_links(text, dir, |label, _, p| {
+        gone.iter().any(|g| g == p).then(|| label.to_string())
+    });
+    (out, hits.into_iter().map(|(l, old, _)| (l, old)).collect())
+}
+
+/// Every link in `text` to `ideas` (`docs/ideas.md`) pointed at
+/// `ideas/README.md` instead, anchor dropped: the README holds the rules
+/// those links meant (FR-20). The `(line, old link, new link)` of each.
+fn relink(text: &str, dir: &Path, ideas: &Path) -> (String, Vec<(usize, String, String)>) {
+    edit_links(text, dir, |label, target, p| {
+        let base = target.strip_suffix("ideas.md")?;
+        (p == ideas).then(|| format!("[{label}]({base}ideas/README.md)"))
+    })
+}
+
+/// Every link in `text` (the file at `dir`, so a relative target resolves)
+/// that `edit` gives a replacement for, given its text, its target without
+/// the anchor and the resolved path. Images and external links are left.
+fn edit_links(
+    text: &str,
+    dir: &Path,
+    edit: impl Fn(&str, &str, &Path) -> Option<String>,
+) -> (String, Vec<(usize, String, String)>) {
     let mut out = String::new();
     let mut hits = Vec::new();
     let mut at = 0;
@@ -1254,12 +1372,16 @@ fn unlink(text: &str, dir: &Path, gone: &[PathBuf]) -> (String, Vec<(usize, Stri
         };
         let target = href.split('#').next().unwrap_or_default();
         let external = href.contains(':') || target.is_empty();
-        if !external && !text[..i].ends_with('!') && gone.contains(&normalize(&dir.join(target))) {
+        if !external
+            && !text[..i].ends_with('!')
+            && let Some(new) = edit(label, target, &normalize(&dir.join(target)))
+        {
             out.push_str(&text[copied..i]);
-            out.push_str(label);
+            out.push_str(&new);
             hits.push((
                 text[..i].matches('\n').count() + 1,
                 text[i..end].to_string(),
+                new,
             ));
             copied = end;
         }
@@ -1502,22 +1624,65 @@ pub fn plan(root: &Path) -> Result<Plan> {
         .map(|f| f.dir.join(AGENT_LOG))
         .filter(|p| p.is_file())
         .collect();
+    // `docs/ideas.md` goes too, but its links are pointed at the folder's
+    // README rather than cut (slice 08).
+    let ideas_md = root.join(migrate_ideas::FILE);
+    let ideas_go = ideas_md.is_file();
     let mut texts: BTreeMap<PathBuf, String> = BTreeMap::new();
     let mut md = Vec::new();
     walk_md(&docs, &docs.join("archive"), &mut md);
-    let mut unlinked: Vec<PathBuf> = Vec::new();
-    for p in md.iter().filter(|p| !gone.contains(p)) {
+    let mut unlinked: Vec<(PathBuf, String)> = Vec::new();
+    for p in md
+        .iter()
+        .filter(|p| !gone.contains(p) && !(ideas_go && **p == ideas_md))
+    {
         let text = fs::read_to_string(p).map_err(io(format!("read {}", p.display())))?;
         let rel = rel_of(root, p);
-        let (new, hits) = unlink(&text, p.parent().unwrap_or(root), &gone);
+        let dir = p.parent().unwrap_or(root);
+        let (new, hits) = unlink(&text, dir, &gone);
+        let (new, rehits) = match ideas_go {
+            true => relink(&new, dir, &normalize(&ideas_md)),
+            false => (new, Vec::new()),
+        };
+        // FR-16: a retro is left as it is, byte for byte, its stale links
+        // included; the plan names each one instead of rewriting it.
+        if p.file_name().is_some_and(|n| n == "retro.md") {
+            let stale = hits
+                .into_iter()
+                .chain(rehits.into_iter().map(|(l, old, _)| (l, old)));
+            for (line, link) in stale {
+                rows.push(PlanRow::new(
+                    "warn",
+                    format!(
+                        "{}:{line} {link} left as it is: retro.md is not rewritten",
+                        rel.display()
+                    ),
+                ));
+            }
+            continue;
+        }
+        let mut why = Vec::new();
+        if !hits.is_empty() {
+            why.push("links to a deleted agent-log.md");
+        }
         for (line, link) in hits {
             rows.push(PlanRow::new(
                 "unlink",
                 format!("{}:{line} {link}", rel.display()),
             ));
         }
+        let hits = rehits;
+        if !hits.is_empty() {
+            why.push("links to ideas.md → ideas/README.md");
+        }
+        for (line, old, link) in hits {
+            rows.push(PlanRow::new(
+                "relink",
+                format!("{}:{line} {old} → {link}", rel.display()),
+            ));
+        }
         if new != text {
-            unlinked.push(rel.clone());
+            unlinked.push((rel.clone(), why.join("; ")));
         }
         texts.insert(rel, new);
     }
@@ -1628,11 +1793,11 @@ pub fn plan(root: &Path) -> Result<Plan> {
             files.push((PathBuf::from(log_rel), None));
         }
     }
-    for rel in unlinked {
+    for (rel, why) in unlinked {
         if !files.iter().any(|(p, _)| *p == rel) {
             rows.push(PlanRow::new(
                 "rewrite",
-                format!("{} (links to a deleted agent-log.md)", rel.display()),
+                format!("{} ({why})", rel.display()),
             ));
             let text = texts[&rel].clone();
             files.push((rel, Some(text)));
@@ -1672,14 +1837,18 @@ pub fn plan(root: &Path) -> Result<Plan> {
     let (retros, retro_plan) = retro_rows(root, &repo)?;
     rows.extend(retro_plan);
 
-    let (toml, toml_rows) = project_toml(root, &index_fm)?;
-    rows.extend(toml_rows);
-    files.push((PROJECT.into(), Some(toml)));
-    Ok(Plan {
+    let mut plan = Plan {
         rows,
         files,
         retros,
-    })
+    };
+    if ideas_go {
+        migrate_ideas::plan(root, &mut plan)?;
+    }
+    let (toml, toml_rows) = project_toml(root, &index_fm)?;
+    plan.rows.extend(toml_rows);
+    plan.files.push((PROJECT.into(), Some(toml)));
+    Ok(plan)
 }
 
 /// Refuses unless `git status --porcelain -- docs/` is empty, so the whole
@@ -1704,7 +1873,12 @@ pub fn run(root: &Path, plan: &Plan, db: &Db) -> Result<()> {
     for (rel, text) in plan.files.iter().filter(|(p, _)| p != project) {
         let p = root.join(rel);
         match text {
-            Some(t) => write_atomic(&p, t)?,
+            Some(t) => {
+                if let Some(dir) = p.parent() {
+                    fs::create_dir_all(dir).map_err(io(format!("mkdir {}", dir.display())))?;
+                }
+                write_atomic(&p, t)?
+            }
             None => fs::remove_file(&p).map_err(io(format!("delete {}", p.display())))?,
         }
     }
@@ -1739,17 +1913,21 @@ mod tests {
             .collect()
     }
 
-    /// A file at HEAD of this repo, while it is still v2; `None` once the
-    /// owner has migrated it (§14), and the test has nothing to read.
+    /// A file of this repo's v2 docs as frozen in `tests/fixture/` (its
+    /// README says why: the live `docs/` moves with every commit).
+    fn frozen(rel: &str) -> String {
+        let p = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixture/repo-at-a7e89bf")
+            .join(rel);
+        fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
+    }
+
     fn head(rel: &str) -> Option<String> {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let t = git_out(root, &["show", &format!("HEAD:{rel}")]).ok()?;
-        t.starts_with("---\n").then_some(t)
+        Some(frozen(rel))
     }
 
     fn head_log(rel: &str) -> Option<String> {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-        git_out(root, &["show", &format!("HEAD:{rel}")]).ok()
+        Some(frozen(rel))
     }
 
     #[test]
@@ -2106,6 +2284,11 @@ mod tests {
     }
 
     fn v2_tree() -> tempfile::TempDir {
+        v2_tree_with(&[])
+    }
+
+    /// The small v2 tree, plus `extra` `(path, text)` files in its commit.
+    fn v2_tree_with(extra: &[(&str, &str)]) -> tempfile::TempDir {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         let w = |rel: &str, text: &str| {
@@ -2133,6 +2316,9 @@ mod tests {
             "docs/archive/000-old/retro.md",
             "---\nscore: 3\ngate_minutes: n/a\n---\n# Retro\n",
         );
+        for (rel, text) in extra {
+            w(rel, text);
+        }
         git(root, &["init", "-q"]);
         git(root, &["add", "-A"]);
         git(
@@ -2229,5 +2415,122 @@ mod tests {
         assert_eq!(rows[1].score, None);
         assert_eq!(rows[1].gate_minutes, Some(2.23));
         assert_eq!(rows[1].shipped_at, None, "not a git repo");
+    }
+
+    #[test]
+    fn a_review_line_keeps_its_reason() {
+        let log = "## Decisions\n\n### AD-1 — q · slice-01 · 2026-10-02\n\n**Chose:** a\n\n**Review:** decide — deviates from the slice\n\n**Owner (2026-10-03):** kept\n\n### AD-2 — r · slice-01 · 2026-10-02\n\n**Review:** fyi\n";
+        let es = parse_agent_log(log, &d(20)).unwrap();
+        let a = by_id(&es, "AD-1");
+        assert_eq!(a.flag, Some(Flag::Decide));
+        assert_eq!(
+            a.body,
+            "**Chose:** a\n\n**Review:** decide — deviates from the slice"
+        );
+        assert_eq!(refs(&es, Kind::Review, "AD-1").len(), 1);
+        let b = by_id(&es, "AD-2");
+        assert_eq!((b.flag, b.body.as_str()), (Some(Flag::Fyi), ""));
+        let shown = log::render(&es, log::Filter::All, 1);
+        assert!(
+            shown.contains("\n**Review:** decide — deviates from the slice\n"),
+            "{shown}"
+        );
+        assert_eq!(shown.matches("**Review:** decide").count(), 1, "{shown}");
+        assert!(shown.contains("\n**Review:** fyi\n"), "{shown}");
+    }
+
+    #[test]
+    fn a_middle_dot_in_a_title_stays_in_the_title() {
+        let log = "### AD-77 — Title with a · middle dot · slice-02 · 2026-10-02\n\n### BLOCK-3 — Gate · red run · polish · open\n";
+        let es = parse_agent_log(log, &d(5)).unwrap();
+        let a = by_id(&es, "AD-77");
+        assert_eq!(a.title, "Title with a · middle dot");
+        assert_eq!((a.slice, a.ts.as_str()), (Some(2), "2026-10-02T00:00:00Z"));
+        let b = by_id(&es, "BLOCK-3");
+        assert_eq!(
+            (b.title.as_str(), b.phase.as_deref()),
+            ("Gate · red run", Some("polish"))
+        );
+        let shown = log::render(&es, log::Filter::All, 1);
+        for h in log.lines().filter(|l| l.starts_with("### ")) {
+            assert!(shown.contains(h), "{h}\n{shown}");
+        }
+    }
+
+    #[test]
+    fn a_pipe_in_a_code_span_stays_in_its_cell() {
+        assert_eq!(
+            cells("| 002 | `log add | show` and \\| x | ``a ` | b`` |"),
+            ["002", "`log add | show` and | x", "``a ` | b``"]
+        );
+        assert_eq!(
+            cells("| a ` b | c |"),
+            ["a ` b", "c"],
+            "an unclosed backtick"
+        );
+        let index = "## Live features\n\n| # | Notes |\n|---|---|\n| 002 | ports `log add | show`, then more |\n";
+        assert_eq!(notes_cells(index)[&2], "ports `log add | show`, then more");
+    }
+
+    #[test]
+    fn yaml_values_read_back_as_written() {
+        for v in [
+            "plain",
+            "A: b",
+            "say \"hi\": now",
+            "it's: x",
+            "it's \"x\": y",
+            "\"lead",
+            "'lead",
+            "[x]",
+            "a \\ b: c",
+            "it's a \\ b: c",
+            "x #y",
+            "|",
+        ] {
+            let y = yaml(v);
+            let fm = frontmatter::parse(&format!("---\ntitle: {y}\nnext: 1\n---\n"));
+            assert_eq!(fm.str("title"), Some(v), "{v} as {y}");
+            assert_eq!(fm.get("next"), Some(&Value::Num(1)), "{v} as {y}");
+        }
+        assert_eq!(yaml("say \"hi\": now"), "'say \"hi\": now'");
+        assert_eq!(yaml("it's: x"), "\"it's: x\"");
+        assert_eq!(yaml("it's \"x\": y"), "|-\n  it's \"x\": y");
+    }
+
+    #[test]
+    fn a_retro_keeps_its_links_byte_for_byte() {
+        let retro = "---\nscore: 3\n---\n# Retro\n\nSee [the log](agent-log.md) and [ideas](../../ideas.md).\n";
+        let tmp = v2_tree_with(&[
+            ("docs/features/001-x/retro.md", retro),
+            ("docs/ideas.md", "## Open\n\n- **A.** a\n"),
+            (
+                "docs/reference/x.md",
+                "[log](../features/001-x/agent-log.md) [i](../ideas.md)\n",
+            ),
+        ]);
+        let p = plan(tmp.path()).unwrap();
+        let retro_rel = Path::new("docs/features/001-x/retro.md");
+        assert!(p.files.iter().all(|(f, _)| f != retro_rel), "{:?}", p.files);
+        for link in ["[the log](agent-log.md)", "[ideas](../../ideas.md)"] {
+            let want = format!(
+                "docs/features/001-x/retro.md:6 {link} left as it is: retro.md is not rewritten"
+            );
+            assert!(
+                p.rows.contains(&PlanRow::new("warn", want)),
+                "{:#?}",
+                p.rows
+            );
+        }
+        assert!(
+            p.rows
+                .iter()
+                .any(|r| r.verb == "unlink" && r.what.starts_with("docs/reference/x.md:1 "))
+        );
+        assert!(
+            p.rows
+                .iter()
+                .any(|r| r.verb == "relink" && r.what.starts_with("docs/reference/x.md:1 "))
+        );
     }
 }

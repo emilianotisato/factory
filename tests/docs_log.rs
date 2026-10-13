@@ -211,5 +211,7 @@ fn refusals_exit_2_and_log_merge_points_at_log_add() {
     assert!(String::from_utf8_lossy(&o.stderr).contains("BLOCK-9"));
     let o = fx.docs_output(&["log", "merge", "001"]);
     assert_eq!(o.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&o.stderr).contains("removed in v3"));
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("removed in v3"), "{err}");
+    assert!(err.contains("factory docs log add"), "{err}");
 }

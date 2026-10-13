@@ -32,11 +32,11 @@ If the owner asks to stop: `factory stop <id>` — it says how many workers are 
 
 ## 3. Review interview — as `/deliver` §8
 
-Read `docs/features/NNN-*/agent-log.md` now, the only time this skill reads it. Collect the ADs with no `**Owner` line yet: `**Review:** decide` lines first, then `fyi`; skip `no`. None → say so and ask nothing.
+Read the log now, the only time this skill reads it: `factory docs log show NNN --decide` for the `decide` ADs no review answers yet, then `factory docs log show NNN --json` for the `fyi` decisions with no `review` entry pointing at them (`--decide` drops those); skip the ones with no flag. None → say so and ask nothing.
 
 1. `AskUserQuestion` once: "Review all n now (Recommended) / Only the d decide ones / Later". Later → stop here; the PR stays as it is.
 2. Rounds of at most four questions per `AskUserQuestion` call. Question = the AD's own question with `AD-{n} · slice-{NN}`; Header `AD-{n}`; options = what it chose and its `Over:` alternative (a third only when a real one exists), each description carrying its cost (`Undo:` for the one not chosen). The recommendation goes first, re-judged with what the run learned since; `Other` is free text.
-3. Apply: under each answered AD append `**Owner ({date}):** kept` or `**Owner ({date}):** changed — {to what}`; never edit the entry. A changed AD gets its code change by a subagent on the feature branch: inner loop, then the gate once, one commit by pathspec. Append `**Owner review ({date}):** k kept, c changed (AD numbers)` to the feature's `retro.md`. Push once.
+3. Apply: one `factory docs log add NNN --kind review --ref AD-{n} --verdict kept --title "AD-{n} kept"` per kept answer, and `--verdict changed --title "AD-{n} changed" --body-file -` with the "to what" on stdin per changed one; never edit the log by hand. A changed AD gets its code change by a subagent on the feature branch: inner loop, then the gate once, one commit by pathspec. Append `**Owner review ({date}):** k kept, c changed (AD numbers)` to the feature's `retro.md`. Push once.
 4. Tell the owner the PR URL, that it is a draft, and that merging is theirs.
 
 ## 4. A dead cockpit

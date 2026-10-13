@@ -330,7 +330,9 @@ fn decision(out: &mut String, all: &[Entry], e: &Entry) {
         e.date()
     ));
     push_body(out, &e.body);
-    if let Some(f) = e.flag {
+    // A migrated entry keeps a Review line that carries a reason in its body.
+    let reviewed = e.body.lines().any(|l| l.starts_with("**Review:**"));
+    if let Some(f) = e.flag.filter(|_| !reviewed) {
         let f = if f == Flag::Decide { "decide" } else { "fyi" };
         out.push_str(&format!("\n**Review:** {f}\n"));
     }

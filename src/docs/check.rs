@@ -11,6 +11,7 @@ use std::process::{Command, Stdio};
 
 use super::board::{self, Feature, Kind};
 use super::frontmatter::Value;
+use super::ideas::{self, Bad};
 use super::log::{self, Kind as LogKind};
 use super::project::{self, Project};
 use super::state::{self, SliceState, State};
@@ -28,7 +29,8 @@ const SECOND_BOARD_NAMES: [&str; 6] = [
 ];
 /// `LEGACY_DOC_DIRS` (`docs.mjs:39`): planning conventions the framework replaces.
 const LEGACY_DOC_DIRS: [&str; 4] = [".vibe", "plans", "ai_docs", "docs/prd"];
-/// The v3 PRD frontmatter (prd §3).
+/// The v3 PRD frontmatter (prd §3). Other keys pass, `from_idea` (FR-20)
+/// among them.
 const PRD_KEYS: [&str; 7] = [
     "number", "slug", "title", "type", "created", "author", "summary",
 ];
@@ -160,6 +162,7 @@ pub fn run(root: &Path) -> Report {
     }
     archive_frozen(root, &mut r);
     links(root, &mut r);
+    ideas(root, &mut r);
     for dir in [root.to_path_buf(), docs] {
         for name in SECOND_BOARD_NAMES {
             let f = dir.join(name);
@@ -185,6 +188,25 @@ pub fn run(root: &Path) -> Report {
         }
     }
     r
+}
+
+/// Every file in `docs/ideas/` through `ideas::read`, the reader `idea list`
+/// uses, and the v2 inbox an old skill may still write to (FR-20).
+fn ideas(root: &Path, r: &mut Report) {
+    for (rel, path) in ideas::files(root) {
+        match ideas::read(&path) {
+            Ok(_) => {}
+            Err(Bad::Name(m)) => r.err("E-IDEA-NAME", format!("{rel}: {m}")),
+            Err(Bad::Parse(m)) => r.err("E-IDEA-PARSE", format!("{rel}: {m}")),
+            Err(Bad::Field(m)) => r.err("E-IDEA-FIELD", format!("{rel}: {m}")),
+        }
+    }
+    if root.join("docs/ideas.md").exists() {
+        r.warn(
+            "W-IDEAS-V2",
+            "docs/ideas.md is the v2 inbox, and an old skill may still write to it — move each line with `factory docs idea add`, then delete the file",
+        );
+    }
 }
 
 /// `docs/project.toml`: `None` when it does not parse (an error is recorded),

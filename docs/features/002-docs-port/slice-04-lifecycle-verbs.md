@@ -105,3 +105,7 @@ The trap: the closeout forwards only stdout lines that begin with `⚠` (`src/cl
 Rows from [`prd.md`](prd.md) § QA plan: the **FR-15** row, for the verbs this slice lands ("each verb once in the fixture with its exit code"): `gate` (0, and 1 with none declared), `gate --inner`, `gate --candidates`, `gate set`, `preflight` (0, 1 dirty, 2 with an ask), `ship` (2 with a pending slice, 0, 0 again), `archive`, `lanes`, `lanes set` (0, 2 without `--env`), `renumber` (0, 2 on a taken number), run in a `Fixture::v3` copy. The `--help` listing of the eighteen verbs is slice 11's half of the row; `render`, `vendor` and `log merge` were slice 01's. Evidence: the verb → exit table and the equivalence test's output, in this slice's Progress.
 
 **Acceptance:** the table in Progress covers every verb named here with its observed exit code.
+
+**Code-review fixes (2026-10-13).**
+
+- `ship` and `archive` on a feature whose `state.toml` does not parse said "refusing: N slice(s) not done": the board fell back to slice frontmatter, which v3 slices do not have. The closeout would then block on the wrong cause. `live()` in `src/docs/ship.rs` now returns the parse error, so the refusal names the file. Test: `ship_names_a_state_toml_that_does_not_parse` (`tests/docs_lifecycle.rs`).

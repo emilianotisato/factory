@@ -117,7 +117,7 @@ impl Held {
         if at == 0 {
             return Some("Slice");
         }
-        if name == "agent-log.md" || (name.starts_with("log-") && name.ends_with(".md")) {
+        if name == "log.jsonl" {
             return None;
         }
         Some("Outline")
@@ -908,7 +908,7 @@ mod tests {
         Held::parse(
             "slice-02-1.md",
             &format!(
-                "<!-- factory-pack files: {SLICE},docs/features/001-x/prd.md,docs/features/001-x/agent-log.md,src/helper.rs -->\n"
+                "<!-- factory-pack files: {SLICE},docs/features/001-x/prd.md,docs/features/001-x/log.jsonl,docs/features/001-x/agent-log.md,src/helper.rs -->\n"
             ),
         )
     }
@@ -1087,8 +1087,13 @@ mod tests {
             Verdict::Allow
         );
         assert_eq!(
-            read("/repo/docs/features/001-x/agent-log.md", json!({})),
+            read("/repo/docs/features/001-x/log.jsonl", json!({})),
             Verdict::Allow
+        );
+        // v2's log has no exemption left: listed, it is any other held file.
+        assert_eq!(
+            read("/repo/docs/features/001-x/agent-log.md", json!({})),
+            want("Outline")
         );
         assert_eq!(read("/repo/src/other.rs", json!({})), Verdict::Allow);
         assert_eq!(bash(&format!("cat {SLICE}")), want("Slice"));

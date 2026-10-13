@@ -60,7 +60,16 @@ pub fn run(args: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i
         loaded.sources.budget = config::Source::Flag;
     }
     let budget = loaded.config.budget_weighted_tokens;
-    let docs = Docs::locate(&repo)?;
+    // A repo not on v3 is refused before preflight (FR-18). `main` maps an
+    // `Err` to exit 1, so the hint is printed here and the exit is 2.
+    let docs = match Docs::open(&repo) {
+        Ok(d) => d,
+        Err(Error::NotV3(hint)) => {
+            writeln!(err, "factory: {hint}").map_err(io("stderr"))?;
+            return Ok(2);
+        }
+        Err(e) => return Err(e),
+    };
     let feature = feature_number(&docs, &args.feature)?;
 
     if let Some(live) = Run::find_live(&data_dir, &repo, &feature)? {
@@ -178,7 +187,7 @@ pub fn daemon(args: &DaemonArgs, out: &mut dyn Write, err: &mut dyn Write) -> Re
         writeln!(err, "factory: {w}").map_err(io("stderr"))?;
     }
     let repo = run.state().repo.clone();
-    let docs = Docs::locate(&repo)?;
+    let docs = Docs::open(&repo)?;
     writeln!(
         out,
         "{} driver pid {} took run {}",

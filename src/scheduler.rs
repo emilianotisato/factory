@@ -17,17 +17,17 @@
 //! answered sends the run through branch and board as the `pass` path does.
 //!
 //! Dead workers (FR-1, autonomy.md:76): the first death on a slice is a note
-//! in that slice's `log-slice-NN.md` and a fresh worker with a new session;
-//! the second since the owner last answered a block on it blocks the slice
-//! with the lowest free `BLOCK-NNkk` from `NN02`. The count lives in
+//! in the feature's `log.jsonl` and a fresh worker with a new session; the
+//! second since the owner last answered a block on it blocks the slice with
+//! a `block` entry, its id allocated by the tool. The count lives in
 //! `state.json` `workers[]` and `events.jsonl`, so a resume after a kill
 //! counts the killed worker, and the spawn loop blocks a capped slice
 //! instead of giving it a third worker.
 //!
 //! FR-5: a worker whose slice reads `done` has its slice committed by
 //! pathspec before the next board read — the paths its stream named, the
-//! slice file and its fragment, nothing with `-A` since another lane may be
-//! mid-write. The worker's outcome is saved after the commit, so a driver
+//! slice file, `state.toml` and `log.jsonl`, nothing with `-A` since another
+//! lane may be mid-write. The worker's outcome is saved after the commit, so a driver
 //! killed in between leaves it unsettled and the resume commits. A tracked
 //! file the worker changed without naming it joins the commit when no
 //! sibling was live, and is listed otherwise; a new file no tool call named
@@ -37,7 +37,7 @@
 //!
 //! FR-4: when the board says `checkpoint_due` nothing new spawns; once the
 //! table is empty the loop hands the run to [`checkpoint::run`] — the gate,
-//! the fix workers, the log merge, the checkpoint worker and the checkpoint
+//! the fix workers, the checkpoint worker and the checkpoint
 //! commit — and reads the board again when it is done. The end of the run
 //! is the last checkpoint: `all_done` with nothing unverified finishes.
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -270,7 +270,7 @@ fn drive_inner(
                 // finishes, a dead one is settled, before the run ends.
                 let board = docs.status(&feature)?;
                 let none = HashSet::new();
-                if settle_orphans(run, docs, &board, &none, &mut waiting, out)? == Orphans::Live {
+                if settle_orphans(run, &board, &none, &mut waiting, out)? == Orphans::Live {
                     std::thread::sleep(TICK);
                     continue;
                 }
@@ -314,7 +314,7 @@ fn drive_inner(
             .values()
             .map(|r| r.worker.session_id.clone())
             .collect();
-        match settle_orphans(run, docs, &board, &live, &mut waiting, out)? {
+        match settle_orphans(run, &board, &live, &mut waiting, out)? {
             Orphans::None => {}
             Orphans::Live => {
                 // The dead ones are settled; the live ones get a tick, as
@@ -359,8 +359,7 @@ fn drive_inner(
             }
             let dead = deaths_since_answer(run, b.number)?;
             if dead.len() >= DEATH_CAP {
-                let block = dead_block_id(run, &board, b.number)?;
-                block_dead_slice(run, &board, b.number, &block, &dead, "")?;
+                let block = block_dead_slice(run, &board, b.number, &dead, "")?;
                 say(
                     out,
                     &format!(
@@ -384,9 +383,9 @@ fn drive_inner(
                         continue;
                     }
                     let l = free.remove(0);
-                    set_frontmatter(
-                        &slice_file(run, &board, b.number)?,
-                        &[("lane", &l.to_string())],
+                    crate::docs::state::set(
+                        &run.state().repo.join(&board.dir),
+                        &[(&format!("slices.{}.lane", b.number), &l.to_string())],
                     )?;
                     l
                 }
@@ -418,9 +417,12 @@ fn drive_inner(
                     continue;
                 }
                 let lane = free.remove(0);
-                set_frontmatter(
-                    &slice_file(run, &board, r.number)?,
-                    &[("status", "building"), ("lane", &lane.to_string())],
+                crate::docs::state::set(
+                    &run.state().repo.join(&board.dir),
+                    &[
+                        (&format!("slices.{}.status", r.number), "building"),
+                        (&format!("slices.{}.lane", r.number), &lane.to_string()),
+                    ],
                 )?;
                 spawn_on(run, docs, cfg, &board, r.number, lane, None, table, out)?;
             }
@@ -766,7 +768,7 @@ fn block_section(repo: &Path, board: &Status, answer: &Answer) -> Result<BlockSe
         return Ok(BlockSection {
             id: answer.id.clone(),
             source,
-            text: answers::entry_text(&entry)?,
+            text: answers::entry_text(&entry),
         });
     }
     Ok(BlockSection {
@@ -841,7 +843,7 @@ fn route_exit(
                     block
                         .as_ref()
                         .map(|(id, q)| format!("{id}: {q}"))
-                        .unwrap_or_else(|| "no BLOCK entry in its fragment".into()),
+                        .unwrap_or_else(|| "no block entry in log.jsonl".into()),
                     r.lane
                 ),
             )?;
@@ -930,7 +932,7 @@ fn done_logged(run: &Run, slice: u32, session_id: &str) -> Result<bool> {
         .any(|e| matches!(e.kind, EventKind::SliceDone { slice: s } if s == slice)))
 }
 
-/// `(BLOCK-n, question)` of the slice's open block, from its fragment.
+/// `(BLOCK-n, question)` of the slice's open block, from the feature's log.
 fn open_block(run: &Run, board: &Status, slice: u32) -> Result<Option<(String, String)>> {
     let feature_dir = run.state().repo.join(&board.dir);
     Ok(answers::open_block_of_slice(&feature_dir, slice)?.map(|e| (e.id, e.title)))
@@ -946,10 +948,10 @@ fn emit_blocked(run: &mut Run, slice: u32, block: Option<&(String, String)>) -> 
 }
 
 /// FR-5: the slice's commit, right after the board read `done`. The paths
-/// its stream named go in (less the three protected files), then the slice
-/// file and the fragment. Files that appeared in the tree unnamed are listed
-/// in the fragment under `## Untracked leftovers` first, so the list is in
-/// the commit and the files are not.
+/// its stream named go in (less the protected files), then the slice file,
+/// `state.toml` and `log.jsonl`. Files that appeared in the tree unnamed are
+/// a `note` entry in the log first, so the list is in the commit and the
+/// files are not.
 #[allow(clippy::too_many_arguments)]
 fn commit_slice(
     run: &mut Run,
@@ -985,9 +987,13 @@ fn commit_slice(
         blobs,
     } = leftovers(run, board, slice, &spec, baseline, live)?;
     if !listed.is_empty() {
-        let fragment = repo.join(commit::fragment_path(board, slice));
         let body: String = listed.iter().map(|p| format!("- {p}\n")).collect();
-        append_under(&fragment, "## Untracked leftovers", &body)?;
+        answers::add_note(
+            &repo.join(&board.dir),
+            Some(slice),
+            "Untracked leftovers",
+            &body,
+        )?;
         run.emit(EventKind::UntrackedLeftovers {
             slice,
             files: listed.clone(),
@@ -996,7 +1002,7 @@ fn commit_slice(
         say(
             out,
             &format!(
-                "slice {slice:02} left {} file(s) no tool call named — listed in its fragment, not committed: {}",
+                "slice {slice:02} left {} file(s) no tool call named — listed in log.jsonl, not committed: {}",
                 listed.len(),
                 listed.join(", ")
             ),
@@ -1128,7 +1134,7 @@ pub fn unnamed(
     Ok(found)
 }
 
-/// The slice's [`unnamed`] changes: not another slice's file or fragment,
+/// The slice's [`unnamed`] changes: not another slice's file,
 /// and nothing a live worker's stream names so far — the other lane's
 /// half-written work is its own, not this slice's leftover.
 fn leftovers(
@@ -1146,7 +1152,6 @@ fn leftovers(
     for s in &board.slices {
         if s.number != slice {
             skip.insert(format!("docs/features/{}", s.file));
-            skip.insert(commit::fragment_path(board, s.number));
         }
     }
     for sid in live {
@@ -1164,7 +1169,6 @@ pub fn short(sha: &str) -> &str {
 /// dead driver's workers (FR-1 resume).
 fn settle_orphans(
     run: &mut Run,
-    docs: &Docs,
     board: &Status,
     live: &HashSet<String>,
     waiting: &mut HashSet<String>,
@@ -1209,7 +1213,7 @@ fn settle_orphans(
             if w.role == "polish" || (w.role == "fix" && w.checkpoint.is_none()) {
                 closeout::settle_orphan(run, board, &w, summary, out)?;
             } else {
-                settle_checkpoint_orphan(run, docs, board, &w, summary, out)?;
+                settle_checkpoint_orphan(run, board, &w, summary, out)?;
             }
             continue;
         };
@@ -1274,13 +1278,12 @@ fn label(w: &WorkerRef) -> String {
 
 /// A fix or checkpoint worker of a dead driver (FR-4). A checkpoint worker
 /// whose `CP-n` is on the board is done, and this driver finishes what the
-/// dead one did not: render, `docs: checkpoint n`, `checkpoint_done`. A fix
+/// dead one did not: `docs: checkpoint n`, `checkpoint_done`. A fix
 /// worker has what it changed committed however it ended, judged against
 /// its spawn baseline (AD-20007). A limit pauses the run; anything else is
 /// dead, and the checkpoint runs again from the board.
 fn settle_checkpoint_orphan(
     run: &mut Run,
-    docs: &Docs,
     board: &Status,
     w: &WorkerRef,
     summary: Summary,
@@ -1291,8 +1294,7 @@ fn settle_checkpoint_orphan(
     if w.role == "checkpoint" && board.checkpoints.iter().any(|c| c.n == n) {
         let before = load_baseline(run.dir(), &checkpoint_key(n, "checkpoint"))?;
         let spec = Pathspec::from_stream(&summary, board, &repo);
-        let sha =
-            checkpoint::commit_checkpoint(run, docs, board, n, w.row_id, &spec, &before, out)?;
+        let sha = checkpoint::commit_checkpoint(run, board, n, w.row_id, &spec, &before, out)?;
         settle(run, w.row_id, &w.session_id, &summary, WorkerOutcome::Done)?;
         let logged = run
             .events()?
@@ -1378,12 +1380,12 @@ fn settle_checkpoint_orphan(
         exit_code: None,
     })?;
     if w.role == "checkpoint" {
-        let date = clock::now_rfc3339()[..10].to_string();
-        append_under(
-            &repo.join(&board.dir).join("agent-log.md"),
-            "## Traps",
+        answers::add_note(
+            &repo.join(&board.dir),
+            None,
+            "Dead checkpoint worker",
             &format!(
-                "- **Dead checkpoint worker ({date})**: checkpoint {n}, session {} exited (code unknown) with {}.",
+                "checkpoint {n}, session {} exited (code unknown) with {}.",
                 w.session_id,
                 if summary.is_dead() {
                     "no result"
@@ -1441,9 +1443,14 @@ fn settle_limited(
         summary,
         WorkerOutcome::RateLimited,
     )?;
-    let file = slice_file(run, board, slice)?;
-    set_frontmatter(&file, &[("status", "pending")])?;
-    remove_frontmatter_keys(&file, &["lane"])?;
+    // An empty value removes the key: the lane is freed, not set to "".
+    crate::docs::state::set(
+        &run.state().repo.join(&board.dir),
+        &[
+            (&format!("slices.{slice}.status"), "pending"),
+            (&format!("slices.{slice}.lane"), ""),
+        ],
+    )?;
     let until = quota::pause(run, limit, out)?;
     say(
         out,
@@ -1480,10 +1487,7 @@ fn settle_dead(
         exit_code,
     })?;
     let dead = deaths_since_answer(run, slice)?;
-    let repo = run.state().repo.clone();
-    let fragment = repo
-        .join(&board.dir)
-        .join(format!("log-slice-{:02}.md", slice));
+    let feature_dir = run.state().repo.join(&board.dir);
     let code = exit_code.map_or("exited (code unknown)".to_string(), |c| {
         format!("exited {c}")
     });
@@ -1492,24 +1496,22 @@ fn settle_dead(
     } else {
         "with a result but the slice neither done nor blocked"
     };
-    let date = clock::now_rfc3339()[..10].to_string();
     if dead.len() >= DEATH_CAP {
-        let block = dead_block_id(run, board, slice)?;
-        append_under(
-            &fragment,
-            "## Traps",
-            &format!(
-                "- **Dead worker ({date})**: session {} {code} {what}; second death on this slice, blocked ({block}).",
-                w.session_id
-            ),
-        )?;
-        block_dead_slice(
+        let block = block_dead_slice(
             run,
             board,
             slice,
-            &block,
             &dead,
             &format!("The last one {code} {what}. "),
+        )?;
+        answers::add_note(
+            &feature_dir,
+            Some(slice),
+            "Dead worker",
+            &format!(
+                "session {} {code} {what}; second death on this slice, blocked ({block}).",
+                w.session_id
+            ),
         )?;
         say(
             out,
@@ -1520,13 +1522,11 @@ fn settle_dead(
         )?;
         Ok(true)
     } else {
-        append_under(
-            &fragment,
-            "## Traps",
-            &format!(
-                "- **Dead worker ({date})**: session {} {code} {what}; respawned.",
-                w.session_id
-            ),
+        answers::add_note(
+            &feature_dir,
+            Some(slice),
+            "Dead worker",
+            &format!("session {} {code} {what}; respawned.", w.session_id),
         )?;
         say(
             out,
@@ -1577,58 +1577,32 @@ pub fn deaths_since_answer(run: &Run, slice: u32) -> Result<Vec<WorkerRef>> {
         .collect())
 }
 
-/// The id of the death block on `slice`: one already open under the death
-/// title (a kill after it was written, before the slice flipped), else the
-/// lowest free `BLOCK-NNkk` from `kk = 02` — the slice's own range, so the
-/// merge keeps it, and never a number a builder of the slice already used.
-fn dead_block_id(run: &Run, board: &Status, slice: u32) -> Result<String> {
-    let feature_dir = run.state().repo.join(&board.dir);
-    if let Some(e) = open_dead_block(&feature_dir, slice)? {
-        return Ok(e.id);
-    }
-    let mut used: HashSet<u32> = HashSet::new();
-    for path in answers::log_files(&feature_dir)? {
-        used.extend(answers::entries(&path)?.into_iter().map(|e| e.n));
-    }
-    let k = (2..100)
-        .find(|k| !used.contains(&(slice * 100 + k)))
-        .ok_or_else(|| {
-            crate::Error::Msg(format!("slice {slice:02} has used every BLOCK-{slice}NN"))
-        })?;
-    Ok(format!("BLOCK-{}", slice * 100 + k))
-}
-
+/// The open death block on `slice`: one a kill left written after the
+/// entry and before the slice flipped.
 fn open_dead_block(feature_dir: &Path, slice: u32) -> Result<Option<answers::BlockEntry>> {
     let title = dead_title(slice);
-    let mut hit = None;
-    for path in answers::log_files(feature_dir)? {
-        if let Some(e) = answers::entries(&path)?
-            .into_iter()
-            .find(|e| !e.resolved && e.slice == Some(slice) && e.title == title)
-        {
-            hit = Some(e);
-        }
-    }
-    Ok(hit)
+    Ok(answers::entries(feature_dir)?
+        .into_iter()
+        .rfind(|e| !e.resolved && e.slice == Some(slice) && e.title == title))
 }
 
-/// Block `slice` on its dead workers: the entry under `## Blockers` (unless
-/// a kill left it written), the slice `blocked`, `slice_blocked`. `last` is
-/// what the latest death adds to the entry, empty when the driver came back
-/// to a cap reached before it died.
+/// Block `slice` on its dead workers: a `block` entry (unless a kill left
+/// one open), the slice `blocked`, `slice_blocked`. `last` is what the
+/// latest death adds to the entry, empty when the driver came back to a cap
+/// reached before it died. Returns the block's id.
 fn block_dead_slice(
     run: &mut Run,
     board: &Status,
     slice: u32,
-    block: &str,
     dead: &[WorkerRef],
     last: &str,
-) -> Result<()> {
+) -> Result<String> {
     let repo = run.state().repo.clone();
     let feature_dir = repo.join(&board.dir);
     let title = dead_title(slice);
-    if open_dead_block(&feature_dir, slice)?.is_none_or(|e| e.id != block) {
-        let fragment = feature_dir.join(format!("log-slice-{:02}.md", slice));
+    let block = if let Some(e) = open_dead_block(&feature_dir, slice)? {
+        e.id
+    } else {
         let sessions: Vec<String> = dead
             .iter()
             .map(|x| {
@@ -1639,9 +1613,8 @@ fn block_dead_slice(
                 )
             })
             .collect();
-        let entry = format!(
-            "### {block} — {title} · slice-{nn} · open\n\n\
-             **Happened:** {n} workers on slice {nn} exited without leaving it `done` or `blocked`: {sessions}. \
+        let body = format!(
+            "**Happened:** {n} workers on slice {slice:02} exited without leaving it `done` or `blocked`: {sessions}. \
              {last}The slice sits at `building` on the board with nothing alive on it; \
              the driver's once-only respawn (autonomy.md § Caps, hand-back once) is spent. \
              Streams and stderr are under `{dir}/`.\n\
@@ -1649,15 +1622,18 @@ fn block_dead_slice(
              2. build the slice by hand and set it `done`; \
              3. drop the slice from the plan if it no longer applies.\n\
              **Recommended:** 1 — a worker that dies before its first tool call is the environment's fault, not the slice's.\n",
-            nn = format!("{:02}", slice),
             n = dead.len(),
             sessions = sessions.join(", "),
             dir = worker::dir(run.dir()).display(),
         );
-        append_under(&fragment, "## Blockers", &entry)?;
-    }
-    set_slice_status(&slice_file(run, board, slice)?, "blocked")?;
-    emit_blocked(run, slice, Some(&(block.to_string(), title)))
+        answers::add_block(&feature_dir, Some(slice), None, &title, &body)?
+    };
+    crate::docs::state::set(
+        &feature_dir,
+        &[(&format!("slices.{slice}.status"), "blocked")],
+    )?;
+    emit_blocked(run, slice, Some(&(block.clone(), title)))?;
+    Ok(block)
 }
 
 fn find_ref(run: &Run, session_id: &str) -> WorkerRef {
@@ -1668,16 +1644,6 @@ fn find_ref(run: &Run, session_id: &str) -> WorkerRef {
         .find(|w| w.session_id == session_id)
         .cloned()
         .expect("a spawned worker is in state.workers")
-}
-
-/// The slice's file in the repo, from the board.
-fn slice_file(run: &Run, board: &Status, slice: u32) -> Result<PathBuf> {
-    board
-        .slices
-        .iter()
-        .find(|s| s.number == slice)
-        .map(|s| run.state().repo.join("docs/features").join(&s.file))
-        .ok_or_else(|| crate::Error::Msg(format!("slice {slice:02} is not on the board")))
 }
 
 /// Phase `finished` and the `run_finished` line (FR-7): the PR URL and the
@@ -1769,7 +1735,7 @@ pub fn pad_list(ns: &[u32]) -> String {
         .join(", ")
 }
 
-/// The slice's frontmatter status as the board reports it; `""` when unknown.
+/// The slice's status as the board reports it; `""` when unknown.
 pub fn slice_status(board: &Status, slice: u32) -> &str {
     board
         .slices
@@ -1777,133 +1743,6 @@ pub fn slice_status(board: &Status, slice: u32) -> &str {
         .find(|s| s.number == slice)
         .and_then(|s| s.status.as_deref())
         .unwrap_or("")
-}
-
-/// Append `body` at the end of the `heading` section of a log file, creating
-/// the file or the section when missing; a `_(none)_` placeholder gives way.
-/// Every line of a fragment must sit under a `## ` heading (`docs log merge`).
-pub fn append_under(path: &Path, heading: &str, body: &str) -> Result<()> {
-    let text = match fs::read_to_string(path) {
-        Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(io(format!("read {}", path.display()))(e)),
-    };
-    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
-    let body = body.trim_end();
-    match lines.iter().position(|l| l.trim_end() == heading) {
-        Some(h) => {
-            let next = lines[h + 1..]
-                .iter()
-                .position(|l| l.starts_with("## "))
-                .map_or(lines.len(), |i| h + 1 + i);
-            let mut at = next;
-            while at > h + 1 && lines[at - 1].trim().is_empty() {
-                at -= 1;
-            }
-            if at > h + 1 && lines[at - 1].trim() == "_(none)_" {
-                at -= 1;
-                while at > h + 1 && lines[at - 1].trim().is_empty() {
-                    at -= 1;
-                }
-            }
-            let mut insert: Vec<String> = Vec::new();
-            if at == h + 1 || body.starts_with("### ") {
-                insert.push(String::new());
-            }
-            insert.extend(body.lines().map(str::to_string));
-            if next < lines.len() {
-                insert.push(String::new());
-            }
-            lines.splice(at..next, insert);
-        }
-        None => {
-            if !lines.is_empty() {
-                while lines.last().is_some_and(|l| l.trim().is_empty()) {
-                    lines.pop();
-                }
-                lines.push(String::new());
-            }
-            lines.push(heading.to_string());
-            lines.push(String::new());
-            lines.extend(body.lines().map(str::to_string));
-        }
-    }
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(io(format!("mkdir {}", parent.display())))?;
-    }
-    fs::write(path, lines.join("\n") + "\n").map_err(io(format!("write {}", path.display())))
-}
-
-/// `status: <status>` in a slice file's frontmatter, nothing else touched.
-pub fn set_slice_status(path: &Path, status: &str) -> Result<()> {
-    set_frontmatter(path, &[("status", status)])
-}
-
-/// The `status:` of a slice file's frontmatter; `None` when it has none.
-pub fn read_slice_status(path: &Path) -> Result<Option<String>> {
-    let mut status = None;
-    let text = fs::read_to_string(path).map_err(io(format!("read {}", path.display())))?;
-    let fm = text
-        .strip_prefix("---\n")
-        .or_else(|| text.strip_prefix("---\r\n"))
-        .and_then(|rest| rest.find("\n---").map(|end| &rest[..end]))
-        .ok_or_else(|| crate::Error::Msg(format!("{} has no frontmatter", path.display())))?;
-    for line in fm.lines() {
-        if let Some(v) = line.strip_prefix("status:") {
-            status = Some(v.trim().trim_matches(|c| c == '"' || c == '\'').to_string());
-            break;
-        }
-    }
-    Ok(status)
-}
-
-/// Set `key: value` lines in a slice file's frontmatter: an existing key is
-/// rewritten in place, a missing one appended before the closing `---`.
-/// Nothing below the frontmatter is touched.
-pub fn set_frontmatter(path: &Path, pairs: &[(&str, &str)]) -> Result<()> {
-    edit_frontmatter(path, |lines| {
-        for (key, value) in pairs {
-            let prefix = format!("{key}:");
-            match lines.iter_mut().find(|l| l.starts_with(&prefix)) {
-                Some(l) => *l = format!("{key}: {value}"),
-                None => lines.push(format!("{key}: {value}")),
-            }
-        }
-    })
-}
-
-/// Drop `key:` lines from a slice file's frontmatter (FR-9 clears `lane`
-/// when a limited worker's slice goes back to `pending`).
-pub fn remove_frontmatter_keys(path: &Path, keys: &[&str]) -> Result<()> {
-    edit_frontmatter(path, |lines| {
-        lines.retain(|l| !keys.iter().any(|k| l.starts_with(&format!("{k}:"))));
-    })
-}
-
-/// The file keeps its line endings: a CRLF file's edited lines are CRLF.
-fn edit_frontmatter(path: &Path, edit: impl FnOnce(&mut Vec<String>)) -> Result<()> {
-    let text = fs::read_to_string(path).map_err(io(format!("read {}", path.display())))?;
-    let nl = if text.starts_with("---\r\n") {
-        "\r\n"
-    } else {
-        "\n"
-    };
-    let rest = text
-        .strip_prefix(&format!("---{nl}"))
-        .ok_or_else(|| crate::Error::Msg(format!("{} has no frontmatter", path.display())))?;
-    let end = rest
-        .find(&format!("{nl}---"))
-        .ok_or_else(|| crate::Error::Msg(format!("{} has no frontmatter end", path.display())))?;
-    let fm = &rest[..end];
-    let mut lines: Vec<String> = fm
-        .lines()
-        .map(|l| l.trim_end_matches('\r').to_string())
-        .collect();
-    edit(&mut lines);
-    let out = format!("---{nl}{}{}", lines.join(nl), &rest[end..]);
-    // DEC-3: `docs status` in another process, `factory answer` or a worker
-    // reading its slice must never meet a half-written file.
-    write_atomic(path, &out)
 }
 
 /// Replace `path` with `text` atomically (DEC-3): a temp file beside it,
@@ -1925,153 +1764,4 @@ pub fn write_atomic(path: &Path, text: &str) -> Result<()> {
 /// `runs/<id>/packs`.
 pub fn packs_dir(run_dir: &Path) -> PathBuf {
     run_dir.join("packs")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn append_under_creates_extends_and_keeps_sections_apart() {
-        let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("log-slice-01.md");
-        append_under(&p, "## Traps", "- one").unwrap();
-        assert_eq!(fs::read_to_string(&p).unwrap(), "## Traps\n\n- one\n");
-        append_under(
-            &p,
-            "## Decisions",
-            "### AD-101 — q · slice-01 · 2026-10-10\n\n**Chose:** x",
-        )
-        .unwrap();
-        append_under(&p, "## Traps", "- two").unwrap();
-        let text = fs::read_to_string(&p).unwrap();
-        assert_eq!(
-            text,
-            "## Traps\n\n- one\n- two\n\n## Decisions\n\n### AD-101 — q · slice-01 · 2026-10-10\n\n**Chose:** x\n"
-        );
-        append_under(
-            &p,
-            "## Blockers",
-            "### BLOCK-102 — w · slice-01 · open\n\n**Happened:** y",
-        )
-        .unwrap();
-        let text = fs::read_to_string(&p).unwrap();
-        assert!(
-            text.ends_with(
-                "## Blockers\n\n### BLOCK-102 — w · slice-01 · open\n\n**Happened:** y\n"
-            ),
-            "{text}"
-        );
-        assert!(!text.contains("\n\n\n"), "{text}");
-    }
-
-    #[test]
-    fn append_under_replaces_the_none_placeholder() {
-        let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("agent-log.md");
-        fs::write(&p, "# Agent log\n\n## Traps\n\n_(none)_\n\n## Decisions\n\n_(none)_\n\n## Checkpoints\n\n_(none)_\n").unwrap();
-        append_under(
-            &p,
-            "## Decisions",
-            "- **DEC (2026-10-10)**: preflight ask \"x\" answered: proceed",
-        )
-        .unwrap();
-        assert_eq!(
-            fs::read_to_string(&p).unwrap(),
-            "# Agent log\n\n## Traps\n\n_(none)_\n\n## Decisions\n\n- **DEC (2026-10-10)**: preflight ask \"x\" answered: proceed\n\n## Checkpoints\n\n_(none)_\n"
-        );
-    }
-
-    #[test]
-    fn set_slice_status_touches_only_the_status_line() {
-        let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("slice-01-a.md");
-        fs::write(
-            &p,
-            "---\nslice: 01\nstatus: building\ndepends_on: []\n---\n\n# A\n\nstatus: not this\n",
-        )
-        .unwrap();
-        set_slice_status(&p, "blocked").unwrap();
-        assert_eq!(
-            fs::read_to_string(&p).unwrap(),
-            "---\nslice: 01\nstatus: blocked\ndepends_on: []\n---\n\n# A\n\nstatus: not this\n"
-        );
-    }
-
-    #[test]
-    fn set_frontmatter_rewrites_or_appends_the_lane() {
-        let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("slice-02-b.md");
-        fs::write(
-            &p,
-            "---\nslice: 02\nstatus: pending\ndepends_on: []\n---\n\n# B\n",
-        )
-        .unwrap();
-        set_frontmatter(&p, &[("status", "building"), ("lane", "2")]).unwrap();
-        assert_eq!(
-            fs::read_to_string(&p).unwrap(),
-            "---\nslice: 02\nstatus: building\ndepends_on: []\nlane: 2\n---\n\n# B\n"
-        );
-        set_frontmatter(&p, &[("lane", "1")]).unwrap();
-        assert_eq!(
-            fs::read_to_string(&p).unwrap(),
-            "---\nslice: 02\nstatus: building\ndepends_on: []\nlane: 1\n---\n\n# B\n"
-        );
-        assert!(set_frontmatter(&dir.path().join("none.md"), &[("lane", "1")]).is_err());
-    }
-
-    #[test]
-    fn a_crlf_slice_file_is_edited_and_stays_crlf() {
-        let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("slice-02-b.md");
-        fs::write(
-            &p,
-            "---\r\nslice: 02\r\nstatus: pending\r\nlane: 2\r\n---\r\n\r\n# B\r\n",
-        )
-        .unwrap();
-        set_frontmatter(&p, &[("status", "building"), ("lane", "1")]).unwrap();
-        assert_eq!(
-            fs::read_to_string(&p).unwrap(),
-            "---\r\nslice: 02\r\nstatus: building\r\nlane: 1\r\n---\r\n\r\n# B\r\n"
-        );
-        remove_frontmatter_keys(&p, &["lane"]).unwrap();
-        set_frontmatter(&p, &[("owner", "x")]).unwrap();
-        assert_eq!(
-            fs::read_to_string(&p).unwrap(),
-            "---\r\nslice: 02\r\nstatus: building\r\nowner: x\r\n---\r\n\r\n# B\r\n"
-        );
-    }
-
-    /// DEC-3: the edit lands by a rename, so a reader holding the old file
-    /// still reads it whole and a new reader gets the new one whole; no temp
-    /// is left beside the slice.
-    #[test]
-    fn a_frontmatter_edit_replaces_the_file_by_rename() {
-        use std::io::Read;
-        use std::os::unix::fs::MetadataExt;
-        let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("slice-02-b.md");
-        let before = "---\nslice: 02\nstatus: pending\n---\n\n# B\n";
-        fs::write(&p, before).unwrap();
-        let ino = fs::metadata(&p).unwrap().ino();
-        let mut held = fs::File::open(&p).unwrap();
-        set_frontmatter(&p, &[("status", "building")]).unwrap();
-        assert_ne!(
-            fs::metadata(&p).unwrap().ino(),
-            ino,
-            "a new file, renamed in"
-        );
-        let mut old = String::new();
-        held.read_to_string(&mut old).unwrap();
-        assert_eq!(old, before);
-        assert_eq!(
-            fs::read_to_string(&p).unwrap(),
-            "---\nslice: 02\nstatus: building\n---\n\n# B\n"
-        );
-        let names: Vec<String> = fs::read_dir(dir.path())
-            .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(names, vec!["slice-02-b.md".to_string()]);
-    }
 }

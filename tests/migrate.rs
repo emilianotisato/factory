@@ -34,7 +34,7 @@ fn migrate(fx: &Fixture, dry: bool) -> Output {
     } else {
         &["migrate"]
     };
-    fx.factory_docs_output(args)
+    fx.docs_output(args)
 }
 
 fn node_check(fx: &Fixture) -> Output {
@@ -60,7 +60,7 @@ fn node_status(fx: &Fixture, feature: &str) -> Value {
 
 fn v3_status(fx: &Fixture, feature: &str) -> Value {
     json(
-        fx.factory_docs_output(&["status", feature, "--json"]),
+        fx.docs_output(&["status", feature, "--json"]),
         "factory docs status",
     )
 }
@@ -242,7 +242,7 @@ fn migrate_and_undo(fx: &Fixture, features: &[&str]) -> BTreeMap<String, Vec<u8>
     let (out, err) = text(&o);
     assert_eq!(o.status.code(), Some(0), "migrate\n{out}\n{err}");
     assert!(out.contains("migrated: "), "{out}");
-    let o = fx.factory_docs_output(&["check"]);
+    let o = fx.docs_output(&["check"]);
     let (cout, cerr) = text(&o);
     eprintln!("--- factory docs check\n{cout}{cerr}");
     assert_eq!(o.status.code(), Some(0), "check\n{cout}\n{cerr}");
@@ -292,7 +292,7 @@ fn the_v2_fixture_migrates_and_the_undo_restores_it() {
     let tree = migrate_and_undo(&fx, &["001"]);
 
     // The log: every v2 heading, its body and its review line.
-    let shown = fx.factory_docs(&["log", "show", "001"]);
+    let shown = fx.docs(&["log", "show", "001"]);
     for (h, first) in headings(&old_log) {
         assert!(shown.contains(&h), "log show lost {h}:\n{shown}");
         if let Some(f) = first {
@@ -476,7 +476,7 @@ fn ideas_migrate() {
     );
     assert!(!fx.path().join("docs/ideas.md").exists());
     let list = json(
-        fx.factory_docs_output(&["idea", "list", "--json"]),
+        fx.docs_output(&["idea", "list", "--json"]),
         "idea list --json",
     );
     let list = list.as_array().unwrap();
@@ -554,7 +554,7 @@ fn ideas_migrate() {
     );
 
     // 3. `check` is clean, with no warning at all.
-    let o = fx.factory_docs_output(&["check"]);
+    let o = fx.docs_output(&["check"]);
     let (out, err) = text(&o);
     eprintln!("--- factory docs check\n{out}{err}");
     assert_eq!(o.status.code(), Some(0), "check\n{out}\n{err}");
@@ -631,7 +631,7 @@ fn prd_001_copy_migrates() {
     let s = v3_status(&fx, "001");
     assert_eq!(s["log"]["decisions"], 145);
     assert_eq!(s["checkpoints"].as_array().unwrap().len(), 7);
-    let shown = fx.factory_docs(&["log", "show", "001"]);
+    let shown = fx.docs(&["log", "show", "001"]);
     // The template's fenced `### BLOCK-1` example stays in a note: skip fences.
     let blocks: Vec<String> = headings(&shown)
         .into_iter()
@@ -640,6 +640,23 @@ fn prd_001_copy_migrates() {
         .collect();
     assert_eq!(blocks.len(), 1, "{blocks:?}");
     assert!(blocks[0].ends_with("resolved"), "{}", blocks[0]);
+    // A Review line with a reason after its flag keeps the reason.
+    let old_log =
+        fs::read_to_string(src.path().join("docs/features/001-driver/agent-log.md")).unwrap();
+    let reasons: Vec<&str> = old_log
+        .lines()
+        .filter(|l| l.starts_with("**Review:** ") && l.split_whitespace().count() > 2)
+        .collect();
+    assert!(!reasons.is_empty());
+    for l in reasons {
+        assert!(shown.contains(l), "log show lost {l}");
+    }
+    // A `|` inside a code span in an index Notes cell does not cut it.
+    let old_index = fs::read_to_string(src.path().join("docs/index.md")).unwrap();
+    if old_index.contains("`log add | show`") {
+        let prd = String::from_utf8_lossy(&tree["docs/features/002-docs-port/prd.md"]);
+        assert!(prd.contains("`log add | show`"), "the 002 summary was cut");
+    }
     let state = String::from_utf8(tree["docs/features/001-driver/state.toml"].clone()).unwrap();
     assert_eq!(state.matches("[slices.").count(), 13, "{state}");
     assert_eq!(state.matches("status = \"done\"").count(), 13, "{state}");
@@ -706,5 +723,8 @@ fn prd_001_copy_migrates() {
             assert!(b.body.contains(&f.added), "line {}: {}", b.line, f.added);
         }
     }
-    assert_eq!((phrase, blamed), (8, 11));
+    // Ideas added after the migration was written are blamed too: the count
+    // only grows.
+    assert_eq!(phrase, 8);
+    assert!(blamed >= 11, "{blamed} blamed");
 }

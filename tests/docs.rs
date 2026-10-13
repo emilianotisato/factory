@@ -7,7 +7,7 @@ mod harness;
 use std::fs;
 
 use factory::docs::log::{Entry, Kind};
-use factory::docs::{Docs, Ship, V2_HINT};
+use factory::docs::{Docs, V2_HINT};
 use factory::error::Error;
 use harness::Fixture;
 
@@ -85,30 +85,6 @@ fn the_driver_writes_state_and_log_in_process() {
 
     docs.set_reviewed("001", "2026-10-13").unwrap();
     assert_eq!(fx.state().reviewed.as_deref(), Some("2026-10-13"));
-}
-
-#[test]
-fn ship_refuses_a_feature_with_a_pending_slice() {
-    let fx = Fixture::new("docs-ship");
-    let docs = Docs::open(fx.path()).unwrap();
-    match docs.ship("001").unwrap() {
-        Ship::Refused(text) => assert!(text.contains("(01, 02, 03)"), "{text}"),
-        other => panic!("ship with three pending slices: {other:?}"),
-    }
-    assert_eq!(fx.state().status, "ready");
-}
-
-#[test]
-fn a_v2_repo_is_refused_with_the_migrate_hint() {
-    let fx = Fixture::v2("docs-v2");
-    match Docs::open(fx.path()) {
-        Err(Error::NotV3(hint)) => {
-            assert_eq!(hint, V2_HINT);
-            assert_eq!(hint, "docs are v2: run `factory docs migrate --dry`");
-        }
-        Err(e) => panic!("a v2 repo: {e}"),
-        Ok(_) => panic!("a v2 repo opened"),
-    }
 }
 
 #[test]

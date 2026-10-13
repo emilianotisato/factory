@@ -158,3 +158,9 @@ Rewrite each assertion that reads a slice file's `status:`, `agent-log.md`, a `l
 Rows from [`prd.md`](prd.md) § QA plan: **FR-18**. Run `cargo test` on the v3 fixture. Run `grep -rn 'Command::new("node")' src` and get exactly the FR-17 shim. Run `factory run` on the v2 fixture and get exit 2 with the hint. Evidence: the grep output, the exit code and stderr, and the test count go in this slice's Progress.
 
 **Acceptance:** after the checkpoint, Progress holds the grep line, the `factory run` transcript with `exit 2`, and the `cargo test` summary line.
+
+**Code-review fixes (2026-10-13).**
+
+- `factory answer BLOCK-n` had no way out when the id was open in two features. With per-feature numbering that is the common case, and "resolve the one you mean by hand" meant hand-writing `log.jsonl`. Added `--feature NNN` (AD-9902); the refusal names it. Test: the two-open case in `tests/lanes.rs`.
+- `slice_status` in `src/cli/answer.rs` turned a `state.toml` parse error into "no status", so an answer left a blocked slice blocked and printed "left as is". It returns the error now. Test: `a_state_toml_that_does_not_parse_is_an_error_not_no_status`.
+- The feature code of slices 01, 03, 09, 10 and 11 was in the working tree but not in any commit: the driver's pathspec commits left it out, and the gate ran on the dirty tree. The polish commit carries it (AD-9901).

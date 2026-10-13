@@ -101,7 +101,7 @@ pub struct WorkerSources {
 }
 
 const TOP_KEYS: [&str; 2] = ["budget_weighted_tokens", "workers"];
-const PROJECT_TOP_KEYS: [&str; 2] = ["run", "workers"];
+const PROJECT_TOP_KEYS: [&str; 3] = ["docs", "run", "workers"];
 const RUN_KEYS: [&str; 1] = ["budget"];
 const ROLE_KEYS: [&str; 4] = ["build", "fix", "checkpoint", "polish"];
 const WORKER_KEYS: [&str; 2] = ["model", "effort"];
@@ -138,7 +138,8 @@ pub fn load(config_dir: &Path) -> Result<Loaded> {
 
 /// The user file, then `<repo>/docs/project.toml` when present, its
 /// `[run] budget` and `[workers.<role>] model | effort` overriding key by key.
-/// Unknown keys there warn and never fail: PRD-002 adds its own tables later.
+/// Unknown keys there warn and never fail. `[docs]` is the docs tool's
+/// (PRD-002 FR-13, `docs::project`), known here and read there.
 pub fn load_with_project(config_dir: &Path, repo: &Path) -> Result<Loaded> {
     let mut loaded = load(config_dir)?;
     let path = repo.join(PROJECT_FILE);
@@ -360,11 +361,11 @@ mod tests {
 
     #[test]
     fn an_unknown_project_table_warns_once_and_never_fails() {
-        let (cfg, repo) = dirs(None, Some("[docs]\nfoo = 1\n"));
+        let (cfg, repo) = dirs(None, Some("[deploy]\nfoo = 1\n"));
         let l = load_with_project(cfg.path(), repo.path()).unwrap();
         assert_eq!(l.warnings.len(), 1, "{:?}", l.warnings);
         assert!(l.warnings[0].contains(PROJECT_FILE), "{}", l.warnings[0]);
-        assert!(l.warnings[0].contains("`docs`"), "{}", l.warnings[0]);
+        assert!(l.warnings[0].contains("`deploy`"), "{}", l.warnings[0]);
         assert_eq!(l.config, Config::default());
     }
 

@@ -255,6 +255,24 @@ fn drop_commits_one_path_with_the_reason() {
 }
 
 #[test]
+fn drop_reads_the_id_as_a_literal_path_not_a_glob() {
+    let fx = Fixture::new("ideas-drop-glob");
+    let ideas = fx.path().join("docs/ideas");
+    fs::create_dir_all(&ideas).unwrap();
+    fs::write(ideas.join("a*.md"), "# Star\n").unwrap();
+    fs::write(ideas.join("ab.md"), "# Other\n").unwrap();
+    fx.git(&["add", "docs/ideas"]);
+    fx.git(&["commit", "-q", "-m", "docs: two ideas"]);
+    fs::write(ideas.join("ab.md"), "# Other\nedited\n").unwrap();
+
+    let o = fx.docs_output(&["idea", "drop", "a*", "--because", "x"]);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    let show = fx.git(&["show", "--name-status", "--format=", "HEAD"]);
+    assert_eq!(show.trim(), "D\tdocs/ideas/a*.md", "{show}");
+    assert_eq!(fx.read("docs/ideas/ab.md"), "# Other\nedited\n");
+}
+
+#[test]
 fn new_from_idea_carries_the_body_and_deletes_the_file() {
     let fx = Fixture::new("ideas-from");
     let body = "Why it matters. Recon below.\n\n- `src/x.rs:12` does it twice\n";

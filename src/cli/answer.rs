@@ -1,18 +1,19 @@
 //! `factory answer <BLOCK-n|ASK-n> "<text>"` (PRD §5 FR-3, §3 FR-1): the
 //! owner's half of a parked run.
 //!
-//! `BLOCK-n`: the entry is found in the feature's log fragments or
-//! `agent-log.md`; the answer lands in `runs/<id>/answers/BLOCK-n.json`,
-//! `**Resolution ({date}):** <text>` is appended under the entry and its
-//! heading flips `open` → `resolved` (autonomy.md § Resuming), and a slice
-//! the block left `blocked` goes back to `building`, lane unchanged. The
-//! driver's slow tick sees a `building` slice with nothing alive on it and an
-//! answer naming it, and respawns it with the block and the answer in the
-//! pack. A retry of an answer that failed after the heading flipped
-//! finishes it.
+//! `BLOCK-n`: the `block` entry is found in a feature's `log.jsonl`; the
+//! answer lands in `runs/<id>/answers/BLOCK-n.json`, an `answer` entry with
+//! `ref = BLOCK-n` is appended to the log (the block's line stays as it was),
+//! and a slice the block left `blocked` goes back to `building` in
+//! `state.toml`, lane unchanged. The driver's slow tick sees a `building`
+//! slice with nothing alive on it and an answer naming it, and respawns it
+//! with the block and the answer in the pack. A retry of an answer that
+//! failed after the `answer` entry landed finishes it. Block ids restart at
+//! `BLOCK-1` in every feature, so the same id open in two features goes to
+//! the one whose run is parked.
 //!
-//! `ASK-n`: a `DEC` line in `agent-log.md`, `ask_answered`, then the answer
-//! file; the run starts when the last ask is answered. ASK numbers are per
+//! `ASK-n`: an `ask` entry (phase `preflight`) in the feature's log,
+//! `ask_answered`, then the answer file; the run starts when the last ask is answered. ASK numbers are per
 //! run: two open runs waiting on the same one are refused by name, and
 //! `--run <id>` picks one.
 //!
@@ -26,6 +27,7 @@ use std::path::{Path, PathBuf};
 use clap::Args;
 
 use crate::answers::{self, Answer};
+use crate::docs::{log, state};
 use crate::error::io;
 use crate::events::EventKind;
 use crate::quota::{self, Hold};
@@ -42,6 +44,9 @@ pub struct AnswerArgs {
     /// The run an `ASK-n` belongs to, when more than one open run asked it
     #[arg(long, value_name = "RUN")]
     pub run: Option<String>,
+    /// The feature a `BLOCK-n` belongs to, when it is open in more than one
+    #[arg(long, value_name = "NNN")]
+    pub feature: Option<String>,
 }
 
 pub fn answer(args: &AnswerArgs, out: &mut dyn Write) -> Result<i32> {
@@ -54,7 +59,7 @@ pub fn answer(args: &AnswerArgs, out: &mut dyn Write) -> Result<i32> {
         return Err(Error::Msg("the answer is empty".into()));
     }
     if id.starts_with("BLOCK-") {
-        answer_block(&repo, &data_dir, &id, &text, out)
+        answer_block(&repo, &data_dir, &id, &text, args.feature.as_deref(), out)
     } else if id.starts_with("ASK-") {
         answer_ask(&repo, &data_dir, &id, &text, args.run.as_deref(), out)
     } else {
@@ -70,26 +75,40 @@ fn answer_block(
     data_dir: &Path,
     id: &str,
     text: &str,
+    feature: Option<&str>,
     out: &mut dyn Write,
 ) -> Result<i32> {
+    let wanted = feature
+        .map(|f| f.trim().parse::<u32>())
+        .transpose()
+        .map_err(|_| {
+            Error::Msg(format!(
+                "--feature takes a feature number, not `{}`",
+                feature.unwrap_or("")
+            ))
+        })?;
     let mut hits: Vec<(PathBuf, answers::BlockEntry)> = Vec::new();
     for dir in feature_dirs(repo)? {
-        for e in answers::find_all(&dir, id)? {
-            hits.push((dir.clone(), e));
+        if wanted.is_some_and(|n| feature_number(&dir).ok().and_then(|d| d.parse().ok()) != Some(n))
+        {
+            continue;
+        }
+        if let Some(e) = answers::find(&dir, id)? {
+            hits.push((dir, e));
         }
     }
     if hits.is_empty() {
         writeln!(
             out,
-            "no {id} under {}: a block is a `### {id} — …` heading in a log-*.md fragment or agent-log.md",
+            "no {id} under {}: a block is a `kind: block` entry in a feature's log.jsonl",
             rel(repo, &repo.join("docs/features"))
         )
         .map_err(io("stdout"))?;
         return Ok(1);
     }
-    let at = |e: &answers::BlockEntry| format!("{} line {}", rel(repo, &e.path), e.start + 1);
-    // Only an open block takes an answer; a resolved one of the same number
-    // (an earlier feature's, or a phase block of this one) is not a target.
+    let at = |e: &answers::BlockEntry| format!("{} line {}", rel(repo, &e.path), e.line);
+    // Only an open block takes an answer; a resolved one of the same id (an
+    // earlier feature's) is not a target.
     let mut open: Vec<(PathBuf, answers::BlockEntry)> =
         hits.iter().filter(|(_, e)| !e.resolved).cloned().collect();
     if open.is_empty() {
@@ -113,7 +132,7 @@ fn answer_block(
     if open.len() > 1 {
         writeln!(
             out,
-            "{id} is open in {} places — nothing resolved; resolve the one you mean by hand:",
+            "{id} is open in {} places — nothing resolved; name one with `--feature NNN`:",
             open.len()
         )
         .map_err(io("stdout"))?;
@@ -126,20 +145,19 @@ fn answer_block(
     let where_ = at(&entry);
     // What can refuse goes first: a block naming a slice with no file
     // writes nothing.
-    let slice = match entry.slice {
-        Some(n) => Some((n, slice_file(&feature_dir, n)?)),
-        None => None,
-    };
+    if let Some(n) = entry.slice {
+        slice_file(&feature_dir, n)?;
+    }
+    let slice = entry.slice;
     let now = clock::now_rfc3339();
-    let date = now[..10].to_string();
     let feature = feature_number(&feature_dir)?;
     let mut run = Run::find_resumable(data_dir, repo, &feature)?;
     // The answer file and `block_answered` before the slice flips: a driver
     // that reads `building` must already find the answer, or it would take
     // the slice for a dead worker's (slice 04 task 3's trap), and the log
     // must read `block_answered` before the `slice_spawned` it causes. They
-    // go before the heading too: a retry finds the block open until every
-    // step that cannot be redone is done, and redoes them.
+    // go before the `answer` entry too: a retry finds the block open until
+    // every step that cannot be redone is done, and redoes them.
     if let Some(run) = &mut run {
         answers::write(
             run.dir(),
@@ -156,16 +174,16 @@ fn answer_block(
             text: text.to_string(),
         })?;
     }
-    // The heading and its resolution before the flip: the respawned
-    // worker's pack quotes the entry as the log holds it.
-    answers::resolve(&entry, text, &date)?;
+    // The `answer` entry before the flip: the respawned worker's pack quotes
+    // the block with its answer as the log holds them.
+    answers::resolve(&feature_dir, &entry, text)?;
     writeln!(out, "{id} resolved ({where_}): {text}").map_err(io("stdout"))?;
-    deliver(repo, &feature, slice, run, out)?;
+    deliver(repo, &feature_dir, &feature, slice, run, out)?;
     Ok(0)
 }
 
 /// Every `id` found is resolved. A retry of an answer that stopped after
-/// the heading flipped — the slice still `blocked`, or the parked run never
+/// the `answer` entry landed — the slice still `blocked`, or the parked run never
 /// woken — finishes it; anything else is refused.
 fn answer_resolved(
     repo: &Path,
@@ -174,7 +192,7 @@ fn answer_resolved(
     hits: &[(PathBuf, answers::BlockEntry)],
     out: &mut dyn Write,
 ) -> Result<i32> {
-    let at = |e: &answers::BlockEntry| format!("{} line {}", rel(repo, &e.path), e.start + 1);
+    let at = |e: &answers::BlockEntry| format!("{} line {}", rel(repo, &e.path), e.line);
     for (dir, e) in hits {
         let feature = feature_number(dir)?;
         let Some(run) = Run::find_resumable(data_dir, repo, &feature)? else {
@@ -183,12 +201,8 @@ fn answer_resolved(
         if answers::read(run.dir(), id)?.is_none_or(|a| a.slice != e.slice) {
             continue;
         }
-        let slice = match e.slice {
-            Some(n) => Some((n, slice_file(dir, n)?)),
-            None => None,
-        };
-        let blocked = match &slice {
-            Some((_, f)) => scheduler::read_slice_status(f)?.as_deref() == Some("blocked"),
+        let blocked = match e.slice {
+            Some(n) => slice_status(dir, n)?.as_deref() == Some("blocked"),
             None => false,
         };
         let unwoken = run.state().phase == Phase::WaitingOwner
@@ -202,7 +216,7 @@ fn answer_resolved(
                 run.id()
             )
             .map_err(io("stdout"))?;
-            deliver(repo, &feature, slice, Some(run), out)?;
+            deliver(repo, dir, &feature, e.slice, Some(run), out)?;
             return Ok(0);
         }
     }
@@ -215,15 +229,17 @@ fn answer_resolved(
 /// then the run woken.
 fn deliver(
     repo: &Path,
+    feature_dir: &Path,
     feature: &str,
-    slice: Option<(u32, PathBuf)>,
+    slice: Option<u32>,
     run: Option<Run>,
     out: &mut dyn Write,
 ) -> Result<()> {
-    if let Some((n, file)) = slice {
-        match scheduler::read_slice_status(&file)? {
+    if let Some(n) = slice {
+        let file = state::path(feature_dir);
+        match slice_status(feature_dir, n)? {
             Some(s) if s == "blocked" => {
-                scheduler::set_slice_status(&file, "building")?;
+                state::set(feature_dir, &[(&format!("slices.{n}.status"), "building")])?;
                 writeln!(out, "slice {n:02} → building ({})", rel(repo, &file))
                     .map_err(io("stdout"))?;
             }
@@ -251,46 +267,19 @@ fn deliver(
     Ok(())
 }
 
-/// Whether a try that failed later already logged this ask's answer: an
-/// `### AD-n` heading ending in `title`, then its `**Chose:**` line.
-fn preflight_logged(log: &str, title: &str, text: &str) -> bool {
-    let chose = format!("**Chose:** {text}");
-    let mut lines = log.lines();
-    while let Some(l) = lines.next() {
-        if l.starts_with("### AD-") && l.ends_with(title) {
-            return lines
-                .take_while(|l| !l.starts_with('#'))
-                .any(|l| l == chose);
-        }
-    }
-    false
+/// The slice's status in `state.toml`; `None` when the file or the slice
+/// has none.
+fn slice_status(feature_dir: &Path, n: u32) -> Result<Option<String>> {
+    Ok(state::read(feature_dir)?.and_then(|s| s.slices.get(&n).map(|s| s.status.clone())))
 }
 
-/// The AD number a preflight answer takes: the next one after the highest
-/// below 100. Slicing owns `AD-1`–`AD-99` and is done before preflight; the
-/// build's ranges start at `AD-101`. `None` once 99 is taken. Fenced
-/// lines are skipped, as `docs.mjs` does: the template's example is no entry.
-fn next_preflight_ad(log: &str) -> Option<u32> {
-    let mut fenced = false;
-    let top = log
-        .lines()
-        .filter(|l| {
-            if l.trim_start().starts_with("```") {
-                fenced = !fenced;
-            }
-            !fenced
-        })
-        .filter_map(|l| l.strip_prefix("### AD-"))
-        .filter_map(|r| {
-            r.split(|c: char| !c.is_ascii_digit())
-                .next()?
-                .parse::<u32>()
-                .ok()
-        })
-        .filter(|n| *n < 100)
-        .max()
-        .unwrap_or(0);
-    (top < 99).then_some(top + 1)
+/// Whether a try that failed later already logged this ask's answer: an
+/// `ask` entry titled `title` with its `**Chose:**` line.
+fn preflight_logged(entries: &[log::Entry], title: &str, text: &str) -> bool {
+    let chose = format!("**Chose:** {text}");
+    entries
+        .iter()
+        .any(|e| e.kind == log::Kind::Ask && e.title == title && e.body.lines().any(|l| l == chose))
 }
 
 fn answer_ask(
@@ -348,36 +337,24 @@ fn answer_ask(
     };
     let (mut run, item, _) = asked.swap_remove(i);
     let now = clock::now_rfc3339();
-    let date = now[..10].to_string();
     let feature = run.state().feature.clone();
-    let log = agent_log(repo, &feature)?;
-    // The AD entry and `ask_answered` before the answer file: the file is
+    let dir = feature_dir(repo, &feature)?;
+    // The `ask` entry and `ask_answered` before the answer file: the file is
     // what the driver starts on and what takes the ask off the list, so a
     // retry after a failure here still finds the ask open. Each step is
     // skipped when a failed try already did it.
-    let title = format!(" — Preflight {id}: {item} · preflight · {date}");
-    let log_text = match fs::read_to_string(&log) {
-        Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            // A second check: `docs new` creates agent-log.md now (AD-503), but a
-            // feature made by a vendored docs.mjs older than that fix has none.
-            let t = format!("# Agent log — PRD-{feature}\n");
-            fs::write(&log, &t).map_err(io(format!("write {}", log.display())))?;
-            t
-        }
-        Err(e) => return Err(io(format!("read {}", log.display()))(e)),
-    };
-    if !preflight_logged(&log_text, &title, text) {
-        let n = next_preflight_ad(&log_text).ok_or_else(|| {
-            Error::Msg(format!(
-                "{}: AD-1 to AD-99 are all taken; record {id}'s answer by hand",
-                log.display()
-            ))
-        })?;
-        let entry = format!(
-            "### AD-{n}{title}\n\n**Chose:** {text}\n**Because:** the owner's answer to a preflight ask, before any slice started.\n**Review:** no"
+    let title = format!("Preflight {id}: {item}");
+    let (logged, _) = log::entries(&dir)?;
+    if !preflight_logged(&logged, &title, text) {
+        let mut entry = log::Entry::new(
+            log::Kind::Ask,
+            &title,
+            &format!(
+                "**Chose:** {text}\n**Because:** the owner's answer to a preflight ask, before any slice started.\n**Review:** no\n"
+            ),
         );
-        scheduler::append_under(&log, "## Decisions", &entry)?;
+        entry.phase = Some("preflight".to_string());
+        log::add(&dir, entry)?;
     }
     let emitted = run.events()?.into_iter().any(
         |e| matches!(&e.kind, EventKind::AskAnswered { id: i, text: t } if i == id && t == text),
@@ -397,7 +374,12 @@ fn answer_ask(
             at: now,
         },
     )?;
-    writeln!(out, "{id} answered: {text} — noted in {}", rel(repo, &log)).map_err(io("stdout"))?;
+    writeln!(
+        out,
+        "{id} answered: {text} — noted in {}",
+        rel(repo, &log::path(&dir))
+    )
+    .map_err(io("stdout"))?;
     let remaining = answers::asks_pending(&run)?;
     if remaining.is_empty() {
         writeln!(out, "every ask answered — the run proceeds").map_err(io("stdout"))?;
@@ -494,13 +476,12 @@ fn feature_number(feature_dir: &Path) -> Result<String> {
     Ok(digits)
 }
 
-/// The feature folder of `NNN`, and its `agent-log.md`.
-fn agent_log(repo: &Path, feature: &str) -> Result<PathBuf> {
-    let dir = feature_dirs(repo)?
+/// The feature folder of `NNN`.
+fn feature_dir(repo: &Path, feature: &str) -> Result<PathBuf> {
+    feature_dirs(repo)?
         .into_iter()
         .find(|d| feature_number(d).is_ok_and(|n| n == feature))
-        .ok_or_else(|| Error::Msg(format!("no docs/features/{feature}-* folder")))?;
-    Ok(dir.join("agent-log.md"))
+        .ok_or_else(|| Error::Msg(format!("no docs/features/{feature}-* folder")))
 }
 
 /// `slice-NN-*.md` in the feature folder.
@@ -529,25 +510,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_preflight_answer_takes_the_next_ad_below_100() {
-        assert_eq!(next_preflight_ad("# Agent log\n"), Some(1));
-        let log = "### AD-3 — q · slicing · d\n### AD-101 — q · slice-01 · d\n### AD-9901 — q · polish · d\n";
-        assert_eq!(next_preflight_ad(log), Some(4));
-        assert_eq!(next_preflight_ad("### AD-99 — q · slicing · d\n"), None);
-        assert_eq!(next_preflight_ad("```\n### AD-1 — example\n```\n"), Some(1));
+    fn a_logged_answer_is_found_by_its_title_and_choice() {
+        let title = "Preflight ASK-1: lanes";
+        let ask = log::Entry::new(
+            log::Kind::Ask,
+            title,
+            "**Chose:** proceed\n**Review:** no\n",
+        );
+        let decision = log::Entry::new(
+            log::Kind::Decision,
+            "Preflight ASK-2: x",
+            "**Chose:** proceed\n",
+        );
+        let log = vec![ask, decision];
+        assert!(preflight_logged(&log, title, "proceed"));
+        assert!(!preflight_logged(&log, title, "fix it"));
+        assert!(!preflight_logged(&log, "Preflight ASK-2: x", "proceed"));
     }
 
     #[test]
-    fn a_logged_answer_is_found_by_its_title_and_choice() {
-        let title = " — Preflight ASK-1: lanes · preflight · 2026-10-12";
-        let log =
-            format!("## Decisions\n\n### AD-4{title}\n\n**Chose:** proceed\n**Review:** no\n");
-        assert!(preflight_logged(&log, title, "proceed"));
-        assert!(!preflight_logged(&log, title, "fix it"));
-        assert!(!preflight_logged(
-            &log,
-            " — Preflight ASK-2: x · preflight · 2026-10-12",
-            "proceed"
-        ));
+    fn a_state_toml_that_does_not_parse_is_an_error_not_no_status() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(state::path(dir.path()), "status = \n").unwrap();
+        assert!(slice_status(dir.path(), 1).is_err());
+        assert_eq!(
+            slice_status(tempfile::tempdir().unwrap().path(), 1).unwrap(),
+            None
+        );
     }
 }

@@ -140,3 +140,12 @@ The trap: `--dry` must never reach `Db::open`, which creates and migrates the st
 Rows from [`prd.md`](prd.md) § QA plan: the machine half of the **FR-16** row. Drive it with the branch binary in a temp copy of `tests/fixture/v2` and in a `git archive HEAD docs` copy: `migrate --dry`, `git status --porcelain`, `migrate`, `check`, `status 001 --json` before (node) and after with a `diff` of the key sets, the undo, the re-run with `diff -r` against the first result, and `sqlite3 factory.db 'SELECT * FROM retros'` twice. Also run the `--ignored` test. The human half is in [`qa-guide.md`](qa-guide.md).
 
 **Acceptance:** Progress holds each transcript with its exit code, the empty `git status` after `--dry`, the empty `diff -r` after the re-run, and the two `retros` reads differing only in `written_at`.
+
+**Code-review fixes (2026-10-13).**
+
+- A Review line with a reason after the flag lost the reason: `review_flag` kept only the word, which dropped text on 18 PRD-001 entries. It now stays in the body, and `log show` prints it once (AD-9903). Test: `a_review_line_keeps_its_reason`.
+- `cells` and `notes_cells` split an index row on every `|`, even inside a code span, which cut this repo's PRD-002 summary by about 2,600 characters. A `|` inside backticks is now literal. Test: `a_pipe_in_a_code_span_stays_in_its_cell`.
+- A heading split on ` · ` threw away the middle parts, so a title with a middle dot was cut short. Only the place, the date and a BLOCK's state come out now. Test: `a_middle_dot_in_a_title_stays_in_the_title`.
+- The relink rewrote `retro.md`, which FR-16 leaves as it is. It is skipped now, with a `warn` row per link (AD-9904). Test: `a_retro_keeps_its_links_byte_for_byte`.
+- `yaml()` wrapped a value holding `"` in double quotes without escaping it, so the frontmatter would not parse. Fix and test: AD-9905, `yaml_values_read_back_as_written`.
+- Test cleanup: the five tests that read this repo's docs at `HEAD` with exact counts now read a frozen copy (AD-9906).

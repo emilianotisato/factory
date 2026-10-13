@@ -26,6 +26,9 @@ pub enum Error {
         detail: String,
     },
     Msg(String),
+    /// `Docs::open` on a repo that is not on v3: the text is the hint
+    /// (`docs are v2: run …`). `factory run` exits 2 on it, not 1.
+    NotV3(String),
 }
 
 impl fmt::Display for Error {
@@ -36,7 +39,7 @@ impl fmt::Display for Error {
             Error::Toml { what, source } => write!(f, "{what}: {source}"),
             Error::Sql(e) => write!(f, "sqlite: {e}"),
             Error::Tool { cmd, detail } => write!(f, "`{cmd}` failed: {detail}"),
-            Error::Msg(m) => f.write_str(m),
+            Error::Msg(m) | Error::NotV3(m) => f.write_str(m),
         }
     }
 }

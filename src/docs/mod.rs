@@ -1,22 +1,25 @@
-//! The `docs.mjs` wrapper (PRD §2, §3 FR-1). The board (`status --json`) and
-//! preflight (`preflight --json`) are the contract every slice reads; the rest
-//! are the commands the driver runs on `/deliver`'s behalf. No routing logic is
-//! derived from the board here: the tool decides, the driver reads.
+//! The feature-docs library (PRD-002 FR-18): `factory docs` is built on it
+//! and the driver calls it in process through [`Docs`]. The board
+//! (`status --json`) and preflight (`preflight --json`) are the contract every
+//! caller reads. No routing logic is derived from the board here: the docs
+//! decide, the driver reads.
 //!
-//! Every optional key carries `#[serde(default)]` so a tool upgrade that adds
-//! a key does not break the driver (slice 02 Current code).
+//! Every optional key carries `#[serde(default)]` so JSON written by an older
+//! or newer build still parses (PRD-001 slice 02).
 //!
-//! The v3 model (PRD-002 FR-13) lives in the submodules, beside the wrapper
-//! until the driver switches to it (slice 09): free functions over a repo
-//! root, and the board structs below are their output contract too.
+//! The model lives in the submodules: free functions over a repo root, and
+//! the board structs below are their output contract.
 pub mod board;
 pub mod check;
 pub mod doctor;
 pub mod frontmatter;
 pub mod gate;
+pub mod hook;
 pub mod ideas;
 pub mod lanes;
 pub mod log;
+pub mod migrate;
+pub mod migrate_ideas;
 pub mod preflight;
 pub mod project;
 pub mod renumber;
@@ -26,164 +29,126 @@ pub mod ship;
 pub mod state;
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
-use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{Error, Result, paths};
+use crate::{Error, Result};
 
-/// A located `docs.mjs` and the repo it runs in.
+/// The text `Docs::open` refuses a v2 repo with (FR-18): the driver reads v3
+/// only, so `factory run` stops before preflight.
+pub const V2_HINT: &str = "docs are v2: run `factory docs migrate --dry`";
+
+/// A v3 repo the driver reads and writes in process (PRD-002 FR-18).
 pub struct Docs {
-    tool: PathBuf,
     root: PathBuf,
 }
 
-/// What a tool run returned; the caller judges the exit where it matters.
-#[derive(Debug, Clone)]
-pub struct ToolOutput {
-    pub stdout: String,
-    pub stderr: String,
-    pub code: i32,
+/// What `ship` did: shipped (with its output, whose `⚠` lines the closeout
+/// forwards), or refused with the reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Ship {
+    Done(String),
+    Refused(String),
 }
 
 impl Docs {
-    /// The repo's `.docs/bin/docs.mjs` when vendored, else the skill's copy
-    /// under `~/.claude/skills/feature-docs/bin/` — the same preference the
-    /// tool's own hook applies.
-    pub fn locate(repo_root: &Path) -> Result<Docs> {
-        let vendored = repo_root.join(".docs/bin/docs.mjs");
-        let global = paths::home().join(".claude/skills/feature-docs/bin/docs.mjs");
-        let tool = if vendored.is_file() {
-            vendored
-        } else if global.is_file() {
-            global
-        } else {
-            return Err(Error::Msg(format!(
-                "no docs.mjs: neither {} nor {} exists",
-                vendored.display(),
-                global.display()
-            )));
-        };
-        Ok(Docs {
-            tool,
-            root: repo_root.to_path_buf(),
-        })
-    }
-
-    pub fn tool(&self) -> &Path {
-        &self.tool
+    /// The repo when it is on v3. A v2 repo (a `docs/index.md`, no
+    /// `[docs] framework = 3`) is refused with [`V2_HINT`]; a repo off the
+    /// framework with its own text. Both are `Error::NotV3`.
+    pub fn open(repo_root: &Path) -> Result<Docs> {
+        if project::is_v3(repo_root) {
+            return Ok(Docs {
+                root: repo_root.to_path_buf(),
+            });
+        }
+        if repo_root.join("docs/index.md").is_file() {
+            return Err(Error::NotV3(V2_HINT.into()));
+        }
+        Err(Error::NotV3(format!(
+            "not on the framework: {} has no docs/project.toml with [docs] framework = 3 — run `factory docs init`",
+            repo_root.display()
+        )))
     }
 
     pub fn root(&self) -> &Path {
         &self.root
     }
 
-    /// `node <tool> <args>` in the repo root, whatever it exits.
-    pub fn run(&self, args: &[&str]) -> Result<ToolOutput> {
-        let out = Command::new("node")
-            .arg(&self.tool)
-            .args(args)
-            .current_dir(&self.root)
-            .output()
-            .map_err(|e| Error::Tool {
-                cmd: self.cmdline(args),
-                detail: format!("could not start node: {e}"),
-            })?;
-        Ok(ToolOutput {
-            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-            code: out.status.code().unwrap_or(-1),
-        })
+    /// The feature's folder, live or archived.
+    pub fn dir(&self, feature: &str) -> Result<PathBuf> {
+        Ok(board::scan(&self.root)?.resolve(feature)?.dir.clone())
     }
 
-    fn cmdline(&self, args: &[&str]) -> String {
-        format!("docs {}", args.join(" "))
-    }
-
-    /// `run`, with a non-zero exit turned into an error quoting stderr.
-    fn ok(&self, args: &[&str]) -> Result<ToolOutput> {
-        let out = self.run(args)?;
-        if out.code != 0 {
-            return Err(Error::Tool {
-                cmd: self.cmdline(args),
-                detail: format!("exit {}: {}", out.code, quote(&out)),
-            });
-        }
-        Ok(out)
-    }
-
-    fn parse<T: DeserializeOwned>(&self, args: &[&str], out: &ToolOutput) -> Result<T> {
-        serde_json::from_str(&out.stdout).map_err(|e| Error::Tool {
-            cmd: self.cmdline(args),
-            detail: format!(
-                "exit {}, stdout is not the expected JSON ({e}): {}",
-                out.code,
-                quote(out)
-            ),
-        })
-    }
-
-    /// `status NNN --json`: the board.
+    /// The board of one feature (`factory docs status NNN --json`).
     pub fn status(&self, feature: &str) -> Result<Status> {
-        let args = ["status", feature, "--json"];
-        let out = self.ok(&args)?;
-        self.parse(&args, &out)
+        board::status(&self.root, feature)
     }
 
-    /// `preflight NNN --json` with its exit code: 0 pass, 1 refused, 2 asks
-    /// pending. Any other exit is the tool failing, not a verdict.
+    /// The preflight verdict with its exit code: 0 pass, 1 refused, 2 asks
+    /// pending.
     pub fn preflight(&self, feature: &str) -> Result<(Preflight, i32)> {
-        let args = ["preflight", feature, "--json"];
-        let out = self.run(&args)?;
-        match out.code {
-            0..=2 => Ok((self.parse(&args, &out)?, out.code)),
-            code => Err(Error::Tool {
-                cmd: self.cmdline(&args),
-                detail: format!("exit {code}: {}", quote(&out)),
-            }),
+        preflight::run(&self.root, feature)
+    }
+
+    fn project(&self) -> Result<project::Project> {
+        project::load(&self.root)?
+            .ok_or_else(|| Error::NotV3("docs/project.toml has no [docs] table".into()))
+    }
+
+    /// The declared gate command; an error when none is declared.
+    pub fn gate(&self) -> Result<String> {
+        self.project()?
+            .gate
+            .ok_or_else(|| Error::Msg("no gate declared: `factory docs gate set \"<cmd>\"`".into()))
+    }
+
+    /// The declared inner-loop command, else the full gate (as `gate --inner`).
+    pub fn gate_inner(&self) -> Result<String> {
+        let p = self.project()?;
+        p.inner
+            .or(p.gate)
+            .ok_or_else(|| Error::Msg("no gate declared: `factory docs gate set \"<cmd>\"`".into()))
+    }
+
+    /// `ship NNN`. A refusal (a slice not done) is a verdict the caller
+    /// routes, so it comes back as `Ship::Refused` rather than an error.
+    pub fn ship(&self, feature: &str) -> Result<Ship> {
+        let mut out = Vec::new();
+        match ship::ship(&self.root, feature, &mut out) {
+            Ok(()) => Ok(Ship::Done(String::from_utf8_lossy(&out).into_owned())),
+            Err(Error::Msg(m)) => Ok(Ship::Refused(m)),
+            Err(e) => Err(e),
         }
     }
 
-    /// `gate`: the declared gate command.
-    pub fn gate(&self) -> Result<String> {
-        Ok(self.ok(&["gate"])?.stdout.trim().to_string())
+    /// `state::set` on the feature's `state.toml` (FR-13): the one write path.
+    pub fn set(&self, feature: &str, pairs: &[(&str, &str)]) -> Result<()> {
+        state::set(&self.dir(feature)?, pairs).map(|_| ())
     }
 
-    /// `gate --inner`: the declared inner-loop command.
-    pub fn gate_inner(&self) -> Result<String> {
-        Ok(self.ok(&["gate", "--inner"])?.stdout.trim().to_string())
+    pub fn set_slice_status(&self, feature: &str, slice: u32, status: &str) -> Result<()> {
+        self.set(feature, &[(&format!("slices.{slice}.status"), status)])
     }
 
-    /// `log merge NNN`. A refusal (an AD clash) is a verdict the caller routes,
-    /// so the exit comes back rather than erroring.
-    pub fn log_merge(&self, feature: &str) -> Result<ToolOutput> {
-        self.run(&["log", "merge", feature])
+    pub fn set_status(&self, feature: &str, status: &str) -> Result<()> {
+        self.set(feature, &[("status", status)])
     }
 
-    /// `log merge NNN --dry`: the same checks, nothing written.
-    pub fn log_merge_dry(&self, feature: &str) -> Result<ToolOutput> {
-        self.run(&["log", "merge", feature, "--dry"])
+    pub fn set_reviewed(&self, feature: &str, date: &str) -> Result<()> {
+        self.set(feature, &[("reviewed", date)])
     }
 
-    /// `ship NNN`; same contract as `log_merge`.
-    pub fn ship(&self, feature: &str) -> Result<ToolOutput> {
-        self.run(&["ship", feature])
+    /// Append one log entry (FR-14); the id the tool allocated, `None` for an
+    /// `answer`, `review` or `note`.
+    pub fn log_add(&self, feature: &str, entry: log::Entry) -> Result<Option<String>> {
+        log::add(&self.dir(feature)?, entry)
     }
 
-    /// `render --write`.
-    pub fn render_write(&self) -> Result<ToolOutput> {
-        self.ok(&["render", "--write"])
-    }
-}
-
-fn quote(out: &ToolOutput) -> String {
-    let err = out.stderr.trim();
-    if err.is_empty() {
-        out.stdout.trim().to_string()
-    } else {
-        err.to_string()
+    /// Every entry of the feature's `log.jsonl`, in file order. A torn line
+    /// is skipped here; `check` reports it.
+    pub fn log_entries(&self, feature: &str) -> Result<Vec<log::Entry>> {
+        Ok(log::entries(&self.dir(feature)?)?.0)
     }
 }
 

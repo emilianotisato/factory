@@ -41,13 +41,19 @@ fn db(fx: &Fixture) -> Db {
     Db::open(&data_dir(fx).join("factory.db")).unwrap()
 }
 
-/// The chained fixture with a committed `docs/project.toml`.
+/// The chained fixture with a `[workers.polish]` table committed to its
+/// `docs/project.toml`, after the `[docs]` table the fixture already has.
 fn project_fixture(name: &str) -> Fixture {
     let fx = Fixture::with_index(name, &[("checkpoint_every", "10"), ("lanes", "1")]);
     fx.chain();
+    let file = fx.path().join("docs/project.toml");
+    let docs = fs::read_to_string(&file).unwrap();
     fs::write(
-        fx.path().join("docs/project.toml"),
-        "[workers.polish]\nmodel = \"sonnet\"\n",
+        &file,
+        format!(
+            "{}\n\n[workers.polish]\nmodel = \"sonnet\"\n",
+            docs.trim_end()
+        ),
     )
     .unwrap();
     fx.git(&["add", "docs/project.toml"]);

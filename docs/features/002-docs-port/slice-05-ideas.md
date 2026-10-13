@@ -83,3 +83,8 @@ The trap: if slice 03's PRD-key rule is a closed list of seven, the first `--fro
 Rows from [`prd.md`](prd.md) § QA plan: the **FR-20** row, its tool half: "concurrent `idea add`; `idea drop` commit; `new --from-idea`; `check` on a bad state", evidence "`tests/docs.rs` transcripts". Run in a `Fixture::v3` copy: two shells adding the same title at once; `idea list --json`; `idea drop <id> --because x` then `git show --stat HEAD`; `new demo --from-idea <id>` then `git status --short`; `check` on a `state: later` file and on a `docs/ideas.md`. The `migrate --dry` half and the arca-api `qa-guide.md` row are slice 08's.
 
 **Acceptance:** each of the five runs has its transcript in this slice's Progress, with the exit code and the read-back (file count, the commit's one path and body, the deletion, the `check` codes).
+
+**Code-review fixes (2026-10-13).**
+
+- `idea drop` passed the idea's path to `git status`, `git commit` and `git checkout` as a plain pathspec, so an id holding `*` or `[` matched other ideas: the drop could commit or refuse on a neighbour's edit. The three calls now use `:(literal)`. Test: `drop_reads_the_id_as_a_literal_path_not_a_glob` (`tests/docs_ideas.rs`).
+- The FR-20 Prove rows (this task 8 and slice 08 task 7) were never driven: no checkpoint named FR-20 and no `evidence/` file existed. Polish drove both halves on the branch binary: `evidence/polish-fr20.txt`, made by `evidence/polish-fr20-drive.sh`. Concurrent adds 2 × 10 gave 20 files, the drop commit holds one path, `--from-idea` carried the body and deleted the idea, and `check` exits 1 on `E-IDEA-PARSE`.

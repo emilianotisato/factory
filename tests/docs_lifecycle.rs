@@ -278,6 +278,17 @@ fn ship_refuses_open_slices_and_is_a_no_op_the_second_time() {
 }
 
 #[test]
+fn ship_names_a_state_toml_that_does_not_parse() {
+    let fx = Fixture::new("v3-ship-broken");
+    let state = fx.path().join(FEATURE_DIR).join("state.toml");
+    fs::write(&state, "status = \n").unwrap();
+    let o = fx.docs_output(&["ship", "001"]);
+    assert_ne!(exit(&o), 0);
+    assert!(stderr(&o).contains("state.toml"), "{}", stderr(&o));
+    assert!(!stderr(&o).contains("not done"), "{}", stderr(&o));
+}
+
+#[test]
 fn archive_moves_the_folder_and_leaves_the_index_alone() {
     let fx = Fixture::new("v3-archive");
     let o = fx.docs_output(&["archive", "001"]);

@@ -169,20 +169,39 @@ pub fn parse(text: &str) -> Vec<Bullet> {
             out.push(bullet(o.line, o.first, &o.cont, h2, h3));
         }
     }
+    // A fenced line under no bullet: dropped, and listed after the first `##`
+    // like any other line that is no bullet (FR-20).
+    let stray =
+        |out: &mut Vec<Bullet>, i: usize, line: &str, h2: Option<&str>, h3: Option<&str>| {
+            if h2.is_some() && !line.trim().is_empty() {
+                out.push(Bullet {
+                    line: i + 1,
+                    title: line.trim().to_string(),
+                    body: String::new(),
+                    h2: h2.map(str::to_string),
+                    h3: h3.map(str::to_string),
+                    place: Place::Dropped("in a fence under no bullet"),
+                });
+            }
+        };
     for (i, line) in text.lines().enumerate() {
         if is_fence(line) {
             // An indented fence belongs to the bullet above it; one at the
-            // margin ends it.
+            // margin ends it (AD-802), and it and its lines are dropped.
             match cur.as_mut() {
                 Some(o) if line.starts_with(char::is_whitespace) => o.cont.push(line),
-                _ => flush(&mut out, &mut cur, h2, h3),
+                _ => {
+                    flush(&mut out, &mut cur, h2, h3);
+                    stray(&mut out, i, line, h2, h3);
+                }
             }
             fenced = !fenced;
             continue;
         }
         if fenced {
-            if let Some(o) = cur.as_mut() {
-                o.cont.push(line);
+            match cur.as_mut() {
+                Some(o) => o.cont.push(line),
+                None => stray(&mut out, i, line, h2, h3),
             }
             continue;
         }
@@ -466,10 +485,31 @@ mod tests {
     #[test]
     fn bounds_fences_and_drops() {
         let b = parse("## Open\n- **A.** a\n- **B.** b\n  b2\n\n  not b\n```\n- **C.** c\n```\n");
-        assert_eq!(b.len(), 3, "{b:?}");
+        assert_eq!(b.len(), 6, "{b:?}");
         assert_eq!(b[1].body, "b\n  b2\n");
         assert_eq!(b[2].place, Place::Dropped("not a bullet"));
-        assert!(b.iter().all(|x| x.title != "C"));
+        // A fence at the margin: its lines are dropped and listed, never lost.
+        assert_eq!(
+            b[3..]
+                .iter()
+                .map(|x| (x.line, x.title.as_str()))
+                .collect::<Vec<_>>(),
+            [(7, "```"), (8, "- **C.** c"), (9, "```")]
+        );
+        assert!(
+            b[3..]
+                .iter()
+                .all(|x| x.place == Place::Dropped("in a fence under no bullet"))
+        );
+        // Under a bullet, then ended by a fence at the margin.
+        let b = parse("## Open\n- **A.** a\n```\nx\n\n```\n");
+        assert_eq!(b.len(), 4, "{b:?}");
+        assert_eq!(b[0].body, "a\n");
+        assert_eq!(
+            b[1..].iter().map(|x| x.line).collect::<Vec<_>>(),
+            [3, 4, 6],
+            "the blank line is not listed"
+        );
         let template = fs::read_to_string(
             Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixture/v2/.docs/templates/ideas.md"),
         )
@@ -490,17 +530,13 @@ mod tests {
 
     #[test]
     fn this_repos_ideas_at_head() {
-        let Some(text) = Command::new("git")
-            .args(["show", "HEAD:docs/ideas.md"])
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-        else {
-            eprintln!("skipped: no docs/ideas.md at HEAD");
-            return;
-        };
+        // Frozen: the live `docs/ideas.md` gains a line with every parked
+        // finding (tests/fixture/repo-at-a7e89bf/README.md).
+        let text = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixture/repo-at-a7e89bf/docs/ideas.md"
+        ))
+        .unwrap();
         let all = parse(&text);
         let open: Vec<&Bullet> = all
             .iter()

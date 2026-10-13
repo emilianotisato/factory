@@ -386,6 +386,54 @@ The inner loop is green only with all of them. A slice-03 commit without them fa
 **Undo:** drop the v2 clauses once every repo is migrated.
 **Review:** decide
 
+### AD-9901 — HEAD lacked the feature code the gate had passed on · polish · 20261013
+
+**Chose:** stage every leftover the slice commits missed, about 50 paths. This includes `src/docs/mod.rs`, which replaces `src/docs.rs`, plus `src/cli/answer.rs`, `src/closeout.rs`, `src/answers.rs`, `assets/retro.md`, the `tests/fixture/v2/` tree and the edited suites. The polish commit then carries code from slices 01, 03, 09, 10 and 11.
+**Over:** a block. HEAD did not compile (E0761: `src/docs.rs` and `src/docs/mod.rs` both present; `include_str!("../assets/retro.md")` untracked), and every checkpoint ran on the dirty tree.
+**Because:** the files are the slices' own work, listed under § Untracked leftovers, and the gate is green on exactly this tree. Without them the branch cannot build.
+**Undo:** `git reset` the paths and re-commit them per slice.
+**Review:** decide
+
+### AD-9902 — `factory answer BLOCK-n` open in two features · polish · 20261013
+
+**Chose:** a `--feature NNN` option on `factory answer` that narrows the search to one feature. The refusal for an id open in several places now names it.
+**Over:** "resolve the one you mean by hand", which in v3 means hand-appending to `log.jsonl`, and per-repo block ids.
+**Because:** v3 numbers blocks per feature from BLOCK-1, so two parked features collide by default. When no run is parked, nothing else picks one.
+**Undo:** drop the field in `AnswerArgs` and the filter in `answer_block`.
+**Review:** decide
+
+### AD-9903 — A migrated Review line that carries a reason · polish · 20261013
+
+**Chose:** keep `**Review:** decide — because …` in the entry body, word for word, with the flag also set. `log show` then skips its own bare `**Review:**` line for that entry.
+**Over:** keeping only the flag word, which lost the reason on 18 PRD-001 entries, or a new field in the log line.
+**Because:** FR-16 wants every entry "with its body and review line" in `log show`. The body already holds a `**Review:** no` line the same way.
+**Undo:** drop `|| tail` in `migrate.rs` `read_log` and the `reviewed` check in `log.rs` `decision`.
+**Review:** fyi
+
+### AD-9904 — Links in `retro.md` when their target moves · polish · 20261013
+
+**Chose:** `migrate` leaves `retro.md` byte for byte, links included, and prints a `warn` plan row for each link to `agent-log.md` or `ideas.md` it did not rewrite.
+**Over:** rewriting those links like every other `.md`.
+**Because:** FR-16 says "the retro file is left as it is". The same FR wants `check` clean after migration, and a retro that links to `agent-log.md` breaks that with E-LINK-BROKEN. The two sentences meet only there. This repo's retros have no such link.
+**Undo:** delete the `retro.md` branch in the relink loop.
+**Review:** decide
+
+### AD-9905 — A YAML value holding both quote kinds · polish · 20261013
+
+**Chose:** `yaml()` writes plain, then `"…"`, then `'…'`, then a `|-` block scalar, whichever is the first the value fits. Both the repo's frontmatter reader and PyYAML read each form back unchanged.
+**Over:** refusing the value, as the ideas writer does.
+**Because:** a PRD title with an apostrophe and a quote should not stop a migration.
+**Undo:** return an error from `yaml()` for that case.
+**Review:** no
+
+### AD-9906 — Migrate tests that read this repo's live docs · polish · 20261013
+
+**Chose:** freeze the eight v2 files the migrate unit tests read at `HEAD` into `tests/fixture/repo-at-a7e89bf/`, about 416 KB, and point `head()`, `head_log()` and `this_repos_ideas_at_head` at the copies.
+**Over:** `#[ignore]`, which takes them out of the gate, or updating the counts.
+**Because:** they asserted exact counts of files that every commit can change. This polish pass's own `docs/ideas.md` lines would have turned `this_repos_ideas_at_head` red on the next commit, and `docs ship` or a retro score would turn the others red.
+**Undo:** delete the folder and restore the `git show HEAD:` reads.
+**Review:** fyi
+
 ## Checkpoints
 
 ### CP-1 — after slice-06 · 2026-10-13
