@@ -1888,11 +1888,7 @@ mod tests {
         assert!(ads.windows(2).all(|w| w[0] < w[1]));
         assert!(es.iter().any(|e| e.phase.as_deref() == Some("polish")));
         // The rules prose after the last CP is a note, not its body.
-        let last = es
-            .iter()
-            .filter(|e| e.kind == Kind::Checkpoint)
-            .last()
-            .unwrap();
+        let last = es.iter().rfind(|e| e.kind == Kind::Checkpoint).unwrap();
         assert!(!last.body.contains("```"), "{}", last.body);
     }
 
