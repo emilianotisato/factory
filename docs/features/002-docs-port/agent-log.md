@@ -61,6 +61,8 @@ _(none)_
 **Undo:** add `&& !root.join("docs").exists()` to the `init` arm of `route` in `src/cli/docs.rs`.
 **Review:** fyi
 
+**Owner (2026-10-13):** kept
+
 ### AD-102 — How does `Slice.file` print `null` for an entry with no file? · slice-01 · 2026-10-13
 **Chose:** keep `file: String` and serialize an empty string as `null` through a small `nullable` serde module in `src/docs/mod.rs`; `null` deserializes back to `""`.
 **Over:** changing the field to `Option<String>`.
@@ -117,12 +119,16 @@ _(none)_
 **Undo:** format the three minute columns with `{:.2}` in `src/docs/retro.rs` `lines`.
 **Review:** fyi
 
+**Owner (2026-10-13):** kept
+
 ### AD-301 — A live feature with no prd.md or no state.toml · slice-03 · 2026-10-13
 **Chose:** a folder under `features/` with no `prd.md` keeps v2's `E-NO-PRD`. One with no `state.toml` is `E-STATE-INVALID`, and the message names `factory docs set NNN status=draft`.
 **Over:** dropping both cases silently, or adding a new code for the missing state file.
 **Because:** the slice lists the codes for a file that does not parse, and is silent on a file that is absent. Both are errors in v2, and a v3 feature without state has no status at all.
 **Undo:** two arms in `src/docs/check.rs` `feature`.
 **Review:** fyi
+
+**Owner (2026-10-13):** kept
 
 ### AD-302 — check reads features/ and archive/ itself · slice-03 · 2026-10-13
 **Chose:** `board::scan_folder` is now `pub`, and `check::run` calls it once per folder instead of calling `board::scan`.
@@ -137,6 +143,8 @@ _(none)_
 **Because:** routing is slice 01's decision, and the slice names `is_v3` for detect. Today a broken `project.toml` next to a `docs/index.md` goes to `docs.mjs`, and doctor reports `v1` or `v2`.
 **Undo:** test `project::path(root).is_file()` in `route` and `detect` instead of `is_v3`.
 **Review:** fyi
+
+**Owner (2026-10-13):** kept
 
 ### AD-304 — doctor's drift line in a v2 or v1 repo · slice-03 · 2026-10-13
 **Chose:** `clean` when `docs.mjs check` says `docs check: clean`. Otherwise it shows its `N errors, M warnings` line, or `docs.mjs check exited N` when it printed none, and the tool's other lines follow. When there is no `docs.mjs`, it shows `unknown: no docs.mjs: …`.
@@ -159,12 +167,16 @@ The inner loop is green only with all of them. A slice-03 commit without them fa
 **Undo:** commit them with this slice, or in a fix commit before it.
 **Review:** decide
 
+**Owner (2026-10-13):** kept
+
 ### AD-401 — What ship, archive and renumber stage · slice-04 · 2026-10-13
 **Chose:** each verb stages only the paths it wrote or moved. `ship` stages the feature's `state.toml`. `archive` stages the moved folder's `state.toml`, and `git mv` stages the move. `renumber` stages the renamed folder and each rewritten markdown file.
 **Over:** v2's `git add -- docs` (`docs.mjs:1810`, `:1914`).
 **Because:** with lanes ≥ 2, `docs/` holds a sibling's unstaged work. `git add -- docs` would claim it into a commit that is not the sibling's.
 **Undo:** one `git add` call per verb in `src/docs/ship.rs` and `src/docs/renumber.rs`.
 **Review:** fyi
+
+**Owner (2026-10-13):** kept
 
 ### AD-402 — renumber on an archived feature · slice-04 · 2026-10-13
 **Chose:** `renumber` refuses an archived feature with exit 2 ("the archive is frozen").
@@ -194,12 +206,16 @@ The inner loop is green only with all of them. A slice-03 commit without them fa
 **Undo:** `render` and `read` in `src/docs/ideas.rs`.
 **Review:** fyi
 
+**Owner (2026-10-13):** kept
+
 ### AD-503 — What in `docs/ideas/` is an idea · slice-05 · 2026-10-13
 **Chose:** `ideas::files` skips `README.md` and dotfiles such as a `.gitkeep`. Everything else goes through `ideas::read`: a directory or a non-`.md` file is `E-IDEA-NAME`, and `idea list` skips it with a `!` line. Slugs keep ASCII letters and digits only, so `Café` gives `caf`.
 **Over:** flagging a `.gitkeep`, or keeping non-ASCII letters, which `check`'s `[a-z0-9]` name pattern would then refuse.
 **Because:** the slice is silent on dotfiles and non-ASCII titles. A repo may already hold a `.gitkeep` in the folder. And a slug `add` writes must pass `check`.
 **Undo:** `files` and `slug` in `src/docs/ideas.rs`.
 **Review:** fyi
+
+**Owner (2026-10-13):** kept
 
 ### AD-504 — `idea drop` restores the file when the commit fails · slice-05 · 2026-10-13
 **Chose:** when `git commit` exits non-zero, for example when the repo's pre-commit hook refuses it, `drop` runs `git checkout -- <path>` and exits 2 with git's stderr.
@@ -215,12 +231,16 @@ The inner loop is green only with all of them. A slice-03 commit without them fa
 **Undo:** write the whole value in `prd_md` (`src/docs/migrate.rs`) and drop the fix row.
 **Review:** decide
 
+**Owner (2026-10-13):** kept
+
 ### AD-702 — In what order do `log.flagged` and `log.decide` list ids after migration? · slice-07 · 2026-10-13
 **Chose:** ascending by id, which is the order `log.jsonl` holds after migration; the harness compares them sorted.
 **Over:** v2 file order (`BLOCK-201`, `AD-101` … `AD-9001`, `AD-501` in PRD-001).
 **Because:** slice 03's `E-LOG-ORDER` needs each sequence to increase, so v2 file order cannot survive; the set of ids is what the acceptance names.
 **Undo:** none needed; a reader that wants file order reads the old `agent-log.md` from git.
 **Review:** fyi
+
+**Owner (2026-10-13):** kept
 
 ### AD-703 — A heading or Owner date written `YYYYMMDD` · slice-07 · 2026-10-13
 **Chose:** rewrite it `YYYY-MM-DD` in `ts` with a `fix` plan row, as task 3 does for `reviewed`.
@@ -249,6 +269,8 @@ The inner loop is green only with all of them. A slice-03 commit without them fa
 **Because:** the refusal is right, and the test proves migration, not the run's timing; at a checkpoint the merge is a no-op.
 **Undo:** delete the merge loop in `prd_001_copy_migrates` (`tests/migrate.rs`).
 **Review:** fyi
+
+**Owner (2026-10-13):** kept — moot once the copy test goes (AD-9906)
 
 ### AD-901 — What does `Docs::log_add` return for an entry without an id? · slice-09 · 2026-10-13
 
@@ -282,6 +304,8 @@ The inner loop is green only with all of them. A slice-03 commit without them fa
 **Undo:** slice 10 reworks the retro; drop the two file lookups then
 **Review:** fyi
 
+**Owner (2026-10-13):** changed — templates come only from this repo (`assets/`, embedded in the binary); slice 10 already does this for the retro
+
 ### AD-905 — How does the preflight answer recognise its own retry? · slice-09 · 2026-10-13
 
 **Chose:** one `ask` entry titled `Preflight ASK-n: <item>` with `phase: preflight`; a retry finds an `ask` with that title whose `**Chose:**` line matches and appends nothing
@@ -297,6 +321,8 @@ The inner loop is green only with all of them. A slice-03 commit without them fa
 **Because:** `append_under` has no caller once every BLOCK, note and answer is a `log.jsonl` entry (task 3); `log::add` has its own tests from slice 02
 **Undo:** none needed
 **Review:** fyi
+
+**Owner (2026-10-13):** kept
 
 ### AD-907 — Delete or keep `tests/docs.rs`, whose board test ran on node? · slice-09 · 2026-10-13
 
@@ -314,6 +340,8 @@ The inner loop is green only with all of them. A slice-03 commit without them fa
 **Undo:** none needed
 **Review:** fyi
 
+**Owner (2026-10-13):** kept
+
 ### AD-909 — A build stream no longer repeats a target: what does the metrics repeat test assert? · slice-09 · 2026-10-13
 
 **Chose:** `every_tool_call_is_a_row_with_its_kind_and_repeat_flags` (`tests/metrics.rs`) now asserts that no stub build row is flagged as a repeat; the flagged case stays covered by the unit test `repeat_flags_are_per_worker_and_per_run` in `src/metrics.rs`
@@ -321,6 +349,8 @@ The inner loop is green only with all of them. A slice-03 commit without them fa
 **Because:** the repeat came from the stub's second Edit of its slice file; workers no longer edit slice files (task 2), and the two `factory docs` Bash calls that replaced it are different commands
 **Undo:** give the stub a step option that edits one file twice
 **Review:** fyi
+
+**Owner (2026-10-13):** kept
 
 ### AD-1001 — Does a CI fix commit update the `retros` row's `ci_cycles`? · slice-10 · 2026-10-13
 
@@ -330,6 +360,8 @@ The inner loop is green only with all of them. A slice-03 commit without them fa
 **Undo:** call `closeout::retro_row` again after the CI watch ends green, from `report::compute`; the upsert keeps `score`.
 **Review:** decide
 
+**Owner (2026-10-13):** kept
+
 ### AD-1002 — Which slice a fix worker's decision names · slice-10 · 2026-10-13
 
 **Chose:** the fix contract says `--slice {slice}`, "where `{slice}` is the slice the fix lands in", filled by the worker; the fix's block uses `--phase checkpoint`.
@@ -338,6 +370,8 @@ The inner loop is green only with all of them. A slice-03 commit without them fa
 **Undo:** replace `--slice {slice}` with `--phase checkpoint` in `assets/contract-fix.md`.
 **Review:** fyi
 
+**Owner (2026-10-13):** kept
+
 ### AD-1003 — How an owner's answer to a block is written, per `autonomy.md` § Resuming · slice-10 · 2026-10-13
 
 **Chose:** step 1 says `factory docs log add NNN --kind answer --ref BLOCK-n` (and that `factory answer` does it in a run), in place of appending `**Resolution ({date}):**` and editing the heading.
@@ -345,6 +379,8 @@ The inner loop is green only with all of them. A slice-03 commit without them fa
 **Because:** the slice's task 9 names `:83-86` and `:99` but not `:97`; the v2 step would tell a worker to hand-edit the log, which the contracts now forbid.
 **Undo:** revert the one line in `assets/autonomy.md`.
 **Review:** fyi
+
+**Owner (2026-10-13):** kept
 
 ### AD-1004 — The `RETRO_KEYS` grep hits the vendored v2 `docs.mjs` · slice-10 · 2026-10-13
 
@@ -378,6 +414,8 @@ The inner loop is green only with all of them. A slice-03 commit without them fa
 **Undo:** reword the three lines in `~/.claude/skills`; nothing in this repo depends on them.
 **Review:** decide
 
+**Owner (2026-10-13):** changed — reword the three lines into v3 verbs (`check`, `log add`)
+
 ### AD-1102 — The skills' ideas lines keep a v2 fallback · slice-11 · 2026-10-13
 
 **Chose:** every edited ideas line names `factory docs idea add` (or `new <slug> --from-idea <id>` in `prd/SKILL.md:56`) and keeps a clause for v2 repos: "in a v2 repo (`factory docs doctor` says so), … `docs/ideas.md` … as before". Three lines the PRD did not list got the same treatment so that `ideas.md` appears only in v2 clauses: `prd/SKILL.md:28` (the by-hand check), `prd/SKILL.md:151` (link sideways) and `prd/template.md:31` (Split from). `prd/template.md:66` names `docs/ideas/` in a code span, not a link.
@@ -385,6 +423,8 @@ The inner loop is green only with all of them. A slice-03 commit without them fa
 **Because:** `docs.mjs` has no `idea` verb (its `default:` case exits 2), so in an unmigrated repo `/polish`'s Park step would lose its findings. A template link to `ideas/` is broken in every v2 repo and one to `ideas.md` in every v3 repo; a code span is checked by neither.
 **Undo:** drop the v2 clauses once every repo is migrated.
 **Review:** decide
+
+**Owner (2026-10-13):** changed — bare v3 wording; no v2 clauses
 
 ### AD-9901 — HEAD lacked the feature code the gate had passed on · polish · 20261013
 
@@ -394,6 +434,8 @@ The inner loop is green only with all of them. A slice-03 commit without them fa
 **Undo:** `git reset` the paths and re-commit them per slice.
 **Review:** decide
 
+**Owner (2026-10-13):** kept
+
 ### AD-9902 — `factory answer BLOCK-n` open in two features · polish · 20261013
 
 **Chose:** a `--feature NNN` option on `factory answer` that narrows the search to one feature. The refusal for an id open in several places now names it.
@@ -401,6 +443,8 @@ The inner loop is green only with all of them. A slice-03 commit without them fa
 **Because:** v3 numbers blocks per feature from BLOCK-1, so two parked features collide by default. When no run is parked, nothing else picks one.
 **Undo:** drop the field in `AnswerArgs` and the filter in `answer_block`.
 **Review:** decide
+
+**Owner (2026-10-13):** kept
 
 ### AD-9903 — A migrated Review line that carries a reason · polish · 20261013
 
@@ -410,6 +454,8 @@ The inner loop is green only with all of them. A slice-03 commit without them fa
 **Undo:** drop `|| tail` in `migrate.rs` `read_log` and the `reviewed` check in `log.rs` `decision`.
 **Review:** fyi
 
+**Owner (2026-10-13):** kept
+
 ### AD-9904 — Links in `retro.md` when their target moves · polish · 20261013
 
 **Chose:** `migrate` leaves `retro.md` byte for byte, links included, and prints a `warn` plan row for each link to `agent-log.md` or `ideas.md` it did not rewrite.
@@ -417,6 +463,8 @@ The inner loop is green only with all of them. A slice-03 commit without them fa
 **Because:** FR-16 says "the retro file is left as it is". The same FR wants `check` clean after migration, and a retro that links to `agent-log.md` breaks that with E-LINK-BROKEN. The two sentences meet only there. This repo's retros have no such link.
 **Undo:** delete the `retro.md` branch in the relink loop.
 **Review:** decide
+
+**Owner (2026-10-13):** changed — `migrate` rewrites links in `retro.md` like every other `.md`
 
 ### AD-9905 — A YAML value holding both quote kinds · polish · 20261013
 
@@ -433,6 +481,8 @@ The inner loop is green only with all of them. A slice-03 commit without them fa
 **Because:** they asserted exact counts of files that every commit can change. This polish pass's own `docs/ideas.md` lines would have turned `this_repos_ideas_at_head` red on the next commit, and `docs ship` or a retro score would turn the others red.
 **Undo:** delete the folder and restore the `git show HEAD:` reads.
 **Review:** fyi
+
+**Owner (2026-10-13):** changed — no test reads this repo's live or frozen docs: the shapes they caught move into `tests/fixture/v2/`, the frozen copy and `prd_001_copy_migrates` go, and this repo's real migration is the FR-16 evidence
 
 ## Checkpoints
 
