@@ -43,7 +43,7 @@ Two rules override the table. **Anything security-sensitive gets the security pa
 
 **Local review first**, always. Invoke the `code-review` skill. It has full repository context and its findings are the higher-signal set; running it first also stops the second opinion's noise from anchoring the local pass.
 
-**Then `security-review`, when the diff touches security-sensitive code** — authentication or authorization, a permission or tenancy check, parsing or validating outside input, raw queries, file paths or shell commands built from input, deserialization, crypto, secrets or config, CORS, headers or cookies, or logging that could carry user data. The general review does not look through that lens. Skip it only when none of that changed, and say so. Its findings join the same triage. **Run it as its own subagent**: its contract ends the turn on a report, which is right for a standalone review and wrong for a collector in the middle of a ritual.
+**Then `security-review`, when the diff touches security-sensitive code** — authentication or authorization, a permission or tenancy check, parsing or validating outside input, raw queries, file paths or shell commands built from input, a read, write or delete through a path the repo itself controls (a symlink in a cloned repo can redirect it outside), deserialization, crypto, secrets or config, CORS, headers or cookies, or logging that could carry user data. The general review does not look through that lens. Skip it only when none of that changed, and say so. Its findings join the same triage. **Run it as its own subagent**: its contract ends the turn on a report, which is right for a standalone review and wrong for a collector in the middle of a ritual.
 
 **Then `/ux`, when the diff touches anything a user sees** — pages, components, templates, styles, or the server code deciding what a page renders. It drives the app through the verify skill, captures every state (empty, loading, error, focus, narrow, long content) and checks them against `docs/ux-rubric.md`. It is a **collector like the others**: its findings join the same triage, not a separate ritual.
 
@@ -55,7 +55,7 @@ Skip it only when nothing user-visible changed, and say so. No harness (`.claude
 
 **Read its exit code.** `0` is findings: claims to verify in step 2. `2` is unreviewed (the auth is gone, the model is missing, or no pass returned text), so the fallback below starts now, said out loud. `1` is a usage error: fix the command and run it again. A pass marked `unreviewed`, or `timed out … partial`, is never *no findings*: name the files it did not finish.
 
-Cursor unavailable, or the run fails → a fresh agent on the judgment model with **no inherited context**, never a `fork`. Either way its findings are claims to verify in step 2, and you say which reviewer produced them.
+Cursor unavailable, or the run fails → a fresh agent on the judgment model with **no inherited context**, never a `fork`, **one per pass of about 600 changed lines** (`[review] pass_lines`), the same passes the command would have run: one agent over a whole feature diff skims. Either way its findings are claims to verify in step 2, and you say which reviewer produced them.
 
 ## 2. Verify and dedup — one pass over every set
 
@@ -108,7 +108,7 @@ A long Fix list splits across subagents **only when their file sets do not overl
 - **Run static analysis on the whole project, not per file.** It is read-only, so it is safe in parallel. Per-file runs miss errors that only show in class context.
 - **A red result may be a sibling's half-finished edit.** Wait and re-run; do not fix code outside your own set.
 - **Report what you could not reach, not a workaround.** A route the other side owns, or a key the other side broke. When all fixers are back, reconcile what the split stranded before you run the gate.
-- **Hand each fixer its own `AD` numbers**, or have it return its decisions for you to number. Two fixers counting from the same log will collide. Inside a `factory` run, give fixer *k* the file `{feature dir}/log-fix-{k}.md` and the range `AD-{k}0001` (five digits: a slice's range tops out at `AD-9999`, so polish can never land on one), and fold them in with `factory docs log merge <NNN>` once every fixer is back — it refuses on a clash instead of merging one over another. **Tell each fixer its fragment starts with `## Decisions`**: merge refuses a title line or a prose preamble, and stripping them by hand happened twice in one run.
+- **Each fixer logs its own decisions** with `factory docs log add <NNN> --kind decision --phase polish --flag decide|fyi --title "{question}" --body-file -`, the body holding `**Chose:**`, `**Over:**`, `**Because:**` and `**Undo:**`. The tool numbers each entry under the feature's lock, so fixers running at once never collide. Never hand a fixer an `AD` range or a fragment file: v3 has no `log merge`, and one run re-added eleven fragment entries by script.
 
 Run the gate:
 
