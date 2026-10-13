@@ -38,6 +38,8 @@ enum Command {
     },
     /// The PreToolUse hook the driver injects into every worker
     Hook,
+    /// Set a repo up: the docs layout, the skill family, the convention block
+    Init,
     /// The feature-docs board: native on v3, `docs.mjs` on a v2 repo
     #[command(disable_help_flag = true)]
     Docs {
@@ -62,6 +64,8 @@ fn main() -> ExitCode {
         Command::Status(a) => cli::status::status(&a, &mut stdout(), &mut stderr()),
         Command::Ctx { verb } => ctx::run(&verb, Path::new("."), &mut stdout(), &mut stderr()),
         Command::Hook => cli::hook::hook(&mut stdin(), &mut stdout(), &mut stderr()),
+        // One code path: `factory init` routes exactly as `factory docs init`.
+        Command::Init => cli::docs::docs(&["init".to_string()], &mut stdout(), &mut stderr()),
         Command::Docs { args } => cli::docs::docs(&args, &mut stdout(), &mut stderr()),
     };
     match result {

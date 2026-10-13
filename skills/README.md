@@ -1,8 +1,8 @@
 # Skills
 
-Claude Code skills that ship with `factory`. Install one by linking its folder into your skills directory (a copy works too):
+Claude Code skills that ship with `factory`. `factory init` in a repo writes these into `.claude/skills/`, byte for byte, with a link per skill in `.agents/skills/` for Codex and a manifest that says which release they came from.
 
-    ln -s "$(pwd)/skills/deliver" ~/.claude/skills/deliver
+In this repo `.claude/skills/<name>` are links to these folders instead, so a session here reads `skills/` live and an edit takes effect without a release.
 
 | skill | what it does |
 |---|---|

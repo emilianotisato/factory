@@ -3,7 +3,14 @@
 **Source**: [`prd.md`](prd.md) → §4 FR-2 (every decision and acceptance bullet but the last, which is slice 03's doctor line), §5 FR-3 decision "Manifest at `.claude/skills/factory.toml`" (the writer; the reader is slice 03). **Depends on**: 01 (it renders `skills::FILES` and hashes with `skills::file_hash` and `skills::bundle_hash`; and the source-checkout guard reads the links slice 01 committed).
 **Created**: 2026-10-13
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+
+- **Built.** `factory init` (`src/main.rs`), dispatched as `docs init` through `cli::docs::docs`, so the routing is one path. `src/skills.rs`: `Manifest`, `Rendered`, `render`, `source_checkout`, and `MANIFEST`, `SKILLS_DIR`, `LINKS_DIR`. `render` checks with `symlink_metadata` before every write: a linked skill folder becomes a real directory and a link at a file path is unlinked first, so nothing writes through. Whatever sits at `.agents/skills/<name>` is cleared, then the link is made. `assets/docs/convention.md` holds the block. `scaffold::convention` re-reads each file just before appending, so a `CLAUDE.md` → `AGENTS.md` link gets the block once, through the first name. The output and commit lines name the link's target (AD-2). `init` renders only when there is no manifest and no source checkout; it prints `created` / `skills` / `convention block` / `commit` / `next, in order` and commits nothing.
+- **Tests.** `tests/init.rs`, 8 tests covering tasks 1-5's acceptance. `tests/cli.rs` lists `init`. `tests/cockpit.rs` asserts `` `factory init` `` in `skills/README.md`.
+- **Docs.** In `skills/README.md` the `ln -s` paragraph became `factory init` plus a line on this repo's links. `README.md` `## Trying it` says `factory init`.
+- **Inner loop.** 1 run, 0 red, ~1 min. No harness test broke even though every fixture now carries the skills, so no test assumption needed fixing (task 7's trap did not fire).
+- **Deviations.** AD-2 (fyi): the subject drops `(skills <version>)` when the skills were not rendered, and a linked pair is reported by its target.
+- **Prove (task 8).** Left for the checkpoint: the FR-2 machine row, the two stdouts, `ls -la .agents/skills`, the porcelain, and the replaced `polish/SKILL.md` hash.
 
 **Slice**: After this slice `factory init` (and its alias `factory docs init`) sets a repo up in one command: the v3 docs layout as today, the nine skill folders written byte-identical into `.claude/skills/`, eight relative `.agents/skills/<name>` links for Codex, a manifest with the crate version and a sha256 per file, and the convention block in `CLAUDE.md` and `AGENTS.md`. It prints what it wrote, the one commit line, and the setup order, and commits nothing. A second `init` writes only what is missing and leaves an existing skills install to `update`. Reading the manifest (doctor, preflight, `skills update`) is slice 03's.
 

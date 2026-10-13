@@ -68,7 +68,7 @@ You need Rust, the `claude` CLI logged in, and `gh` authenticated.
 ```
 cargo install --path .
 factory --help
-factory docs init        # in a project: project.toml, index.md, features/, ideas/, archive/
+factory init             # in a project: the docs layout, the skills in .claude/skills/, the convention block
 factory docs gate set "<the command that proves a change is done>"
 ```
 

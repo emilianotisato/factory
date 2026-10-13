@@ -5,7 +5,23 @@
 //! source folder, so neither is bundled. `tests/skills_bundle.rs` walks
 //! `skills/` and fails on a file this list misses.
 
+use std::collections::BTreeMap;
+use std::fs;
+use std::os::unix::fs::symlink;
+use std::path::Path;
+
+use serde::{Deserialize, Serialize};
+
+use crate::error::io;
 use crate::metrics::sha256_hex;
+use crate::{Error, Result};
+
+/// Where `init` writes the bundle, relative to the repo root.
+pub const SKILLS_DIR: &str = ".claude/skills";
+/// Where the Codex links go, one per skill, relative to the repo root.
+pub const LINKS_DIR: &str = ".agents/skills";
+/// The manifest (FR-3): a loose file at the skills root is no skill to any agent.
+pub const MANIFEST: &str = ".claude/skills/factory.toml";
 
 /// The eight skills, the folders that get an `.agents/skills` link.
 /// `_shared` is not a skill: it has no `SKILL.md`.
@@ -100,6 +116,117 @@ pub fn hash_of(files: &[(&str, &str)]) -> String {
 /// [`hash_of`] the embedded [`FILES`].
 pub fn bundle_hash() -> String {
     hash_of(FILES)
+}
+
+/// `.claude/skills/factory.toml`. `files` keys are relative to
+/// `.claude/skills/`; `links` keys are repo-relative, valued with the target.
+/// BTreeMaps keep the file byte-stable across renders.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Manifest {
+    pub version: String,
+    pub bundle: String,
+    #[serde(default)]
+    pub files: BTreeMap<String, String>,
+    #[serde(default)]
+    pub links: BTreeMap<String, String>,
+}
+
+/// What [`render`] wrote, for `init`'s output.
+#[derive(Debug, Default)]
+pub struct Rendered {
+    pub files: Vec<String>,
+    pub links: Vec<String>,
+}
+
+/// `../../.claude/skills/<name>`, the target of `.agents/skills/<name>`.
+pub fn link_target(name: &str) -> String {
+    format!("../../{SKILLS_DIR}/{name}")
+}
+
+/// Removes whatever sits at `path` without following a symlink: a link or a
+/// file is unlinked, a real directory removed whole.
+fn clear(path: &Path) -> Result<()> {
+    let Ok(meta) = fs::symlink_metadata(path) else {
+        return Ok(());
+    };
+    let what = format!("remove {}", path.display());
+    if meta.is_dir() {
+        fs::remove_dir_all(path).map_err(io(what))
+    } else {
+        fs::remove_file(path).map_err(io(what))
+    }
+}
+
+/// A real directory at `path`. A symlink there is removed first, so the
+/// bundle never writes through it into the link's target.
+fn real_dir(path: &Path) -> Result<()> {
+    if fs::symlink_metadata(path).is_ok_and(|m| !m.is_dir()) {
+        clear(path)?;
+    }
+    fs::create_dir_all(path).map_err(io(format!("mkdir {}", path.display())))
+}
+
+/// `fs::write` that never follows a symlink at `path`.
+fn write_real(path: &Path, text: &str) -> Result<()> {
+    if fs::symlink_metadata(path).is_ok_and(|m| !m.is_file()) {
+        clear(path)?;
+    }
+    fs::write(path, text).map_err(io(format!("write {}", path.display())))
+}
+
+/// Writes every [`FILES`] entry to `.claude/skills/`, byte-identical and over
+/// whatever is there, then the eight `.agents/skills` links, then the
+/// manifest.
+pub fn render(root: &Path) -> Result<Rendered> {
+    let skills = root.join(SKILLS_DIR);
+    let mut done = Rendered::default();
+    let mut files = BTreeMap::new();
+    for (rel, content) in FILES {
+        let parts: Vec<&str> = rel.split('/').collect();
+        let mut dir = skills.clone();
+        for part in &parts[..parts.len() - 1] {
+            dir.push(part);
+            real_dir(&dir)?;
+        }
+        write_real(&skills.join(rel), content)?;
+        files.insert((*rel).to_string(), file_hash(content));
+        done.files.push(format!("{SKILLS_DIR}/{rel}"));
+    }
+    let agents = root.join(LINKS_DIR);
+    fs::create_dir_all(&agents).map_err(io(format!("mkdir {}", agents.display())))?;
+    let mut links = BTreeMap::new();
+    for name in NAMES {
+        let path = agents.join(name);
+        clear(&path)?;
+        let target = link_target(name);
+        symlink(&target, &path).map_err(io(format!("link {}", path.display())))?;
+        let rel = format!("{LINKS_DIR}/{name}");
+        links.insert(rel.clone(), target);
+        done.links.push(rel);
+    }
+    let manifest = Manifest {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        bundle: bundle_hash(),
+        files,
+        links,
+    };
+    let text =
+        toml::to_string(&manifest).map_err(|e| Error::Msg(format!("serialize {MANIFEST}: {e}")))?;
+    write_real(&root.join(MANIFEST), &text)?;
+    Ok(done)
+}
+
+/// This repo's own layout: `.claude/skills/prd` resolves inside
+/// `<root>/skills/`, so a session reads the live source and `init` leaves the
+/// skills alone.
+pub fn source_checkout(root: &Path) -> bool {
+    let (Ok(prd), Ok(src)) = (
+        fs::canonicalize(root.join(SKILLS_DIR).join("prd")),
+        fs::canonicalize(root.join("skills")),
+    ) else {
+        return false;
+    };
+    prd.starts_with(src)
 }
 
 #[cfg(test)]
