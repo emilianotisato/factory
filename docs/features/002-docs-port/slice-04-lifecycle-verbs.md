@@ -1,7 +1,8 @@
 ---
 slice: 04
-status: pending
+status: done
 depends_on: [3]
+lane: 2
 ---
 
 # Slice 04 — gate, preflight, ship, archive, lanes, renumber (FR-15 rest)
@@ -9,7 +10,24 @@ depends_on: [3]
 **Source**: [`prd.md`](prd.md) → §5 FR-15 (`gate`, `preflight`, `ship`, `archive`, `renumber`, `lanes`, the exit codes, the `Status`/`Preflight` output contract and the equivalence acceptance), §3 FR-13 (`project.toml` defaults, `gate_parallel` tri-state, `state.toml` as the status store). **Depends on**: 03 (preflight's first bucket is `docs check: no errors`, so `check::run` must exist; the log fields of `Status` from 02 feed preflight's open-block refusal and its shipped-resume line).
 **Created**: 2026-10-13 · **Status**: pending
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+- **Built.** Five modules, each with an arm in `src/cli/docs.rs`:
+  - `src/docs/gate.rs`: `resolve_part`, `candidates`, `status`, `line`, `harness`, `rubric`, and the `gate` verb.
+  - `src/docs/preflight.rs`: `run` gives the four buckets and the exit code. It also has `parallel_width` and `default_branch`.
+  - `src/docs/ship.rs`: `ship` and `archive`.
+  - `src/docs/lanes.rs`: the docs verb, reusing `crate::lanes::{file, parse}`.
+  - `src/docs/renumber.rs`: the sweep skips `archive/` and prints `left alone:`.
+- **Board.** `board::feature_state` now fills `gate`, `harness` and `rubric`.
+- **Tests.** `tests/docs_lifecycle.rs` holds 11 tests: the FR-15 equivalence test, plus every acceptance of tasks 1-5. There are unit tests in `gate.rs`, `preflight.rs` and `renumber.rs`.
+- **Inner loop** (`cargo test`): 3 runs, 1 red, about 2.5 min.
+  - The red run was a compile error: a local `code` binding in a test shadowed the `code()` helper. I renamed the helper to `exit`.
+  - Clippy caught a needless `..Status::default()` (every field is now set) and a complex type in `gate.rs`. Both are fixed.
+- **Deviations:**
+  - The three lifecycle verbs stage only the paths they wrote (AD-401).
+  - `renumber` refuses an archived feature (AD-402).
+  - The verify hints are capped at three in total (AD-403).
+  - Preflight messages now name the v3 places: `factory docs set NNN reviewed=`, `log add … --kind answer`, `docs/project.toml` and `factory docs lanes`.
+- **Prove (task 8)** is left for the checkpoint: the FR-15 row's verb → exit table.
 
 **Slice**: After this slice every verb the driver calls has a native v3 implementation: `gate` (with `set`, `--inner`, `--candidates`), `preflight` with its four buckets and exit codes, and `ship`. `archive`, `lanes` and `renumber` land beside them, so the lifecycle verbs of FR-15 are complete. `factory docs status 001 --json` now fills the `gate`, `harness` and `rubric` fields that slice 01 left at their defaults, and the v3 fixture passes the same board and preflight assertions the v2 fixture passes today. The driver is still untouched: it keeps calling `node docs.mjs` until slice 09 swaps `Docs::locate` for the functions this slice lands. Ideas (05), retro (06), migrate (07), `hook` (11) and `--help`'s full verb list (11) are other slices.
 

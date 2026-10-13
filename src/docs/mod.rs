@@ -10,11 +10,19 @@
 //! until the driver switches to it (slice 09): free functions over a repo
 //! root, and the board structs below are their output contract too.
 pub mod board;
+pub mod check;
+pub mod doctor;
 pub mod frontmatter;
+pub mod gate;
+pub mod ideas;
+pub mod lanes;
 pub mod log;
+pub mod preflight;
 pub mod project;
+pub mod renumber;
 pub mod retro;
 pub mod scaffold;
+pub mod ship;
 pub mod state;
 
 use std::path::{Path, PathBuf};
