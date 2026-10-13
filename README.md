@@ -33,7 +33,7 @@ The inversion is the whole idea. **The binary orchestrates; the model only build
 
 **The docs framework.** `docs/project.toml` holds the project's knobs: the gate, the inner loop, lane count, model and effort per role, a per-run token budget. Each feature folder has `prd.md`, its slices, a `state.toml` written only by the binary under a lock, an append-only `log.jsonl` of decisions, blocks and notes, and a `retro.md`. `factory docs check` validates the board and runs as a pre-commit hook. `factory docs migrate` moves a repo from the previous format in one reviewable diff.
 
-**The skills.** The judgment calls stay in Claude Code as thin skills, shipped from this repo and installed by `factory` into each project: `/prd`, `/factory-deliver` (the cockpit), `/polish`, `/guardrails`, `/verify-app`, `/test-cleanup`, `/ux-review`, `/lanes`. Project skills are rendered from a profile plus overlays, never copied, and drift is detected by hash. Three scopes with promotion: project, user, base.
+**The skills.** The judgment calls stay in Claude Code as thin skills, shipped from this repo and installed by `factory` into each project: `/prd`, `/slice`, `/deliver` (the cockpit), `/polish`, `/gate`, `/harness`, `/prune`, `/ux`, `/lanes`. Project skills are rendered from a profile plus overlays, never copied, and drift is detected by hash. Three scopes with promotion: project, user, base.
 
 **The gate.** `/guardrails` interviews a project into one command that proves a change is done: tiered checks for lint, types, coverage floors, complexity, mutation, size budgets and architecture rules, measured against reality and proven to fail before they are declared. Every slice's Verify task, every checkpoint and the polish pass run that one command. A fast subset is the inner loop.
 
@@ -72,6 +72,6 @@ factory docs init        # in a project: project.toml, index.md, features/, idea
 factory docs gate set "<the command that proves a change is done>"
 ```
 
-Then `/prd` in Claude Code to write the first feature, and `/factory-deliver NNN` to build it.
+Then `/prd` in Claude Code to write the first feature, and `/deliver NNN` to build it.
 
 The gate for this repo is `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test`. The test harness is a fixture repo plus a stub `claude` that replays recorded streams, so the whole loop runs in `cargo test` with no tokens.

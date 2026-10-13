@@ -32,7 +32,7 @@ pub struct Measure {
     pub cache_write_tokens: u64,
     pub cache_read_tokens: u64,
     /// The first message's context at or after the `skills/deliver` or
-    /// `skills/factory-deliver` prompt (`measure.py:148`), else the first
+    /// `skills/deliver` prompt (`measure.py:148`), else the first
     /// message's; 0 with no messages.
     pub start_context: u64,
     pub peak_context: u64,
@@ -146,7 +146,7 @@ fn assistant_by_id(rows: &[Value]) -> HashMap<String, Msg> {
 }
 
 /// The prompt that starts a delivery: `measure.py`'s `skills/deliver`, or
-/// this repo's cockpit skill, `skills/factory-deliver`.
+/// this repo's cockpit skill, `skills/deliver`.
 fn is_deliver_prompt(text: &str) -> bool {
     ["skills/deliver", "skills/factory-deliver"]
         .iter()

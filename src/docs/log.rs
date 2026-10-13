@@ -240,7 +240,7 @@ pub fn add(dir: &Path, mut entry: Entry) -> Result<Option<String>> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Filter {
     All,
-    /// `decide` decisions no `review` refs: what `/factory-deliver` §3 reads.
+    /// `decide` decisions no `review` refs: what `/deliver` §3 reads.
     Decide,
     /// Blocks no `answer` refs.
     Open,

@@ -285,7 +285,7 @@ fn pack_is_the_slice_the_cited_sections_the_contract_and_the_inner_loop() {
         )),
         "{text}"
     );
-    assert!(!text.contains("## 2. Users affected"), "{text}");
+    assert!(!text.contains("## 2. Blast radius"), "{text}");
     assert!(!text.contains("## 3. FR-"), "{text}");
     // The contract with its placeholders filled; the autonomy copy whole.
     assert!(

@@ -16,9 +16,10 @@ summary: |
 
 _(The pressure. Name the bugs someone actually hit, separately from the improvements.)_
 
-## 2. Users affected
+## 2. Blast radius
 
-- _(audience — which FRs touch them)_
+- _(not personas: who uses the surface being changed, which FRs touch them, what they would notice)_
+- _(external contracts — API, webhooks, URLs — untouched and decided, or what breaks and how it is versioned)_
 
 ## 3. FR-1 — _(requirement title)_
 
