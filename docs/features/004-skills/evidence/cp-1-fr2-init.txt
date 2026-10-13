@@ -1,0 +1,88 @@
+# scratch repo: git init + empty commit; binary: target/debug/factory (this tree)
+$ factory init   # run 1
+created docs/project.toml, docs/index.md, docs/features/, docs/ideas/, docs/archive/, docs/ideas/README.md, docs/.gitignore
+skills 0.1.0: .claude/skills/ (19 files, factory.toml), .agents/skills/ (8 links)
+convention block: CLAUDE.md, AGENTS.md
+commit: git add docs .claude/skills .agents/skills CLAUDE.md AGENTS.md && git commit -m "chore: factory init (skills 0.1.0)"
+next, in order: the gate (factory docs gate set "<cmd>", or /gate), the harness (/harness), the UX rubric (/ux rubric)
+exit=0
+
+$ ls -la .agents/skills
+total 0
+drwxr-xr-x 2 emiliano emiliano 200 Oct 13 15:53 .
+drwxr-xr-x 3 emiliano emiliano  60 Oct 13 15:53 ..
+lrwxrwxrwx 1 emiliano emiliano  28 Oct 13 15:53 deliver -> ../../.claude/skills/deliver
+lrwxrwxrwx 1 emiliano emiliano  25 Oct 13 15:53 gate -> ../../.claude/skills/gate
+lrwxrwxrwx 1 emiliano emiliano  28 Oct 13 15:53 harness -> ../../.claude/skills/harness
+lrwxrwxrwx 1 emiliano emiliano  27 Oct 13 15:53 polish -> ../../.claude/skills/polish
+lrwxrwxrwx 1 emiliano emiliano  24 Oct 13 15:53 prd -> ../../.claude/skills/prd
+lrwxrwxrwx 1 emiliano emiliano  26 Oct 13 15:53 prune -> ../../.claude/skills/prune
+lrwxrwxrwx 1 emiliano emiliano  26 Oct 13 15:53 slice -> ../../.claude/skills/slice
+lrwxrwxrwx 1 emiliano emiliano  23 Oct 13 15:53 ux -> ../../.claude/skills/ux
+
+$ ls .claude/skills
+deliver
+factory.toml
+gate
+harness
+polish
+prd
+prune
+_shared
+slice
+ux
+
+$ git status --porcelain
+?? .agents/
+?? .claude/
+?? AGENTS.md
+?? CLAUDE.md
+?? docs/
+
+$ git log --oneline
+9f0e480 init
+
+$ head -8 .claude/skills/factory.toml
+version = "0.1.0"
+bundle = "8845b9b6871b27f93e44ec9c3489edac8df5a88ba0f106a4351ca014130d2619"
+
+[files]
+"_shared/models.md" = "73c90e50f81c1b1f0018333af56ae207af4c755338805cad8cd4d560e0583a6c"
+"deliver/SKILL.md" = "5cca2152193eb5bd7f40f555f0b2ab41b2fc3e4134e3528f6f78786ca4000682"
+"gate/SKILL.md" = "7e014cb57564e8df4ec344a5d110a970a6bbaeb027030e7d690b9becc3fb0c50"
+"gate/references/stacks.md" = "bd8a8afd1d974ac35c9d4ce6d1b9e1dc33d73f9250bc3bc8acd54f1d06e0c43f"
+
+$ grep -c "factory" CLAUDE.md AGENTS.md; diff of the block
+AGENTS.md:1:# Product Docs Convention
+CLAUDE.md:1:# Product Docs Convention
+
+$ factory init   # run 2
+already initialised
+exit=0
+
+$ git status --porcelain   # after run 2
+?? .agents/
+?? .claude/
+?? AGENTS.md
+?? CLAUDE.md
+?? docs/
+
+# second scratch repo with a hand-written .claude/skills/polish/SKILL.md
+$ cat .claude/skills/polish/SKILL.md
+hand-written polish
+$ factory init
+created docs/project.toml, docs/index.md, docs/features/, docs/ideas/, docs/archive/, docs/ideas/README.md, docs/.gitignore
+skills 0.1.0: .claude/skills/ (19 files, factory.toml), .agents/skills/ (8 links)
+convention block: CLAUDE.md, AGENTS.md
+commit: git add docs .claude/skills .agents/skills CLAUDE.md AGENTS.md && git commit -m "chore: factory init (skills 0.1.0)"
+next, in order: the gate (factory docs gate set "<cmd>", or /gate), the harness (/harness), the UX rubric (/ux rubric)
+exit=0
+
+$ sha256sum .claude/skills/polish/SKILL.md
+b3dfec5cd2c40eef57906b2fe612c6910ba971ed12ed37199456cf9b5e6a48dd  .claude/skills/polish/SKILL.md
+$ grep -A2 "polish/SKILL.md" .claude/skills/factory.toml
+15:"polish/SKILL.md" = "b3dfec5cd2c40eef57906b2fe612c6910ba971ed12ed37199456cf9b5e6a48dd"
+16-"prd/SKILL.md" = "4058ad87a5372c9f682f6406338d8ddcfc23181b4cfba6909a0b7e1dc4a45774"
+17-"prune/SKILL.md" = "1baa22197ece9dce6bc7dba8a074b4cea6fc3d8998b75fa92edd7a53a4eb740e"
+$ cmp with the source skills/polish/SKILL.md
+identical

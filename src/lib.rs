@@ -30,6 +30,7 @@ pub mod pack;
 pub mod paths;
 pub mod quota;
 pub mod retro;
+pub mod review;
 pub mod run;
 pub mod scheduler;
 pub mod shell;

@@ -298,8 +298,7 @@ fn feature(
     let g = gate::status(root, p.and_then(|p| p.gate.as_deref()));
     match g.status.as_str() {
         "none" => refuse.push(
-            "no verify gate declared — /gate builds one (an interview, never unattended)"
-                .into(),
+            "no verify gate declared — /gate builds one (an interview, never unattended)".into(),
         ),
         "missing" => refuse.push(format!("gate {}", gate::line(&g))),
         _ => ok.push(format!("gate {}", gate::line(&g))),
