@@ -34,8 +34,8 @@ use crate::db::Db;
 use crate::db::{ToolCallRow, WorkerRow};
 use crate::docs::Docs;
 use crate::error::{io, json};
-use crate::measure::{self, Measure, Subagents};
-use crate::metrics::{self, CTX_KINDS, LOOKUP_KINDS};
+use crate::measure::{self, Measure};
+use crate::metrics::{self, CTX_KINDS, LOOKUP_KINDS, SubagentsUnread};
 use crate::pack::Part;
 use crate::run::{GateCmds, Run};
 use crate::stream::Findings;
@@ -872,10 +872,13 @@ pub fn recount(run: &Run, out: &mut dyn Write) -> Result<()> {
     let run_id = run.id().as_str();
     let repo = run.state().repo.clone();
     let mut workers = db.workers(run_id)?;
-    // `repeat_in_run` depends on which worker came first.
-    workers.sort_by(|a, b| (&a.started_at, a.id).cmp(&(&b.started_at, b.id)));
+    // `repeat_in_run` depends on which worker came first: the live record
+    // flags at each exit, so the recount goes in exit order too.
+    workers.sort_by(|a, b| (&a.ended_at, a.id).cmp(&(&b.ended_at, b.id)));
     // Every stream is read before a row is written: one gone leaves the
-    // store as it was.
+    // store as it was. The lines print once every row is written, so a
+    // closed stdout cannot stop the rewrite halfway.
+    let mut lines = Vec::new();
     let mut ended = Vec::new();
     for w in &workers {
         let short: String = w
@@ -886,8 +889,10 @@ pub fn recount(run: &Run, out: &mut dyn Write) -> Result<()> {
             .take(8)
             .collect();
         if w.ended_at.is_none() {
-            writeln!(out, "recount: {} {short} no result yet, skipped", w.role)
-                .map_err(io("stdout"))?;
+            lines.push(format!(
+                "recount: {} {short} no result yet, skipped",
+                w.role
+            ));
             continue;
         }
         let session = w.session_id.as_deref().unwrap_or("");
@@ -922,16 +927,12 @@ pub fn recount(run: &Run, out: &mut dyn Write) -> Result<()> {
             &mut seen_run,
         )?;
         let transcript = measure::transcript_path(&config, &repo, session);
-        let (sub, note) = if fs::symlink_metadata(&transcript).is_err() {
-            (None, ", transcript missing, own tokens only".to_string())
-        } else {
-            match measure::subagents(&transcript) {
-                Subagents::None => (Some((0, 0, 0, 0, 0)), String::new()),
-                Subagents::Read { usage, count } => {
-                    (Some(metrics::sub_columns(&usage, count)), String::new())
-                }
-                Subagents::Unreadable(e) => (None, format!(", subagents unreadable: {e}")),
+        let (sub, note) = match metrics::read_subagents(&transcript) {
+            Ok(cols) => (Some(cols), String::new()),
+            Err(SubagentsUnread::TranscriptMissing) => {
+                (None, ", transcript missing, own tokens only".to_string())
             }
+            Err(SubagentsUnread::Unreadable(e)) => (None, format!(", subagents unreadable: {e}")),
         };
         db.set_worker_subagents(w.id, sub)?;
         let u = summary.usage.as_ref();
@@ -943,15 +944,16 @@ pub fn recount(run: &Run, out: &mut dyn Write) -> Result<()> {
         );
         let n = |v: i64| v.max(0) as u64;
         let sub_weighted = sub.map(|s| quota::weigh(n(s.0), n(s.1), n(s.2), n(s.3)).round() as u64);
-        writeln!(
-            out,
+        lines.push(format!(
             "recount: {} {short} own {} sub {} subagents {}{note}",
             w.role,
             own.round() as u64,
             or_dash(sub_weighted),
             or_dash(sub.map(|s| s.4))
-        )
-        .map_err(io("stdout"))?;
+        ));
+    }
+    for line in lines {
+        writeln!(out, "{line}").map_err(io("stdout"))?;
     }
     Ok(())
 }

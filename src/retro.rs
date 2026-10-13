@@ -41,12 +41,13 @@ pub fn shortstat(text: &str) -> (u64, u64) {
     out
 }
 
-/// `git diff --shortstat <base>..HEAD` in `repo`.
+/// `git diff --shortstat <base>...HEAD` in `repo`: what the branch changed
+/// since it left the base, so commits the base gained meanwhile do not count.
 pub fn changed_lines(repo: &Path, base: &str) -> Result<(u64, u64)> {
-    let out = ci::git(repo, &["diff", "--shortstat", &format!("{base}..HEAD")])?;
+    let out = ci::git(repo, &["diff", "--shortstat", &format!("{base}...HEAD")])?;
     if !out.ok() {
         return Err(Error::Msg(format!(
-            "git diff --shortstat {base}..HEAD: {}",
+            "git diff --shortstat {base}...HEAD: {}",
             out.text()
         )));
     }
@@ -233,20 +234,31 @@ pub fn numbers(db: &Db, run_id: &str) -> Result<String> {
 
 /// Put `section` between the markers in `retro`, replacing what is there,
 /// or append `## Numbers` and the markers at the end of the file. Every
-/// byte outside the markers stays. `true` when the file changed.
+/// byte outside the markers stays. `true` when the file changed. Anything
+/// but one marker of each, in order, or none of either, is refused: a stray
+/// marker would make the next write replace the prose up to it.
 pub fn write(retro: &Path, section: &str) -> Result<bool> {
     let text = fs::read_to_string(retro).map_err(io(format!("read {}", retro.display())))?;
+    let (opens, closes) = (text.matches(OPEN).count(), text.matches(CLOSE).count());
     let open = text.find(OPEN);
-    let close = open.and_then(|o| text[o..].find(CLOSE).map(|c| o + c));
+    let close = text.find(CLOSE);
     let out = match (open, close) {
-        (Some(o), Some(c)) => format!("{}{OPEN}\n{section}{}", &text[..o], &text[c..]),
-        _ => {
+        (Some(o), Some(c)) if opens == 1 && closes == 1 && o < c => {
+            format!("{}{OPEN}\n{section}{}", &text[..o], &text[c..])
+        }
+        (None, None) => {
             let mut t = text.clone();
             if !t.is_empty() && !t.ends_with('\n') {
                 t.push('\n');
             }
             t.push_str(&format!("\n## Numbers\n\n{OPEN}\n{section}{CLOSE}\n"));
             t
+        }
+        _ => {
+            return Err(Error::Msg(format!(
+                "{}: {opens} `{OPEN}` and {closes} `{CLOSE}` marker(s), not one pair in order; nothing written",
+                retro.display()
+            )));
         }
     };
     if out == text {
@@ -338,6 +350,24 @@ mod tests {
             format!("{before}{OPEN}\nfresh\n{CLOSE}{after}")
         );
         assert!(!write(&p, "fresh\n").unwrap());
+    }
+
+    /// A stray, reversed or doubled marker is refused with the file as it
+    /// was: the next write would replace the prose up to it.
+    #[test]
+    fn write_refuses_markers_that_are_not_one_pair_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("retro.md");
+        for text in [
+            format!("{OPEN}\nprose the owner kept\n"),
+            format!("{CLOSE}\nx\n{OPEN}\n"),
+            format!("{OPEN}\na\n{CLOSE}\n{OPEN}\nb\n{CLOSE}\n"),
+            format!("prose\n{CLOSE}\n"),
+        ] {
+            fs::write(&p, &text).unwrap();
+            assert!(write(&p, "fresh\n").is_err(), "{text}");
+            assert_eq!(fs::read_to_string(&p).unwrap(), text);
+        }
     }
 
     fn insert(db: &Db, id: &str, repo: &str, started: &str, finished: Option<&str>) {
@@ -438,5 +468,35 @@ mod tests {
         assert!(s.contains("| 008-20261007-hhhh (this run) | 008 |"), "{s}");
         assert!(!s.contains(NO_EARLIER), "{s}");
         assert_eq!(s, numbers(&db, "008-20261007-hhhh").unwrap());
+    }
+
+    /// A stopped run is phase `finished` too: it never joins the cohort.
+    #[test]
+    fn a_stopped_run_is_not_compared_with() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("factory.db")).unwrap();
+        insert(
+            &db,
+            "001-20261001-aaaa",
+            "/r",
+            "2026-10-01T00:00:00Z",
+            Some("2026-10-01T01:00:00Z"),
+        );
+        db.conn()
+            .execute(
+                "INSERT INTO events (run_id, seq, ts, kind, payload)
+                 VALUES ('001-20261001-aaaa', 1, '2026-10-01T01:00:00Z', 'run_stopped', '{}')",
+                [],
+            )
+            .unwrap();
+        insert(
+            &db,
+            "002-20261002-bbbb",
+            "/r",
+            "2026-10-02T00:00:00Z",
+            Some("2026-10-02T01:00:00Z"),
+        );
+        let s = numbers(&db, "002-20261002-bbbb").unwrap();
+        assert!(s.contains(NO_EARLIER), "{s}");
     }
 }

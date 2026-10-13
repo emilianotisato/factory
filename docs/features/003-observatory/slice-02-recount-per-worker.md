@@ -17,6 +17,11 @@ lane: 1
 - Deviations: tests run on slice 01's subagent scenario, not `finished_run()` (AD-201). Prove (task 4) is left for CP-1.
 - **Prove (task 4), driven at CP-1 (2026-10-12)**: the FR-21 row, second half, green on the real store (backed up as `factory.db.pre-003`, recount kept). `024-20261012-e894` reads `weighted_tokens` 18,465,008 against the target 18,465,008; `recount: polish ddbb0927 own 1948573 sub 2294981 subagents 4`; `cockpit_tokens` 974,031 before and after. `018-20261011-6490` reads 8,131,594 against 8,131,594, with `cockpit_tokens` 619,229 unchanged. Evidence: `evidence/cp-1-fr21-recount.txt` (every report output). Found: the arca "cockpit" transcript the A/B used (`f4063ce4`) is slice 01's build worker, so 974,031 is not the cockpit's cost. Also, `--recount` leaves `model_id` null on these pre-003 rows, so qa-guide step 4's `claude-opus-…` check reads `—`.
 
+- **Code-review fixes (2026-10-13).**
+  - The recount walked workers by `started_at`, not the order the live run recorded them in, so with parallel builders the rewritten rows could differ from what live wrote. It now walks `(ended_at, id)`, the live exit order.
+  - It printed each `recount:` line between writes, so a closed pipe stopped it halfway. The lines are now printed after every write.
+  - It left `model_id` as it was; `update_worker_usage` now writes it when the stream has one.
+
 **Slice**: After this slice the two A/B runs stored on this machine can be corrected in the store with one command, and `report --per-worker` says what each worker cost. It leaves `model_id` to slice 04 (which appends it to the same per-worker line) and the retro to slice 06.
 
 ## Current code / environment

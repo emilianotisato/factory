@@ -11,7 +11,7 @@
 //! PRD-003 FR-21 reads a worker's subagents the same way, apart from its
 //! own usage: [`transcript_path`] finds the session file under Claude
 //! Code's projects dir, [`subagents`] sums what sits beside it.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -101,6 +101,14 @@ fn num(u: &Value, key: &str) -> u64 {
 /// `message.id` (the last occurrence wins, as a dict assignment does),
 /// sorted by timestamp.
 fn assistant_msgs(rows: &[Value]) -> Vec<Msg> {
+    let mut msgs: Vec<Msg> = assistant_by_id(rows).into_values().collect();
+    msgs.sort_by(|a, b| a.ts.total_cmp(&b.ts));
+    msgs
+}
+
+/// The assistant rows of `assistant_msgs`, keyed by `message.id` (else the
+/// row's `uuid`, else "").
+fn assistant_by_id(rows: &[Value]) -> HashMap<String, Msg> {
     let mut by_id: HashMap<String, Msg> = HashMap::new();
     for r in rows {
         if r.get("type").and_then(Value::as_str) != Some("assistant") {
@@ -134,9 +142,7 @@ fn assistant_msgs(rows: &[Value]) -> Vec<Msg> {
             },
         );
     }
-    let mut msgs: Vec<Msg> = by_id.into_values().collect();
-    msgs.sort_by(|a, b| a.ts.total_cmp(&b.ts));
-    msgs
+    by_id
 }
 
 /// The prompt that starts a delivery: `measure.py`'s `skills/deliver`, or
@@ -242,6 +248,12 @@ pub fn subagents(transcript: &Path) -> Subagents {
         .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
         .collect();
     files.sort();
+    // A forked subagent's file opens with copies of the parent's messages,
+    // and sibling forks repeat each other's: a message id counts once per
+    // session, and the parent's own are already in its `result.usage`.
+    let mut seen: HashSet<String> = load(transcript)
+        .map(|rows| assistant_by_id(&rows).into_keys().collect())
+        .unwrap_or_default();
     let mut usage = Measure::default();
     let mut count = 0;
     for f in files {
@@ -249,7 +261,11 @@ pub fn subagents(transcript: &Path) -> Subagents {
             Ok(rows) => rows,
             Err(e) => return Subagents::Unreadable(e.to_string()),
         };
-        let msgs = assistant_msgs(&rows);
+        let msgs: Vec<Msg> = assistant_by_id(&rows)
+            .into_iter()
+            .filter(|(id, _)| id.is_empty() || seen.insert(id.clone()))
+            .map(|(_, m)| m)
+            .collect();
         if msgs.is_empty() {
             continue;
         }
@@ -260,13 +276,14 @@ pub fn subagents(transcript: &Path) -> Subagents {
 }
 
 /// Where Claude Code keeps a session's transcript: `<config
-/// dir>/projects/<cwd with every "/" and "." as "-">/<session>.jsonl`. The
-/// cwd is the worker's, the run's repo.
+/// dir>/projects/<cwd with every character but an ASCII letter or digit as
+/// "-">/<session>.jsonl`. The cwd is the worker's, the run's repo. Not only
+/// "/" and ".": `ICG/apk_fiscal_arca` is `-ICG-apk-fiscal-arca` on disk.
 pub fn transcript_path(config_dir: &Path, repo: &Path, session_id: &str) -> PathBuf {
     let slug: String = repo
         .to_string_lossy()
         .chars()
-        .map(|c| if c == '/' || c == '.' { '-' } else { c })
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect();
     config_dir
         .join("projects")
@@ -393,6 +410,11 @@ mod tests {
             transcript_path(Path::new("/c"), Path::new("/a/b.c/d"), "s"),
             PathBuf::from("/c/projects/-a-b-c-d/s.jsonl")
         );
+        // Claude Code's rule: every character but an ASCII letter or digit.
+        assert_eq!(
+            transcript_path(Path::new("/c"), Path::new("/p/ICG/apk_fiscal arca+1"), "s"),
+            PathBuf::from("/c/projects/-p-ICG-apk-fiscal-arca-1/s.jsonl")
+        );
     }
 
     /// Two lines on one message id with growing usage: the final one counts.
@@ -446,6 +468,34 @@ mod tests {
         // The cockpit's single figure keeps adding them in.
         let m = measure(&path).unwrap();
         assert_eq!((m.out_tokens, m.subagents), (87, 2));
+    }
+
+    /// A fork's file opens with copies of the parent's messages and of its
+    /// siblings': each message id counts once, and a file holding only
+    /// copies is not a subagent.
+    #[test]
+    fn a_forks_copied_messages_count_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = transcript_path(dir.path(), Path::new("/r/x"), "s1");
+        let sub = path.parent().unwrap().join("s1/subagents");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(&path, agent_lines("own", 7)).unwrap();
+        fs::write(sub.join("agent-1.jsonl"), agent_lines("a", 50)).unwrap();
+        fs::write(
+            sub.join("agent-2.jsonl"),
+            format!("{}{}", agent_lines("own", 7), agent_lines("a", 50)),
+        )
+        .unwrap();
+        fs::write(
+            sub.join("agent-3.jsonl"),
+            format!("{}{}", agent_lines("a", 50), agent_lines("b", 30)),
+        )
+        .unwrap();
+        let Subagents::Read { usage, count } = subagents(&path) else {
+            panic!("{:?}", subagents(&path));
+        };
+        assert_eq!(count, 2);
+        assert_eq!((usage.input_tokens, usage.out_tokens), (4, 80));
     }
 
     #[cfg(unix)]

@@ -19,6 +19,12 @@ lane: 1
 - **Prove (task 8)**: the FR-21 row, first half, is left for CP-1 with the full gate. The scenario is `tests/metrics.rs` `a_polish_with_subagents_counts_them_apart_from_its_own`.
 - **Prove (task 8), driven at CP-1 (2026-10-12)**: the FR-21 row, first half, green. The polish row stores `sub_*` (16, 3600, 102000, 1000), `subagents` 2 and own-only `peak_context` 89,526; 3 of its 12 `tool_calls` rows are `in_subagent`; the build and checkpoint rows are all zeros. Evidence: `evidence/cp-1-fr21-subagents.txt` (test transcript, store read-back, `report --per-worker`). The accepted cost above stands: the A/B lookup baselines were mixed figures, and the next runs re-baseline.
 
+- **Code-review fixes (2026-10-13).**
+  - The transcript path mapped only `/` and `.`; Claude Code maps every non-alphanumeric character, so a repo path with `_` read as zero subagents. Now every non-alphanumeric character becomes `-`, here and in the stub (AD-9902).
+  - A forked subagent copies its parent's and siblings' messages, so session `788a618e` counted them twice. Messages are now counted once per session by `message.id` (AD-9905).
+  - A `<synthetic>` first assistant line became the worker's `model_id`. It is now skipped.
+  - `record_subagents` and the recount read the columns through one `metrics::read_subagents`, so the live and recount paths cannot drift.
+
 **Slice**: After this slice every worker row carries what its subagents cost, apart from its own usage, and the run's `weighted_tokens` and budget count both. The collector stops mixing a subagent's lines into the worker's own `start_context`, `peak_context` and `tool_calls`. The stub harness gains a projects dir and one "polish with subagents" scenario. It leaves `--recount` and the per-worker token columns to slice 02, and the retro to slice 06.
 
 **This is the spine of PRD-003 and its highest-risk work is task 3**, the transcript reader: it depends on Claude Code's transcript layout, which is not a contract. Do task 1 first so every later slice appends its own columns to the same migration list, and task 3 before task 4 so the exit path only wires a reader that already has its unit tests.

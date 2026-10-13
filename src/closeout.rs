@@ -626,7 +626,10 @@ fn ship(
         stood_in(run, STAND_IN_RETRO, &retro_rel)?;
     }
     fill_retro(&retro, &report)?;
-    retro::write(&retro, &retro::numbers(run.db(), run.id().as_str())?)?;
+    // A section the markers refuse is a line in the log, never a stopped ship.
+    if let Err(e) = retro::write(&retro, &retro::numbers(run.db(), run.id().as_str())?) {
+        say(out, &format!("ship: no ## Numbers written — {e}"))?;
+    }
     docs.render_write()?;
     let want = commit::expand(&repo, &[board.dir.clone(), "docs/index.md".to_string()])?;
     let committed = commit::commit(

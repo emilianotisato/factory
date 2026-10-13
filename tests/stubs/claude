@@ -651,8 +651,8 @@ function subagentRun(step) {
   }
   const configDir = process.env.CLAUDE_CONFIG_DIR
   if (!configDir) fail(64, 'CLAUDE_CONFIG_DIR is not set — the harness sets it (tests/harness/mod.rs)')
-  // The driver's rule (src/measure.rs transcript_path): every "/" and "." of the cwd as "-".
-  const slug = cwd.replace(/[/.]/g, '-')
+  // The driver's rule (src/measure.rs transcript_path): every character of the cwd but a letter or digit as "-".
+  const slug = cwd.replace(/[^A-Za-z0-9]/g, '-')
   const dir = path.join(configDir, 'projects', slug, sessionId, 'subagents')
   fs.mkdirSync(dir, { recursive: true })
   for (let i = 0; i < count; i++) {
@@ -723,7 +723,7 @@ function emit(event) {
   process.stdout.write(`${JSON.stringify(event)}\n`)
   const configDir = process.env.CLAUDE_CONFIG_DIR
   if (!configDir) return
-  const dir = path.join(configDir, 'projects', cwd.replace(/[/.]/g, '-'))
+  const dir = path.join(configDir, 'projects', cwd.replace(/[^A-Za-z0-9]/g, '-'))
   fs.mkdirSync(dir, { recursive: true })
   fs.appendFileSync(path.join(dir, `${sessionId}.jsonl`), `${JSON.stringify(event)}\n`)
 }

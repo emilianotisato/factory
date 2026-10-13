@@ -89,6 +89,7 @@ pub fn run(args: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i
         run.adopt()?;
         if let Some(b) = args.budget {
             run.set_budget(b)?;
+            budget_knob(&run, b)?;
         }
         run.emit(EventKind::RunResumed)?;
         writeln!(out, "run {} resumed ({})", run.id(), run.state().phase).map_err(io("stdout"))?;
@@ -223,6 +224,20 @@ fn record_start(
         run.db().set_run_hypothesis(id, h)?;
     }
     Ok(())
+}
+
+/// A resume's `--budget` replaces the budget in `runs.knobs`, so the row
+/// says what the run went on with, not only what it started with.
+fn budget_knob(run: &Run, budget: u64) -> Result<()> {
+    let id = run.id().as_str();
+    let Some(text) = run.db().run_row(id)?.and_then(|r| r.knobs) else {
+        return Ok(());
+    };
+    let Ok(mut knobs) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return Ok(());
+    };
+    knobs["budget"] = serde_json::json!({"value": budget, "source": config::Source::Flag});
+    run.db().set_run_knobs(id, &knobs.to_string())
 }
 
 /// The trimmed stdout of `claude --version`; one stderr line and `None`

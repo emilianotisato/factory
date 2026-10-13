@@ -15,6 +15,11 @@ lane: 1
 - **Prove (task 7), real store**: `factory retro 024-20261012-e894 --file docs/features/001-driver/retro.md` printed `updated` and appended 22 lines. The rows are build 9,946,537, fix 338,812, checkpoint 3,936,107 and polish 1,948,573 own + 2,294,981 subagents, each within 0.35% of `001-driver/ab/runs.md:223-233`. The total is 18,465,008 and the comparison says no earlier finished run. A second call printed `unchanged`, byte-identical. Transcript, `git diff` and the 1% table: `docs/features/003-observatory/evidence/cp-2-fr25-real.txt`. The section stays in `001-driver/retro.md` for the CP-2 commit.
 - **Human (qa-guide § FR-25)**: open, for the owner. Read `001-driver/retro.md` § Numbers beside the prose. Note that run 024 predates 003, so its knobs, pack and findings print `—`.
 
+- **Code-review fixes (2026-10-13).**
+  - Changed lines used `main..HEAD`, which counts commits landed on main since branching. Now `main...HEAD` (AD-9901, decide).
+  - `write` replaced from the first open marker to the first close one, whatever their count or order. It now refuses anything but one pair in order, and ship logs the refusal instead of failing (AD-9904).
+  - A stopped run joined the comparison cohort as a cheap run. It is now skipped (AD-9903).
+
 **Slice**: After this slice the driver drafts the numbers of every retro itself, at ship, between markers it owns, and the owner can regenerate them for any stored run. Changed lines become a column so cost per line is a figure, not a shell call. The old `measure.py` step leaves the QA guide. It leaves the judgment to the prose above the section (prd §7, accepted cost) and the learning loop to a later PRD.
 
 **The highest-risk work in this slice is task 2**, the section writer: it must be byte-idempotent and must find the right `retro.md` for a stored run whose feature may since have shipped or archived. Write it as a library function first, test it on a file, then wire the subcommand and the ship step to it.

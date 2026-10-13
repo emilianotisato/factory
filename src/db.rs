@@ -436,6 +436,7 @@ impl Db {
              FROM runs
              WHERE repo = ?1 AND phase = 'finished' AND finished_at IS NOT NULL AND finished_at <= ?2
                AND id != ?3
+               AND NOT EXISTS (SELECT 1 FROM events e WHERE e.run_id = runs.id AND e.kind = 'run_stopped')
              ORDER BY finished_at DESC, id DESC LIMIT ?4",
         )?;
         let rows = stmt.query_map(params![repo, before, except, limit], run_from_row)?;
@@ -605,14 +606,15 @@ impl Db {
 
     /// The usage half of [`Db::finish_worker`], for `report --recount`
     /// (PRD-003 FR-21): `outcome`, `terminal_reason`, `duration_ms` and
-    /// `ended_at` say how the worker ended and stay as they are.
+    /// `ended_at` say how the worker ended and stay as they are. A stream
+    /// with no model keeps the stored `model_id`.
     pub fn update_worker_usage(&self, id: i64, summary: &Summary) -> Result<()> {
         let u = summary.usage.as_ref();
         let as_i64 = |v: Option<u64>| v.map(|n| n as i64);
         self.conn.execute(
             "UPDATE workers SET input = ?2, cache_write = ?3, cache_read = ?4, output = ?5,
                                 thinking = ?6, cost_usd = ?7, num_turns = ?8, peak_context = ?9,
-                                start_context = ?10
+                                start_context = ?10, model_id = COALESCE(?11, model_id)
              WHERE id = ?1",
             params![
                 id,
@@ -625,6 +627,7 @@ impl Db {
                 as_i64(summary.num_turns),
                 as_i64(summary.peak_context),
                 as_i64(summary.start_context),
+                summary.model_id,
             ],
         )?;
         Ok(())

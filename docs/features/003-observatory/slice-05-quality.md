@@ -19,6 +19,9 @@ lane: 4
 - **Prove (task 6)** left for CP-3: the FR-24 row.
 - **Prove (task 6), driven at CP-1 (2026-10-12)**: the FR-24 row, green. Red, red, green gives `fix_commits: 2`. CI `red:test, green` gives `ci_red_rounds: 1` and `ci_reruns: 0`. A polish with `FINDINGS` gives `findings: high=1 medium=2 low=3 fixed=4 parked=2`. Without the line, the five columns are NULL, the report prints `findings: —`, and there is one `polish_findings_missing` event. Evidence: `evidence/cp-1-fr24-quality.txt` (four report outputs and the event line). This slice's code was left uncommitted under Untracked leftovers; it is in the CP-1 commit (AD-901).
 
+- **Code-review fixes (2026-10-13).**
+  - `Findings::from_result` read only the first line starting `FINDINGS`, and split on spaces only, so `FINDINGS below:` or `high=1, medium=2` stored nulls. It now takes the first line that parses, splitting on spaces or commas.
+
 **Slice**: After this slice every run row carries the counts that say whether the builders left defects: what polish found by severity and what it did about it, how many fix commits the checkpoints needed, how many CI rounds went red, and the decisions and blocks the log holds. All at zero worker tokens beyond one return line. It leaves the retro's quality block to slice 06 and grades nothing with a model (prd §12).
 
 ## Current code / environment

@@ -4,6 +4,7 @@ slug: observatory
 status: draft
 owns_fr: [21-25]
 retired_fr: []
+reviewed: 20261013
 ---
 
 # PRD-003 — Observatory: measure, experiment and correct factory runs

@@ -153,16 +153,23 @@ pub struct Findings {
 }
 
 impl Findings {
-    /// The first `FINDINGS` line of a result text, colon or not, its
-    /// `key=<digits>` pairs in any order; `None` unless all five are there.
+    /// The first `FINDINGS` line of a result text that holds all five
+    /// `key=<digits>` pairs, colon or not, in any order, split by spaces or
+    /// commas; `None` when no line does.
     pub fn from_result(text: &str) -> Option<Findings> {
-        let rest = text
-            .lines()
+        text.lines()
             .map(str::trim)
-            .find_map(|l| l.strip_prefix("FINDINGS"))?;
+            .filter_map(|l| l.strip_prefix("FINDINGS"))
+            .find_map(Findings::from_pairs)
+    }
+
+    fn from_pairs(rest: &str) -> Option<Findings> {
         let rest = rest.strip_prefix(':').unwrap_or(rest);
         let mut f = [None; 5];
-        for (k, v) in rest.split_whitespace().filter_map(|p| p.split_once('=')) {
+        for (k, v) in rest
+            .split(|c: char| c.is_whitespace() || c == ',')
+            .filter_map(|p| p.split_once('='))
+        {
             let i = match k {
                 "high" => 0,
                 "medium" => 1,
@@ -357,7 +364,12 @@ impl Collector {
         match ev {
             StreamEvent::Assistant { message, rest } => {
                 let in_subagent = in_subagent(rest);
-                if !in_subagent && self.summary.model_id.is_none() {
+                // Claude Code writes `<synthetic>` on a message no model
+                // answered (an API error, an interrupt).
+                if !in_subagent
+                    && self.summary.model_id.is_none()
+                    && message.model.as_deref() != Some("<synthetic>")
+                {
                     self.summary.model_id = message.model.clone();
                 }
                 if let (Some(u), false) = (&message.usage, in_subagent) {
@@ -542,6 +554,10 @@ mod tests {
         assert_eq!((f.high, f.medium, f.fixed), (0, 5, 5));
         assert_eq!(Findings::from_result("STATUS: done\nBLOCK: none"), None);
         assert_eq!(f.text(), "high=0 medium=5 low=0 fixed=5 parked=0");
+        let f = Findings::from_result(
+            "FINDINGS below, after dedupe\nFINDINGS: high=1, medium=2, low=0, fixed=3, parked=0",
+        );
+        assert_eq!(f.map(|f| (f.high, f.medium, f.fixed)), Some((1, 2, 3)));
     }
 
     #[test]
@@ -596,6 +612,7 @@ mod tests {
         };
         let text = [
             line(r#""toolu_x""#, "claude-sonnet-x"),
+            line("null", "<synthetic>"),
             line("null", "claude-opus-x"),
             line("null", "claude-haiku-x"),
         ]

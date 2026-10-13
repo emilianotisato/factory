@@ -19,6 +19,7 @@
 //! `refs` re-run with a larger `--max`, within five); and `pack_doc`, a read
 //! of a file the worker's pack held (`pack_doc_read_chars`, §4).
 use std::collections::HashSet;
+use std::fs;
 use std::path::Path;
 
 use serde_json::Value;
@@ -466,24 +467,60 @@ pub fn sub_columns(usage: &measure::Measure, count: usize) -> (i64, i64, i64, i6
     )
 }
 
+/// Why a session has no subagent columns: nulls on the row, never zeros.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SubagentsUnread {
+    /// No `<session>.jsonl` where Claude Code keeps it: the path rule no
+    /// longer matches its layout, or the transcript was cleaned up.
+    TranscriptMissing,
+    /// The `subagents/` dir, or a file in it, could not be read.
+    Unreadable(String),
+}
+
+impl std::fmt::Display for SubagentsUnread {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SubagentsUnread::TranscriptMissing => f.write_str("transcript missing"),
+            SubagentsUnread::Unreadable(e) => f.write_str(e),
+        }
+    }
+}
+
+/// The `workers` subagent columns for the session whose transcript is
+/// `transcript`, as `record_subagents` and `report --recount` store them.
+/// No `subagents/` dir is zeros; a missing transcript is told apart, so the
+/// recount can say its sum is own tokens only.
+pub fn read_subagents(
+    transcript: &Path,
+) -> std::result::Result<(i64, i64, i64, i64, i64), SubagentsUnread> {
+    if fs::symlink_metadata(transcript).is_err() {
+        return Err(SubagentsUnread::TranscriptMissing);
+    }
+    match measure::subagents(transcript) {
+        Subagents::None => Ok((0, 0, 0, 0, 0)),
+        Subagents::Read { usage, count } => Ok(sub_columns(&usage, count)),
+        Subagents::Unreadable(e) => Err(SubagentsUnread::Unreadable(e)),
+    }
+}
+
 /// PRD-003 FR-21: what the worker's subagents used, read from Claude
 /// Code's transcript dir once the worker exited, onto its row. No dir is
-/// zeros; a dir that cannot be read is nulls and one `subagents_unread`
-/// event. The stream's own subagent lines are never a fallback: their
-/// output count is an early snapshot. `Err` only when that event could not
-/// be written; the callers drop it, so an exit always settles.
+/// zeros, and so is no transcript: a worker killed before its first turn
+/// leaves none. A dir that cannot be read is nulls and one
+/// `subagents_unread` event. The stream's own subagent lines are never a
+/// fallback: their output count is an early snapshot. `Err` only when that
+/// event could not be written; the callers drop it, so an exit always
+/// settles.
 pub fn record_subagents(run: &mut Run, worker_id: i64, session_id: &str) -> Result<()> {
     let path = measure::transcript_path(&paths::claude_config_dir(), &run.state().repo, session_id);
-    let written = match measure::subagents(&path) {
-        Subagents::None => run
+    let written = match read_subagents(&path) {
+        Ok(cols) => run.db().set_worker_subagents(worker_id, Some(cols)),
+        Err(SubagentsUnread::TranscriptMissing) => run
             .db()
             .set_worker_subagents(worker_id, Some((0, 0, 0, 0, 0))),
-        Subagents::Read { usage, count } => run
-            .db()
-            .set_worker_subagents(worker_id, Some(sub_columns(&usage, count))),
-        Subagents::Unreadable(error) => {
+        Err(why) => {
             let _ = run.db().set_worker_subagents(worker_id, None);
-            Err(crate::Error::Msg(error))
+            Err(crate::Error::Msg(why.to_string()))
         }
     };
     if let Err(e) = written {
