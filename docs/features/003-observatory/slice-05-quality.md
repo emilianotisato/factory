@@ -1,7 +1,8 @@
 ---
 slice: 05
-status: pending
+status: done
 depends_on: []
+lane: 4
 ---
 
 # Slice 05 — Quality signals (FR-24)
@@ -9,7 +10,13 @@ depends_on: []
 **Source**: [`prd.md`](prd.md) → §6 FR-24, two decisions ("A `FINDINGS` line in the polish return", "`report` gains a quality block"); §8 OPEN-1 and OPEN-5. **Depends on**: — (independent of 01-04: its own `runs` columns, its own event, its own report block; it appends tuples to the shared migration list and keys to the end of `EXTRA_KEYS`).
 **Created**: 2026-10-13 · **Status**: pending
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+- **Built (tasks 1-4).** `src/stream.rs` `Findings::from_result` (colon or not, keys in any order, all five or `None`) and `text()`, with a unit test. `src/db.rs`: eight guarded `runs` columns (`findings_*`, `decisions`, `decide`, `blocks`), `set_run_findings`, `set_run_log_counts`, and `RunRow.findings`/`decisions`/`decide`/`blocks`. `src/events.rs` `PolishFindingsMissing`. `src/closeout.rs` `polish()`: on a return whose `STATUS` parsed, stores the findings or nulls plus the event; `ship()` re-reads `docs status` and stores the log counts before `report::compute` (AD-501). `src/cli/report.rs`: `fix_commits`, `ci_red_rounds`, `ci_reruns`, `findings`, `decisions`, `decide`, `blocks` appended to `EXTRA_KEYS` and the JSON (`findings` an object or `null`), and the `quality:` line before the threshold lines (AD-502).
+- **Contract, skill, stub (task 2).** `assets/contract-polish.md` carries `FINDINGS high=<n> medium=<n> low=<n> fixed=<n> parked=<n>` after `FIXED`, with one sentence on what it counts. `tests/stubs/claude` emits it by default and drops it on `skip: ["findings"]`. **Out-of-repo edit:** `~/Dropbox/dev/claude-code-skills/polish/SKILL.md` (§ Report, the unattended paragraph) was edited in place to end the return with the same line; the owner commits it in that repo.
+- **Tests.** `tests/checkpoints.rs` red-red-green: `report --json` has `fix_commits == 2`. `tests/closeout.rs` red:test-green: `ci_red_rounds 1`, `ci_reruns 0`, `ci_cycles 1`. `tests/metrics.rs`: the default polish prints `findings: high=1 medium=2 low=3 fixed=4 parked=2` and the `quality:` line; `decisions`, `decide`, `blocks` equal `docs status 001 --json` `log` after the shipped run; new `a_polish_return_without_findings_is_nulls_and_one_event` (null row, one `polish_findings_missing`, `findings: —`, JSON `null`). The report unit test gains the seven keys and a `quality_line` test.
+- **Inner loop: 7 runs, 5 red, about 13 min.** Every red was a sibling lane mid-edit in the shared tree: slice 02's per-worker text, slice 03's `pack_parts` compile error, slice 04's hanging `tests/knobs.rs` (a 10-minute run killed), and the text key-order check. The last green run: all 18 targets except `tests/knobs.rs`, 64 s. Still red at hand-back, and not this slice's: `report_prints_the_retro_keys_then_the_run_keys` until slices 03/04 add `knobs`, `hypothesis`, `pack_by_role` to the `EXTRA_KEYS` copy in `tests/metrics.rs` (Trap in `log-slice-05.md`).
+- **Deviation caught by self-review.** A first fix made that key-order check tolerant of the sibling keys; that weakens a test this run did not write, so it is back to exact.
+- **Prove (task 6)** left for CP-3: the FR-24 row.
 
 **Slice**: After this slice every run row carries the counts that say whether the builders left defects: what polish found by severity and what it did about it, how many fix commits the checkpoints needed, how many CI rounds went red, and the decisions and blocks the log holds. All at zero worker tokens beyond one return line. It leaves the retro's quality block to slice 06 and grades nothing with a model (prd §12).
 
