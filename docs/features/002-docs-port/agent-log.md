@@ -484,6 +484,34 @@ The inner loop is green only with all of them. A slice-03 commit without them fa
 
 **Owner (2026-10-13):** changed — no test reads this repo's live or frozen docs: the shapes they caught move into `tests/fixture/v2/`, the frozen copy and `prd_001_copy_migrates` go, and this repo's real migration is the FR-16 evidence
 
+### AD-8101 — Ship the uncommitted staged moves as the CI fix? · ci · 2026-10-13
+
+**Chose:** commit the changes already staged in the index as they are: delete `src/docs.rs` (superseded by `src/docs/mod.rs`), move `tests/fixture/.docs/` to `tests/fixture/v2/.docs/`, and add the rest of `tests/fixture/v2/`. No code edits.
+**Over:** deleting only `src/docs.rs`. HEAD code already reads `tests/fixture/v2/.docs/...` (`src/docs/migrate.rs:2030` `include_str!`, `src/docs/migrate_ideas.rs:514`, `tests/migrate.rs:595`), so the fixture move is needed too, or CI goes red on the next step.
+**Because:** a slice ran `git mv` and staged the files, but its commits never took them. HEAD therefore has both `src/docs.rs` and `src/docs/mod.rs`, and `cargo fmt` refuses that pair. The full gate (fmt, clippy `-D warnings`, test) is green on this tree, and green again on a clean `git checkout-index` export of the index inside a new repo.
+**Undo:** `git revert` the CI-fix commit, then restore `src/docs.rs` deleted and the fixture paths.
+**Review:** fyi
+
+**Owner (2026-10-13):** kept
+
+### AD-8201 — Why did round 1's fix not reach CI, and what ships now? · ci · 2026-10-13
+
+**Chose:** ship the same change AD-8101 chose, and this time stage it by name inside the worker run: `git add -A -- src tests/fixture`. The change deletes `src/docs.rs` and moves `tests/fixture/.docs/` to `tests/fixture/v2/`. There are no code edits.
+**Over:** a code change. CI fails the same way as in round 1 (`src/docs.rs` and `src/docs/mod.rs` both exist), so the cause has not changed.
+**Because:** round 1 left the change staged from before its run and never ran `git add` itself. The driver committed only the files that worker wrote (`log-ci-1.md`, `retro.md`, commit 222795c), so HEAD still has `src/docs.rs`. On this tree the full gate (fmt, clippy `-D warnings`, test) is green in 52 s. `cargo fmt --check` also passes on a `git checkout-index` export of the index. No files are untracked and none are unstaged.
+**Undo:** `git revert` the CI-fix commit.
+**Review:** no
+
+### AD-8301 — Why did rounds 1 and 2 not reach the commit, and how does this round land the fix? · ci · 2026-10-13
+
+**Chose:** ship the same change as AD-8101: delete `src/docs.rs` and move `tests/fixture/.docs/` to `tests/fixture/v2/`. This round names every path in a `git add --` call that has no `cd`, then leaves the 10 deletions unstaged (` D`) and the 19 new files staged (`A `).
+**Over:** another `git add -A -- src tests/fixture`, or a code change. CI still fails on the same pair, `src/docs.rs` next to `src/docs/mod.rs`.
+**Because:** the driver commits only the paths in a worker's stream (`src/commit.rs` `Pathspec::from_stream`). A `git add` of a folder only adds the folder's new files that were not changed at spawn (`src/scheduler.rs` `unnamed`). These files were staged before the round began, so the swept list held none of them. A Bash call that contains a `cd` names nothing at all (`rooted_scripts`). `commit::commit` also drops any path that `ls-files --cached` does not list, and a staged deletion is not listed. Leaving the deletions unstaged lets the driver's own `git add` stage them. On a scratch copy of the index, that add gives 1 D, 9 R and 10 A against HEAD. The full gate (fmt, clippy `-D warnings`, test) is green on this tree in 53 s.
+**Undo:** `git revert` the CI-fix commit.
+**Review:** fyi
+
+**Owner (2026-10-13):** kept
+
 ## Checkpoints
 
 ### CP-1 — after slice-06 · 2026-10-13

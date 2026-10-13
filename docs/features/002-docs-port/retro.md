@@ -91,4 +91,4 @@ Compared with:
 | 003-20261013-4139 | 003 | 6966177 | 5 | 1393235 | — | — |
 <!-- /factory:numbers -->
 
-**Owner review (2026-10-13):** 20 kept, 5 changed (AD-904, AD-1101, AD-1102, AD-9904, AD-9906)
+**Owner review (2026-10-13):** 22 kept, 5 changed (AD-904, AD-1101, AD-1102, AD-9904, AD-9906)
