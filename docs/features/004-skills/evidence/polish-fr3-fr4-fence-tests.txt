@@ -1,0 +1,16 @@
+$ git rev-parse --short HEAD; working tree = HEAD + polish fixes
+5808d1c
+$ cargo test --test skills_fence
+     Running tests/skills_fence.rs (/mnt/devcache/emiliano/cargo-target/debug/deps/skills_fence-5e1687ec0e2f5493)
+test update_refuses_a_linked_agents_dir_and_writes_nothing ... ok
+test doctor_puts_the_skills_line_after_gate ... ok
+test update_refuses_ahead_and_writes_nothing ... ok
+test update_refuses_a_hand_edit_until_git_restores_it ... ok
+test update_into_a_shared_agents_dir_writes_no_links ... ok
+test update_renders_a_behind_repo_and_drops_what_the_bundle_lost ... ok
+test update_on_current_none_and_a_source_checkout ... ok
+test ahead_from_source_points_at_the_checkout ... ok
+test update_restores_a_missing_file_or_link ... ok
+test preflight_notes_current_as_ok_and_behind_as_a_judge_line ... ok
+test doctor_prints_one_line_per_verdict ... ok
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.49s

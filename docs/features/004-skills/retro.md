@@ -47,3 +47,30 @@ None. The inner loop's four reds were real (fmt and a compile error), and the bu
 ## Score
 
 4 — every FR built and its machine rows proven, but the driver lost committed source twice, and the owner must commit nine links by hand.
+
+## Numbers
+
+<!-- factory:numbers -->
+| role | workers | own | subagents | weighted | minutes | turns |
+|---|---:|---:|---:|---:|---:|---:|
+| build | 7 | 2831500 | 0 | 2831500 | 39 | 169 |
+| checkpoint | 2 | 603728 | 0 | 603728 | 7 | 47 |
+| polish | 1 | 352908 | 3311546 | 3664454 | 10 | 54 |
+| total | 10 | 3788135 | 3311546 | 7099681 | 56 | 270 |
+
+Knobs: build opus/high default · fix opus/high default · checkpoint opus/high default · polish opus/high default · budget 30000000 default · lanes 4 · factory 0.1.0 · claude 2.1.296
+
+Hypothesis: none
+
+quality: gate_red 0 · worker_gate_red 0 · fix_commits 0 · ci_red_rounds 0 · ci_reruns 0 · findings high=2 medium=6 low=8 fixed=15 parked=1 · decisions 23 decide 2 blocks 0
+
+Pack (build): slice 12958 · prd_sections 8096 · log 3417 · outline 10922 · lookup 890 · contract 3327 · autonomy 10833 · inner_loop 91 · total 50534 · start_context 47268
+
+Compared with:
+
+| run | feature | weighted | slices | per slice | lines changed | per line |
+|---|---|---:|---:|---:|---:|---:|
+| 004-20261013-f6d3 (this run) | 004 | 7099681 | 7 | 1014240 | 9785 | 726 |
+| 002-20261013-e729 | 002 | 15464292 | 11 | 1405845 | 24701 | 626 |
+| 003-20261013-4139 | 003 | 6966177 | 5 | 1393235 | — | — |
+<!-- /factory:numbers -->
