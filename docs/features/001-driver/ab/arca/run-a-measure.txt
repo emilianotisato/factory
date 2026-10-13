@@ -1,0 +1,27 @@
+session 64dbba7a-aa7a-46a7-95c2-97ad88737ae9: 275 min wall · build 169 · polish 62 · 24 subagents, 252 agent-min
+tokens: out 928k · cache write 4.4M · cache read 135M · 1341 calls
+context: orchestrator started at 54k · peak 167k
+    12 min  out     56k  cr   6.9M  peak  167k  Build slice 01 of PRD-024
+     6 min  out     31k  cr   3.5M  peak  149k  Build slice 02 of PRD-024
+    15 min  out     40k  cr   5.0M  peak  153k  Checkpoint 1 of PRD-024
+     4 min  out     19k  cr   1.6M  peak   89k  Build slice 03 of PRD-024
+    10 min  out     47k  cr   5.7M  peak  164k  Build slice 04 of PRD-024
+    12 min  out     41k  cr   6.7M  peak  167k  Checkpoint 2 of PRD-024
+    20 min  out     85k  cr  13.8M  peak  166k  Build slice 05 of PRD-024
+    10 min  out     46k  cr   4.8M  peak  142k  Build slice 06 of PRD-024
+    11 min  out     22k  cr   4.8M  peak  143k  Checkpoint 3 of PRD-024
+    10 min  out     43k  cr   5.3M  peak  160k  Build slice 07 of PRD-024
+    11 min  out     53k  cr   5.5M  peak  165k  Build slice 08 of PRD-024
+    12 min  out     37k  cr   5.8M  peak  167k  Checkpoint 4 of PRD-024
+    22 min  out     92k  cr  11.4M  peak  163k  Build slice 09 of PRD-024
+     7 min  out     22k  cr   3.7M  peak  125k  Checkpoint 5 of PRD-024
+    16 min  out      8k  cr   1.1M  peak   87k  Local code review of PRD-024
+     3 min  out     12k  cr   2.6M  peak  115k  Security review of PRD-024
+     4 min  out     13k  cr   2.3M  peak  160k  agent-aa260741e524e7
+    25 min  out     33k  cr   4.8M  peak  166k  UX review of PRD-024
+    11 min  out     45k  cr   7.5M  peak  165k  Verify polish findings at file:line
+    14 min  out     54k  cr   9.3M  peak  167k  Polish fixer for PRD-024
+     7 min  out     21k  cr   4.2M  peak  166k  Test cleanup pr mode + padrón spec
+     3 min  out     15k  cr   1.3M  peak   89k  Write PRD-024 retro.md
+     5 min  out     15k  cr   1.8M  peak   89k  Apply owner change to AD-10001
+     1 min  out      2k  cr   0.3M  peak   61k  Run padrón drive spec once

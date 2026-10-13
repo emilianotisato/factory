@@ -215,3 +215,23 @@ At the owner's request, after both questionnaires (the owner: UI better in B, co
 - Run A was stronger on consistent list helpers, failing closed on unknown form errors, and a leaked-key check in the harness; run B on error-path care, less duplication and tighter test assertions.
 
 Unlike the icg round, the code review agrees with the owner's UI read rather than reversing it.
+
+### Numbers, both runs
+
+Measured 2026-10-12 after both questionnaires and the blind review (`arca/run-a-*.txt`, `arca/run-b-report.txt`). Weighted as in the icg round: input + cache write + 0.1 × cache read + 5 × output. Run A from its orchestrator transcript and 24 subagent transcripts (deduped by message, final usage per message; matches `measure.py`'s totals). Run B from `factory report 024-20261012-e894 --cockpit <session>`.
+
+| | run A | run B |
+|---|---|---|
+| build (9 workers) | 9.86M | 9.95M |
+| checkpoints (5) | 4.15M | 3.94M |
+| CI or gate fixes | in the above | 0.34M (2 fix workers) |
+| polish and closeout | 6.36M (8 subagents) | 1.95M (1 worker) |
+| orchestrator / cockpit | 2.13M | 0.97M |
+| **total** | **22,488,877** | **17,144,058** |
+
+- **Token bar: fail.** Run B is 76.2% of run A; the bar is 0.6× (13,493,326), missed by 3.65M. In the icg round it was 41.5%.
+- **Cockpit share: fail, narrowly.** 974,031 is 6.0% of the workers' 16,170,027 (5.7% of the total); the bar is 5%. It includes the 18-decision review and about 3 h of watching.
+- **Where the saving came from:** only polish (−4.4M) and orchestration (−1.2M). Build and checkpoints cost the same in both runs, 14.0M against 13.9M. The driver's packs and `factory ctx` did not cut build cost on this repo: workers used `ctx` little (`ctx_share` 0.025, 14 calls).
+- **Time:** run B reached its draft PR in 178 min (17:19 → 20:17), run A in 236 min. Build 88 min against 169; polish 33 against 62.
+- **Quality:** the owner's verdict put A one notch higher (ship as is against ship after minor fixes); the blind review put B two points higher (32 to 30). Both PRs are mergeable.
+- PR #65 stayed a draft after CI went green (4 of 4): by design, FR-6 says the driver never marks a PR ready without the owner. Run A's `/deliver` marked #64 ready itself.
