@@ -547,7 +547,7 @@ fn stop_ends_the_run_after_the_worker_and_the_next_run_builds_the_rest() {
 #[test]
 fn the_cockpit_skill_is_under_sixty_lines_and_names_the_five_commands() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let text = fs::read_to_string(root.join("skills/factory-deliver/SKILL.md")).unwrap();
+    let text = fs::read_to_string(root.join("skills/deliver/SKILL.md")).unwrap();
     let lines = text.lines().count();
     assert!(lines < 60, "{lines} lines");
     for needle in [
@@ -581,7 +581,7 @@ fn the_cockpit_skill_is_under_sixty_lines_and_names_the_five_commands() {
     }
     let readme = fs::read_to_string(root.join("skills/README.md")).unwrap();
     assert!(
-        readme.contains("ln -s \"$(pwd)/skills/factory-deliver\" ~/.claude/skills/factory-deliver"),
+        readme.contains("ln -s \"$(pwd)/skills/deliver\" ~/.claude/skills/deliver"),
         "{readme}"
     );
 }
