@@ -3,7 +3,16 @@
 **Source**: [`prd.md`](prd.md) → §3 FR-1 (every decision and the three acceptance bullets except the `models.md` trim, which is slice 04's), §4 FR-2 decision "This repo is the one exception" (the source-checkout links only; the detector is slice 03's). **Depends on**: — (the spine: every other slice but 05 reads the bundle this slice builds).
 **Created**: 2026-10-13
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+
+- **Built.** `skills/` now holds the seven Dropbox folders from `git archive 33796be` plus `_shared/models.md` (`git show 33796be:feature-docs/models.md`, `cmp` identical). `src/skills.rs` holds `NAMES`, `FILES` (19 entries, byte-sorted, so `_shared/…` first and `SKILL.md` before `references/`), `file_hash`, `hash_of` and `bundle_hash`; the hash definition is in `hash_of`'s doc comment. `tests/skills_bundle.rs` walks `skills/` and checks the nine `.claude/skills/` links. Nine relative symlinks under `.claude/skills/`. `README.md:36` and `:60` and `skills/README.md` rewritten; the `ln -s` install line is kept for `tests/cockpit.rs`.
+- **Task 1 evidence.** `grep -rn feature-docs skills/` prints nothing. `diff -r "$P" skills/ -x deliver -x _shared -x README.md` against the `33796be` archive shows exactly eight changed line pairs, each a link rewrite:
+  - `harness/references/maintain.md` `19c19`: target `../../feature-docs/models.md` → `../../_shared/models.md`, text `feature-docs/models.md` → `_shared/models.md`
+  - `polish/SKILL.md` `17c17`, `52c52`; `prd/SKILL.md` `15c15`, `99c99`; `slice/SKILL.md` `17c17`; `ux/SKILL.md` `18c18`: target `../feature-docs/models.md` → `../_shared/models.md`, text `feature-docs/models.md` → `_shared/models.md`
+  - `polish/SKILL.md` `60c60`: target `../feature-docs/models.md` → `../_shared/models.md`, text `models.md` unchanged
+- **Inner loop.** 2 runs, 1 red, about 2 min. The red was `cargo fmt --check` on the two new files; `cargo fmt` fixed it. The green run: fmt, clippy `-D warnings`, `cargo test` all passing (220 lib tests plus every integration binary).
+- **A unit test beyond the slice's list:** `a_path_and_content_cannot_trade_bytes` pins the `\0` separators in `hash_of`.
+- **Left for the checkpoint (Task 6).** The FR-1 row: the `cargo test --test skills_bundle` transcript, the empty grep, and the red run on a stray `skills/prd/references/x.md`.
 
 **Slice**: After this slice the eight family skills and `_shared/models.md` live in `skills/`, ported from Dropbox `33796be` with only the eight `models.md` links changed, and the binary carries them as one embedded bundle with a hash. A gate test fails the moment a file under `skills/` is missing from the bundle or differs from it. This repo's `.claude/skills/<name>` are committed relative symlinks into `skills/`. Nothing renders the bundle yet (slice 02), nothing compares it (slice 03), and `models.md` keeps its Cursor block until slice 04 moves it into the binary.
 
