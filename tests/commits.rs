@@ -473,8 +473,10 @@ fn a_resumed_driver_judges_an_orphans_leftovers_against_its_spawn_baseline() {
     ]);
     let dir = start(&fx);
     let driver = state(&dir)["pid"].as_u64().unwrap() as u32;
+    // `slice_spawned` is emitted once the worker is in state.json: a kill
+    // before that leaves an orphan the resumed driver cannot settle.
     wait_until(&fx, &dir, "slice 02's worker to spawn", 20, || {
-        fx.calls().len() == 2 && fx.slice_status(2) == "building"
+        count(&kinds(&dir), "slice_spawned") == 2 && fx.slice_status(2) == "building"
     });
     assert_eq!(unsafe { libc::kill(driver as i32, libc::SIGKILL) }, 0);
     wait_until(&fx, &dir, "the driver to die", 5, || !pid_alive(driver));

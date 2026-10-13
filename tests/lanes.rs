@@ -1155,8 +1155,15 @@ fn a_resumed_run_does_not_run_a_lanes_setup_again() {
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     let dir = only_run_dir(&fx);
     let driver = state(&dir)["pid"].as_u64().unwrap() as u32;
+    // The stub logs its call as it starts, before the driver records the
+    // worker in state.json: a kill in between leaves an orphan the resumed
+    // driver cannot see, and it builds slice 01 a second time.
     wait_until(&fx, &dir, "slice 01's worker", 20, || {
-        fx.calls().len() == 1 && fx.slice_status(1) == "building"
+        fx.calls().len() == 1
+            && state(&dir)["workers"]
+                .as_array()
+                .is_some_and(|w| w.len() == 1)
+            && fx.slice_status(1) == "building"
     });
     assert_eq!(fx.read("scenario/lane-setup.log"), "setup 1\n");
     assert_eq!(state(&dir)["lanes_set_up"], json!([1]));
