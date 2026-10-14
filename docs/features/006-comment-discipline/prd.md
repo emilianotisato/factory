@@ -7,7 +7,7 @@ type: feature
 created: 2026-10-14
 author: Emiliano Tisato
 summary: |
-  The plan stays in docs/. Code reads as if the plan never existed: no PRD, FR, AD, slice or checkpoint id in comments, names, paths, fixtures or strings, and a comment only for what the code cannot show. Four layers, because a prompt alone does not hold: one rule in every worker's pack, templates that stop modeling ids, one rule table (`factory leaks`) run at every checkpoint, in polish and in the doctor preflight, and factory's own cleanup, done 2026-10-14 on `chore/comment-cleanup`. The retro tracks the numbers and feeds missed classes back. **Interview done 2026-10-14, all seven OPENs settled. Adversarial pass done the same day** by a fresh agent on the session model (`factory review second` exited 2, cursor-agent unauthenticated): four wrong code claims, two contradictions, four detector rows that hit factory's own words, and six acceptance criteria with no surface, all corrected inline and dated. **The cut (2026-10-14) kept every extra but one**, the `note` on a three-line comment block; agreed and ready to slice once `chore/comment-cleanup` is merged. Research is in `research.md`.
+  The plan stays in docs/. Code reads as if the plan never existed: no PRD, FR, AD, slice or checkpoint id in comments, names, paths, fixtures or strings, and a comment only for what the code cannot show. Four layers, because a prompt alone does not hold: one rule in every worker's pack, templates that stop modeling ids, one rule table (`factory leaks`) run at every checkpoint, in polish and in the doctor preflight, and factory's own cleanup, done and merged into `main` 2026-10-14 (`9e79a87`). The retro tracks the numbers and feeds missed classes back. **Interview done 2026-10-14, all seven OPENs settled. Adversarial pass done the same day** by a fresh agent on the session model (`factory review second` exited 2, cursor-agent unauthenticated): four wrong code claims, two contradictions, four detector rows that hit factory's own words, and six acceptance criteria with no surface, all corrected inline and dated. **The cut (2026-10-14) kept every extra but one**, the `note` on a three-line comment block; agreed and ready to slice from `main`. Research is in `research.md`.
 ---
 
 # PRD-006 — Comment and naming discipline
@@ -269,6 +269,8 @@ reads as if the plan never existed.
 
 **Acceptance.** As § QA plan says. The owner's sample read of 20 kept comments, 20 deleted ones and the renames happens before the merge, and the merge of `chore/comment-cleanup` into `main` is the verdict: anything missed becomes a dated line in this section. The merge comes before `/slice`, so the feature branch holds the cleanup and the run's proof is `factory leaks --all` there: zero `fix` hits outside the allowlist, `factory docs doctor` printing `leaks    clean`, the gate green (it is, on the branch). *Corrected 2026-10-14: an earlier draft had the run prove this on `main` after a merge that only the owner can do, which put the owner mid-build.*
 
+**Merged 2026-10-14** as `9e79a87`, on the owner's word and before the sample read; the gate is green on `main` (570 tests). The read now runs on the merge's diff, `git diff 9e79a87^1 9e79a87`, and a miss becomes a dated line here.
+
 ## 8. Decisions log
 
 - ~~**OPEN-1** — Invariants in our own code: keep them as a one-line comment, or require a test, type or rename and delete the comment (the `/no-comments` line)?~~ **Settled 2026-10-14:** keep, one line, in FR-1's rule. Strict would lose the class both audits say a reader would miss (races, coupled timeouts), because concurrency rarely renames away.
@@ -302,7 +304,7 @@ reads as if the plan never existed.
 | FR-3 | run a stub run with the seeded leaks in a slice: the checkpoint pack holds `# Leaks` with the hits, the stub worker's **Fixed** names them, polish's run reports zero. Run `factory docs doctor` and `factory docs preflight` on the seeded branch: the `leaks` line shows the count | pack and transcript read back; doctor and preflight output | no |
 | FR-4 | run a stub run to ship: `retro.md` holds the two new columns and the friction line; with the line filled, closeout files an idea in the `[source]` checkout | `retro.md` and the idea file read back | no |
 | FR-5 | run `factory leaks --all` on the feature branch, which holds the merged cleanup: zero `fix` hits outside the allowlist, and `factory docs doctor` prints `leaks    clean`; the gate is green | CLI and gate transcripts | no |
-| FR-5 | before the merge, the owner reads 20 comments the cleanup kept, 20 it deleted and the renames; the merge is the verdict, and a miss becomes a dated line in FR-5 | the merge commit on `main`; FR-5 | yes |
+| FR-5 | the owner reads, on the merge's diff (`git diff 9e79a87^1 9e79a87`), 20 comments the cleanup kept, 20 it deleted and the renames; a miss becomes a dated line in FR-5 | FR-5 | yes |
 
 ## 10. Slices
 
