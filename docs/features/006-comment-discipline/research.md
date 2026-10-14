@@ -222,3 +222,104 @@ The workflow's synthesis was rerun with the tweet, the keep-list and both audits
 1. Should the id check fail the gate, or only send findings to polish triage?
 2. Clean the ~630 existing id lines now, or only the lines each diff touches?
 3. Ban docblocks on private functions, or allow them when they state a contract?
+
+## 11. Plan ids in names, not just comments
+
+The owner's follow-up (2026-10-14): ids leak into implementation code too, mainly test names and some classes. His example: `tests/fixture/prd-004`. "Names express things. Six months from now, what does prd-004 express?"
+
+A second workflow (`tracking-ids-in-code`, run `wf_f102f8d3-b03`) swept cody-agent, arca-api and factory for plan ids in anything the program or test runner uses: names, paths, fixtures and runtime strings. Comments were out of scope. Two sweeps ran per field repo, plus one on factory, and a skeptic per repo re-ran the counts. Findings: cody 26 (8 refuted or corrected), arca 27 (4), factory 7 (2). Only verified claims are below. Nothing is decided yet.
+
+**Bottom line.** Plan ids leak into names and runtime strings in all three repos, mostly in test code. cody and arca carry most of them; factory has a handful. No instruction asks for id names. But QA plans and Prove tasks key everything by FR, and no rule keeps ids in the docs.
+
+**What leaks:**
+
+| Pattern | cody | arca | factory |
+|---|---|---|---|
+| Test titles or functions | 96 of 3,154 (Browser: 61 of 196) | 56 of 130 drive titles; 20 of 2,552 Go funcs | 5 of 772 fns |
+| Screenshot, evidence, run names | 105 `frNNN-`, 12 stage-named | 51 files; 131 of 184 run dirs | 1 fixture dir |
+| Test output | 22 STDERR lines | 93 console lines; 55 Go strings | 2 stub strings |
+| Fixture data | ~62 | ~32, some persisted to the DB | 1 frozen review, 18 ids |
+| App code, migrations, seeders | 12 literals | 15 of 17 allowlist builders; 3 error messages | 1 CLI string |
+
+**Examples, with a better name:**
+
+- cody `tests/Browser/WorkspaceSwitcherTest.php:103` `'FR-157: Support switches…'`: drop the prefix. The sentence already says what it tests.
+- cody `tests/Browser/LapsedReadOnlyBrowserTest.php:48` `'cs_test_cp3_canceled'` → `'cs_test_canceled'`.
+- cody `tests/Feature/Billing/BillingMigrationTest.php:41` `seedPre025Workspaces` → `seedUnbilledWorkspaces`.
+- arca `.claude/skills/verify-arca/drive/manage-health-pin.spec.ts:16` `'FR-61 pin'` → `'an operator pins a taxpayer to a health state and the pin survives a refresh'`.
+- arca `internal/audit/writer.go:134` `slice2Allowlists` → `tenantAndAdminUserAllowlists`.
+- arca drive fixtures write `cp1-fr43-…` credential names and refs into the platform DB (`devoluciones-live.spec.ts:143`).
+- factory `tests/fixture/prd-004/log.jsonl` → `tests/fixture/log-before-covers.jsonl`.
+- factory `src/db.rs:1226` `the_prd_003_migrate_body_runs_on_a_version_3_store` → `a_schema_v2_migration_is_a_no_op_on_a_version_3_store`.
+
+**How it spreads:**
+
+- **cody, in two waves.**
+  - Vitest `(FR-n)` suffixes began at a0e40f9 (2026-07-20). aaf6706 (2026-08-04) stripped 22 of them, with the message "Names describe contracts, not the PR that wrote them". They came back at ac6c380 (2026-08-17).
+  - The `FR-NNN:` title prefix began at 6209dcb (2026-09-16, PRD-021).
+  - Titles with an FR id, by merge: 014 4, 019 13, 021 36, 023 49, 025 62.
+  - Screenshots: 0 through 018, then 20, 76, and 105 by 025.
+- **arca, in one harness era.** Drive specs arrived at 6f4f77b (2026-09-07). New specs with an id in the title: PRD-013 13 of 14, PRD-014 9 of 9, PRD-015 8 of 8, and every spec in PRD-018 to 020. All 19 Go FR names came from PRD-012, on one day.
+- **factory, the smallest, and a relapse.**
+  - PRD-002 added plan-named tests (`prd_001_copy_migrates`, `this_repos_prds_get_the_seven_keys`) and a frozen copy of this repo's docs (`tests/fixture/repo-at-a7e89bf/`).
+  - The owner had them removed: 0d55577, 2026-10-13, 3,145 lines deleted. His review: "no test reads this repo's live or frozen docs" (`docs/features/002-docs-port/log.jsonl:82`).
+  - The rule went nowhere a worker reads. PRD-005 slice 05 recreated the pattern that same evening as `tests/fixture/prd-004` (f35ed4c, 20:42).
+
+**Where it comes from.** No instruction asks for id names. Factory's shipped assets still model them:
+
+- `assets/docs/prd.scaffold.md:41-43` keys the QA plan by FR.
+- `assets/docs/slice.scaffold.md:19`: "**Source**: §_(n)_ FR-_(x)_".
+- `skills/prd/SKILL.md:134`: the proof row "names the test or command", which pulls test names toward the row id.
+- `skills/harness/references/skill-template.md:12` lists the trigger "prove FR-n". `:72` says "Name files by feature id". Its examples are behavior names (`rules-create.png`), but in factory "feature id" reads as a plan id.
+- `assets/pr-body.md:30` puts `FR-{n}` and `CP-{n}` in a table.
+- Four prose lines cite bare ids that mean something else in other repos: `skills/gate/SKILL.md:132`, `:134`, `skills/prd/SKILL.md:66`, `skills/harness/SKILL.md:33`.
+
+The field repos model it directly:
+
+- cody `.claude/skills/verify-cody-agent/SKILL.md:218` "RUN=fr159-mcp". That skill carries about 130 PRD/FR/AD mentions, and its feature map is keyed "PRD-021 FR-159".
+- cody `docs/archive/021-support-team-access/slice-04-staff-identity.md:104` "- FR-150: a plain MaaS user…". Test titles copy this format.
+- cody `CLAUDE.md:66` says to copy sibling naming, so one prefixed file spreads to the next.
+- arca `docs/archive/012-caea-informe-scheduler/slice-01-series-ordered-read.md:153` "The FR-1 row of prd.md § QA plan". It became `TestProveFR1…`.
+
+**Counter-rules exist, but no worker reads them.**
+- cody's lives only in the aaf6706 commit message.
+- `skills/prune/references/rules.md:21` flags test names that describe implementation steps, not plan ids.
+- arca's `openapi/public_text_test.go:9-15` blocks plan ids in public docs only.
+
+**Harm found:**
+
+- **Renames paid for, then undone.**
+  - cody aaf6706 renamed 22 titles and 8 files, and both patterns came back within two weeks.
+  - In factory, 0d55577's cleanup was undone the same day.
+- **Archive cost.** cody `TestBrowserCommandTest.php:325-346` exists only to stop a plan-doc path cited in app code from rotting. Archiving PRD-023 still had to edit `app/Console/Commands/TestBrowserCommand.php:31` (3539026).
+- **Recorded confusion.** In factory, a removal grep in PRD-005 hit the prd-004 fixture (`docs/features/005-isolated-lanes/log.jsonl:31`, AD-18).
+- **Collisions.**
+  - In cody, AD-10002 means four different decisions, and one is cited at `tests/Browser/BillingPolishBrowserTest.php:134`. `tests/Feature/Knowledge/FaqInboxKindTest.php:131` "(DEC-8)" matches the wrong entry.
+  - In arca, `[slice 10]` means offline episodes (`episode.spec.ts:70`) and also device minting (`device-minting.spec.ts:35`). Slice numbers 03-08, 10, 11 and 13 all repeat across PRDs.
+  - In factory, `tests/stubs/claude:525` "FR-10" means PRD-001's stub harness, while PRD-005's FR-10 is `lanes prune`. `src/docs/migrate.rs:1699` prints "FR-13" into repos that have their own FR-13.
+- **Coupling and stale text.** cody `tests/Browser/BrowserTestMarkerTest.php:25` asserts a title that contains FR-170. arca `internal/tax/calc.go:286` tells API users "v1.5", while the spec is at 1.16.0.
+
+**What is legitimate:**
+
+- Factory's domain words: PRD, slice, checkpoint, `Framework::V3` (`src/docs/doctor.rs:19-24`), `LEGACY_DOC_DIRS` (`src/docs/check.rs:31`).
+- External ids, such as ARCA error codes (`internal/padron/lookup_1502_test.go`). None of the three repos names anything after an upstream ticket.
+- `Legacy*` names for old inputs that really exist, such as bookmarks.
+- Ids in docs and in run evidence.
+- Already clean: Go `t.Run` names (0 of 506), data-testid values, route names, build tags.
+
+**Options the report lists, not decided:**
+
+- **A. A naming rule** beside the comment rule (FR-1): names describe behavior, never a plan item. Cost: one skill release, and it depends on agents following it.
+- **B. Stop modeling ids in templates.** Reword `skill-template.md:12` and `:72`, `slice.scaffold.md:19` and the proof wording. Qualify or drop the four bare ids. Cost: a skill version bump.
+- **C. Map FR to test only in the QA plan.** The proof cell names the test, and the test never names the FR. Cost: `--filter=FR-157` and `-g 'FR-61 pin'` stop working.
+- **D. A mechanical check on added names** (FR-3's verb, over non-comment lines outside `docs/`). Cost: an allowlist for factory's domain words.
+- **E. Let `/prune` catch them.** Extend `rules.md:21` to plan ids and stage words. Cost: low, since prune runs once per feature.
+- **F. Rename what exists.** Factory's share is small: 5 tests, 1 fixture, 1 string, plus the 2 stub strings. cody and arca have far more, archived evidence cites the old names, and migration names cannot change.
+- **G. Rename on touch.** Block new id names, and fix old ones when a slice edits the file. Cost: two naming styles side by side for months.
+
+**Still uncertain:**
+
+- How much reading time id names really cost. Few incidents are logged.
+- Gitignored run dirs and screenshots were counted on this machine only.
+- Whether the rule should cover agent-facing harness feature maps. arca `features/manage.md` has about 100 FR labels.
+- Whether arca's shadowed allowlist entries (`internal/audit/writer.go:116-120`) ever rejected a real write.

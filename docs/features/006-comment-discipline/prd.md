@@ -7,7 +7,7 @@ type: feature
 created: 2026-10-14
 author: Emiliano Tisato
 summary: |
-  Workers write a comment only when it says what the code cannot: an invariant, a foreign quirk, a public contract. They never write a ticket id, a history note or change narration. Specs stop asking for comments. Polish checks every added comment, and the retro tracks comment share. A cleanup skill weeds the existing code, because agents copy what is nearby. **Draft 2026-10-14, no interview yet:** recon and evidence are in, and OPEN-1 to OPEN-6 hold it. Research is in `research.md`.
+  Workers write a comment only when it says what the code cannot: an invariant, a foreign quirk, a public contract. They never write a ticket id, a history note or change narration. Specs stop asking for comments. Polish checks every added comment, and the retro tracks comment share. A cleanup skill weeds the existing code, because agents copy what is nearby. **Draft 2026-10-14, no interview yet:** recon and evidence are in, and OPEN-1 to OPEN-7 hold it. Research is in `research.md`.
 ---
 
 # PRD-006 — Comment discipline
@@ -87,6 +87,13 @@ Under that list, 8% of cody's sample survives and 18% of arca's. The keep-list i
 1. **Keep invariants in our own code that no rename or type expresses**, like races, coupled timeouts and cross-module couplings (OPEN-1). The strict list deletes exactly the class both audits say a reader would miss. Examples: arca `internal/http/manage_apikey.go:159`, `internal/queue/jobs.go:381`; cody `PromptCompiler.php:237`.
 2. **Allow links to external trackers only** (an upstream issue, an RFC). Internal ids rot.
 3. **An unattended run parks a `MUST KILL` refactor as an idea** instead of redesigning code the PRD did not ask it to touch.
+
+**The same leak in names (found 2026-10-14).** Plan ids also reach names and strings the code uses: test titles, fixture dirs, screenshot names, class and function names, test output. The worst cases are cody's browser titles, 61 of 196 carrying an FR id, and arca's drive titles, 56 of 130. Factory has a handful, including `tests/fixture/prd-004` and `src/db.rs:1226` `the_prd_003_migrate_body_runs_on_a_version_3_store`.
+
+- **Factory removed this pattern once and it came back the same day.** 0d55577 deleted 3,145 lines of plan-named tests and frozen docs. That evening, PRD-005 created `tests/fixture/prd-004` (f35ed4c), because the owner's rule was written nowhere a worker reads.
+- **No skill asks for id names, but factory's templates model them.** The QA plan and the slice's **Source** line key everything by FR (`assets/docs/slice.scaffold.md:19`). The harness template says "Name files by feature id" (`skills/harness/references/skill-template.md:72`).
+
+Counts, spread, harm and seven options are in [research.md § 11](research.md). Whether this PRD covers names is OPEN-7.
 
 **Leaves alone:** prose in `docs/`, READMEs, commit messages and PR bodies; per-language linters.
 
@@ -221,7 +228,12 @@ Verify after each batch with the gate, as `/prune` does.
   - **Recommended:** ban them. In both field repos these headers spread fastest.
 - **OPEN-6** — Should the cleanup also run on cody-agent and arca-api now?
   - **Recommended:** no, not in this PRD; each runs as its own feature once the skill ships.
-  - The one exception is the wrong security comment in cody (`DynamicSetResolver.php:140`). It goes on cody's board now, not later.
+  - The wrong security comment in cody (`DynamicSetResolver.php:140`) is already on cody's board (`docs/ideas.md`, parked 2026-09-06). It needs a fix there, not here.
+- **OPEN-7** — Does this PRD cover plan ids in names too (tests, fixtures, classes, strings), or only comments?
+  - **Same PRD:** same root cause, same rule (FR-1 grows a naming line), same check (FR-3 also scans non-comment lines outside `docs/`), same cleanup (FR-5). Cost: FR-3 needs an allowlist for factory's own domain words (PRD, slice, checkpoint).
+  - **Separate PRD:** it keeps 006 small, but two rules ship apart, and the templates that model ids get edited twice.
+  - **Also open inside it:** whether the QA plan alone maps FR to test (C in research § 11). Then `--filter=FR-157` stops working.
+  - Not recommended yet: the owner will decide after reading § 11.
 
 ## 9. QA plan
 
