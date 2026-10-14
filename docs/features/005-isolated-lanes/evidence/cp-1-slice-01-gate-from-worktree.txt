@@ -1,0 +1,10 @@
+$ cd /tmp/cp1-gate.7iJK/lane-1 && ./gate.sh
+FAIL tests/fake.rs: expected 2 got 3
+exit 1
+$ ./gate.sh   # main tree, script consumed
+exit 0
+lane-1 has scenario/: no
+$ cat /tmp/cp1-gate.7iJK/main/scenario/gate.log
+1791944844 gate 1 /tmp/cp1-gate.7iJK/lane-1 62bacab7a3d993ebaee78f7703675e0704c1198b
+1791944844 gate 0 /tmp/cp1-gate.7iJK/main 62bacab7a3d993ebaee78f7703675e0704c1198b
+HEAD: 62bacab7a3d993ebaee78f7703675e0704c1198b

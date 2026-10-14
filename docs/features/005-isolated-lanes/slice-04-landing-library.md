@@ -3,7 +3,8 @@
 **Source**: [`prd.md`](prd.md) → §5 FR-3 (the lane committed whole, the cherry-pick onto the feature tip, a dirty main tree, the `refs/factory/` ref), §10's per-role protected files as FR-3 quotes them, §13 OPEN-2. **Depends on**: nothing. It is a library nothing calls yet; slice 07 wires it into the driver for build workers, slices 08 to 10 for the other roles.
 **Created**: 2026-10-14
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**: built `src/land.rs`. `commit_lane` does `reset --soft` to the base, then `add -A`, unstages the drop lists, commits and sets `update-ref`. `land` checks the branch hold, then dirty paths (`status --porcelain --untracked-files=all`, board files aside), then conflicts (`merge-tree --write-tree --name-only`, no tree touched). It then runs `cherry-pick --no-commit`, adds the board files and commits by pathspec with `-C <sha>`, and deletes the `refs/factory/` refs at the sha. 10 unit tests cover acceptance 1(a)-(e) and 2(a)-(f). `commit::held` became `pub(crate)` so the landing refuses the way `commit` does. Diffs run with `--no-renames`, so a `git mv` names both of its paths. Inner loop: 4 runs, 3 red, about 3 min. The first red was a clippy collapsible-if in `land.rs`. The other two were sibling slices' half-written `src/lanes.rs` (fmt) and `tests/docs_v3.rs` (an unused variable), not this slice's code. `cargo test` was green on every run that got that far. Deviation: AD-1, the drop list split into `board` and `protected`.
+Prove (CP-1): no row of its own. The gate was green over it at checkpoint 1 (`land::tests`). FR-3 and FR-4 stay unreached until slices 07 and 08 call it.
 
 **Slice**: After this slice `src/land.rs` can take a lane worktree and put its work on the feature tip as one commit. `commit_lane` stages everything in the lane with `git add -A`, unstages the board files and the role's protected files, squashes any commit the worker made itself onto the lane's base, makes one commit with the given message, and keeps it reachable under `refs/factory/`. `land` cherry-picks that commit onto the main tree's HEAD and adds the main tree's board files to the same commit. It returns `Landed`, `Conflict` with the conflicted paths and the main tree untouched, or `Dirty` with the owner's paths it would have overwritten. Nothing in the driver calls it yet, so every run behaves as today.
 
@@ -63,3 +64,12 @@
 
 ### 4. Prove — none
 No row of [`prd.md`](prd.md) §14 is this slice's: it is a library nothing calls yet. FR-3's rows are proven through the driver by slice 07, FR-4's by slice 08. The checkpoint runs the gate over it.
+
+**Code-review fixes (2026-10-14).**
+
+- A commit that failed after the pick (a hook, a lock) left the pick half applied in the main tree, which read as the owner's dirty work. `land` now restores the picked paths and the board files from HEAD and returns the error.
+- A slice that changed a file the tip had renamed was checked and committed under the old name. The picked paths now come from `git merge-tree`'s tree against HEAD, so the change lands under the new name.
+- The dirty check missed an ignored file sitting under a picked path, which the pick then overwrote. It now passes `--ignored=matching` and parks.
+- `commit_lane` reset the branch a worker had switched to in its lane. It now detaches the lane's HEAD first, so no branch moves.
+- A path such as `[a].txt` read as a glob and matched other files. Every git call of the landing sets `GIT_LITERAL_PATHSPECS=1`.
+- A lane commit that changes nothing, or nothing on the tip, errors by name instead of landing an empty commit (AD-24).

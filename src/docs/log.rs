@@ -89,6 +89,10 @@ pub struct Entry {
     pub reference: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verdict: Option<Verdict>,
+    /// A checkpoint's covered slices (PRD-005 FR-7); empty on every other
+    /// kind and on a checkpoint written before the field existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub covers: Vec<u32>,
     #[serde(default)]
     pub title: String,
     #[serde(default)]
@@ -107,6 +111,7 @@ impl Entry {
             flag: None,
             reference: None,
             verdict: None,
+            covers: Vec::new(),
             title: title.to_string(),
             body: body.to_string(),
         }
@@ -189,6 +194,9 @@ fn validate(e: &Entry) -> Result<()> {
         && !PHASES.contains(&p.as_str())
     {
         return refuse(format!("phase \"{p}\" is not one of {}", PHASES.join(", ")));
+    }
+    if !e.covers.is_empty() && e.kind != Kind::Checkpoint {
+        return refuse(format!("--covers is for a checkpoint, not a {kind}"));
     }
     if e.kind == Kind::Checkpoint && e.slice.is_none() {
         return refuse("a checkpoint needs --slice, the last slice it covers".into());

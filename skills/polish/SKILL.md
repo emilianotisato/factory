@@ -102,13 +102,12 @@ Follow-up questions only if an answer opens a genuinely new fork.
 
 Apply the Fix bucket plus the user's answers. **Write regression tests freely** — do not economise on them here. That is what step 7 is for.
 
-A long Fix list splits across subagents **only when their file sets do not overlap** — server and UI, say. Two agents editing one file in a shared checkout produce a silent merge; when the sets touch, run them one after another. A split also shares everything that is not a file, so give each fixer these rules in its prompt:
+A long Fix list may go to subagents, **one at a time, never two at once**: each fixer starts once the one before it has returned. Give each fixer these rules in its prompt:
 
-- **Tests in a fixer depend on lanes.** `factory docs lanes` says what the project has. **With lanes declared, hand each fixer one** — `docs/reference/lanes/lane-{L}.md` is its database, its ports, its scratch paths — and it runs the tests it touches freely; a lane is a separate process, so a suite that cannot run `--parallel` is still fine. **With `lanes: 1`, no test suite runs in a fixer**: they would share one database and whatever probe files the suite writes into the tree. Fixers then run the single tests they touch, one process at a time. Either way you run the full gate once, after all of them return.
+- **Each fixer runs the tests it touches.** You run the full gate once, after all of them return.
 - **Run static analysis on the whole project, not per file.** It is read-only, so it is safe in parallel. Per-file runs miss errors that only show in class context.
-- **A red result may be a sibling's half-finished edit.** Wait and re-run; do not fix code outside your own set.
 - **Report what you could not reach, not a workaround.** A route the other side owns, or a key the other side broke. When all fixers are back, reconcile what the split stranded before you run the gate.
-- **Each fixer logs its own decisions** with `factory docs log add <NNN> --kind decision --phase polish --flag decide|fyi --title "{question}" --body-file -`, the body holding `**Chose:**`, `**Over:**`, `**Because:**` and `**Undo:**`. The tool numbers each entry under the feature's lock, so fixers running at once never collide. Never hand a fixer an `AD` range or a fragment file: v3 has no `log merge`, and one run re-added eleven fragment entries by script.
+- **Each fixer logs its own decisions** with `factory docs log add <NNN> --kind decision --phase polish --flag decide|fyi --title "{question}" --body-file -`, the body holding `**Chose:**`, `**Over:**`, `**Because:**` and `**Undo:**`. The tool numbers each entry under the feature's lock, so entries never collide. Never hand a fixer an `AD` range or a fragment file: v3 has no `log merge`, and one run re-added eleven fragment entries by script.
 
 Run the gate:
 

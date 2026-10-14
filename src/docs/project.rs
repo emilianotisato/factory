@@ -1,6 +1,7 @@
 //! `docs/project.toml` `[docs]` (PRD-002 FR-13): the knobs `docs/index.md`
 //! frontmatter held in v2. The file is shared with the driver's `[run]` and
-//! `[workers.<role>]` tables (`config.rs`); this reader looks at `[docs]` only.
+//! `[workers.<role>]` tables (`config.rs`); this reader looks at `[docs]`, and
+//! `seed` at `[lanes] seed` (PRD-005 FR-1).
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -80,6 +81,32 @@ pub fn load(root: &Path) -> Result<Option<Project>> {
         prd_max_kb: float("prd_max_kb", 120.0),
         slice_max_kb: float("slice_max_kb", 30.0),
     }))
+}
+
+/// `[lanes] seed` (PRD-005 FR-1): the repo-relative paths of ignored state
+/// each lane gets. `None` when the file, the table or the key is absent;
+/// `seed = []` is a declaration, `Some` of nothing. Non-string items are
+/// dropped.
+pub fn seed(root: &Path) -> Result<Option<Vec<String>>> {
+    let p = path(root);
+    let text = match fs::read_to_string(&p) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(io(format!("read {}", p.display()))(e)),
+    };
+    let table: toml::Table = text.parse().map_err(|source| Error::Toml {
+        what: format!("read {}", p.display()),
+        source,
+    })?;
+    let Some(toml::Value::Array(items)) = table.get("lanes").and_then(|l| l.get("seed")) else {
+        return Ok(None);
+    };
+    Ok(Some(
+        items
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect(),
+    ))
 }
 
 /// The repo is on v3: `docs/project.toml` parses and `[docs] framework = 3`.
@@ -184,6 +211,20 @@ mod tests {
         let d = repo("[run]\nbudget = 5\n");
         assert_eq!(load(d.path()).unwrap(), None);
         assert!(!is_v3(d.path()));
+    }
+
+    #[test]
+    fn lanes_seed_tells_absent_from_empty() {
+        let d = repo("[docs]\nframework = 3\n");
+        assert_eq!(seed(d.path()).unwrap(), None, "no table");
+        let d = repo("[docs]\nframework = 3\n[lanes]\nother = 1\n");
+        assert_eq!(seed(d.path()).unwrap(), None, "no key");
+        let d = repo("[docs]\nframework = 3\n[lanes]\nseed = []\n");
+        assert_eq!(seed(d.path()).unwrap(), Some(vec![]));
+        let d = repo("[docs]\nframework = 3\n[lanes]\nseed = [\"target\"]\n");
+        assert_eq!(seed(d.path()).unwrap(), Some(vec!["target".to_string()]));
+        let none = tempfile::tempdir().unwrap();
+        assert_eq!(seed(none.path()).unwrap(), None, "no file");
     }
 
     const SHARED: &str = "# shared by the driver and the docs tool\n[docs]\nframework = 3\ngate = \"./gate.sh\"\n\n[run]\nbudget = 5\n\n[workers.polish]\nmodel = \"sonnet\"   # cheap\n";

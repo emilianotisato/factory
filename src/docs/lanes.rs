@@ -22,10 +22,6 @@ setup: {setup}
 This lane is yours for the whole slice. Nothing here is shared with a sibling lane.
 
 Run `setup` above before the first test run; it is written to be safe to run twice.
-
-**What this lane does not isolate** — name every shared path a sibling could be writing
-at the same time (a build output, a manifest, a fixture directory), and what to do
-instead of touching it. Delete this paragraph only when the answer is genuinely nothing.
 ",
         env.join(", ")
     )
@@ -113,7 +109,9 @@ pub fn run(
                     "  · {kept} existing lane file(s) left as they are\n"
                 ));
             }
-            text.push_str("\nNow fill each file's prose: what the lane does NOT isolate, and what an agent must not touch while a sibling runs.\n");
+            text.push_str(
+                "\nThen `factory lanes up --prove` runs the inner loop in every lane at once.\n",
+            );
         }
         Some(other) => {
             return Err(Error::Msg(format!(

@@ -180,6 +180,9 @@ enum LogVerb {
         /// preflight, slicing, checkpoint, polish, pr or ci
         #[arg(long)]
         phase: Option<String>,
+        /// Checkpoints only: every slice it covered, comma-separated
+        #[arg(long, value_delimiter = ',')]
+        covers: Vec<u32>,
         /// The markdown body: a path, or `-` for stdin
         #[arg(long)]
         body_file: Option<String>,
@@ -218,6 +221,7 @@ pub fn docs(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Result
 
 fn route(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Result<i32> {
     let root = paths::repo_root(Path::new(".")).unwrap_or_else(|_| PathBuf::from("."));
+    let root = board_root(&root, args).unwrap_or(root);
     let verb = args.first().map(String::as_str);
     if matches!(verb, None | Some("-h" | "--help")) {
         let help = DocsCli::command().render_help().to_string();
@@ -244,6 +248,25 @@ fn route(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Result<i3
         "not on the framework: {} has neither docs/project.toml with [docs] framework = 3 nor docs/index.md — run `factory docs init`",
         root.display()
     )))
+}
+
+/// PRD-005 FR-2: a lane worker writes the main tree's board. With
+/// `FACTORY_BOARD` naming a tree of the same repo as `root`, the board verbs
+/// (`set`, `log add`, `retro`, `status`) run there; every other verb stays
+/// on cwd. The same-repo check keeps a fixture's `docs set`, run by
+/// `cargo test` inside a live worker, off that worker's board.
+fn board_root(root: &Path, args: &[String]) -> Option<PathBuf> {
+    let verb: Vec<&str> = args.iter().take(2).map(String::as_str).collect();
+    if !matches!(
+        verb.as_slice(),
+        ["set" | "retro" | "status", ..] | ["log", "add"]
+    ) {
+        return None;
+    }
+    let board = std::env::var_os(crate::worker::BOARD_ENV).filter(|v| !v.is_empty())?;
+    let board = paths::repo_root(Path::new(&board)).ok()?;
+    let same = paths::git_common_dir(&board)? == paths::git_common_dir(root)?;
+    same.then_some(board)
 }
 
 fn native(root: &Path, args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Result<i32> {
@@ -388,6 +411,7 @@ fn dispatch(root: &Path, verb: Verb, out: &mut dyn Write, err: &mut dyn Write) -
                 reference,
                 verdict,
                 phase,
+                covers,
                 body_file,
             } => {
                 let body = match body_file.as_deref() {
@@ -400,6 +424,7 @@ fn dispatch(root: &Path, verb: Verb, out: &mut dyn Write, err: &mut dyn Write) -
                     reference,
                     verdict,
                     phase,
+                    covers,
                     ..log::Entry::new(kind, &title, &body)
                 };
                 let dir = live_dir(root, &feature)?;

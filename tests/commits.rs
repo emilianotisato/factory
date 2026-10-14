@@ -1,10 +1,10 @@
-//! Slice 05 of PRD-001, on the v3 docs (PRD-002 slice 09): commits by
-//! pathspec (PRD §7 FR-5). A `done` slice is committed from the paths its
-//! worker's stream named plus its slice file, the feature's `state.toml` and
-//! its `log.jsonl` — never `git add -A`, so two lanes committing out of order
-//! each take only their own work; what the worker wrote without naming it is
-//! listed in a `note` entry of `log.jsonl` and left in the tree. There is no
-//! fragment and no merge: no `log-*.md` is ever written.
+//! PRD-005 slice 07: a done slice lands (FR-3). The driver commits the
+//! slice's lane whole on the lane's base, under `refs/factory/<NNN>/slice-NN`,
+//! and cherry-picks it onto the feature tip with the main tree's board files:
+//! one commit per slice, one parent, today's subject. A driver killed at
+//! either commit leaves the worker for the resume; a dirty path in the main
+//! tree parks the run. No `log-*.md` is ever written. A conflicting pick is
+//! `tests/merge.rs`'s.
 #[path = "harness/mod.rs"]
 mod harness;
 
@@ -154,14 +154,6 @@ fn board_files() -> [String; 2] {
     ]
 }
 
-/// The `Untracked leftovers` notes in `log.jsonl`.
-fn leftover_notes(fx: &Fixture) -> Vec<Value> {
-    fx.log_of("note")
-        .into_iter()
-        .filter(|e| e["title"] == "Untracked leftovers")
-        .collect()
-}
-
 /// No `log-*.md` (fragment or merged log) in the feature folder.
 fn assert_no_md_log(fx: &Fixture) {
     let md: Vec<String> = fs::read_dir(fx.path().join(FEATURE_DIR))
@@ -177,7 +169,7 @@ fn sorted(mut v: Vec<String>) -> Vec<String> {
     v
 }
 
-/// One slice's commit as FR-5 asks for it: `feat(NNN): slice-NN <title>`, no body, the
+/// One slice's landed commit: `feat(NNN): slice-NN <title>`, no body, the
 /// repo's own author, exactly the named paths plus slice file, `state.toml`
 /// and `log.jsonl`;
 /// the `slice_committed` event and the worker row name the same sha.
@@ -217,17 +209,27 @@ fn assert_slice_commit(fx: &Fixture, dir: &Path, n: u8, title: &str, code: &[&st
     sha
 }
 
-// ── tasks 1 and 2: one lane, three commits, leftovers, no markdown log ──────
+/// The `refs/factory/` refs left in the repo, one per line.
+fn factory_refs(fx: &Fixture) -> String {
+    fx.git(&["for-each-ref", "--format=%(refname)", "refs/factory/"])
+}
+
+/// The number of parents of `sha`.
+fn parents(fx: &Fixture, sha: &str) -> usize {
+    fx.git(&["rev-list", "--parents", "-n", "1", sha])
+        .split_whitespace()
+        .count()
+        - 1
+}
+
+// ── one lane: one commit per slice, no markdown log ────────────────────────
 
 #[test]
-fn each_done_slice_is_committed_by_pathspec_and_no_markdown_log_is_written() {
+fn each_done_slice_lands_as_one_commit_from_its_lane() {
     let fx = Fixture::with_index("commits-chain", &[("checkpoint_every", "10")]);
     fx.chain();
-    // Slice 01 also leaves a file no tool call names (a generator, a script):
-    // it is listed in log.jsonl and never committed (FR-5). The file its
-    // `Bash` heredoc typed out is named like a `Write`, and committed.
     fx.write_plan(&[
-        json!({"outcome": "done", "touch": ["src/lib.txt"], "stray": ["notes.txt"], "heredoc": ["src/gen/new.rs"]}),
+        json!({"outcome": "done"}),
         json!({"outcome": "done"}),
         json!({"outcome": "done"}),
         json!({"outcome": "checkpoint"}),
@@ -248,35 +250,11 @@ fn each_done_slice_is_committed_by_pathspec_and_no_markdown_log_is_written() {
             "docs(001): ship PRD-001",
         ]
     );
-    assert_slice_commit(&fx, &dir, 1, "A", &["src/gen/new.rs", "src/lib.txt"]);
-    assert_slice_commit(&fx, &dir, 2, "B", &["src/lib.txt"]);
-    assert_slice_commit(&fx, &dir, 3, "C", &["src/lib.txt"]);
+    assert_slice_commit(&fx, &dir, 1, "A", &["src/slice-01.txt"]);
+    assert_slice_commit(&fx, &dir, 2, "B", &["src/slice-02.txt"]);
+    assert_slice_commit(&fx, &dir, 3, "C", &["src/slice-03.txt"]);
 
-    // The stray file: on disk, in no commit, named in a log.jsonl note.
-    assert!(fx.path().join("notes.txt").exists());
-    assert!(
-        !fx.git(&["log", "--all", "--format=", "--name-only"])
-            .lines()
-            .any(|l| l == "notes.txt"),
-        "notes.txt was committed"
-    );
-    let notes = leftover_notes(&fx);
-    assert_eq!(notes.len(), 1, "{notes:?}");
-    assert_eq!(notes[0]["slice"], 1);
-    assert!(
-        notes[0]["body"].as_str().unwrap().contains("- notes.txt"),
-        "{notes:?}"
-    );
-    let leftovers: Vec<Value> = events(&dir)
-        .into_iter()
-        .filter(|e| e["kind"] == "untracked_leftovers")
-        .collect();
-    assert_eq!(leftovers.len(), 1, "{leftovers:?}");
-    assert_eq!(leftovers[0]["slice"], 1);
-    assert_eq!(leftovers[0]["files"], json!(["notes.txt"]));
-    let blob = leftovers[0]["blobs"]["notes.txt"].as_str().unwrap();
-    assert_eq!(blob, fx.git(&["hash-object", "notes.txt"]).trim());
-    // Each slice's decision is in log.jsonl, ids allocated in commit order.
+    // Each slice's decision is in log.jsonl, ids allocated in landing order.
     let ads: Vec<(String, u64)> = fx
         .log_of("decision")
         .iter()
@@ -317,8 +295,9 @@ fn each_done_slice_is_committed_by_pathspec_and_no_markdown_log_is_written() {
         "log_merged is never emitted"
     );
 
-    // The tree after: only the leftover is unaccounted for, and git agrees.
-    assert_eq!(fx.git(&["status", "--porcelain"]), "?? notes.txt\n");
+    // Nothing left in the main tree, and no lane commit waits on a ref.
+    assert_eq!(fx.git(&["status", "--porcelain"]), "");
+    assert_eq!(factory_refs(&fx), "");
     fx.git(&["fsck", "--strict"]);
 
     let k = kinds(&dir);
@@ -328,7 +307,6 @@ fn each_done_slice_is_committed_by_pathspec_and_no_markdown_log_is_written() {
         [
             "slice_spawned",
             "slice_done",
-            "untracked_leftovers",
             "slice_committed",
             "slice_spawned",
             "slice_done",
@@ -350,17 +328,17 @@ fn each_done_slice_is_committed_by_pathspec_and_no_markdown_log_is_written() {
     );
 }
 
-// ── task 3: two lanes, commits interleave ────────────────────────────────────
+// ── two lanes: landings interleave ─────────────────────────────────────────
 
 #[test]
-fn two_lanes_commit_out_of_order_and_each_commit_takes_only_its_own_files() {
+fn two_lanes_land_out_of_order_and_each_commit_takes_only_its_own_files() {
     let fx = Fixture::with_index("commits-two-lanes", &[("checkpoint_every", "10")]);
-    // 01 and 02 start together; 02 finishes first and commits while 01 is
-    // still writing in the same tree. 03 follows 02.
+    // 01 and 02 start together; 02 finishes first and lands while 01 is
+    // still writing in its own lane. 03 follows 02.
     fx.write_plan(&[
-        json!({"outcome": "done", "delay_ms": 800, "touch": ["src/a.txt"]}),
-        json!({"outcome": "done", "delay_ms": 200, "touch": ["src/b.txt"]}),
-        json!({"outcome": "done", "touch": ["src/c.txt"]}),
+        json!({"outcome": "done", "delay_ms": 800}),
+        json!({"outcome": "done", "delay_ms": 200}),
+        json!({"outcome": "done"}),
         json!({"outcome": "checkpoint"}),
     ]);
     let dir = start(&fx);
@@ -377,10 +355,6 @@ fn two_lanes_commit_out_of_order_and_each_commit_takes_only_its_own_files() {
         at("feat(001): slice-02 B") < at("feat(001): slice-01 A"),
         "{subjects:?}"
     );
-    assert_eq!(
-        subjects.last().map(String::as_str),
-        Some("docs(001): ship PRD-001")
-    );
     assert_eq!(subjects.len(), 7, "{subjects:?}");
     assert!(
         subjects.ends_with(&[
@@ -390,10 +364,13 @@ fn two_lanes_commit_out_of_order_and_each_commit_takes_only_its_own_files() {
         ]),
         "{subjects:?}"
     );
-    assert_slice_commit(&fx, &dir, 1, "A", &["src/a.txt"]);
-    assert_slice_commit(&fx, &dir, 2, "B", &["src/b.txt"]);
-    assert_slice_commit(&fx, &dir, 3, "C", &["src/c.txt"]);
+    // One commit per slice, one parent each: a pick, never a merge.
+    for (n, title) in [(1, "A"), (2, "B"), (3, "C")] {
+        let sha = assert_slice_commit(&fx, &dir, n, title, &[&format!("src/slice-{n:02}.txt")]);
+        assert_eq!(parents(&fx, &sha), 1, "slice {n:02}");
+    }
     assert_eq!(fx.git(&["status", "--porcelain"]), "");
+    assert_eq!(factory_refs(&fx), "");
     fx.git(&["fsck", "--strict"]);
     let k = kinds(&dir);
     assert_eq!(count(&k, "slice_committed"), 3);
@@ -401,50 +378,132 @@ fn two_lanes_commit_out_of_order_and_each_commit_takes_only_its_own_files() {
     assert_eq!(k.last().map(String::as_str), Some("run_finished"));
 }
 
-// ── polish: the commit lands before the worker's outcome is saved ───────────
+// ── a slice edited only through Bash lands whole ───────────────────────────
 
 #[test]
-fn a_driver_killed_at_the_slice_commit_leaves_the_worker_for_the_resume() {
-    let fx = Fixture::with_index("commit-kill", &[("checkpoint_every", "10")]);
+fn a_slice_edited_only_through_bash_lands_every_path_byte_equal() {
+    let fx = Fixture::with_index("commits-bash-only", &[("checkpoint_every", "10")]);
+    fx.chain();
+    fs::write(fx.path().join("src/old.txt"), "old\n").unwrap();
+    fs::write(fx.path().join("src/edit.txt"), "one\ntwo\n").unwrap();
+    fx.git(&["add", "src/old.txt", "src/edit.txt"]);
+    fx.git(&["commit", "-q", "-m", "chore: files to edit"]);
+    // No tool call names a file: a rename, a redirect, an inline rewrite, a
+    // new directory and a symlink to it. The lane's result is copied out
+    // before the worker returns, to compare with what lands.
+    let sh = "git mv src/old.txt src/renamed.txt \
+              && printf 'new\\n' > src/new.txt \
+              && sed -i 's/two/TWO/' src/edit.txt \
+              && mkdir -p gen/dir && printf 'inner\\n' > gen/dir/inner.txt \
+              && ln -s dir gen/link \
+              && mkdir -p \"$FACTORY_STUB_DIR/lane-copy\" \
+              && cp -a src gen \"$FACTORY_STUB_DIR/lane-copy/\"";
+    fx.write_plan(&[
+        json!({"outcome": "done", "touch": [], "sh": sh}),
+        json!({"outcome": "done"}),
+        json!({"outcome": "done"}),
+        json!({"outcome": "checkpoint"}),
+    ]);
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "finished", 40);
+
+    let sha = sha_of(&fx, "feat(001): slice-01 A");
+    let stat = fx.git(&["show", "--stat=200", "--format=", &sha]);
+    for p in [
+        "renamed.txt",
+        "src/new.txt",
+        "src/edit.txt",
+        "gen/dir/inner.txt",
+        "gen/link",
+    ] {
+        assert!(stat.contains(p), "{p} not in the slice commit:\n{stat}");
+    }
+    assert_eq!(fx.git(&["status", "--porcelain"]), "");
+
+    // The landed commit alone holds what the lane held.
+    let alone = fx.stub_dir().join("alone");
+    fx.git(&[
+        "worktree",
+        "add",
+        "-q",
+        "--detach",
+        alone.to_str().unwrap(),
+        &sha,
+    ]);
+    let copy = fx.stub_dir().join("lane-copy");
+    for f in [
+        "src/renamed.txt",
+        "src/new.txt",
+        "src/edit.txt",
+        "gen/dir/inner.txt",
+    ] {
+        assert_eq!(
+            fs::read(alone.join(f)).unwrap(),
+            fs::read(copy.join(f)).unwrap(),
+            "{f}"
+        );
+    }
+    assert!(!alone.join("src/old.txt").exists());
+    let link = fs::read_link(alone.join("gen/link")).unwrap();
+    assert_eq!(link, fs::read_link(copy.join("gen/link")).unwrap());
+    assert_eq!(link, Path::new("dir"));
+    assert_eq!(fs::read(alone.join("src/edit.txt")).unwrap(), b"one\nTWO\n");
+}
+
+// ── a driver killed mid-landing leaves the worker for the resume ───────────
+
+/// The `kill_at`-th `git commit` from now kills the driver (the hook's
+/// grandparent) in its `hook`: a `pre-commit` kill fails that commit, a
+/// `post-commit` one leaves it made. Hooks and the counter live in the
+/// common dir, which every lane shares.
+fn kill_at_commit(fx: &Fixture, hook: &str, kill_at: u32) {
+    let hook = fx.path().join(".git/hooks").join(hook);
+    fs::write(
+        &hook,
+        format!(
+            "#!/bin/sh\n\
+             c=\"$(git rev-parse --git-common-dir)/commits-seen\"\n\
+             n=$(( $(cat \"$c\" 2>/dev/null || echo 0) + 1 ))\n\
+             echo \"$n\" > \"$c\"\n\
+             [ \"$n\" = {kill_at} ] || exit 0\n\
+             kill -9 \"$(ps -o ppid= -p \"$PPID\" | tr -d ' ')\"\n\
+             exit 1\n"
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+}
+
+/// Slice 01 done, the driver killed at its `kill_at`-th commit, the run
+/// resumed: one slice-01 commit, a settled worker, one `slice_done`.
+fn killed_and_resumed(name: &str, hook: &str, kill_at: u32, after_kill: impl Fn(&Fixture)) {
+    let fx = Fixture::with_index(name, &[("checkpoint_every", "10")]);
     fx.chain();
     fx.write_plan(&[
         json!({"outcome": "done"}),
         json!({"outcome": "done", "delay_ms": 3000}),
     ]);
-    // The first `git commit` kills the driver (the hook's grandparent) and
-    // fails; every later one passes.
-    let hook = fx.path().join(".git/hooks/pre-commit");
-    fs::write(
-        &hook,
-        "#!/bin/sh\n\
-         marker=\"$(git rev-parse --git-dir)/killed-once\"\n\
-         [ -e \"$marker\" ] && exit 0\n\
-         touch \"$marker\"\n\
-         kill -9 \"$(ps -o ppid= -p \"$PPID\" | tr -d ' ')\"\n\
-         exit 1\n",
-    )
-    .unwrap();
-    fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    kill_at_commit(&fx, hook, kill_at);
 
     let dir = start(&fx);
     let driver = state(&dir)["pid"].as_u64().unwrap() as u32;
     wait_until(&fx, &dir, "the driver to die at the commit", 20, || {
         !pid_alive(driver)
     });
-    // Slice 01 is done and uncommitted, and its worker is not settled.
+    // Slice 01 is done and its worker is not settled.
     assert_eq!(fx.slice_status(1), "done");
-    assert!(!subjects(&fx).iter().any(|s| s == "feat(001): slice-01 A"));
     assert_eq!(state(&dir)["workers"][0]["outcome"], Value::Null);
     assert_eq!(count(&kinds(&dir), "slice_done"), 1);
+    after_kill(&fx);
 
     let out = factory(&fx, &["run", "001"]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
-    wait_until(&fx, &dir, "slice 01 to be committed", 20, || {
+    wait_until(&fx, &dir, "slice 01 to land", 20, || {
         count(&kinds(&dir), "slice_committed") == 1
     });
     let sha = sha_of(&fx, "feat(001): slice-01 A");
     assert!(files_of(&fx, &sha).contains(&slice_rel(&fx, 1)));
-    // The commit lands before the outcome: wait for the settle too.
+    // The landing comes before the outcome: wait for the settle too.
     wait_until(&fx, &dir, "slice 01's worker to be settled", 20, || {
         !state(&dir)["workers"][0]["outcome"].is_null()
     });
@@ -459,230 +518,96 @@ fn a_driver_killed_at_the_slice_commit_leaves_the_worker_for_the_resume() {
     let out = factory(&fx, &["stop", &run_id(&dir)]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     wait_phase(&fx, &dir, "finished", 30);
+    assert_eq!(
+        subjects(&fx)
+            .iter()
+            .filter(|s| *s == "feat(001): slice-01 A")
+            .count(),
+        1
+    );
+    assert_eq!(factory_refs(&fx), "");
 }
 
 #[test]
-fn a_resumed_driver_judges_an_orphans_leftovers_against_its_spawn_baseline() {
-    let fx = Fixture::with_index("orphan-baseline", &[("checkpoint_every", "10")]);
-    fx.chain();
-    // Slice 01 leaves notes.txt untracked; slice 02's worker outlives a
-    // killed driver, so the resumed one settles it.
+fn a_driver_killed_at_the_lane_commit_leaves_the_worker_for_the_resume() {
+    // The first commit is the lane's: nothing is on a ref yet, and the
+    // resume commits the lane before it lands it.
+    killed_and_resumed("commit-kill-lane", "pre-commit", 1, |fx| {
+        assert!(!subjects(fx).iter().any(|s| s == "feat(001): slice-01 A"));
+        assert_eq!(factory_refs(fx), "");
+    });
+}
+
+#[test]
+fn a_driver_killed_at_the_landing_leaves_its_ref_for_the_resume() {
+    // The second is the landing's: the lane commit is on its ref, the pick
+    // half done in the main tree, and the resume lands the ref.
+    killed_and_resumed("commit-kill-landing", "pre-commit", 2, |fx| {
+        assert!(!subjects(fx).iter().any(|s| s == "feat(001): slice-01 A"));
+        assert_eq!(factory_refs(fx), "refs/factory/001/slice-01\n");
+    });
+}
+
+#[test]
+fn a_driver_killed_after_the_landing_commit_records_it_on_the_resume() {
+    // The landing is made but not recorded, its ref not yet deleted: the
+    // resume finds it on the tip and picks nothing twice.
+    killed_and_resumed("commit-kill-landed", "post-commit", 2, |fx| {
+        assert!(subjects(fx).iter().any(|s| s == "feat(001): slice-01 A"));
+        assert_eq!(factory_refs(fx), "refs/factory/001/slice-01\n");
+    });
+}
+
+// ── a dirty main tree parks the run ────────────────────────────────────────
+
+#[test]
+fn a_dirty_path_in_the_main_tree_parks_the_landing_and_keeps_the_owners_edit() {
+    let fx = Fixture::with_index("commits-dirty", &[("checkpoint_every", "10")]);
+    // 01 and 02 start together; 03 depends on 02. 01 is held by the owner's
+    // file where it lands; 02 lands meanwhile, and 03 must not spawn.
     fx.write_plan(&[
-        json!({"outcome": "done", "stray": ["notes.txt"]}),
+        json!({"outcome": "done", "delay_ms": 1500}),
         json!({"outcome": "done", "delay_ms": 3000}),
-    ]);
-    let dir = start(&fx);
-    let driver = state(&dir)["pid"].as_u64().unwrap() as u32;
-    // `slice_spawned` is emitted once the worker is in state.json: a kill
-    // before that leaves an orphan the resumed driver cannot settle.
-    wait_until(&fx, &dir, "slice 02's worker to spawn", 20, || {
-        count(&kinds(&dir), "slice_spawned") == 2 && fx.slice_status(2) == "building"
-    });
-    assert_eq!(unsafe { libc::kill(driver as i32, libc::SIGKILL) }, 0);
-    wait_until(&fx, &dir, "the driver to die", 5, || !pid_alive(driver));
-    wait_until(&fx, &dir, "the orphan to finish slice 02", 20, || {
-        fx.slice_status(2) == "done"
-    });
-
-    let out = factory(&fx, &["run", "001"]);
-    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
-    wait_until(&fx, &dir, "slice 02 to be committed", 20, || {
-        count(&kinds(&dir), "slice_committed") == 2
-    });
-    // notes.txt was there before slice 02's worker: slice 01's leftover only.
-    let leftovers: Vec<Value> = events(&dir)
-        .into_iter()
-        .filter(|e| e["kind"] == "untracked_leftovers")
-        .collect();
-    assert_eq!(leftovers.len(), 1, "{leftovers:?}");
-    assert_eq!(leftovers[0]["slice"], 1);
-    let notes = leftover_notes(&fx);
-    assert!(notes.iter().all(|e| e["slice"] == 1), "{notes:?}");
-
-    let out = factory(&fx, &["stop", &run_id(&dir)]);
-    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
-    wait_phase(&fx, &dir, "finished", 30);
-}
-
-// ── AD-20007: tracked files no tool call named ──────────────────────────────
-
-/// A tracked `src/extra.txt` a worker can change without naming it.
-fn track_extra(fx: &Fixture) {
-    fs::write(fx.path().join("src/extra.txt"), "extra\n").unwrap();
-    fx.git(&["add", "src/extra.txt"]);
-    fx.git(&["commit", "-q", "-m", "chore: track extra"]);
-}
-
-#[test]
-fn a_lone_workers_unnamed_tracked_change_goes_in_its_slice_commit() {
-    let fx = Fixture::with_index("commits-sweep-alone", &[("checkpoint_every", "10")]);
-    fx.chain();
-    track_extra(&fx);
-    // Slice 01 changes a tracked file no tool call names (a `sed -i`, a
-    // formatter); nothing else runs beside it.
-    fx.write_plan(&[
-        json!({"outcome": "done", "stray": ["src/extra.txt"]}),
-        json!({"outcome": "done"}),
         json!({"outcome": "done"}),
         json!({"outcome": "checkpoint"}),
     ]);
     let dir = start(&fx);
-    wait_phase(&fx, &dir, "finished", 40);
+    let owned = fx.path().join("src/slice-01.txt");
+    fs::write(&owned, "owner\n").unwrap();
 
-    assert_slice_commit(&fx, &dir, 1, "A", &["src/extra.txt", "src/lib.txt"]);
-    assert_slice_commit(&fx, &dir, 2, "B", &["src/lib.txt"]);
-    assert_eq!(count(&kinds(&dir), "untracked_leftovers"), 0);
-    assert_eq!(fx.git(&["status", "--porcelain"]), "");
-    assert!(
-        driver_log(&dir).contains("changed 1 tracked file(s) no tool call named"),
+    let park = "slice 01 cannot land: src/slice-01.txt changed in the main tree";
+    wait_until(&fx, &dir, "slice 01's landing to park", 20, || {
+        driver_log(&dir).contains(park)
+    });
+    wait_phase(&fx, &dir, "waiting-owner", 10);
+    wait_until(&fx, &dir, "slice 02 to land while 01 waits", 20, || {
+        count(&kinds(&dir), "slice_committed") == 1
+    });
+    std::thread::sleep(Duration::from_millis(1000));
+    assert_eq!(fs::read_to_string(&owned).unwrap(), "owner\n");
+    assert_eq!(fx.slice_status(3), "pending");
+    assert_eq!(fx.calls().len(), 2, "nothing spawns while a landing waits");
+    assert_eq!(factory_refs(&fx), "refs/factory/001/slice-01\n");
+
+    fs::remove_file(&owned).unwrap();
+    wait_phase(&fx, &dir, "finished", 40);
+    assert_eq!(
+        driver_log(&dir).matches(park).count(),
+        1,
         "{}",
         driver_log(&dir)
     );
-}
-
-#[test]
-fn a_listed_file_committed_since_and_changed_again_goes_in_the_next_commit() {
-    let fx = Fixture::with_index("commits-relisted", &[("checkpoint_every", "10")]);
-    fx.chain();
-    // Run B of 2026-10-11: slice 02 left files, the owner committed them,
-    // and polish's later edits to them went in no commit and on no list.
-    fx.write_plan(&[
-        json!({"outcome": "done", "stray": ["notes.txt"]}),
-        json!({"outcome": "done", "commit": ["notes.txt"]}),
-        json!({"outcome": "done", "stray": ["notes.txt"]}),
-        json!({"outcome": "checkpoint"}),
-    ]);
-    let dir = start(&fx);
-    wait_phase(&fx, &dir, "finished", 40);
-
-    assert_eq!(count(&kinds(&dir), "untracked_leftovers"), 1);
-    assert_slice_commit(&fx, &dir, 3, "C", &["notes.txt", "src/lib.txt"]);
-    assert_eq!(fx.git(&["status", "--porcelain"]), "");
-}
-
-#[test]
-fn an_unnamed_tracked_change_beside_a_live_sibling_is_listed_not_committed() {
-    let fx = Fixture::with_index("commits-sweep-sibling", &[("checkpoint_every", "10")]);
-    track_extra(&fx);
-    // 01 and 02 start together; 01 returns while 02 still runs, so whose
-    // the tracked change is cannot be told: it is listed, not committed.
-    fx.write_plan(&[
-        json!({"outcome": "done", "touch": ["src/a.txt"], "stray": ["src/extra.txt"]}),
-        json!({"outcome": "done", "delay_ms": 1500, "touch": ["src/b.txt"]}),
-        json!({"outcome": "done", "touch": ["src/c.txt"]}),
-        json!({"outcome": "checkpoint"}),
-    ]);
-    let dir = start(&fx);
-    wait_phase(&fx, &dir, "finished", 40);
-
-    assert_slice_commit(&fx, &dir, 1, "A", &["src/a.txt"]);
-    assert_slice_commit(&fx, &dir, 2, "B", &["src/b.txt"]);
-    assert_slice_commit(&fx, &dir, 3, "C", &["src/c.txt"]);
-    let leftovers: Vec<Value> = events(&dir)
-        .into_iter()
-        .filter(|e| e["kind"] == "untracked_leftovers")
-        .collect();
-    assert_eq!(leftovers.len(), 1, "{leftovers:?}");
-    assert_eq!(leftovers[0]["slice"], 1);
-    assert_eq!(leftovers[0]["files"], json!(["src/extra.txt"]));
-    // In no commit after the one that tracked it, still modified.
-    let touching = fx.git(&["log", "--format=%s", "--", "src/extra.txt"]);
-    assert_eq!(touching.trim(), "chore: track extra");
-    assert!(
-        fx.git(&["status", "--porcelain"])
-            .contains(" M src/extra.txt"),
-        "{}",
-        fx.git(&["status", "--porcelain"])
-    );
-    let notes = leftover_notes(&fx);
-    assert_eq!(notes.len(), 1, "{notes:?}");
-    assert_eq!(notes[0]["slice"], 1);
-    assert!(
-        notes[0]["body"]
-            .as_str()
-            .unwrap()
-            .contains("- src/extra.txt"),
-        "{notes:?}"
-    );
-}
-
-fn leftovers_of(dir: &Path) -> Vec<Value> {
-    events(dir)
-        .into_iter()
-        .filter(|e| e["kind"] == "untracked_leftovers")
-        .collect()
-}
-
-#[test]
-fn a_lone_worker_claims_generated_files_by_git_adding_their_folder() {
-    let fx = Fixture::with_index("commits-claim-dir", &[("checkpoint_every", "10")]);
-    fx.chain();
-    // A generator wrote gen/ and a scratch file; the worker staged gen/ only.
-    fx.write_plan(&[
-        json!({"outcome": "done", "stray": ["gen/a.txt", "gen/b.txt", "scratch.log"], "git_add": "gen"}),
-        json!({"outcome": "done"}),
-        json!({"outcome": "done"}),
-        json!({"outcome": "checkpoint"}),
-    ]);
-    let dir = start(&fx);
-    wait_phase(&fx, &dir, "finished", 40);
-
-    assert_slice_commit(
-        &fx,
-        &dir,
-        1,
-        "A",
-        &["gen/a.txt", "gen/b.txt", "src/lib.txt"],
-    );
-    let leftovers = leftovers_of(&dir);
-    assert_eq!(leftovers.len(), 1, "{leftovers:?}");
-    assert_eq!(leftovers[0]["files"], json!(["scratch.log"]));
-    assert_eq!(fx.git(&["status", "--porcelain"]), "?? scratch.log\n");
-}
-
-#[test]
-fn git_add_all_claims_nothing_and_its_new_files_are_listed() {
-    let fx = Fixture::with_index("commits-claim-all", &[("checkpoint_every", "10")]);
-    fx.chain();
-    // `git add -A` stages the scratch file too: staged-new is not tracked,
-    // so even a lone worker's sweep leaves it out.
-    fx.write_plan(&[
-        json!({"outcome": "done", "stray": ["gen/a.txt", "scratch.log"], "git_add": "-A"}),
-        json!({"outcome": "done"}),
-        json!({"outcome": "done"}),
-        json!({"outcome": "checkpoint"}),
-    ]);
-    let dir = start(&fx);
-    wait_phase(&fx, &dir, "finished", 40);
-
-    assert_slice_commit(&fx, &dir, 1, "A", &["src/lib.txt"]);
-    let leftovers = leftovers_of(&dir);
-    assert_eq!(leftovers.len(), 1, "{leftovers:?}");
-    assert_eq!(leftovers[0]["files"], json!(["gen/a.txt", "scratch.log"]));
+    // Slice 02's landing already carried 01's board writes: 01's commit
+    // holds its own files only.
+    let sha = sha_of(&fx, "feat(001): slice-01 A");
     assert_eq!(
-        fx.git(&["status", "--porcelain"]),
-        "A  gen/a.txt\nA  scratch.log\n"
+        files_of(&fx, &sha),
+        [slice_rel(&fx, 1), "src/slice-01.txt".to_string()]
     );
-}
-
-#[test]
-fn a_file_git_added_by_name_is_committed_beside_a_live_sibling() {
-    let fx = Fixture::with_index("commits-claim-sibling", &[("checkpoint_every", "10")]);
-    // 01 returns while 02 still runs: its folder claim waits for the owner,
-    // its claim by name does not.
-    fx.write_plan(&[
-        json!({"outcome": "done", "touch": ["src/a.txt"], "stray": ["gen/a.txt", "gen/b.txt"], "git_add": "gen/a.txt"}),
-        json!({"outcome": "done", "delay_ms": 1500, "touch": ["src/b.txt"]}),
-        json!({"outcome": "done", "touch": ["src/c.txt"]}),
-        json!({"outcome": "checkpoint"}),
-    ]);
-    let dir = start(&fx);
-    wait_phase(&fx, &dir, "finished", 40);
-
-    assert_slice_commit(&fx, &dir, 1, "A", &["gen/a.txt", "src/a.txt"]);
-    assert_slice_commit(&fx, &dir, 2, "B", &["src/b.txt"]);
-    let leftovers = leftovers_of(&dir);
-    assert_eq!(leftovers.len(), 1, "{leftovers:?}");
-    assert_eq!(leftovers[0]["slice"], 1);
-    assert_eq!(leftovers[0]["files"], json!(["gen/b.txt"]));
+    assert_eq!(
+        fx.read("src/slice-01.txt"),
+        fx.git(&["show", &format!("{sha}:src/slice-01.txt")])
+    );
+    assert_eq!(fx.git(&["status", "--porcelain"]), "");
+    assert_eq!(factory_refs(&fx), "");
 }

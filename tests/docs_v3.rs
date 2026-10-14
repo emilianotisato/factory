@@ -510,3 +510,104 @@ fn the_hook_refuses_an_archive_edit_and_a_broken_link_and_skips_without_factory(
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     assert_ne!(head(), before);
 }
+
+/// `factory docs <args>` in `dir` with the fixture's env and `FACTORY_BOARD`
+/// set to `board`; `stdin` goes to `--body-file -`.
+fn board_docs(fx: &Fixture, dir: &Path, board: &Path, args: &[&str], stdin: &str) -> Output {
+    use std::io::Write as _;
+    let mut child = fx
+        .command(env!("CARGO_BIN_EXE_factory"))
+        .arg("docs")
+        .args(args)
+        .current_dir(dir)
+        .env(factory::worker::BOARD_ENV, board)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("run factory docs");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(stdin.as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
+}
+
+fn bytes(p: &Path) -> Vec<u8> {
+    fs::read(p).unwrap_or_default()
+}
+
+/// PRD-005 FR-2: from a linked worktree, `FACTORY_BOARD` points the four
+/// board verbs at the main tree; a board of another repo is ignored.
+#[test]
+fn a_lane_writes_the_main_trees_board_and_ignores_another_repos() {
+    let fx = Fixture::new("board-lane");
+    let wt = fx.path().with_file_name("wt");
+    fx.git(&["worktree", "add", "-q", "--detach", wt.to_str().unwrap()]);
+    let (main_state, wt_state) = (
+        fx.path().join(FEATURE_DIR).join("state.toml"),
+        wt.join(FEATURE_DIR).join("state.toml"),
+    );
+    let (main_log, wt_log) = (
+        fx.path().join(FEATURE_DIR).join("log.jsonl"),
+        wt.join(FEATURE_DIR).join("log.jsonl"),
+    );
+    let (wt_state_before, wt_log_before) = (bytes(&wt_state), bytes(&wt_log));
+    let (main_state_before, main_log_before) = (bytes(&main_state), bytes(&main_log));
+
+    let ok = |o: &Output| assert!(o.status.success(), "{}{}", stdout(o), stderr(o));
+    let set = ["set", "001", "slices.1.status=building"];
+    ok(&board_docs(&fx, &wt, fx.path(), &set, ""));
+    assert_ne!(bytes(&main_state), main_state_before);
+    assert_eq!(fx.slice_status(1), "building");
+    assert_eq!(bytes(&wt_state), wt_state_before, "the lane's state.toml");
+
+    let add = [
+        "log",
+        "add",
+        "001",
+        "--kind",
+        "note",
+        "--slice",
+        "1",
+        "--title",
+        "t",
+        "--body-file",
+        "-",
+    ];
+    ok(&board_docs(&fx, &wt, fx.path(), &add, "from the lane\n"));
+    let grown = bytes(&main_log);
+    assert!(grown.starts_with(&main_log_before) && grown.len() > main_log_before.len());
+    assert!(String::from_utf8_lossy(&grown).contains("from the lane"));
+    assert_eq!(bytes(&wt_log), wt_log_before, "the lane's log.jsonl");
+
+    let o = board_docs(&fx, &wt, fx.path(), &["status", "001", "--json"], "");
+    ok(&o);
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert!(v.to_string().contains("building"), "{v}");
+    assert_eq!(fx.docs_json("status"), v);
+
+    ok(&board_docs(
+        &fx,
+        &wt,
+        fx.path(),
+        &["retro", "001", "--set", "score=4"],
+        "",
+    ));
+    let o = fx.docs_output(&["retro", "001"]);
+    ok(&o);
+    assert!(stdout(&o).contains("score: 4"), "{}", stdout(&o));
+
+    // Another repo's board: the lane's own state.toml takes the write.
+    let other = Fixture::new("board-other");
+    let other_state = other.path().join(FEATURE_DIR).join("state.toml");
+    let other_before = bytes(&other_state);
+    let set = ["set", "001", "slices.2.status=building"];
+    ok(&board_docs(&fx, &wt, other.path(), &set, ""));
+    assert_eq!(bytes(&other_state), other_before, "the unrelated board");
+    let lane = state::read(&wt.join(FEATURE_DIR)).unwrap().unwrap();
+    assert_eq!(lane.slices[&2].status, "building", "the lane's own board");
+    assert_ne!(fx.slice_status(2), "building");
+}

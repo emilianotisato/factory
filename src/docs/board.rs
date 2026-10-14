@@ -334,16 +334,22 @@ pub fn feature_state(board: &Board, f: &Feature) -> Result<Status> {
             Some(Checkpoint {
                 n: e.n()?,
                 after: e.slice,
+                covers: e.covers.clone(),
             })
         })
         .collect();
-    // Every done slice above the last one a checkpoint covered.
-    let last_cp = checkpoints
-        .iter()
-        .filter_map(|c| c.after)
-        .max()
-        .unwrap_or(0);
-    let unverified: Vec<u32> = done.iter().copied().filter(|n| *n > last_cp).collect();
+    // PRD-005 FR-7: every done slice no checkpoint covered. An entry with no
+    // `covers` predates the field and keeps the old high-water rule.
+    let covered = |n: u32| {
+        checkpoints.iter().any(|c| {
+            if c.covers.is_empty() {
+                c.after.is_some_and(|a| a >= n)
+            } else {
+                c.covers.contains(&n)
+            }
+        })
+    };
+    let unverified: Vec<u32> = done.iter().copied().filter(|n| !covered(*n)).collect();
     let checkpoint_due =
         !unverified.is_empty() && (unverified.len() as u32 >= board.checkpoint_every() || all_done);
     let open_blocks: Vec<OpenBlock> = log::select(&entries, log::Filter::Open)

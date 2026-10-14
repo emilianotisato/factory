@@ -4,12 +4,16 @@
 //! `waiting-owner` and the driver stays alive; `factory answer` is the owner's
 //! one command back — `BLOCK-n` respawns the slice with the answer in its
 //! pack, the last `ASK-n` sends a parked run through branch and board.
+//! PRD-005 slice 03 adds lane worktrees: `factory lanes up`, and the run
+//! that refuses without `[lanes] seed` and makes its lanes before it starts.
+//! Slice 07 runs each build worker in its lane: a free lane is reset, a
+//! respawn keeps it, and a dependent waits for its dependency's landing.
 #[path = "harness/mod.rs"]
 mod harness;
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Output;
+use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
 use factory::db::Db;
@@ -20,6 +24,7 @@ use serde_json::{Value, json};
 const BIN: &str = env!("CARGO_BIN_EXE_factory");
 /// The fixture feature's log: blocks, answers, asks and decisions.
 const LOG: &str = "docs/features/001-fixture/log.jsonl";
+const STATE: &str = "docs/features/001-fixture/state.toml";
 const QUESTION: &str = "Which storage backs the fixture?";
 const ANSWER: &str = "Pick the Recommended option";
 
@@ -207,7 +212,7 @@ fn two_lanes_build_two_slices_at_once_and_the_third_waits_for_its_dependency() {
         fs::write(
             lanes.join(format!("lane-{n}.md")),
             format!(
-                "---\nlane: {n}\nenv: [FACTORY_LANE_DB=fixture_{n}]\nsetup: echo \"setup $FACTORY_LANE $FACTORY_LANE_DB\" >> scenario/lane-setup.log\n---\n\nLane {n} of the fixture.\n"
+                "---\nlane: {n}\nenv: [FACTORY_LANE_DB=fixture_{n}]\nsetup: echo \"setup $FACTORY_LANE $FACTORY_LANE_DB\" >> \"$(dirname \"$(git rev-parse --path-format=absolute --git-common-dir)\")\"/scenario/lane-setup.log\n---\n\nLane {n} of the fixture.\n"
             ),
         )
         .unwrap();
@@ -269,7 +274,9 @@ fn two_lanes_build_two_slices_at_once_and_the_third_waits_for_its_dependency() {
         builds.iter().map(|c| call_slice(c)).collect::<Vec<_>>(),
         [1, 2, 3]
     );
-    // Every worker saw its lane: `FACTORY_LANE` and the lane file's env.
+    // Every worker ran in its lane (PRD-005 FR-2): the lane's worktree as
+    // cwd and `FACTORY_REPO`, `FACTORY_LANE` and the lane file's env, and
+    // the main tree as `FACTORY_BOARD`.
     for call in &builds {
         let n = call_slice(call);
         let lane = slice_lane(&fx, n as u8).unwrap();
@@ -279,6 +286,34 @@ fn two_lanes_build_two_slices_at_once_and_the_third_waits_for_its_dependency() {
             format!("fixture_{lane}"),
             "{call}"
         );
+        assert_eq!(
+            call["cwd"],
+            lane_path(&fx, lane).to_str().unwrap(),
+            "{call}"
+        );
+        assert_eq!(call["env"]["FACTORY_REPO"], call["cwd"], "{call}");
+        assert_eq!(
+            call["env"]["FACTORY_BOARD"],
+            fx.path().to_str().unwrap(),
+            "{call}"
+        );
+    }
+    // Their board writes went to the main tree: each stub's decision is in
+    // its log, and no lane's copy of the board files moved.
+    let mut ads: Vec<u64> = fx
+        .log_of("decision")
+        .iter()
+        .map(|e| e["slice"].as_u64().unwrap())
+        .collect();
+    ads.sort_unstable();
+    assert_eq!(ads, [1, 2, 3]);
+    for lane in 1..=2 {
+        let moved = git_at(
+            &fx,
+            &lane_path(&fx, lane),
+            &["status", "--porcelain", "--", STATE, LOG],
+        );
+        assert_eq!(moved, "", "lane {lane}");
     }
     assert_eq!(slice_lane(&fx, 1), Some(1));
     assert_eq!(slice_lane(&fx, 2), Some(2));
@@ -1133,7 +1168,7 @@ fn lanes_with_setup(fx: &Fixture) {
         fs::write(
             lanes.join(format!("lane-{n}.md")),
             format!(
-                "---\nlane: {n}\nenv: [FACTORY_LANE_DB=fixture_{n}]\nsetup: echo \"setup $FACTORY_LANE\" >> scenario/lane-setup.log\n---\n\nLane {n} of the fixture.\n"
+                "---\nlane: {n}\nenv: [FACTORY_LANE_DB=fixture_{n}]\nsetup: echo \"setup $FACTORY_LANE\" >> \"$(dirname \"$(git rev-parse --path-format=absolute --git-common-dir)\")\"/scenario/lane-setup.log\n---\n\nLane {n} of the fixture.\n"
             ),
         )
         .unwrap();
@@ -1268,4 +1303,472 @@ fn a_rate_limited_slice_goes_back_to_pending_with_no_lane_and_its_file_untouched
         "the slice file is untouched"
     );
     assert_eq!(fx.slice_status(1), "pending");
+}
+
+// ── PRD-005 slice 03: lane worktrees ─────────────────────────────────────────
+
+/// What `lanes up` labels a seed path in this fixture: `clone` when `cp`
+/// can clone a scratch file in the fixture's tempdir, else `copy`. Test
+/// tempdirs are tmpfs here and ext4 on CI, so the probe decides.
+fn seed_label(fx: &Fixture) -> &'static str {
+    let base = data_dir(fx).parent().unwrap().to_path_buf();
+    let probe = base.join("probe");
+    fs::write(&probe, "p").unwrap();
+    let flag = if cfg!(target_os = "macos") {
+        "-c"
+    } else {
+        "--reflink=always"
+    };
+    let cloned = Command::new("cp")
+        .arg(flag)
+        .arg(&probe)
+        .arg(base.join("probe-clone"))
+        .output()
+        .unwrap()
+        .status
+        .success();
+    if cloned { "clone" } else { "copy" }
+}
+
+/// The worktrees under `$FACTORY_DATA_DIR/lanes/`, each with its porcelain
+/// block.
+fn lane_worktrees(fx: &Fixture) -> Vec<(PathBuf, String)> {
+    let lanes = data_dir(fx).canonicalize().unwrap().join("lanes");
+    fx.git(&["worktree", "list", "--porcelain"])
+        .split("\n\n")
+        .filter_map(|b| {
+            let path = PathBuf::from(b.lines().next()?.strip_prefix("worktree ")?);
+            path.starts_with(&lanes).then(|| (path, b.to_string()))
+        })
+        .collect()
+}
+
+#[test]
+fn lanes_up_makes_two_detached_seeded_lanes_and_runs_setup_in_each() {
+    let fx = Fixture::new("lanes-up");
+    let root = fx.path().to_path_buf();
+    let ignore = fs::read_to_string(root.join(".gitignore")).unwrap();
+    fs::write(root.join(".gitignore"), format!("{ignore}/big/\n/.env\n")).unwrap();
+    fs::create_dir_all(root.join("big/nested")).unwrap();
+    fs::write(root.join("big/one.bin"), "one").unwrap();
+    fs::write(root.join("big/nested/two.bin"), "two").unwrap();
+    fs::write(root.join(".env"), "SECRET=fixture\n").unwrap();
+    let lane_files = root.join("docs/reference/lanes");
+    fs::create_dir_all(&lane_files).unwrap();
+    for n in 1..=2 {
+        fs::write(
+            lane_files.join(format!("lane-{n}.md")),
+            format!("---\nlane: {n}\nenv: []\nsetup: pwd -P > setup-pwd\n---\n"),
+        )
+        .unwrap();
+    }
+    fx.git(&["add", "-A"]);
+    fx.git(&["commit", "-q", "-m", "chore: lane files and ignored state"]);
+    fx.set_seed(&["big", ".env"]);
+
+    let out = factory(&fx, &["lanes", "up"]);
+    let text = stdout(&out);
+    assert_eq!(out.status.code(), Some(0), "{text}");
+    let label = seed_label(&fx);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 2, "{text}");
+    for (n, line) in (1..=2).zip(&lines) {
+        assert!(line.starts_with(&format!("lane-{n}  ")), "{line}");
+        assert!(
+            line.contains(&format!("big {label} · .env {label}")),
+            "{line}"
+        );
+        assert!(line.ends_with("setup 0"), "{line}");
+    }
+
+    let lanes = lane_worktrees(&fx);
+    assert_eq!(lanes.len(), 2, "{lanes:?}");
+    for (path, block) in &lanes {
+        assert!(block.lines().any(|l| l == "detached"), "{block}");
+        for f in ["big/one.bin", "big/nested/two.bin", ".env"] {
+            assert_eq!(
+                fs::read(path.join(f)).unwrap(),
+                fs::read(root.join(f)).unwrap(),
+                "{f} in {}",
+                path.display()
+            );
+        }
+        assert_eq!(
+            fs::read_to_string(path.join("setup-pwd")).unwrap(),
+            format!("{}\n", path.canonicalize().unwrap().display())
+        );
+    }
+
+    // Again: nothing re-seeded, setup run in every lane each time.
+    fs::remove_file(lanes[0].0.join("setup-pwd")).unwrap();
+    let out = factory(&fx, &["lanes", "up"]);
+    let text = stdout(&out);
+    assert_eq!(out.status.code(), Some(0), "{text}");
+    assert!(text.contains("big kept · .env kept"), "{text}");
+    assert!(lanes[0].0.join("setup-pwd").is_file());
+    assert_eq!(lane_worktrees(&fx).len(), 2);
+}
+
+#[test]
+fn lanes_up_without_a_seed_refuses_naming_lanes() {
+    let fx = Fixture::new("lanes-up-no-seed");
+    fx.drop_lanes_table();
+    let out = factory(&fx, &["lanes", "up"]);
+    let text = stdout(&out);
+    assert_eq!(out.status.code(), Some(1), "{text}");
+    assert!(text.contains("/lanes"), "{text}");
+    assert!(lane_worktrees(&fx).is_empty());
+}
+
+#[test]
+fn a_run_without_a_lanes_seed_refuses_naming_lanes_and_creates_nothing() {
+    let fx = Fixture::new("lanes-run-no-seed");
+    fx.drop_lanes_table();
+    fx.write_plan(&[done()]);
+    let out = factory(&fx, &["run", "001"]);
+    let text = stdout(&out);
+    assert_eq!(out.status.code(), Some(1), "{text}");
+    assert!(text.contains("no lanes declared — /lanes"), "{text}");
+    assert!(!fx.stub_dir().join("calls").exists(), "no worker spawned");
+    assert!(run_dirs(&fx).is_empty());
+    assert!(lane_worktrees(&fx).is_empty());
+}
+
+#[test]
+fn a_fresh_run_makes_its_lanes_and_builds_in_them() {
+    let fx = Fixture::with_index("lanes-run-makes", &[("checkpoint_every", "10")]);
+    fx.write_plan(&[done(), done(), done(), checkpoint()]);
+    let out = factory(&fx, &["run", "001", "--foreground"]);
+    let text = stdout(&out);
+    assert_eq!(out.status.code(), Some(0), "{text}");
+    let lanes = lane_worktrees(&fx);
+    assert_eq!(lanes.len(), 2, "{lanes:?}");
+    for n in 1..=2 {
+        assert!(
+            text.lines()
+                .any(|l| l.trim_start().starts_with(&format!("lane-{n}  "))),
+            "{text}"
+        );
+    }
+    // Every worker runs in its lane, the polish worker too (PRD-005 FR-5).
+    let calls = fx.calls();
+    assert_eq!(builds(&calls).len(), 3, "{calls:?}");
+    for c in &calls {
+        let n = lane_env(c).unwrap_or_else(|| panic!("call {} has no lane", c["n"]));
+        let want = lane_path(&fx, n.parse().unwrap());
+        assert_eq!(c["cwd"], want.to_str().unwrap(), "call {}", c["n"]);
+    }
+    let polish = calls.iter().find(|c| c["prompt"] == "/polish").unwrap();
+    assert_eq!(polish["cwd"], lane_path(&fx, 1).to_str().unwrap());
+}
+
+/// The canonical worktree of lane `n`.
+fn lane_path(fx: &Fixture, n: u32) -> PathBuf {
+    lane_worktrees(fx)
+        .into_iter()
+        .map(|(p, _)| p)
+        .find(|p| p.ends_with(format!("lane-{n}")))
+        .unwrap_or_else(|| panic!("no lane-{n} worktree"))
+}
+
+/// `git` in `dir`, with the fixture's env; its stdout.
+fn git_at(fx: &Fixture, dir: &Path, args: &[&str]) -> String {
+    let out = fx
+        .command("git")
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// The sha of the commit whose subject is `subject`.
+fn commit_of(fx: &Fixture, subject: &str) -> String {
+    fx.git(&["log", "--format=%H %s"])
+        .lines()
+        .find_map(|l| {
+            let (sha, s) = l.split_once(' ')?;
+            (s == subject).then(|| sha.to_string())
+        })
+        .unwrap_or_else(|| panic!("no commit {subject:?}"))
+}
+
+#[test]
+fn a_slice_taking_a_free_lane_resets_it_and_a_respawn_keeps_it() {
+    let fx = Fixture::with_index("lanes-reset", &[("checkpoint_every", "10"), ("lanes", "1")]);
+    // One lane wants a chain: the preflight asks about independent slices.
+    fx.chain();
+    // Setup appends the dir it ran in to a log in the main tree, through the
+    // common dir. Unquoted at the end: the lane file trims a trailing quote.
+    let lanes = fx.path().join("docs/reference/lanes");
+    fs::create_dir_all(&lanes).unwrap();
+    fs::write(
+        lanes.join("lane-1.md"),
+        "---\nlane: 1\nenv: [FACTORY_LANE_DB=fixture_1]\nsetup: pwd -P >> \"$(dirname \"$(git rev-parse --path-format=absolute --git-common-dir)\")\"/scenario/lane-setup.log\n---\n\nLane 1 of the fixture.\n",
+    )
+    .unwrap();
+    fx.git(&["add", "-A"]);
+    fx.git(&["commit", "-q", "-m", "chore: lane file"]);
+    fx.write_plan(&[
+        json!({"outcome": "blocked", "question": QUESTION}),
+        json!({"outcome": "done", "sh": "test -f kept.txt", "delay_ms": 1500}),
+        json!({"outcome": "done", "sh": "test ! -e junk.txt"}),
+        done(),
+        checkpoint(),
+    ]);
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let dir = only_run_dir(&fx);
+    wait_until(&fx, &dir, "slice 01 to block", 30, || {
+        state(&dir)["phase"] == "waiting-owner"
+    });
+    let lane = PathBuf::from(fx.calls()[0]["cwd"].as_str().unwrap());
+    assert_eq!(lane, lane_path(&fx, 1));
+
+    // A respawn keeps the lane as its worker left it.
+    fs::write(lane.join("kept.txt"), "kept\n").unwrap();
+    // The owner's untracked file where slice 01 lands holds its landing,
+    // which leaves a window to drop junk in the lane before slice 02.
+    fs::write(fx.path().join("src/slice-01.txt"), "owner\n").unwrap();
+    let out = factory(&fx, &["answer", "BLOCK-1", ANSWER]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    wait_until(&fx, &dir, "slice 01's landing to wait", 30, || {
+        driver_log(&dir).contains("slice 01 cannot land: src/slice-01.txt")
+    });
+    fs::write(lane.join("junk.txt"), "junk\n").unwrap();
+    fs::remove_file(fx.path().join("src/slice-01.txt")).unwrap();
+
+    // A slice taking the free lane resets it to the tip: junk gone, slice
+    // 01's landed commit its HEAD.
+    wait_until(&fx, &dir, "the run to finish", 60, || {
+        state(&dir)["phase"] == "finished"
+    });
+    let slice_01 = commit_of(&fx, "feat(001): slice-01 A");
+    let files = fx.git(&["show", "--format=", "--name-only", &slice_01]);
+    assert!(files.lines().any(|f| f == "kept.txt"), "{files}");
+    let calls = fx.calls();
+    assert_eq!(call_slice(&calls[2]), 2, "{calls:?}");
+    assert_eq!(calls[2]["cwd"], lane.to_str().unwrap());
+    assert_eq!(calls[2]["head"], slice_01.as_str());
+    assert!(!lane.join("junk.txt").exists());
+    // Setup ran once, in the lane.
+    assert_eq!(
+        fx.read("scenario/lane-setup.log"),
+        format!("{}\n", lane.display())
+    );
+}
+
+#[test]
+fn a_dependent_waits_for_its_dependency_to_land() {
+    // Slice 03 depends on 02. 01 frees lane 1 at once; 02's worker writes
+    // `done` and lingers 3 s before it exits, so 03 is ready on the board
+    // long before 02 lands.
+    let fx = Fixture::with_index("lanes-dependent", &[("checkpoint_every", "10")]);
+    fx.write_plan(&[
+        done(),
+        json!({"outcome": "done", "linger_ms": 3000}),
+        done(),
+        checkpoint(),
+    ]);
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let dir = only_run_dir(&fx);
+    wait_until(&fx, &dir, "the run to finish", 60, || {
+        state(&dir)["phase"] == "finished"
+    });
+    let calls = fx.calls();
+    let of = |n: u32| {
+        builds(&calls)
+            .into_iter()
+            .find(|c| call_slice(c) == n)
+            .unwrap_or_else(|| panic!("no call for slice {n:02}"))
+            .clone()
+    };
+    let (two, three) = (of(2), of(3));
+    assert!(three["n"].as_u64() > two["n"].as_u64(), "{calls:?}");
+    let slice_02 = commit_of(&fx, "feat(001): slice-02 B");
+    let head = three["head"].as_str().unwrap();
+    let out = fx
+        .command("git")
+        .current_dir(fx.path())
+        .args(["merge-base", "--is-ancestor", &slice_02, head])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "slice 03 started on {head}, without {slice_02}"
+    );
+}
+
+// ── PRD-005 slice 06: `lanes up --prove` and `lanes prune` ───────────────────
+
+/// `docs/project.toml`'s `[docs]` key `key` set to `value` in the working
+/// file, uncommitted: the lane verbs read the main tree's file.
+fn set_docs_key(fx: &Fixture, key: &str, value: &str) {
+    let file = fx.path().join("docs/project.toml");
+    let text = fs::read_to_string(&file).unwrap();
+    let prefix = format!("{key} = ");
+    let out: Vec<String> = text
+        .lines()
+        .map(|l| {
+            if l.starts_with(&prefix) {
+                format!("{key} = {value}")
+            } else {
+                l.to_string()
+            }
+        })
+        .collect();
+    assert_ne!(out.join("\n") + "\n", text, "no `{key}` line to set");
+    fs::write(&file, out.join("\n") + "\n").unwrap();
+}
+
+/// `(start, end)` of each run `prove.sh` recorded for lane `n`.
+fn prove_times(base: &Path, n: u32) -> (f64, f64) {
+    let text = fs::read_to_string(base.join(format!("times-{n}"))).unwrap();
+    let at = |what: &str| -> f64 {
+        text.lines()
+            .find_map(|l| l.strip_prefix(what))
+            .unwrap_or_else(|| panic!("no {what}in {text}"))
+            .trim()
+            .parse()
+            .unwrap()
+    };
+    (at("start "), at("end "))
+}
+
+#[test]
+fn lanes_up_prove_runs_the_inner_loop_in_every_lane_at_once_and_names_a_red_lane() {
+    let fx = Fixture::new("lanes-prove");
+    let base = data_dir(&fx).parent().unwrap().to_path_buf();
+    let script = base.join("prove.sh");
+    fs::write(
+        &script,
+        format!(
+            "t={}/times-$FACTORY_LANE\necho \"start $(date +%s.%N)\" >> \"$t\"\nsleep 1\necho \"end $(date +%s.%N)\" >> \"$t\"\npwd -P > {}/pwd-$FACTORY_LANE\n",
+            base.display(),
+            base.display()
+        ),
+    )
+    .unwrap();
+    set_docs_key(&fx, "inner", &format!("\"sh {}\"", script.display()));
+
+    let out = factory(&fx, &["lanes", "up", "--prove"]);
+    let text = stdout(&out);
+    assert_eq!(out.status.code(), Some(0), "{text}");
+    let inner: Vec<&str> = text.lines().filter(|l| l.contains("  inner  ")).collect();
+    assert_eq!(inner.len(), 2, "{text}");
+    for (n, line) in (1..=2).zip(&inner) {
+        assert!(
+            line.starts_with(&format!("lane-{n}  inner  exit 0  ")),
+            "{line}"
+        );
+        assert!(line.ends_with('s'), "{line}");
+    }
+    let (s1, e1) = prove_times(&base, 1);
+    let (s2, e2) = prove_times(&base, 2);
+    eprintln!("lane-1 {s1}..{e1}  lane-2 {s2}..{e2}");
+    assert!(
+        s1 < e2 && s2 < e1,
+        "the lanes overlap: {s1}..{e1} and {s2}..{e2}"
+    );
+    let lanes = lane_worktrees(&fx);
+    for (n, (path, _)) in (1..=2).zip(&lanes) {
+        let pwd = fs::read_to_string(base.join(format!("pwd-{n}"))).unwrap();
+        assert_eq!(pwd.trim(), path.canonicalize().unwrap().to_str().unwrap());
+    }
+
+    // Lane 2 red: exit 1, its line says so, the last line names it alone.
+    set_docs_key(
+        &fx,
+        "inner",
+        "\"echo lane $FACTORY_LANE says hi; test $FACTORY_LANE != 2\"",
+    );
+    let out = factory(&fx, &["lanes", "up", "--prove"]);
+    let text = stdout(&out);
+    assert_eq!(out.status.code(), Some(1), "{text}");
+    assert!(text.contains("lane-1  inner  exit 0  "), "{text}");
+    assert!(text.contains("lane-2  inner  exit 1  "), "{text}");
+    assert!(
+        text.contains("    lane 2 says hi"),
+        "a red lane's output: {text}"
+    );
+    let last = text.lines().last().unwrap();
+    assert!(last.contains("lane-2"), "{last}");
+    assert!(!last.contains("lane-1"), "{last}");
+}
+
+#[test]
+fn lanes_up_prove_stops_at_a_failed_up() {
+    let fx = Fixture::new("lanes-prove-no-seed");
+    fx.drop_lanes_table();
+    let out = factory(&fx, &["lanes", "up", "--prove"]);
+    let text = stdout(&out);
+    assert_eq!(out.status.code(), Some(1), "{text}");
+    assert!(!text.contains("  inner  "), "{text}");
+}
+
+#[test]
+fn lanes_prune_removes_the_lanes_above_the_count_and_all_with_all() {
+    let fx = Fixture::with_index("lanes-prune", &[("lanes", "3")]);
+    let out = factory(&fx, &["lanes", "up"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let lanes: Vec<PathBuf> = lane_worktrees(&fx).into_iter().map(|(p, _)| p).collect();
+    assert_eq!(lanes.len(), 3, "{lanes:?}");
+    for p in &lanes {
+        fs::write(p.join("marker"), "kept").unwrap();
+    }
+
+    set_docs_key(&fx, "lanes", "2");
+    let out = factory(&fx, &["lanes", "prune"]);
+    let text = stdout(&out);
+    eprintln!("{text}");
+    assert_eq!(out.status.code(), Some(0), "{text}");
+    assert!(
+        text.contains("lane-3  ") && !text.contains("lane-1  "),
+        "{text}"
+    );
+    assert!(!lanes[2].exists(), "lane-3's dir is gone");
+    let left: Vec<PathBuf> = lane_worktrees(&fx).into_iter().map(|(p, _)| p).collect();
+    assert_eq!(left, lanes[..2], "no worktree row for lane-3");
+    for p in &lanes[..2] {
+        assert_eq!(fs::read_to_string(p.join("marker")).unwrap(), "kept");
+    }
+
+    // Nothing above the count: said, exit 0.
+    let out = factory(&fx, &["lanes", "prune"]);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(stdout(&out).contains("no lane above 2"), "{}", stdout(&out));
+
+    let out = factory(&fx, &["lanes", "prune", "--all"]);
+    let text = stdout(&out);
+    eprintln!("{text}");
+    assert_eq!(out.status.code(), Some(0), "{text}");
+    assert!(lane_worktrees(&fx).is_empty());
+    assert!(lanes.iter().all(|p| !p.exists()));
+}
+
+#[test]
+fn lanes_prune_refuses_while_a_run_is_unfinished_and_removes_nothing() {
+    // A run parked on a preflight ask: no driver alive, phase not over.
+    let fx = Fixture::with_index("lanes-prune-open", &[("lanes", "1")]);
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let id = run_id(&only_run_dir(&fx));
+    let lanes = lane_worktrees(&fx);
+    assert_eq!(lanes.len(), 1, "{lanes:?}");
+
+    for args in [&["lanes", "prune"][..], &["lanes", "prune", "--all"]] {
+        let out = factory(&fx, args);
+        let text = stdout(&out);
+        eprintln!("{text}");
+        assert_eq!(out.status.code(), Some(1), "{text}");
+        assert!(text.contains(&id), "names the run: {text}");
+        assert_eq!(lane_worktrees(&fx).len(), 1);
+        assert!(lanes[0].0.is_dir());
+    }
 }

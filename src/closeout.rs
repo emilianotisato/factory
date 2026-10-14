@@ -25,24 +25,25 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::answers;
-use crate::checkpoint::Outcome;
+use crate::checkpoint::{Landed, Outcome};
 use crate::ci::{self, CheckRow, Checks, CiRun, Verdict};
 use crate::cli::report::{self, Report};
 use crate::cli::run::load_preflight;
-use crate::commit::{self, Pathspec};
+use crate::commit;
 use crate::config::{self, Config};
 use crate::db::RetroRow;
 use crate::docs::ideas::{self, Idea};
 use crate::docs::{Docs, Ship, Status, scaffold};
 use crate::error::io;
 use crate::events::EventKind;
+use crate::land::{self, Landing};
 use crate::pack::Pack;
 use crate::quota::{self, Hold, Limit};
 use crate::run::{Phase, Run, WorkerOutcome, WorkerRef};
 use crate::scheduler::{self, DEATH_CAP, say, short};
 use crate::stream::{Findings, Summary};
 use crate::worker::{self, Exit, Job, Worker};
-use crate::{Result, clock, metrics, paths, retro};
+use crate::{Result, clock, lanes, metrics, paths, retro};
 
 /// The phases a closeout block names in its heading (autonomy § Blocker
 /// protocol step 2).
@@ -59,6 +60,7 @@ const STAND_IN_MARK: &str = "**Template stand-in";
 
 // The closeout blocks whose `proceed` answer the driver reads, by title.
 const POLISH_DIED: &str = "Two polish workers died";
+const POLISH_CONFLICT: &str = "the polish worker's commit conflicts with the feature tip";
 const PR_EDIT: &str = "gh pr edit refused";
 const PR_CREATE: &str = "gh pr create refused";
 const CHECKS_UNREADABLE: &str = "gh pr checks unreadable";
@@ -100,7 +102,7 @@ pub fn run(
     let events = run.events()?;
     let polish_by_hand = answered(run, &feature_dir)?
         .iter()
-        .any(|a| a.proceed && a.title == POLISH_DIED);
+        .any(|a| a.proceed && (a.title == POLISH_DIED || a.title == POLISH_CONFLICT));
     let polished = board_shipped
         || polish_by_hand
         || events
@@ -236,20 +238,24 @@ fn polish(
             .into_iter()
             .map(|b| b.id)
             .collect();
-        let before = scheduler::snapshot(run, POLISH_KEY)?;
+        let lane = closeout_lane(board);
+        let (lane_dir, lane_def) = scheduler::prepare_lane(run, lane, true, out)?;
+        drop_ref(run, board, &Closer::Polish)?;
         let w = Worker::spawn(
             run,
             Job::Polish { attempt },
             &pack,
             &cfg.workers.polish,
-            &[],
+            &lane_def.env(),
+            &lane_dir,
+            Some(lane),
         )?;
         let session_id = w.session_id.clone();
         let row_id = w.row_id;
         say(
             out,
             &format!(
-                "polish: worker {session_id} spawned (pid {}, attempt {attempt}, pack {})",
+                "polish: worker {session_id} spawned in lane {lane} (pid {}, attempt {attempt}, pack {})",
                 w.pid,
                 pack.path.display()
             ),
@@ -309,7 +315,6 @@ fn polish(
             settle_dead(run, &feature_dir, "polish", &session_id, row_id, &exit, out)?;
             continue;
         }
-        settle(run, row_id, &session_id, &exit.summary, WorkerOutcome::Done)?;
         // FR-24: only a return block has a `FINDINGS` line to miss.
         if exit.summary.status_hint.is_some() {
             let findings = exit
@@ -324,11 +329,25 @@ fn polish(
                 })?;
             }
         }
-        let committed = commit_polish(run, board, row_id, &exit.summary, &template, &before, out)?;
-        run.emit(EventKind::PolishDone {
-            sha: committed.as_ref().map(|c| c.sha.clone()),
-            files: committed.map(|c| c.files).unwrap_or_default(),
-        })?;
+        // Land before settling: a driver killed in between leaves the worker
+        // to the resume, which lands it, in place of a second polish whose
+        // lane reset would discard these edits.
+        match land_here(run, board, &Closer::Polish, lane, row_id, out)? {
+            Ok(_) => {}
+            Err(o) => {
+                if matches!(o, Outcome::Parked { .. }) {
+                    settle(
+                        run,
+                        row_id,
+                        &session_id,
+                        &exit.summary,
+                        WorkerOutcome::Blocked,
+                    )?;
+                }
+                return Ok(Some(o));
+            }
+        }
+        settle(run, row_id, &session_id, &exit.summary, WorkerOutcome::Done)?;
         file_friction(run, board, cfg, out);
         return Ok(None);
     }
@@ -387,29 +406,84 @@ fn friction(retro: &str) -> String {
         .to_string()
 }
 
-/// `fix(NNN): polish review fixes`: the paths the stream named plus
-/// `state.toml` (`reviewed`) and `retro.md` — the polish worker is the one
-/// worker allowed to write `retro.md`; `docs/index.md` stays the ship's. A missing `retro.md`
-/// is created from the template first, a missing PR body from a fallback, so
-/// the ship and the PR never wait on a worker that skipped its last turn —
-/// but each stand-in is flagged (AD-904): a `template_stand_in` event the
-/// cockpit relays, and a first line in the PR body naming it.
-/// What it changed unnamed since `before` is swept or listed (AD-50002).
-fn commit_polish(
-    run: &mut Run,
-    board: &Status,
-    row_id: i64,
-    summary: &Summary,
-    template: &str,
-    before: &HashSet<String>,
-    out: &mut dyn Write,
-) -> Result<Option<commit::Committed>> {
+// ── landing (PRD-005 FR-3, FR-5) ────────────────────────────────────────────
+
+/// The closeout worker a lane landing is for.
+enum Closer<'a> {
+    Polish,
+    CiFix { round: u32, check: &'a str },
+}
+
+impl Closer<'_> {
+    /// `refs/factory/<NNN>/polish` or `…/ci-fix-<round>`: the worker's lane
+    /// commit until it lands.
+    fn ref_name(&self, board: &Status) -> String {
+        let key = match self {
+            Closer::Polish => "polish".to_string(),
+            Closer::CiFix { round, .. } => format!("ci-fix-{round}"),
+        };
+        format!("refs/factory/{:03}/{key}", board.number)
+    }
+
+    fn subject(&self, board: &Status) -> String {
+        match self {
+            Closer::Polish => commit::subject(board, "fix", "polish review fixes"),
+            Closer::CiFix { check, .. } => commit::subject(board, "fix", &format!("CI {check}")),
+        }
+    }
+
+    /// What the role may not write. Polish keeps `prd.md`, whose Status prose
+    /// is its; `docs/index.md` stays the ship's.
+    fn protected(&self, board: &Status) -> Vec<String> {
+        match self {
+            Closer::Polish => vec!["docs/index.md".to_string()],
+            Closer::CiFix { .. } => commit::protected_files(board).to_vec(),
+        }
+    }
+
+    fn phase(&self) -> &'static str {
+        match self {
+            Closer::Polish => "polish",
+            Closer::CiFix { .. } => "ci",
+        }
+    }
+
+    fn worker(&self) -> String {
+        match self {
+            Closer::Polish => "polish worker".to_string(),
+            Closer::CiFix { round, .. } => format!("CI fix worker of round {round}"),
+        }
+    }
+}
+
+/// The lane a closeout worker takes (FR-5): the lowest free one, which is
+/// lane 1, since every slice is done.
+fn closeout_lane(board: &Status) -> u32 {
+    board.free_lanes.first().copied().unwrap_or(1)
+}
+
+/// A ref an earlier worker of this role left unlanded (a conflict the owner
+/// answered) would land in place of the next worker's lane.
+fn drop_ref(run: &Run, board: &Status, who: &Closer) -> Result<()> {
     let repo = run.state().repo.clone();
+    let name = who.ref_name(board);
+    if scheduler::resolve(&repo, &name)?.is_some() {
+        scheduler::git_ok(&repo, &["update-ref", "-d", &name])?;
+    }
+    Ok(())
+}
+
+/// A missing `retro.md` is created from the template in the polish lane, so
+/// it lands with the commit; a missing PR body from a fallback in the run
+/// dir. The ship and the PR never wait on a worker that skipped its last
+/// turn, but each stand-in is flagged (AD-904): a `template_stand_in` event
+/// the cockpit relays, and a first line in the PR body naming it.
+fn stand_ins(run: &mut Run, board: &Status, lane_dir: &Path, out: &mut dyn Write) -> Result<()> {
     let feature = run.state().feature.clone();
     let retro_rel = format!("{}/retro.md", board.dir);
-    let retro = repo.join(&retro_rel);
+    let retro = lane_dir.join(&retro_rel);
     if !retro.exists() {
-        fs::write(&retro, template.replace("{NNN}", &feature))
+        fs::write(&retro, retro_template().replace("{NNN}", &feature))
             .map_err(io(format!("write {}", retro.display())))?;
         say(
             out,
@@ -430,44 +504,289 @@ fn commit_polish(
         )?;
         stood_in(run, STAND_IN_BODY, &body.display().to_string())?;
     }
-    flag_body(run, &body)?;
-    let spec = Pathspec::from_stream(summary, board, &repo);
-    let mut paths = spec.paths.clone();
-    for p in &spec.protected {
-        if p != "docs/index.md" && !paths.contains(p) {
-            paths.push(p.clone());
+    flag_body(run, &body)
+}
+
+/// FR-3 for a polish or CI fix worker in `lane`: the lane committed whole
+/// under [`Closer::ref_name`] on the lane's base, less the board files and
+/// the role's protected files, then picked onto the feature tip with the
+/// main tree's board files, as `fix(NNN): polish review fixes` or
+/// `fix(NNN): CI <check>`. Safe to call again for the same worker, which is
+/// how a resumed driver finishes it: a row with a commit has landed; a
+/// commit with its subject on the tip since the lane's base is the landing;
+/// a ref that resolves is picked; else the lane is committed first. A polish
+/// lane that changed nothing still leaves `reviewed` in the main tree's
+/// `state.toml`: then the board files are committed by pathspec.
+fn land_worker(
+    run: &mut Run,
+    board: &Status,
+    who: &Closer,
+    lane: u32,
+    row_id: i64,
+    out: &mut dyn Write,
+) -> Result<Landed> {
+    let landed = run
+        .db()
+        .workers(run.id().as_str())?
+        .into_iter()
+        .find(|w| w.id == row_id)
+        .and_then(|w| w.commit_sha);
+    if let Some(sha) = landed {
+        emit_landed(run, who, &sha)?;
+        return Ok(Landed::Done(Some(sha)));
+    }
+    let repo = run.state().repo.clone();
+    let board_files = commit::tool_files(board).to_vec();
+    let name = who.ref_name(board);
+    let subject = who.subject(board);
+    let base = run.state().lane_bases.get(&lane).cloned();
+    // A driver killed after the landing commit and before its record.
+    if let Some(base) = &base {
+        let tip = scheduler::git_ok(&repo, &["log", "--format=%H %s", &format!("{base}..HEAD")])?;
+        if let Some(sha) = tip
+            .lines()
+            .find_map(|l| l.split_once(' ').filter(|(_, s)| *s == subject))
+            .map(|(sha, _)| sha.to_string())
+        {
+            if scheduler::resolve(&repo, &name)?.is_some() {
+                scheduler::git_ok(&repo, &["update-ref", "-d", &name])?;
+            }
+            record(run, who, row_id, &sha, out)?;
+            return Ok(Landed::Done(Some(sha)));
         }
     }
-    for p in [format!("{}/state.toml", board.dir), retro_rel] {
-        if !paths.contains(&p) {
-            paths.push(p);
+    let sha = match scheduler::resolve(&repo, &name)? {
+        Some(sha) => sha,
+        None => {
+            let main = lanes::main_tree(&repo)?;
+            let lane_dir = lanes::dir(&paths::data_dir(), &main, lane);
+            if matches!(who, Closer::Polish) {
+                stand_ins(run, board, &lane_dir, out)?;
+            }
+            let committed = match &base {
+                Some(base) => land::commit_lane(
+                    &lane_dir,
+                    base,
+                    &board_files,
+                    &who.protected(board),
+                    &subject,
+                    &name,
+                )?,
+                None => None,
+            };
+            let Some(c) = committed else {
+                return Ok(Landed::Done(nothing(run, board, who, row_id, out)?));
+            };
+            for path in &c.dropped {
+                say(
+                    out,
+                    &format!(
+                        "{}: {} wrote {path}, which no {} may — left out of the commit",
+                        who.phase(),
+                        who.worker(),
+                        match who {
+                            Closer::Polish => "polish worker",
+                            Closer::CiFix { .. } => "fix",
+                        }
+                    ),
+                )?;
+            }
+            c.sha
+        }
+    };
+    scheduler::undo_half_pick(&repo, &sha)?;
+    match land::land(&repo, &sha, &board_files)? {
+        Landing::Landed { sha } => {
+            record(run, who, row_id, &sha, out)?;
+            Ok(Landed::Done(Some(sha)))
+        }
+        Landing::Dirty { paths } => Ok(Landed::Waiting(format!(
+            "the {}'s commit cannot land: {} changed in the main tree — commit or discard them",
+            who.worker(),
+            paths.join(", ")
+        ))),
+        Landing::Conflict { paths } => Ok(Landed::Conflict { paths, name }),
+    }
+}
+
+/// [`land_worker`] for a worker this driver waited on. A dirty main tree
+/// parks the run (said once, `waiting-owner`) and the landing is retried
+/// each tick, nothing else being live, until it goes through (phase
+/// `closeout` again) or the run is stopped; a conflict blocks. `Ok`: the
+/// landed sha, `None` for nothing to commit; `Err`: the run stops or parks.
+fn land_here(
+    run: &mut Run,
+    board: &Status,
+    who: &Closer,
+    lane: u32,
+    row_id: i64,
+    out: &mut dyn Write,
+) -> Result<std::result::Result<Option<String>, Outcome>> {
+    let (mut parked, mut announced) = (false, false);
+    loop {
+        match land_worker(run, board, who, lane, row_id, out)? {
+            Landed::Done(sha) => {
+                if parked {
+                    say(
+                        out,
+                        &format!(
+                            "{}: the landing went through — the closeout goes on",
+                            who.phase()
+                        ),
+                    )?;
+                    run.set_phase(Phase::Closeout)?;
+                }
+                return Ok(Ok(sha));
+            }
+            Landed::Waiting(what) => {
+                scheduler::park_with(run, &mut parked, &mut announced, &[], &[], &what, out)?;
+                scheduler::slow_tick(run)?;
+                if run.state().stop_requested {
+                    return Ok(Err(Outcome::Stopped));
+                }
+            }
+            Landed::Conflict { paths, name } => {
+                return Ok(Err(block_conflict(run, board, who, &paths, &name, out)?));
+            }
         }
     }
-    let skip: HashSet<String> = paths.iter().chain(&spec.protected).cloned().collect();
-    let found = scheduler::unnamed(run, board, before, &skip, &spec.dirs, true)?;
-    note_leftovers(run, "polish", "polish: worker", &found, out)?;
-    paths.extend(found.sweep);
-    let committed = commit::commit(
-        &repo,
-        &paths,
-        &commit::subject(board, "fix", "polish review fixes"),
+}
+
+/// A lane with nothing to commit. Polish commits the main tree's board files
+/// (its `reviewed`) under its subject; a CI fix commits nothing.
+fn nothing(
+    run: &mut Run,
+    board: &Status,
+    who: &Closer,
+    row_id: i64,
+    out: &mut dyn Write,
+) -> Result<Option<String>> {
+    if let Closer::CiFix { round, .. } = who {
+        say(
+            out,
+            &format!("ci: fix worker of round {round} changed nothing to commit"),
+        )?;
+        return Ok(None);
+    }
+    let repo = run.state().repo.clone();
+    let files = commit::tool_files(board).to_vec();
+    if let Some(c) = commit::commit(&repo, &files, &who.subject(board))? {
+        record(run, who, row_id, &c.sha, out)?;
+        return Ok(Some(c.sha));
+    }
+    say(out, "polish: worker changed nothing to commit")?;
+    let logged = run
+        .events()?
+        .iter()
+        .any(|e| matches!(e.kind, EventKind::PolishDone { .. }));
+    if !logged {
+        run.emit(EventKind::PolishDone {
+            sha: None,
+            files: vec![],
+        })?;
+    }
+    Ok(None)
+}
+
+/// A landed commit on the worker's row, in a line, and its event.
+fn record(run: &mut Run, who: &Closer, row_id: i64, sha: &str, out: &mut dyn Write) -> Result<()> {
+    run.db().set_worker_commit(row_id, sha)?;
+    let files = landed_files(run, sha)?;
+    let head = match who {
+        Closer::Polish => "polish:".to_string(),
+        Closer::CiFix { round, .. } => format!("ci: round {round}"),
+    };
+    say(
+        out,
+        &format!(
+            "{head} committed {} — {} file(s): {}",
+            short(sha),
+            files.len(),
+            files.join(", ")
+        ),
     )?;
-    match &committed {
-        Some(c) => {
-            run.db().set_worker_commit(row_id, &c.sha)?;
-            say(
-                out,
-                &format!(
-                    "polish: committed {} — {} file(s): {}",
-                    short(&c.sha),
-                    c.files.len(),
-                    c.files.join(", ")
-                ),
-            )?;
-        }
-        None => say(out, "polish: worker changed nothing to commit")?,
+    emit_landed(run, who, sha)
+}
+
+/// `polish_done` or `ci_fix_committed` for `sha`, once. The closeout knows
+/// polish is over only from `polish_done`: a driver killed between the row's
+/// commit and the event would run a second polish over a landed one.
+fn emit_landed(run: &mut Run, who: &Closer, sha: &str) -> Result<()> {
+    let logged = run.events()?.iter().any(|e| match (&e.kind, who) {
+        (EventKind::PolishDone { sha: Some(s), .. }, Closer::Polish) => s == sha,
+        (EventKind::CiFixCommitted { sha: s, .. }, Closer::CiFix { .. }) => s == sha,
+        _ => false,
+    });
+    if logged {
+        return Ok(());
     }
-    Ok(committed)
+    let files = landed_files(run, sha)?;
+    run.emit(match who {
+        Closer::Polish => EventKind::PolishDone {
+            sha: Some(sha.to_string()),
+            files,
+        },
+        Closer::CiFix { round, .. } => EventKind::CiFixCommitted {
+            round: *round,
+            sha: sha.to_string(),
+            files,
+        },
+    })?;
+    Ok(())
+}
+
+fn landed_files(run: &Run, sha: &str) -> Result<Vec<String>> {
+    Ok(scheduler::nul_split(&scheduler::git_ok(
+        &run.state().repo,
+        &[
+            "diff-tree",
+            "--no-commit-id",
+            "--name-only",
+            "-r",
+            "-z",
+            sha,
+        ],
+    )?))
+}
+
+/// A closeout worker's lane commit conflicts with the feature tip, which
+/// only the owner moved while it ran: a closeout block naming the paths and
+/// the ref, which keeps the commit.
+fn block_conflict(
+    run: &mut Run,
+    board: &Status,
+    who: &Closer,
+    paths: &[String],
+    name: &str,
+    out: &mut dyn Write,
+) -> Result<Outcome> {
+    let feature_dir = run.state().repo.join(&board.dir);
+    let (title, options) = match who {
+        Closer::Polish => (
+            POLISH_CONFLICT.to_string(),
+            format!(
+                "1. `git cherry-pick {name}`, resolve, commit, and answer this block with `proceed` — the driver ships from there, no second polish worker\n\
+                 2. answer this block with anything else — a fresh polish worker reviews the tip as it is, and its spawn deletes the ref\n\
+                 **Recommended:** 1 — the commit holds everything the polish worker left in its lane.\n"
+            ),
+        ),
+        Closer::CiFix { round, check } => (
+            format!("the CI fix of round {round} conflicts with the feature tip"),
+            format!(
+                "1. `git cherry-pick {name}`, resolve, commit, and answer this block — the driver pushes and watches `{check}` again\n\
+                 2. answer this block without it — the driver pushes the tip as it is and watches again\n\
+                 **Recommended:** 1 — the commit holds everything the fix worker left in its lane.\n"
+            ),
+        ),
+    };
+    let body = format!(
+        "**Happened:** the {}'s lane, committed as `{name}`, does not apply on the feature tip, \
+         which moved while it ran; it conflicts in {}. The main tree is untouched.\n\
+         **Options:**\n{options}",
+        who.worker(),
+        paths.join(", ")
+    );
+    block(run, &feature_dir, who.phase(), &title, &body, out)
 }
 
 /// Emit `template_stand_in` for `what` (AD-904), once per run: a resume that
@@ -1643,20 +1962,25 @@ fn fix_round(
             .into_iter()
             .map(|b| b.id)
             .collect();
-        let before = scheduler::snapshot(run, &ci_fix_key(round))?;
+        let lane = closeout_lane(board);
+        let (lane_dir, lane_def) = scheduler::prepare_lane(run, lane, true, out)?;
+        let who = Closer::CiFix { round, check };
+        drop_ref(run, board, &who)?;
         let w = Worker::spawn(
             run,
             Job::CiFix { round, attempt },
             &pack,
             &cfg.workers.fix,
-            &[],
+            &lane_def.env(),
+            &lane_dir,
+            Some(lane),
         )?;
         let session_id = w.session_id.clone();
         let row_id = w.row_id;
         say(
             out,
             &format!(
-                "ci: fix worker {session_id} spawned for `{check}` (round {round}, attempt {attempt}, pid {}, pack {})",
+                "ci: fix worker {session_id} spawned for `{check}` in lane {lane} (round {round}, attempt {attempt}, pid {}, pack {})",
                 w.pid,
                 pack.path.display()
             ),
@@ -1714,90 +2038,41 @@ fn fix_round(
                 fresh: true,
             }));
         }
+        // Land before settling, as polish does: a killed driver leaves the
+        // worker to the resume, which lands it.
+        if let Err(o) = land_here(run, board, &who, lane, row_id, out)? {
+            if matches!(o, Outcome::Parked { .. }) {
+                settle(
+                    run,
+                    row_id,
+                    &session_id,
+                    &exit.summary,
+                    WorkerOutcome::Blocked,
+                )?;
+            }
+            return Ok(Some(o));
+        }
         settle(run, row_id, &session_id, &exit.summary, WorkerOutcome::Done)?;
-        commit_ci_fix(
-            run,
-            board,
-            round,
-            check,
-            row_id,
-            &exit.summary,
-            &before,
-            out,
-        )?;
         return Ok(None);
     }
-}
-
-/// `fix(NNN): CI <check>`: the stream's paths, never `retro.md` (the CI
-/// count is the `ci_fix_committed` events, `factory report` reads them). What
-/// the worker changed unnamed since `before` is swept or listed (AD-50002).
-#[allow(clippy::too_many_arguments)]
-fn commit_ci_fix(
-    run: &mut Run,
-    board: &Status,
-    round: u32,
-    check: &str,
-    row_id: i64,
-    summary: &Summary,
-    before: &HashSet<String>,
-    out: &mut dyn Write,
-) -> Result<()> {
-    let repo = run.state().repo.clone();
-    let spec = Pathspec::from_stream(summary, board, &repo);
-    for path in &spec.protected {
-        say(
-            out,
-            &format!("ci: fix worker wrote {path}, which no fix may — left out of the commit"),
-        )?;
-    }
-    let mut paths = spec.paths.clone();
-    let skip: HashSet<String> = paths.iter().chain(&spec.protected).cloned().collect();
-    let found = scheduler::unnamed(run, board, before, &skip, &spec.dirs, true)?;
-    note_leftovers(run, "ci-fix", "ci: fix worker", &found, out)?;
-    paths.extend(found.sweep);
-    match commit::commit(
-        &repo,
-        &paths,
-        &commit::subject(board, "fix", &format!("CI {check}")),
-    )? {
-        Some(c) => {
-            run.db().set_worker_commit(row_id, &c.sha)?;
-            say(
-                out,
-                &format!(
-                    "ci: round {round} committed {} — {} file(s): {}",
-                    short(&c.sha),
-                    c.files.len(),
-                    c.files.join(", ")
-                ),
-            )?;
-            run.emit(EventKind::CiFixCommitted {
-                round,
-                sha: c.sha,
-                files: c.files,
-            })?;
-        }
-        None => say(
-            out,
-            &format!("ci: fix worker of round {round} changed nothing to commit"),
-        )?,
-    }
-    Ok(())
 }
 
 // ── orphans ─────────────────────────────────────────────────────────────────
 
 /// A polish or CI fix worker of a dead driver (FR-1 resume): a returned one
-/// has its files committed as the live path would; a limited one pauses the
-/// run; anything else is dead, and the closeout runs again from the events.
+/// has its lane landed as the live path would, before it is settled; a
+/// limited one pauses the run; anything else is dead, and the closeout runs
+/// again from the events. A worker with no lane is one from a driver before
+/// lanes, whose edits sit in the main tree: settled dead too. `Some`: the
+/// landing waits on the owner's dirty main tree, the park line; the worker
+/// stays unsettled and the landing runs again next tick.
 pub fn settle_orphan(
     run: &mut Run,
     board: &Status,
     w: &WorkerRef,
     summary: Summary,
     out: &mut dyn Write,
-) -> Result<()> {
+) -> Result<Option<String>> {
     let what = if w.role == "polish" {
         "polish"
     } else {
@@ -1821,9 +2096,9 @@ pub fn settle_orphan(
                 clock::rfc3339(until)
             ),
         )?;
-        return Ok(());
+        return Ok(None);
     }
-    if summary.is_dead() {
+    let Some(lane) = w.lane.filter(|_| !summary.is_dead()) else {
         settle(run, w.row_id, &w.session_id, &summary, WorkerOutcome::Dead)?;
         run.emit(EventKind::WorkerDead {
             slice: None,
@@ -1833,37 +2108,17 @@ pub fn settle_orphan(
         say(
             out,
             &format!(
-                "closeout: {what} worker {} of an earlier driver is gone (dead) — the closeout runs again",
-                w.session_id
+                "closeout: {what} worker {} of an earlier driver is gone ({}) — the closeout runs again",
+                w.session_id,
+                if summary.is_dead() {
+                    "dead"
+                } else {
+                    "spawned before lanes"
+                }
             ),
         )?;
-        return Ok(());
-    }
-    settle(run, w.row_id, &w.session_id, &summary, WorkerOutcome::Done)?;
-    say(
-        out,
-        &format!(
-            "closeout: {what} worker {} of an earlier driver returned — committing what it wrote",
-            w.session_id
-        ),
-    )?;
-    if w.role == "polish" {
-        let template = retro_template();
-        let before = scheduler::load_baseline(run.dir(), POLISH_KEY)?;
-        let committed = commit_polish(run, board, w.row_id, &summary, &template, &before, out)?;
-        run.emit(EventKind::PolishDone {
-            sha: committed.as_ref().map(|c| c.sha.clone()),
-            files: committed.map(|c| c.files).unwrap_or_default(),
-        })?;
-        // As the live path, after the event (AD-1): the next pass sees polish
-        // done and never files. The scheduler hands orphans no config, so it
-        // is read here; an unreadable one files nothing (AD-30001).
-        let repo = run.state().repo.clone();
-        if let Ok(loaded) = config::load_with_project(&paths::config_dir(), &repo) {
-            file_friction(run, board, &loaded.config, out);
-        }
-        return Ok(());
-    }
+        return Ok(None);
+    };
     let events = run.events()?;
     let round = events
         .iter()
@@ -1882,54 +2137,52 @@ pub fn settle_orphan(
             _ => None,
         })
         .unwrap_or_else(|| "ci".to_string());
-    let before = scheduler::load_baseline(run.dir(), &ci_fix_key(round))?;
-    commit_ci_fix(run, board, round, &check, w.row_id, &summary, &before, out)
-}
-
-/// The spawn baseline key of the polish worker: one runs at a time, and a
-/// respawn waits for the last one to be settled.
-const POLISH_KEY: &str = "closeout-polish";
-
-/// The spawn baseline key of a CI fix round's worker.
-fn ci_fix_key(round: u32) -> String {
-    format!("closeout-ci-fix-{round}")
-}
-
-/// A closeout worker's unnamed changes, said and logged: the swept ones go
-/// in its commit, the listed ones stay in the tree (`closeout_leftovers`).
-fn note_leftovers(
-    run: &mut Run,
-    role: &str,
-    who: &str,
-    found: &scheduler::Unnamed,
-    out: &mut dyn Write,
-) -> Result<()> {
-    if !found.sweep.is_empty() {
+    let who = if w.role == "polish" {
+        Closer::Polish
+    } else {
+        Closer::CiFix {
+            round,
+            check: &check,
+        }
+    };
+    // A landing already under way (its ref made) is retried every tick a
+    // dirty main tree holds it: said once, at first.
+    if scheduler::resolve(&run.state().repo, &who.ref_name(board))?.is_none() {
         say(
             out,
             &format!(
-                "{who} changed {} tracked file(s) no tool call named — in its commit: {}",
-                found.sweep.len(),
-                found.sweep.join(", ")
+                "closeout: {what} worker {} of an earlier driver returned — landing its lane",
+                w.session_id
             ),
         )?;
     }
-    if !found.listed.is_empty() {
-        run.emit(EventKind::CloseoutLeftovers {
-            role: role.to_string(),
-            files: found.listed.clone(),
-            blobs: found.blobs.clone(),
-        })?;
-        say(
-            out,
-            &format!(
-                "{who} left {} file(s) no tool call named — not committed: {}",
-                found.listed.len(),
-                found.listed.join(", ")
-            ),
-        )?;
+    match land_worker(run, board, &who, lane, w.row_id, out)? {
+        Landed::Done(_) => {}
+        Landed::Waiting(what) => return Ok(Some(what)),
+        Landed::Conflict { paths, name } => {
+            block_conflict(run, board, &who, &paths, &name, out)?;
+            settle(
+                run,
+                w.row_id,
+                &w.session_id,
+                &summary,
+                WorkerOutcome::Blocked,
+            )?;
+            return Ok(None);
+        }
     }
-    Ok(())
+    settle(run, w.row_id, &w.session_id, &summary, WorkerOutcome::Done)?;
+    if w.role == "polish" {
+        // As the live path, after the landing and its event (AD-1): the next
+        // pass sees polish done and never files. The scheduler hands orphans
+        // no config, so it is read here; an unreadable one files nothing
+        // (AD-30001).
+        let repo = run.state().repo.clone();
+        if let Ok(loaded) = config::load_with_project(&paths::config_dir(), &repo) {
+            file_friction(run, board, &loaded.config, out);
+        }
+    }
+    Ok(None)
 }
 
 // ── shared ──────────────────────────────────────────────────────────────────
@@ -2151,7 +2404,7 @@ fn settle(
     run.db()
         .finish_worker(row_id, summary, outcome.as_str(), &clock::now_rfc3339())?;
     // Never fails the exit: an unreadable dir is an event and null columns.
-    let _ = metrics::record_subagents(run, row_id, session_id);
+    let _ = metrics::record_subagents(run, row_id, session_id, summary.cwd.as_deref());
     metrics::record_exit(run, row_id, summary)?;
     run.set_worker_outcome(session_id, outcome.as_str())
 }

@@ -90,6 +90,10 @@ pub fn scrubbed(name: &str) -> bool {
 /// The worker env var naming the repo the pack's paths are relative to.
 pub const REPO_ENV: &str = "FACTORY_REPO";
 
+/// The worker env var naming the main tree, whose board a lane worker's
+/// `factory docs` board verbs write (PRD-005 FR-2).
+pub const BOARD_ENV: &str = "FACTORY_BOARD";
+
 /// git's count of `GIT_CONFIG_KEY_<i>`/`GIT_CONFIG_VALUE_<i>` pairs.
 pub const GIT_CONFIG_COUNT: &str = "GIT_CONFIG_COUNT";
 
@@ -184,12 +188,19 @@ pub enum Job {
         round: u32,
         attempt: u32,
     },
+    /// PRD-005 FR-4: a merge worker resolving the slice's conflicted
+    /// landing in its lane; `attempt` counts the slice's merge workers.
+    Merge {
+        slice: u32,
+        attempt: u32,
+    },
 }
 
 impl Job {
     pub fn role(&self) -> &'static str {
         match self {
             Job::Build { .. } => "build",
+            Job::Merge { .. } => "merge",
             Job::Fix { .. } | Job::CiFix { .. } => "fix",
             Job::Checkpoint { .. } => "checkpoint",
             Job::Polish { .. } => "polish",
@@ -198,14 +209,14 @@ impl Job {
 
     pub fn slice(&self) -> Option<u32> {
         match self {
-            Job::Build { slice } => Some(*slice),
+            Job::Build { slice } | Job::Merge { slice, .. } => Some(*slice),
             _ => None,
         }
     }
 
     pub fn checkpoint(&self) -> Option<u32> {
         match self {
-            Job::Build { .. } | Job::Polish { .. } | Job::CiFix { .. } => None,
+            Job::Build { .. } | Job::Polish { .. } | Job::CiFix { .. } | Job::Merge { .. } => None,
             Job::Fix { checkpoint, .. } => Some(*checkpoint),
             Job::Checkpoint { n, .. } => Some(*n),
         }
@@ -216,7 +227,8 @@ impl Job {
 /// into an [`Exit`].
 pub struct Worker {
     pub job: Job,
-    /// The slice of a build worker; `None` for a fix or checkpoint worker.
+    /// The slice of a build or merge worker; `None` for a fix or checkpoint
+    /// worker.
     pub slice: Option<u32>,
     pub role: String,
     pub session_id: String,
@@ -246,16 +258,21 @@ pub fn stream_path(run_dir: &Path, session_id: &str) -> PathBuf {
 }
 
 impl Worker {
-    /// Spawn `claude -p` for `job` with FR-2's flags and `env` on top of the
-    /// driver's environment, record it in the run. Every path on its command
-    /// line is absolute, so a relative data dir resolves against the
-    /// driver's cwd and not the repo the worker runs in.
+    /// Spawn `claude -p` for `job` in `cwd` with FR-2's flags and `env` on
+    /// top of the driver's environment, record it in the run. Every path on
+    /// its command line is absolute, so a relative data dir resolves against
+    /// the driver's cwd and not the tree the worker runs in. `cwd` is its
+    /// `FACTORY_REPO`; `FACTORY_BOARD` is always the run's main tree, whose
+    /// board a lane worker writes (PRD-005 FR-2). `lane` is the lane `cwd`
+    /// is, recorded so an orphan finds it.
     pub fn spawn(
         run: &mut Run,
         job: Job,
         pack: &Pack,
         cfg: &config::Worker,
         env: &[(String, String)],
+        cwd: &Path,
+        lane: Option<u32>,
     ) -> Result<Worker> {
         let role = job.role();
         let slice = job.slice();
@@ -278,6 +295,9 @@ impl Worker {
         let pack_path = std::path::absolute(&pack.path)
             .map_err(io(format!("resolve {}", pack.path.display())))?;
         let repo = run.state().repo.clone();
+        // Canonical: the hook keys its guards to `FACTORY_REPO`, and the
+        // transcript slug comes from the cwd the worker sees.
+        let cwd = std::fs::canonicalize(cwd).map_err(io(format!("resolve {}", cwd.display())))?;
 
         let mut cmd = Command::new("claude");
         cmd.arg("-p")
@@ -291,7 +311,7 @@ impl Worker {
             .args(["--effort", &cfg.effort])
             .arg("--settings")
             .arg(&settings_file)
-            .current_dir(&repo)
+            .current_dir(&cwd)
             .stdin(Stdio::null())
             .stdout(Stdio::from(stream_file))
             .stderr(Stdio::from(stderr_file));
@@ -319,13 +339,14 @@ impl Worker {
             .or_else(|| std::env::var(GIT_CONFIG_COUNT).ok());
         cmd.envs(push_off_env(inherited.as_deref()));
         cmd.env(crate::cli::hook::PACK_ENV, &pack_path);
-        cmd.env(REPO_ENV, &repo);
+        cmd.env(REPO_ENV, &cwd);
+        cmd.env(BOARD_ENV, &repo);
         let mut child = cmd.spawn().map_err(|e| Error::Tool {
             cmd: format!("claude -p … --session-id {session_id}"),
             detail: format!("could not start claude: {e}"),
         })?;
         let pid = child.id();
-        let recorded = record(run, job, pack, cfg, &session_id, pid);
+        let recorded = record(run, job, pack, cfg, &session_id, pid, lane);
         let row_id = reaped_on_err(&mut child, recorded)?;
         Ok(Worker {
             job,
@@ -389,6 +410,7 @@ fn record(
     cfg: &config::Worker,
     session_id: &str,
     pid: u32,
+    lane: Option<u32>,
 ) -> Result<i64> {
     let role = job.role();
     let slice = job.slice();
@@ -408,6 +430,7 @@ fn record(
     run.add_worker(WorkerRef {
         slice,
         checkpoint: job.checkpoint(),
+        lane,
         role: role.to_string(),
         session_id: session_id.to_string(),
         pid,
@@ -444,6 +467,12 @@ fn record(
         },
         Job::CiFix { round, attempt } => EventKind::CiFixSpawned {
             round,
+            attempt,
+            session_id,
+            pid,
+        },
+        Job::Merge { slice, attempt } => EventKind::MergeSpawned {
+            slice,
             attempt,
             session_id,
             pid,

@@ -3,7 +3,15 @@
 **Source**: [`prd.md`](prd.md) → §3 FR-1 (lane worktrees, `[lanes] seed`, reset, setup in the lane, `factory lanes up`, the preflight refusal), §13 OPEN-3. **Depends on**: nothing. It builds the lanes; slice 07 is the first to spawn a worker in one, and slice 06 adds `--prove` and `prune` to the verb made here.
 **Created**: 2026-10-14
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+
+- **Built.** `src/lanes.rs`: `main_tree` (parent of the absolute git common dir, canonical), `key` (`<name>-<8 hex of sha256(path)>`), `dir(data, main, n)`, `ensure` (detached `git worktree add` from the main tree's HEAD when the lane is not a registered worktree, `-f` when git still lists a vanished one; then each seed path as `clone`, `copy`, `kept` or `skipped (not in the main tree)`, a failed clone's partial target removed before the copy), `reset` (forced detached checkout, `reset --hard` to drop `CHERRY_PICK_HEAD`, `clean -fd`), `Lane::run_setup` (setup's raw output; `setup` now wraps it), `NO_SEED`. `src/docs/project.rs::seed` reads `[lanes] seed` as `Option<Vec<String>>`; `"lanes"` joins `PROJECT_TOP_KEYS`. `src/cli/lanes.rs`: `factory lanes up` and `ensure_all`, which a fresh `factory run` calls after the refusals and before any run exists (the ask path included). Preflight refuses with `NO_SEED` next to the gate refusal; the lanes ask names `/lanes`. Harness: `build_v3` writes `[lanes]\nseed = []`; `set_seed` and `drop_lanes_table` rewrite and commit the table.
+- **Tests.** Unit: same lane dir from the main tree and a linked worktree, twin `app` repos differ; `ensure` twice → one detached lane, seeds byte-equal, labels match a `cp --reflink=always` probe, `kept` the second time with a lane-grown file left alone, `missing` skipped, `../out` refused; `reset` over an edit, a staged file, an untracked file and a conflicted cherry-pick keeps the ignored `.env`. Config: `[lanes]` loads with no warning. Project: absent table, absent key, `[]`, `["target"]`. `tests/lanes.rs`: `lanes up` on two lanes (detached, byte-equal seeds, each `setup-pwd` its own canonical path, labels per the probe, `kept` and setup again on a rerun); `lanes up` and `run` without a seed exit 1 naming `/lanes`, no call, no run dir, no lane; a fresh `--foreground` run leaves both lanes and every worker's cwd is the main tree. `"lanes"` in `SUBCOMMANDS`.
+- **Inner loop.** 1 run, 0 red, 1.2 min, 545 tests passed. Run in a tree other slices were building in at the same time.
+- **Deviations.** `dir` and `ensure` take the data dir as an argument (unit tests can't set `FACTORY_DATA_DIR` safely); the CLI passes `paths::data_dir()`. `main_tree` runs its own `git rev-parse --git-common-dir`: `paths::git_common_dir` was in the tree but uncommitted (another slice's in-flight work), AD logged. A seed path that is absolute or climbs out with `..` is an error naming it.
+- **Prove (checkpoint).** FR-1 rows left for the checkpoint: the `lanes up` transcript, `git worktree list` with two detached lanes, and the refusal line with its exit code.
+- **Prove (CP-1), FR-1 tests.** The task 5 and task 6 tests green: `evidence/cp-1-fr-1-lanes-tests.txt`.
+- **Prove (CP-1), FR-1 drive.** `lanes up` prints one line per lane (`big copy · .env copy  setup 0` on tmpfs, `kept` on rerun). `git worktree list` shows two detached lanes. With no `[lanes] seed`, `lanes up` and `run 001` print `✗ no lanes declared — /lanes …` and exit 1, with no run dir: `evidence/cp-1-fr-1-lanes-up-drive.txt`.
 
 **Slice**: After this slice a repo has real lanes. Lane N is a detached git worktree at `<data dir>/lanes/<repo key>/lane-N`, and the ignored state `[lanes] seed` names is cloned into it once, or copied when a clone fails. `src/lanes.rs` owns the whole lane: where it lives, creating and seeding it, resetting it to a commit, and running its setup there. `factory lanes up` creates and seeds every lane, runs each setup inside its lane, and prints one line per lane. A fresh `factory run` refuses a repo with no `[lanes] seed` and names `/lanes`, and creates and seeds the lanes before it starts. Workers still run in the main tree: slice 07 moves them, and the reset is first called there.
 
@@ -92,3 +100,9 @@ Rows from [`prd.md`](prd.md) §14 this slice proves, below the UI:
 - **FR-1**: "run `factory lanes up` on a fixture with two lanes and a seed list; then `factory run` without `[lanes] seed`". Run the task 5 and task 6 tests and keep their transcripts, plus the `git worktree list` output from task 5's fixture and the refusal line from task 6.
 
 **Acceptance:** after the checkpoint, Progress holds the `lanes up` output (one line per lane, `clone` or `copy` per path), `git worktree list` with two detached lanes, and the refusal line naming `/lanes` with its exit code.
+
+**Code-review fixes (2026-10-14).**
+
+- A lane file's `setup:` and env items lost every leading and trailing quote, so a setup ending in `…log"` broke in sh. Now only one matching pair comes off (`unquote` in `src/lanes.rs`).
+- A seed path written `big/.` copied to an odd target. Seed paths keep only their normal components; an empty one is an error.
+- Preflight read an unreadable `[lanes] seed` as no seed and named the wrong fix. It now refuses with `[lanes] seed unreadable: {error}`.

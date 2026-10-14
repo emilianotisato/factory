@@ -54,12 +54,16 @@ pub fn fixture_src() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixture")
 }
 
-/// One line of `scenario/gate.log`.
+/// One line of `scenario/gate.log`: `<epoch> <kind> <exit> <pwd> <head>`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GateRun {
     pub epoch: u64,
     pub kind: String,
     pub exit: i32,
+    /// The directory the gate ran in, as `pwd -P` printed it.
+    pub pwd: PathBuf,
+    /// The HEAD it saw; `-` when HEAD is unborn.
+    pub head: String,
 }
 
 pub struct Fixture {
@@ -121,6 +125,43 @@ impl Fixture {
     /// `$FACTORY_DATA_DIR`: where the metrics store lives.
     pub fn data_dir(&self) -> PathBuf {
         self.base.path().join("data")
+    }
+
+    /// `[lanes] seed = [...]` in `docs/project.toml` in place of the
+    /// `[lanes]` table there, committed.
+    pub fn set_seed(&self, paths: &[&str]) {
+        let items: Vec<String> = paths.iter().map(|p| format!("{p:?}")).collect();
+        self.rewrite_lanes(Some(&format!("[lanes]\nseed = [{}]\n", items.join(", "))));
+    }
+
+    /// `docs/project.toml` with no `[lanes]` table, committed.
+    pub fn drop_lanes_table(&self) {
+        self.rewrite_lanes(None);
+    }
+
+    fn rewrite_lanes(&self, table: Option<&str>) {
+        let file = self.root.join("docs/project.toml");
+        let text = fs::read_to_string(&file).unwrap();
+        let mut out = String::new();
+        let mut inside = false;
+        for line in text.lines() {
+            if line.trim_start().starts_with('[') {
+                inside = line.trim() == "[lanes]";
+            }
+            if !inside {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+        let mut out = out.trim_end().to_string();
+        out.push('\n');
+        if let Some(t) = table {
+            out.push('\n');
+            out.push_str(t);
+        }
+        fs::write(&file, out).unwrap();
+        self.git(&["add", "docs/project.toml"]);
+        self.git(&["commit", "-q", "-m", "chore: lanes table"]);
     }
 
     /// The temp dirs and the env, before any repo is built.
@@ -205,6 +246,8 @@ impl Fixture {
         for (k, v) in keys {
             toml.push_str(&format!("{k} = {v}\n"));
         }
+        // Preflight refuses a repo with no `[lanes] seed` (PRD-005 FR-1).
+        toml.push_str("\n[lanes]\nseed = []\n");
         fs::write(self.root.join("docs/project.toml"), toml).unwrap();
         self.docs(&["new", "fixture", "--title", "Fixture"]);
         self.docs(&["slice", FEATURE, "a"]);
@@ -462,20 +505,22 @@ impl Fixture {
         };
         text.lines()
             .map(|l| {
-                let mut it = l.split_whitespace();
-                let epoch = it
-                    .next()
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or_else(|| panic!("gate.log line {l:?}"));
-                let kind = it
-                    .next()
-                    .unwrap_or_else(|| panic!("gate.log line {l:?}"))
-                    .to_string();
-                let exit = it
-                    .next()
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or_else(|| panic!("gate.log line {l:?}"));
-                GateRun { epoch, kind, exit }
+                let parse = || {
+                    let mut it = l.splitn(4, ' ');
+                    let epoch = it.next()?.parse().ok()?;
+                    let kind = it.next()?.to_string();
+                    let exit = it.next()?.parse().ok()?;
+                    // The pwd may hold a space; the head never does.
+                    let (pwd, head) = it.next()?.rsplit_once(' ')?;
+                    Some(GateRun {
+                        epoch,
+                        kind,
+                        exit,
+                        pwd: PathBuf::from(pwd),
+                        head: head.to_string(),
+                    })
+                };
+                parse().unwrap_or_else(|| panic!("gate.log line {l:?}"))
             })
             .collect()
     }

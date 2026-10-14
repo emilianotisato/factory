@@ -340,6 +340,51 @@ fn roles(fx: &Fixture, dir: &Path) -> Vec<String> {
         .collect()
 }
 
+/// The canonical worktrees of the run's lanes, as `pwd -P` prints them.
+fn lane_paths(fx: &Fixture) -> Vec<PathBuf> {
+    let lanes = data_dir(fx).canonicalize().unwrap().join("lanes");
+    fx.git(&["worktree", "list", "--porcelain"])
+        .split("\n\n")
+        .filter_map(|b| Some(PathBuf::from(b.lines().next()?.strip_prefix("worktree ")?)))
+        .filter(|p| p.starts_with(&lanes))
+        .collect()
+}
+
+/// The canonical worktree of lane `n`.
+fn lane_path(fx: &Fixture, n: u32) -> PathBuf {
+    lane_paths(fx)
+        .into_iter()
+        .find(|p| p.ends_with(format!("lane-{n}")))
+        .unwrap_or_else(|| panic!("no lane-{n} worktree"))
+}
+
+/// The cwd a stub call ran in.
+fn cwd_of(call: &Value) -> PathBuf {
+    PathBuf::from(
+        call["cwd"]
+            .as_str()
+            .unwrap_or_else(|| panic!("no cwd: {call}")),
+    )
+}
+
+/// Lane files for lanes 1 and 2 whose setup appends `setup N` to
+/// `scenario/lane-setup.log`, committed.
+fn lanes_with_setup(fx: &Fixture) {
+    let lanes = fx.path().join("docs/reference/lanes");
+    fs::create_dir_all(&lanes).unwrap();
+    for n in 1..=2 {
+        fs::write(
+            lanes.join(format!("lane-{n}.md")),
+            format!(
+                "---\nlane: {n}\nenv: [FACTORY_LANE_DB=fixture_{n}]\nsetup: echo \"setup $FACTORY_LANE\" >> \"$(dirname \"$(git rev-parse --path-format=absolute --git-common-dir)\")\"/scenario/lane-setup.log\n---\n\nLane {n} of the fixture.\n"
+            ),
+        )
+        .unwrap();
+    }
+    fx.git(&["add", "-A"]);
+    fx.git(&["commit", "-q", "-m", "chore: lane files"]);
+}
+
 /// `(red, cached, attempt)` of the rows for checkpoint `n`, in id order; every
 /// row is the driver's checkpoint row with the fixture's gate command.
 fn gate_shape(rows: &[GateRow], n: u32) -> Vec<(bool, bool, u32)> {
@@ -360,8 +405,9 @@ fn gate_shape(rows: &[GateRow], n: u32) -> Vec<(bool, bool, u32)> {
         .collect()
 }
 
-/// `CP-n` is one `checkpoint` entry with `slice` = the last covered slice.
-fn assert_cp(fx: &Fixture, n: u32, after: u8, covers: &str) {
+/// `CP-n` is one `checkpoint` entry with `slice` = the last covered slice and
+/// `covers` = every one of them.
+fn assert_cp(fx: &Fixture, n: u32, after: u8, covers: &str, numbers: &[u32]) {
     let id = format!("CP-{n}");
     let cps: Vec<Value> = fx
         .log_of("checkpoint")
@@ -371,6 +417,7 @@ fn assert_cp(fx: &Fixture, n: u32, after: u8, covers: &str) {
     assert_eq!(cps.len(), 1, "{id}: {:?}", fx.log_entries());
     let cp = &cps[0];
     assert_eq!(cp["slice"], after, "{cp}");
+    assert_eq!(cp["covers"], json!(numbers), "{cp}");
     assert_eq!(cp["phase"], "checkpoint", "{cp}");
     assert!(
         cp["title"]
@@ -394,8 +441,8 @@ fn assert_two_checkpoints(fx: &Fixture, dir: &Path) {
     for n in 1..=3 {
         assert_eq!(fx.slice_status(n), "done", "slice {n:02}");
     }
-    assert_cp(fx, 1, 2, "01, 02");
-    assert_cp(fx, 2, 3, "03");
+    assert_cp(fx, 1, 2, "01, 02", &[1, 2]);
+    assert_cp(fx, 2, 3, "03", &[3]);
     // One decision per slice, numbered by the tool in commit order.
     assert_eq!(
         decisions(fx),
@@ -531,6 +578,16 @@ fn the_driver_runs_the_gate_at_each_checkpoint_and_commits_the_cp_entries() {
     let log = fx.gate_log();
     assert_eq!(log.len(), 2, "gate.log");
     assert!(log.iter().all(|g| g.kind == "gate" && g.exit == 0));
+    // Each ran in a lane at the feature tip: the last slice commit before
+    // its checkpoint (PRD-005 FR-5).
+    let lanes = lane_paths(&fx);
+    for (g, tip) in log
+        .iter()
+        .zip(["feat(001): slice-02 B", "feat(001): slice-03 C"])
+    {
+        assert!(lanes.contains(&g.pwd), "{g:?} not in {lanes:?}");
+        assert_eq!(g.head, sha_of(&fx, tip), "{g:?}");
+    }
     assert!(dir.join("gates/1-1.log").is_file());
     assert!(dir.join("gates/2-1.log").is_file());
     let runs = of_kind(&dir, "gate_run");
@@ -565,7 +622,7 @@ fn the_driver_runs_the_gate_at_each_checkpoint_and_commits_the_cp_entries() {
         "# Contract",
         "You are running checkpoint 1 of PRD-001",
         "slices 01, 02: each one's Prove task",
-        "--kind checkpoint --phase checkpoint --slice 02 --title \"after slice-02\"",
+        "--kind checkpoint --phase checkpoint --slice 02 --covers 1,2 --title \"after slice-02\"",
         "# Autonomy",
     ] {
         assert!(
@@ -744,6 +801,11 @@ fn red_red_green_runs_two_fix_workers_and_three_gates_before_the_cp() {
     );
     let first = fs::read_to_string(dir.join("gates/1-1.log")).unwrap();
     assert!(first.contains(FAIL_LINE), "{first}");
+    // Both fix workers ran in a lane (PRD-005 FR-5).
+    let lanes = lane_paths(&fx);
+    for call in &fx.calls()[2..4] {
+        assert!(lanes.contains(&cwd_of(call)), "{call}");
+    }
     assert_eq!(fs::read_to_string(dir.join("gates/1-3.log")).unwrap(), "");
 
     // Two fix commits, each only the file the fix worker named.
@@ -1335,9 +1397,10 @@ fn a_dead_fix_workers_changes_are_committed_before_the_gate_runs_again() {
     ]);
     let dir = start(&fx);
     wait_until(&fx, &dir, "the fix worker", 40, || fx.calls().len() >= 3);
-    // What the fix worker changed before it died, through a tool call the
-    // stream never flushed.
-    fs::write(fx.path().join("src/lib.txt"), "fixed before the death\n").unwrap();
+    // What the fix worker changed in its lane before it died, through a tool
+    // call the stream never flushed.
+    let lane = cwd_of(&fx.calls()[2]);
+    fs::write(lane.join("src/lib.txt"), "fixed before the death\n").unwrap();
     wait_phase(&fx, &dir, "finished", 60);
 
     assert_eq!(prompts(&fx)[2], fix(1));
@@ -1362,15 +1425,16 @@ fn a_dead_fix_workers_changes_are_committed_before_the_gate_runs_again() {
 }
 
 #[test]
-fn a_green_on_a_dirty_tree_serves_its_own_checkpoint_only() {
+fn a_dirty_main_tree_does_not_pin_the_cache() {
     let fx = Fixture::new("cp-dirty-green");
     fx.chain();
-    // notes.txt is listed, never committed: every gate runs on a dirty tree.
-    // Checkpoint 1's worker dies twice and the answer reuses its green (run
-    // B of the A/B reran 7 minutes). Slice 03 touches no code, so checkpoint
-    // 2 sees the same tree and still runs it (Xb7).
+    // The owner's untracked notes.txt, written once the run is past its
+    // clean-tree preflight. The gate runs in a lane reset to HEAD, so the
+    // main tree's state is not what it tests (PRD-005 FR-5). Checkpoint 1's
+    // worker dies twice and the answer reuses its green. Slice 03 touches no
+    // code, so checkpoint 2 sees the same tree: cached green.
     fx.write_plan(&[
-        json!({"outcome": "done", "stray": ["notes.txt"]}),
+        done(),
         done(),
         step("dead"),
         step("dead"),
@@ -1379,6 +1443,7 @@ fn a_green_on_a_dirty_tree_serves_its_own_checkpoint_only() {
         step("checkpoint"),
     ]);
     let dir = start(&fx);
+    fs::write(fx.path().join("notes.txt"), "owner's notes\n").unwrap();
     wait_phase(&fx, &dir, "waiting-owner", 60);
     let out = factory(&fx, &["answer", "BLOCK-1", "logged in again"]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
@@ -1387,10 +1452,110 @@ fn a_green_on_a_dirty_tree_serves_its_own_checkpoint_only() {
     assert!(fx.path().join("notes.txt").exists());
     let rows = gates(&fx, &dir);
     assert_eq!(gate_shape(&rows, 1), [(false, false, 1), (false, true, 2)]);
-    assert_eq!(gate_shape(&rows, 2), [(false, false, 1)]);
-    assert_eq!(fx.gate_log().len(), 2);
+    assert_eq!(gate_shape(&rows, 2), [(false, true, 1)]);
+    assert_eq!(fx.gate_log().len(), 1);
     let cache = factory::gatecache::GateCache::load(&dir).unwrap();
     assert_eq!(cache.len(), 1, "{cache:?}");
+}
+
+// ── PRD-005 FR-5: the checkpoint runs in the lowest free lane ───────────────
+
+#[test]
+fn a_checkpoint_due_while_a_blocked_slice_holds_lane_1_runs_in_lane_2() {
+    let fx = Fixture::new("cp-lane-2");
+    lanes_with_setup(&fx);
+    // Slices 01 and 02 start at once; 01 blocks on lane 1, 02 and then 03
+    // land through lane 2, and checkpoint 1 is due while lane 1 is held.
+    fx.write_plan(&[step("blocked"), done(), done(), step("checkpoint")]);
+    let dir = start(&fx);
+    wait_until(&fx, &dir, "the park after checkpoint 1", 60, || {
+        state(&dir)["phase"] == "waiting-owner"
+            && kinds(&dir).iter().any(|k| k == "checkpoint_done")
+    });
+
+    assert_eq!(prompts(&fx), [build(1), build(2), build(3), checkpoint(1)]);
+    assert_eq!(fx.slice_status(1), "blocked");
+    assert_eq!(fx.slice_lane(1), Some(1));
+    let lane = lane_path(&fx, 2);
+    let log = fx.gate_log();
+    assert_eq!(log.len(), 1, "{log:?}");
+    assert_eq!(log[0].pwd, lane, "{log:?}");
+    assert_eq!(cwd_of(&fx.calls()[3]), lane);
+    let text = driver_log(&dir);
+    assert!(
+        text.contains("parked (waiting-owner): slice 01 blocked"),
+        "{text}"
+    );
+    // Lane 2's setup ran once: for slice 02, not again for 03 or the gate.
+    let setup = fx.read("scenario/lane-setup.log");
+    assert_eq!(
+        setup.lines().filter(|l| *l == "setup 2").count(),
+        1,
+        "{setup}"
+    );
+    let out = factory(&fx, &["stop", &run_id(&dir)]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+}
+
+#[test]
+fn a_file_only_the_main_tree_holds_does_not_turn_the_gate_green() {
+    let fx = Fixture::with_index(
+        "cp-main-only",
+        &[("gate", "\"./gate.sh && test -f needed.txt\"")],
+    );
+    fx.chain();
+    fx.write_plan(&[done(), done(), step("fix"), step("fix")]);
+    let dir = start(&fx);
+    // Untracked in the main tree only, written once the run is past its
+    // clean-tree preflight and long before the first gate: the lane reset
+    // to HEAD has none, so the gate is red every time.
+    fs::write(fx.path().join("needed.txt"), "the owner's\n").unwrap();
+    wait_phase(&fx, &dir, "waiting-owner", 90);
+
+    let runs = of_kind(&dir, "gate_run");
+    assert_eq!(runs.len(), 3, "{runs:?}");
+    assert!(runs.iter().all(|r| r["red"] == true), "{runs:?}");
+    let lanes = lane_paths(&fx);
+    for g in fx.gate_log() {
+        assert_eq!(g.exit, 0, "{g:?}");
+        assert!(lanes.contains(&g.pwd), "{g:?}");
+    }
+    let blocks = fx.log_of("block");
+    assert_eq!(blocks.len(), 1, "{blocks:?}");
+    assert!(
+        blocks[0]["title"]
+            .as_str()
+            .unwrap()
+            .starts_with("gate red three times at checkpoint 1"),
+        "{}",
+        blocks[0]
+    );
+    assert!(fx.path().join("needed.txt").exists());
+    let out = factory(&fx, &["stop", &run_id(&dir)]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+}
+
+#[test]
+fn a_fix_workers_file_no_tool_call_named_lands_in_its_commit() {
+    let fx = Fixture::new("cp-fix-unnamed");
+    fx.chain();
+    fx.script_gate(&["red"]);
+    // The file's name is built in the script: no tool call names it.
+    fx.write_plan(&[
+        done(),
+        done(),
+        json!({"outcome": "fix", "touch": [], "sh": "n=fixed; echo ok > src/$n.txt"}),
+        step("checkpoint"),
+        done(),
+        step("checkpoint"),
+    ]);
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "finished", 60);
+
+    let sha = sha_of(&fx, "fix(001): gate red at checkpoint 1");
+    assert_eq!(files_of(&fx, &sha), ["src/fixed.txt"]);
+    assert_eq!(fx.read("src/fixed.txt"), "ok\n");
+    assert_eq!(fx.git(&["status", "--porcelain"]), "");
 }
 
 // ── finding Xc4: a checkpoint worker that outlives its driver ───────────────

@@ -2,7 +2,6 @@
 //! `{seq, ts, kind, ...payload}`. Every event is also a row in the `events`
 //! table, written by the same [`emit`]; nothing writes one without the other.
 //! The cockpit replays the file; the metrics read the table.
-use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::Path;
@@ -39,6 +38,20 @@ pub enum EventKind {
         slice: u32,
         session_id: String,
         pid: u32,
+    },
+    /// PRD-005 FR-4: a merge worker started in the slice's lane, on a
+    /// landing that conflicted; `attempt` counts the slice's merge workers.
+    MergeSpawned {
+        slice: u32,
+        attempt: u32,
+        session_id: String,
+        pid: u32,
+    },
+    /// PRD-005 FR-4: the slice's lane commit conflicts with the feature tip
+    /// in `paths`; the driver redoes the pick in the lane for a merge worker.
+    LandingConflicted {
+        slice: u32,
+        paths: Vec<String>,
     },
     /// The board read `done` after the worker exited.
     SliceDone {
@@ -120,38 +133,6 @@ pub enum EventKind {
         slice: u32,
         sha: String,
         files: Vec<String>,
-    },
-    /// Files that appeared in the tree while the worker ran and that no tool
-    /// call named: listed in a `note` entry of `log.jsonl`,
-    /// never committed (FR-5).
-    UntrackedLeftovers {
-        slice: u32,
-        files: Vec<String>,
-        /// Each listed file's blob id when listed (`git hash-object`, "" for a
-        /// deleted file): the same content is listed once, a later change
-        /// to it is judged afresh. Empty from a driver that kept none.
-        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-        blobs: BTreeMap<String, String>,
-    },
-    /// What a checkpoint's fix or checkpoint worker changed that its stream
-    /// never named and its commit does not take: untracked files and the
-    /// protected ones, left in the tree for the owner (AD-20007).
-    CheckpointLeftovers {
-        n: u32,
-        role: String,
-        files: Vec<String>,
-        /// As [`EventKind::UntrackedLeftovers`]'s.
-        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-        blobs: BTreeMap<String, String>,
-    },
-    /// The same for a closeout worker (`polish` or `ci-fix`): what it
-    /// changed unnamed and its commit does not take (AD-50002).
-    CloseoutLeftovers {
-        role: String,
-        files: Vec<String>,
-        /// As [`EventKind::UntrackedLeftovers`]'s.
-        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-        blobs: BTreeMap<String, String>,
     },
     /// The stream names one of the files no worker may write
     /// ([`crate::commit::protected_files`]: the feature's `prd.md`, and
@@ -553,6 +534,41 @@ mod tests {
             Some("skipped unreadable line 3")
         );
         assert_eq!(skip_note(run.dir(), &[]), None);
+    }
+
+    /// PRD-005 FR-6 deleted the three leftover events; a past run's log that
+    /// holds one still reads, so `factory report` keeps working on it. The
+    /// kinds are put together here so FR-6's grep finds no use of them.
+    #[test]
+    fn a_deleted_leftover_kind_reads_as_unknown() {
+        let (_tmp, run) = run();
+        let kind = |what: &str| format!("{what}_{}", "leftovers");
+        let lines = [
+            format!(
+                r#"{{"seq":1,"ts":"t","kind":"{}","role":"polish","files":["a"],"blobs":{{"a":"b"}}}}"#,
+                kind("closeout")
+            ),
+            format!(
+                r#"{{"seq":2,"ts":"t","kind":"{}","slice":1,"files":["a"]}}"#,
+                kind("untracked")
+            ),
+            format!(
+                r#"{{"seq":3,"ts":"t","kind":"{}","n":1,"role":"fix","files":[]}}"#,
+                kind("checkpoint")
+            ),
+        ];
+        fs::write(run.dir().join(FILE), lines.join("\n") + "\n").unwrap();
+        let (events, skipped) = scan(run.dir()).unwrap();
+        let got: Vec<(u64, EventKind)> = events.into_iter().map(|e| (e.seq, e.kind)).collect();
+        assert_eq!(
+            got,
+            vec![
+                (1, EventKind::Unknown),
+                (2, EventKind::Unknown),
+                (3, EventKind::Unknown),
+            ]
+        );
+        assert!(skipped.is_empty(), "{skipped:?}");
     }
 
     #[test]

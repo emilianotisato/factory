@@ -680,11 +680,32 @@ fn a_polish_return_without_findings_is_nulls_and_one_event() {
     assert!(v["findings"].is_null(), "{v}");
 }
 
-/// Where the driver looked for a worker's subagents.
-fn subagents_dir(fx: &Fixture, db: &Db, id: &str, session: &str) -> PathBuf {
-    let repo = db.run_row(id).unwrap().unwrap().repo;
+/// The cwd the stub call of `session` ran in: a lane since PRD-005 FR-2.
+fn cwd_of(fx: &Fixture, session: &str) -> PathBuf {
+    let calls = fx.calls();
+    let call = calls
+        .iter()
+        .find(|c| c["session_id"] == session)
+        .unwrap_or_else(|| panic!("no call of session {session}"));
+    PathBuf::from(call["cwd"].as_str().unwrap())
+}
+
+/// The cwd is a lane worktree under the data dir, not the fixture root.
+fn assert_lane(fx: &Fixture, cwd: &Path) {
+    let lanes = data_dir(fx).canonicalize().unwrap().join("lanes");
+    assert!(
+        cwd.starts_with(&lanes) && cwd.file_name().is_some_and(|n| n == "lane-1"),
+        "{} is not lane 1 under {}",
+        cwd.display(),
+        lanes.display()
+    );
+}
+
+/// Where the driver looked for a worker's subagents: under the slug of the
+/// cwd its worker ran in.
+fn subagents_dir(fx: &Fixture, session: &str) -> PathBuf {
     let config = PathBuf::from(&fx.env()["CLAUDE_CONFIG_DIR"]);
-    let t = factory::measure::transcript_path(&config, Path::new(&repo), session);
+    let t = factory::measure::transcript_path(&config, &cwd_of(fx, session), session);
     t.with_extension("").join("subagents")
 }
 
@@ -719,7 +740,7 @@ fn a_polish_with_subagents_counts_them_apart_from_its_own() {
     let workers = db.workers(&id).unwrap();
     let polish = workers.iter().find(|w| w.role == "polish").unwrap();
     let session = polish.session_id.as_deref().unwrap();
-    let dir = subagents_dir(&fx, &db, &id, session);
+    let dir = subagents_dir(&fx, session);
     assert!(
         dir.is_dir(),
         "the stub wrote where the driver looks: {} not in {:?}",
@@ -826,7 +847,7 @@ fn an_unreadable_subagents_dir_is_nulls_and_one_event_never_a_failed_run() {
         .into_iter()
         .find(|w| w.role == "polish")
         .unwrap();
-    let dir = subagents_dir(&fx, &db, &id, polish.session_id.as_deref().unwrap());
+    let dir = subagents_dir(&fx, polish.session_id.as_deref().unwrap());
     // Root reads through any mode: nothing to test there.
     let root = fs::read_dir(&dir).is_ok();
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
@@ -916,6 +937,8 @@ fn recount_rewrites_the_tokens_and_tool_calls_from_the_streams() {
     let weighted_before = weighted_tokens(&fx, &id);
     let events_before = events_text(&fx, &id);
     assert_eq!(before.subagents, Some(2));
+    // PRD-005 FR-2: the polish worker ran in a lane; its subagents were read there.
+    assert_lane(&fx, &cwd_of(&fx, before.session_id.as_deref().unwrap()));
 
     db.conn()
         .execute(
@@ -1004,7 +1027,7 @@ fn recount_without_the_transcript_keeps_own_tokens_only() {
     let db = db(&fx);
     let before = polish_row(&db, &id);
     let session = before.session_id.clone().unwrap();
-    let transcript = subagents_dir(&fx, &db, &id, &session)
+    let transcript = subagents_dir(&fx, &session)
         .parent()
         .unwrap()
         .with_extension("jsonl");
@@ -1196,4 +1219,57 @@ fn a_version_2_store_gains_retros_and_reports_the_same() {
         String::from_utf8_lossy(&before.0)
     );
     assert_eq!(after.1, before.1);
+}
+
+/// PRD-005 FR-2: a worker that ran in a lane has its transcript under the
+/// lane's slug, named by its stream's `init` cwd; `--recount` reads it there.
+#[test]
+fn recount_finds_a_lane_workers_transcript_by_its_init_cwd() {
+    let (fx, id) = subagent_run(
+        "metrics-recount-lane",
+        json!({"outcome": "polish", "subagents": 2}),
+    );
+    let db = db(&fx);
+    let before = polish_row(&db, &id);
+    let session = before.session_id.clone().unwrap();
+    let sub = subagents_dir(&fx, &session);
+    let (from_dir, from) = (
+        sub.parent().unwrap().to_path_buf(),
+        sub.parent().unwrap().with_extension("jsonl"),
+    );
+    let lane = fx.path().with_file_name("metrics-recount-lane-2");
+    let config = PathBuf::from(&fx.env()["CLAUDE_CONFIG_DIR"]);
+    let to = factory::measure::transcript_path(&config, &lane, &session);
+    fs::create_dir_all(to.parent().unwrap()).unwrap();
+    fs::rename(&from, &to).unwrap();
+    fs::rename(&from_dir, to.with_extension("")).unwrap();
+    let stream = data_dir(&fx)
+        .join("runs")
+        .join(&id)
+        .join("workers")
+        .join(format!("{session}.jsonl"));
+    let root = serde_json::to_string(&cwd_of(&fx, &session).to_string_lossy()).unwrap();
+    let lane_json = serde_json::to_string(&lane.to_string_lossy()).unwrap();
+    let text = fs::read_to_string(&stream).unwrap();
+    assert!(text.contains(&format!("\"cwd\":{root}")), "{text}");
+    fs::write(
+        &stream,
+        text.replace(&format!("\"cwd\":{root}"), &format!("\"cwd\":{lane_json}")),
+    )
+    .unwrap();
+
+    let out = factory(&fx, &["report", &id, "--recount"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = stdout(&out);
+    let line = text
+        .lines()
+        .find(|l| l.starts_with("recount: polish "))
+        .unwrap_or_else(|| panic!("{text}"));
+    assert!(line.ends_with(" subagents 2"), "{line}");
+    assert_eq!(sub_cols(&polish_row(&db, &id)), sub_cols(&before));
 }

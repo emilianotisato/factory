@@ -515,7 +515,7 @@ pub struct Workers {
     pub by_role: BTreeMap<String, u64>,
 }
 
-pub const ROLE_ORDER: [&str; 4] = ["build", "fix", "checkpoint", "polish"];
+pub const ROLE_ORDER: [&str; 5] = ["build", "merge", "fix", "checkpoint", "polish"];
 
 impl Workers {
     /// `5 (build 3, fix 1, checkpoint 1)`.
@@ -923,10 +923,10 @@ pub fn recount(run: &Run, out: &mut dyn Write) -> Result<()> {
             w.id,
             &summary.tool_uses,
             gate.as_ref(),
-            &repo,
+            metrics::worker_dir(summary.cwd.as_deref(), &repo),
             &mut seen_run,
         )?;
-        let transcript = measure::transcript_path(&config, &repo, session);
+        let transcript = metrics::transcript_of(&config, summary.cwd.as_deref(), &repo, session);
         let (sub, note) = match metrics::read_subagents(&transcript) {
             Ok(cols) => (Some(cols), String::new()),
             Err(SubagentsUnread::TranscriptMissing) => {
@@ -1211,6 +1211,8 @@ mod tests {
         w.by_role.insert("build".to_string(), 3);
         w.by_role.insert("fix".to_string(), 1);
         assert_eq!(w.text(), "5 (build 3, fix 1, checkpoint 1)");
+        w.by_role.insert("merge".to_string(), 1);
+        assert_eq!(w.text(), "5 (build 3, merge 1, fix 1, checkpoint 1)");
     }
 
     #[test]

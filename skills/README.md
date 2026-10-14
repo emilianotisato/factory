@@ -12,6 +12,7 @@ In this repo `.claude/skills/<name>` are links to these folders instead, so a se
 | [`polish`](polish/SKILL.md) | the closing ritual before the merge: review, security, UX and a second opinion, triaged, then test cleanup and doc closeout |
 | [`gate`](gate/SKILL.md) | interview a project into one verify gate of tiered checks, proven to fail, declared in `docs/project.toml`; `gate audit` reviews one |
 | [`harness`](harness/SKILL.md) | build or maintain the project-local skill that drives the real app and captures proof |
+| [`lanes`](lanes/SKILL.md) | interview a repo into its lanes: the seed list and a lane file per lane with literal values, proven with `factory lanes up --prove` |
 | [`prune`](prune/SKILL.md) | clean up, deduplicate and stabilize a test suite without losing coverage |
 | [`ux`](ux/SKILL.md) | review changed UI against the project's design rules by driving the real app; builds `docs/ux-rubric.md` |
 

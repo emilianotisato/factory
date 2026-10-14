@@ -3,7 +3,15 @@
 **Source**: [`prd.md`](prd.md) → §6 FR-4 (a conflicting pick spawns a merge worker in the slice's lane; the BLOCK rules; a clean exit lands), §13 OPEN-2. **Depends on**: 07, which lands slices from lanes and, on a conflict, blocks the slice with the ref kept. This slice replaces that interim branch. It also edits `src/scheduler.rs` and `src/worker.rs`, which 09 and 10 edit next, so they follow it one at a time.
 **Created**: 2026-10-14
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**: built 2026-10-14.
+
+- **Built.** `Job::Merge { slice, attempt }`, role `merge`, after `build` in `ROLE_ORDER`; `merge_spawned` and `landing_conflicted` events. `Pack::for_merge` (`# Conflict` with the paths, the lane commit's message and `--stat`, then `# Slice`, the answer when there is one, the log, `assets/contract-merge.md`, autonomy, inner loop). On `Landing::Conflict`, `start_merge` resets the slice's lane to HEAD as its new base, redoes `cherry-pick --no-commit`, logs `landing_conflicted`, and sets the slice `building`; the build worker settles `done`. The building loop treats a slice with a lane and a resolving ref as merging. It spawns `Job::Merge` on the lane as left, with `workers.build`'s config, and counts merge deaths only (`deaths_since_answer` takes a role). `route_merge` routes a merge worker by role in `route_exit` and `settle_orphans`, in this order: an open block entry, a usage limit (the lane is kept, AD-11), a death, `<<<<<<<`/`>>>>>>>` at a line start in a conflicted path (a driver BLOCK), else `land_slice(merged)`. That commits the lane on its new base with the ref commit's message, lands it, and sets the slice `done`. A conflict on that landing goes round again, and the third since the last answer is a driver BLOCK (`CONFLICT_CAP`). `commit_lane` stages unmerged entries before `reset --soft`. A resumed driver settles a worker whose `landing_conflicted` follows its spawn.
+- **Tests.** `tests/merge.rs`: the spawn (cwd, `# Conflict` pack, `workers.role`, slice 02 `building` and HEAD slice 01 while it runs), (a) resolved and landed, (b) markers left, (c) two merge deaths with no third call, (d) a block the worker logged. Unit tests: the merge pack, the conflict count around an answer, the marker rule. The slice-07 conflict test in `tests/commits.rs` is gone.
+- **Inner loop.** 1 run, 0 red, 1.4 min.
+- **Deviations.** AD-10 (the merge respawn keeps the ref and the lane; answers only after the conflict), AD-11 (a rate-limited merge stays `building`), AD-12 (the two events, the conflict logged after the pick), AD-13 (tests (a) and (b) read their acceptance slightly differently).
+- **Prove.** FR-4's two runs, (a) and (b), are left for the checkpoint.
+- **Prove (CP-3), FR-4 (a) resolved.** `tests/merge.rs` spawn and resolved tests green. The merge call (`3.json`, `# Conflict`) runs with `cwd` `…/lane-2`, the same lane as slice 02's build call. Final `git log --oneline`: `chore: a shared file`, `feat(001): slice-01 A`, `feat(001): slice-02 B`, `feat(001): slice-03 C`, `docs(001): checkpoint 1`, then polish and ship; `shared.txt` line 3 is `both`: `evidence/cp-3-fr-4-merge-worker.txt`.
+- **Prove (CP-3), FR-4 (b) markers left.** The markers test green; `factory status` reads `blocked: 02` and `lanes: 2 (1 parked) — 1: free · 2: slice 02 blocked`, BLOCK-1 "slice 02's merge left conflict markers in shared.txt", main tree HEAD `feat(001): slice-01 A`, lane 2's `shared.txt` keeps the markers: `evidence/cp-3-fr-4-merge-worker.txt`.
 
 **Slice**: After this slice a landing that conflicts no longer blocks at once. The driver leaves the main tree untouched, resets the slice's lane to the new feature tip, redoes the pick there with the conflict left in the files, sets the slice back to `building`, and spawns a merge worker in that lane. The merge worker gets the slice file, the slice commit's message and diff stat, and the conflicted paths. It may change anything in its lane, runs the inner loop until green, and never touches the slice's status. When it exits clean and no conflicted file still holds a marker, the driver lands the lane as slice 07 does and sets the slice `done`. Markers left, a BLOCK the worker logged, two merge deaths, or a third conflict for the slice block it instead.
 
@@ -67,3 +75,10 @@ Markers are checked at the start of a line and only for `<` and `>`: a line of `
 Rows from [`prd.md`](prd.md) §14 this slice proves, below the UI. **FR-4**: "run the two-lane conflict scenario, once resolved and once with markers left" — tests (a) and (b) of task 3, with `factory status` read after (b).
 
 **Acceptance:** after the checkpoint, Progress holds both transcripts, the merge call's recorded `cwd`, the final `git log --oneline` of (a), and `factory status` showing slice 2 `blocked` in (b).
+
+**Code-review fixes (2026-10-14).**
+
+- A merge worker that left a path unmerged with no marker (one side deleted, a binary) was committed as resolved. The driver now reads `git ls-files -u` and blocks on any such path; the merge contract tells the worker to `git add` or `git rm` it (AD-21).
+- A merge worker that resolved to nothing lost the slice's ref and freed its lane. The slice now blocks with the ref kept (AD-21).
+- The stub did not number merge packs, so their calls overwrote each other. Its spawn regex adds `merge-NN`.
+- `tests/merge.rs` ordered its two lanes with a 1.5 s delay. Slice 02's stub step now waits on a `wait_sh` barrier until slice 01's commit is on the main tree's log.

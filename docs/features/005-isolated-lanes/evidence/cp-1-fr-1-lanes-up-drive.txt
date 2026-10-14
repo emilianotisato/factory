@@ -1,0 +1,45 @@
+$ factory lanes up
+lane-1  /tmp/cp1-fr1.X9qh/data/lanes/app-b798ef02/lane-1  big copy · .env copy  setup 0
+lane-2  /tmp/cp1-fr1.X9qh/data/lanes/app-b798ef02/lane-2  big copy · .env copy  setup 0
+exit 0
+
+$ git worktree list
+/tmp/cp1-fr1.X9qh/app                            7be0fb2 [main]
+/tmp/cp1-fr1.X9qh/data/lanes/app-b798ef02/lane-1 7be0fb2 (detached HEAD)
+/tmp/cp1-fr1.X9qh/data/lanes/app-b798ef02/lane-2 7be0fb2 (detached HEAD)
+
+$ git worktree list --porcelain
+worktree /tmp/cp1-fr1.X9qh/app
+HEAD 7be0fb2ea5318a753f9043a4aa3942c4b3a70324
+branch refs/heads/main
+
+worktree /tmp/cp1-fr1.X9qh/data/lanes/app-b798ef02/lane-1
+HEAD 7be0fb2ea5318a753f9043a4aa3942c4b3a70324
+detached
+
+worktree /tmp/cp1-fr1.X9qh/data/lanes/app-b798ef02/lane-2
+HEAD 7be0fb2ea5318a753f9043a4aa3942c4b3a70324
+detached
+
+
+lane-1 setup-pwd: /tmp/cp1-fr1.X9qh/data/lanes/app-b798ef02/lane-1
+lane-1 seeds byte-equal
+lane-2 setup-pwd: /tmp/cp1-fr1.X9qh/data/lanes/app-b798ef02/lane-2
+lane-2 seeds byte-equal
+
+$ factory lanes up   # again
+lane-1  /tmp/cp1-fr1.X9qh/data/lanes/app-b798ef02/lane-1  big kept · .env kept  setup 0
+lane-2  /tmp/cp1-fr1.X9qh/data/lanes/app-b798ef02/lane-2  big kept · .env kept  setup 0
+exit 0
+
+$ factory lanes up   # no [lanes] seed
+  ✗ no lanes declared — /lanes picks the seed list and writes the lane files (an interview, never unattended)
+exit 1
+
+$ factory run 001   # no [lanes] seed
+  ✗ no lanes declared — /lanes picks the seed list and writes the lane files (an interview, never unattended)
+  ✗ no origin remote — the run ends in a pull request
+
+refused: 2 blocker(s)
+exit 1
+run dirs: 0

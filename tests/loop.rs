@@ -225,9 +225,19 @@ fn check_worker_argv(fx: &Fixture, call: &Value, slice: u32, run_dir: &Path) -> 
     );
     check_settings(&settings);
     assert_eq!(call["env"]["FACTORY_PACK"], pack.to_str().unwrap());
-    assert_eq!(call["env"]["FACTORY_REPO"], fx.path().to_str().unwrap());
+    // PRD-005 FR-2: the worker runs in its lane, and its board writes go
+    // to the main tree.
+    let lane = call["env"]["FACTORY_LANE"].as_str().unwrap();
+    let lane_dir = PathBuf::from(call["cwd"].as_str().unwrap());
+    assert!(
+        lane_dir.starts_with(fx.data_dir().canonicalize().unwrap().join("lanes"))
+            && lane_dir.ends_with(format!("lane-{lane}")),
+        "{lane_dir:?}"
+    );
+    assert_eq!(lane_dir, lane_dir.canonicalize().unwrap());
+    assert_eq!(call["env"]["FACTORY_REPO"], call["cwd"]);
+    assert_eq!(call["env"]["FACTORY_BOARD"], fx.path().to_str().unwrap());
     assert_eq!(argv.len(), 17, "{argv:?}");
-    assert_eq!(call["cwd"], fx.path().to_str().unwrap());
     assert_eq!(call["pack_source"], "file");
     assert!(
         run_dir

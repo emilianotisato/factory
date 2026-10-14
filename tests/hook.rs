@@ -197,3 +197,71 @@ fn the_rest_gets_no_decision() {
         assert_eq!(decide(cmd), None, "{cmd}");
     }
 }
+
+/// PRD-005 FR-2: `FACTORY_REPO` set to a lane keys the pack guard there. A
+/// whole-file Read of `<lane>/<held>` through the binary is denied; with the
+/// main tree as the repo, the lane's path is outside it and allowed.
+#[test]
+fn a_whole_read_of_a_held_file_in_a_lane_is_denied() {
+    use std::process::{Command, Stdio};
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().canonicalize().unwrap();
+    let (main, lane) = (base.join("main"), base.join("lane-1"));
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .args(["-c", "user.name=T", "-c", "user.email=t@example.invalid"])
+            .args(args)
+            .current_dir(&main)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    std::fs::create_dir_all(main.join("src")).unwrap();
+    git(&["init", "-q", "-b", "main"]);
+    std::fs::write(main.join("src/lib.txt"), "lib\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "init"]);
+    git(&["worktree", "add", "-q", "--detach", lane.to_str().unwrap()]);
+    let pack = base.join("slice-02-1.md");
+    std::fs::write(&pack, "<!-- factory-pack files: src/lib.txt -->\n# Slice\n").unwrap();
+
+    let input = json!({
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Read",
+        "tool_input": {"file_path": lane.join("src/lib.txt")},
+        "cwd": lane,
+    });
+    let hook = |repo: &Path| {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_factory"))
+            .arg("hook")
+            .env(factory::cli::hook::PACK_ENV, &pack)
+            .env(factory::worker::REPO_ENV, repo)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        use std::io::Write as _;
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.to_string().as_bytes())
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success(), "{out:?}");
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let text = hook(&lane);
+    println!("hook, FACTORY_REPO={}: {text}", lane.display());
+    let v: Value = serde_json::from_str(&text).unwrap_or_else(|e| panic!("{e}: {text:?}"));
+    let o = &v["hookSpecificOutput"];
+    assert_eq!(o["permissionDecision"], "deny", "{text}");
+    assert_eq!(
+        o["permissionDecisionReason"],
+        factory::cli::hook::pack_hint("Slice")
+    );
+    assert_eq!(hook(&main), "", "outside the main tree: no decision");
+}

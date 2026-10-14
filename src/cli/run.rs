@@ -10,7 +10,8 @@
 //! run, emits `judge_noted` per line and `run_started`, and prints the ready
 //! slices. Then the loop (slice 03): a daemon re-executed as the hidden
 //! `factory daemon <id>` and detached with `setsid`, or in this process with
-//! `--foreground`.
+//! `--foreground`. A fresh run makes and seeds its lane worktrees after the
+//! refusals and before the run exists (PRD-005 FR-1).
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -18,6 +19,7 @@ use std::process::{Command, Stdio};
 
 use clap::Args;
 
+use crate::cli::lanes;
 use crate::docs::{Branch, Docs, Preflight};
 use crate::error::{io, json};
 use crate::events::EventKind;
@@ -112,6 +114,12 @@ pub fn run(args: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i
             writeln!(out, "  ✗ {line}").map_err(io("stdout"))?;
         }
         writeln!(out, "\nrefused: {} blocker(s)", pf.refuse.len()).map_err(io("stdout"))?;
+        return Ok(1);
+    }
+    // A fresh run makes and seeds its lanes before any run exists; setup is
+    // left to each lane's first spawn (PRD-005 FR-1).
+    if !lanes::ensure_all(&data_dir, &crate::lanes::main_tree(&repo)?, out)? {
+        writeln!(out, "\nrefused: a lane could not be made").map_err(io("stdout"))?;
         return Ok(1);
     }
     if !pf.ask.is_empty() {

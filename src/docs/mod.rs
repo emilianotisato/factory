@@ -244,6 +244,11 @@ pub struct Building {
 pub struct Checkpoint {
     pub n: u32,
     pub after: Option<u32>,
+    /// The slices the entry says it covered; empty on an entry written
+    /// before PRD-005 FR-7, which covers every slice up to `after`. Left out
+    /// of the JSON when empty, so an old log's board reads as it did.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub covers: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

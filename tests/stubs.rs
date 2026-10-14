@@ -133,7 +133,13 @@ fn stub_claude_flips_the_slice_then_replays_a_result() {
     );
     let paths = tool_use_paths(&events);
     assert!(
-        paths.contains(&fx.path().join("src/lib.txt").to_str().unwrap().to_string()),
+        paths.contains(
+            &fx.path()
+                .join("src/slice-01.txt")
+                .to_str()
+                .unwrap()
+                .to_string()
+        ),
         "{paths:?}"
     );
     assert!(
@@ -189,10 +195,9 @@ fn stub_claude_flips_the_slice_then_replays_a_result() {
     );
     assert!(!names.iter().any(|n| n == "agent-log.md"), "{names:?}");
     assert!(!names.iter().any(|n| n.starts_with("log-")), "{names:?}");
-    assert_eq!(
-        fx.read("src/lib.txt"),
-        "fixture code file\ntouched by spawn 1\n"
-    );
+    // PRD-005 slice 07: a slice owns its own file by default.
+    assert_eq!(fx.read("src/slice-01.txt"), "touched by spawn 1\n");
+    assert_eq!(fx.read("src/lib.txt"), "fixture code file\n");
     assert!(
         fs::read_to_string(&slice)
             .unwrap()
@@ -331,5 +336,150 @@ fn stub_gh_records_calls_and_answers_pr_create() {
             "pr view 1 --json number,url",
             "pr edit 1 --title \"two words\""
         ]
+    );
+}
+
+/// The stub's stream, parsed; panics with its stderr when it failed.
+fn stream(out: &std::process::Output) -> Vec<Value> {
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| serde_json::from_str(l).expect(l))
+        .collect()
+}
+
+#[test]
+fn stub_claude_sh_edits_through_one_bash_call_and_no_named_tool() {
+    let fx = Fixture::new("stub-sh");
+    let script = "git mv src/lib.txt src/moved.txt && printf 'x\\n' > src/printed.txt \
+                  && mkdir -p gen && printf 'a\\n' > gen/a.txt && ln -s gen gen-link";
+    fx.write_plan(&[json!({ "outcome": "done", "sh": script })]);
+    let pack = format!("{}\n", fx.slice_path(1).display());
+    let events = stream(
+        &claude(&fx, &["--append-system-prompt", &pack])
+            .output()
+            .unwrap(),
+    );
+
+    for f in ["src/moved.txt", "src/printed.txt", "gen/a.txt"] {
+        assert!(fx.path().join(f).is_file(), "{f} missing");
+    }
+    let link = fs::symlink_metadata(fx.path().join("gen-link")).unwrap();
+    assert!(link.file_type().is_symlink());
+    assert!(!fx.path().join("src/lib.txt").exists());
+    let bash = bash_commands(&events);
+    assert_eq!(bash.iter().filter(|c| *c == script).count(), 1, "{bash:?}");
+    let named = tool_use_paths(&events);
+    for f in ["src/moved.txt", "src/printed.txt", "gen/a.txt", "gen-link"] {
+        assert!(!named.iter().any(|p| p.ends_with(f)), "{f} in {named:?}");
+    }
+}
+
+/// PRD-005 slice 07: a slice owns `src/slice-NN.txt` by default, the call
+/// records HEAD, and `linger_ms` holds a worker whose slice is `done`.
+#[test]
+fn stub_claude_slice_file_head_and_linger() {
+    let fx = Fixture::new("stub-linger");
+    fx.write_plan(&[json!({ "outcome": "done", "linger_ms": 1500 })]);
+    let pack = format!("{}\n", fx.slice_path(2).display());
+    let mut child = claude(&fx, &["--append-system-prompt", &pack])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut seen_done = false;
+    for _ in 0..100 {
+        if fx.slice_status(2) == "done" {
+            seen_done = true;
+            break;
+        }
+        sleep(Duration::from_millis(20));
+    }
+    assert!(seen_done, "the slice never read done");
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "the stub exited before its linger"
+    );
+    stream(&child.wait_with_output().unwrap());
+    assert_eq!(fx.read("src/slice-02.txt"), "touched by spawn 1\n");
+    assert_eq!(fx.read("src/lib.txt"), "fixture code file\n");
+    let head = fx.git(&["rev-parse", "HEAD"]);
+    assert_eq!(fx.calls()[0]["head"], head.trim());
+}
+
+#[test]
+fn stub_claude_a_failing_sh_step_exits_65() {
+    let fx = Fixture::new("stub-sh-red");
+    fx.write_plan(&[json!({ "outcome": "done", "sh": "echo broken >&2; exit 1" })]);
+    let pack = format!("{}\n", fx.slice_path(1).display());
+    let out = claude(&fx, &["--append-system-prompt", &pack])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(65));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("broken"));
+}
+
+#[test]
+fn stub_claude_merge_role_resolves_or_blocks_and_leaves_the_status() {
+    let fx = Fixture::new("stub-merge");
+    let state = fx.slice_path(2).parent().unwrap().join("state.toml");
+    let before = fs::read_to_string(&state).unwrap();
+    let pack = format!(
+        "# Conflict\n\nshared.txt\n\n# Slice\n\n<!-- {} -->\n",
+        fx.slice_path(2).display()
+    );
+    fx.write_plan(&[
+        json!({ "outcome": "done", "sh": "printf 'resolved\\n' > shared.txt && git add shared.txt" }),
+        json!({ "outcome": "blocked" }),
+        json!({ "outcome": "checkpoint" }),
+    ]);
+
+    let events = stream(
+        &claude(&fx, &["--append-system-prompt", &pack])
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(fx.read("shared.txt"), "resolved\n");
+    let last = events.last().unwrap();
+    assert!(
+        last["result"].as_str().unwrap().starts_with("STATUS: done"),
+        "{last}"
+    );
+    assert_eq!(fs::read_to_string(&state).unwrap(), before);
+
+    let events = stream(
+        &claude(&fx, &["--append-system-prompt", &pack])
+            .output()
+            .unwrap(),
+    );
+    let blocks = fx.log_of("block");
+    assert_eq!(blocks.len(), 1, "{blocks:?}");
+    assert_eq!(blocks[0]["slice"], 2, "{blocks:?}");
+    assert!(
+        blocks[0].get("phase").is_none_or(Value::is_null),
+        "{blocks:?}"
+    );
+    assert_eq!(fx.slice_status(2), "pending");
+    let last = events.last().unwrap();
+    assert!(
+        last["result"]
+            .as_str()
+            .unwrap()
+            .starts_with("STATUS: blocked"),
+        "{last}"
+    );
+
+    let out = claude(&fx, &["--append-system-prompt", &pack])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(65));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("merge worker"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
     );
 }

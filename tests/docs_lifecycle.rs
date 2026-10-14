@@ -340,7 +340,9 @@ fn lanes_set_writes_missing_files_only() {
         "make db LANE={n}",
     ]);
     for n in 1..=3 {
-        assert!(factory::lanes::file(fx.path(), n).is_file());
+        let text = fs::read_to_string(factory::lanes::file(fx.path(), n)).unwrap();
+        // PRD-005 FR-9: a lane is its own worktree; no shared-tree prose.
+        assert!(!text.contains("does not isolate"), "{text}");
     }
     let lane = factory::lanes::load(fx.path(), 2).unwrap();
     assert_eq!(lane.env, vec![("DB".to_string(), "app_2".to_string())]);

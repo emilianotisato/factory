@@ -143,6 +143,10 @@ pub struct RunState {
     /// does not run it again.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub lanes_set_up: Vec<u32>,
+    /// PRD-005 FR-3: the sha each lane was last reset to, the base its
+    /// slice's lane commit sits on, kept so a resumed driver can commit it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub lane_bases: BTreeMap<u32, String>,
     /// The driver's start time ([`start_time`]), so a reused `pid` is not
     /// taken for the driver. `None` from a `state.json` that predates it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -174,6 +178,10 @@ pub struct WorkerRef {
     pub slice: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint: Option<u32>,
+    /// The lane it runs in; `None` for a worker in the main tree. A slice's
+    /// lane is also on the board, a checkpoint worker's only here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lane: Option<u32>,
     pub role: String,
     pub session_id: String,
     pub pid: u32,
@@ -315,6 +323,7 @@ impl Run {
             pr_url: None,
             workers: Vec::new(),
             lanes_set_up: Vec::new(),
+            lane_bases: BTreeMap::new(),
         };
         write_state(&dir, &state)?;
         fs::write(dir.join(events::FILE), "")
@@ -468,6 +477,13 @@ impl Run {
             if !s.lanes_set_up.contains(&n) {
                 s.lanes_set_up.push(n);
             }
+        })
+    }
+
+    /// PRD-005 FR-3: lane `n` was reset to `sha`, its slice's base.
+    pub fn set_lane_base(&mut self, n: u32, sha: &str) -> Result<()> {
+        self.update(|s| {
+            s.lane_bases.insert(n, sha.to_string());
         })
     }
 

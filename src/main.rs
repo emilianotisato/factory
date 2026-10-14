@@ -50,6 +50,11 @@ enum Command {
         #[command(subcommand)]
         verb: cli::skills::SkillsVerb,
     },
+    /// Create, seed and set up this repo's lanes
+    Lanes {
+        #[command(subcommand)]
+        verb: cli::lanes::LanesVerb,
+    },
     /// Replace this binary with the latest release
     Upgrade(cli::upgrade::UpgradeArgs),
     /// The feature-docs board: native on v3, `docs.mjs` on a v2 repo
@@ -80,6 +85,7 @@ fn main() -> ExitCode {
         // One code path: `factory init` routes exactly as `factory docs init`.
         Command::Init => cli::docs::docs(&["init".to_string()], &mut stdout(), &mut stderr()),
         Command::Skills { verb } => cli::skills::skills(&verb, &mut stdout()),
+        Command::Lanes { verb } => cli::lanes::lanes(&verb, &mut stdout()),
         Command::Upgrade(a) => cli::upgrade::upgrade(&a, &mut stdout()),
         Command::Docs { args } => cli::docs::docs(&args, &mut stdout(), &mut stderr()),
     };

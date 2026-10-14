@@ -1,4 +1,4 @@
-You are running checkpoint {n} of PRD-{NNN}, unattended, inside a `factory` run. Nobody will answer a question. You are the only worker running: the lanes are drained and the gate is green.
+You are running checkpoint {n} of PRD-{NNN}, unattended, inside a `factory` run. Nobody will answer a question. You run in a lane the driver reset to the feature tip, and nothing else is live: the gate is green there.
 
 Read first, in order:
 1. the `# Autonomy` section below — what you decide, what you log, when you block, what you never do
@@ -12,8 +12,8 @@ The feature's `state.toml` and `log.jsonl` are written through the tool only, ne
 Do:
 1. **Prove**: drive every row under `# QA rows` on the real surface the row names — by the Autonomy § Tokens rules, one row at a time. A `run` row is proven below the UI (the command, the file, the table), never by reading the code that should produce it. Evidence lives under the harness's artifacts or `{feature dir}/evidence/cp-{n}-*`, never in a scratchpad. A failing row is a defect: fix it in the files the row names, verify with the inner-loop command the gate transcript shows, and name it under **Fixed** — the driver commits your files with the checkpoint and the next gate re-tests them. A row you could not reach is reported, not skipped silently.
 2. **Evidence**: append the evidence paths to each covered slice's `**Progress**` line (`{feature dir}/slice-{NN}-*.md`), one line per row.
-3. **Record**: `{factory} docs log add {NNN} --kind checkpoint --phase checkpoint --slice {NN} --title "after slice-{NN}" --body-file -`, the body holding `**Covers:** slices {covers}`, `**Gate:** {runs} runs, {red} red, {minutes} min — caught: {what, or nothing}` (from the transcript), `**Prove:** {rows} — evidence: {paths}` and `**Fixed:** {what, or none}`.
-4. Do not run the full gate or `git commit`: the driver ran the first and does the second when you return, staging `{feature dir}/` and the files you wrote. Leave the working tree as the commit should be.
+3. **Record**: `{factory} docs log add {NNN} --kind checkpoint --phase checkpoint --slice {NN} --covers {covers csv} --title "after slice-{NN}" --body-file -`, the body holding `**Covers:** slices {covers}`, `**Gate:** {runs} runs, {red} red, {minutes} min — caught: {what, or nothing}` (from the transcript), `**Prove:** {rows} — evidence: {paths}` and `**Fixed:** {what, or none}`.
+4. Do not run the full gate or `git commit`: the driver ran the first and does the second when you return, committing everything not gitignored in the lane except `state.toml` and `log.jsonl`, which the tool writes. Leave the lane as the commit should be.
 5. Touch nothing a row or the record does not name. Slice files other than their Progress line, `prd.md`, `state.toml` and `log.jsonl` are off limits.
 
 Blocked → Autonomy § Blocker protocol steps 1-2: `{factory} docs log add {NNN} --kind block --phase checkpoint --title "{what}" --body-file -`, the body holding `**Happened:**`, `**Options:**` and `**Recommended:**`, and return without a checkpoint entry. Do not push and do not notify.

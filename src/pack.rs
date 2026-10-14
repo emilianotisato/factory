@@ -25,6 +25,7 @@ pub const CONTRACT_FIX: &str = include_str!("../assets/contract-fix.md");
 pub const CONTRACT_CHECKPOINT: &str = include_str!("../assets/contract-checkpoint.md");
 pub const CONTRACT_POLISH: &str = include_str!("../assets/contract-polish.md");
 pub const CONTRACT_CI_FIX: &str = include_str!("../assets/contract-ci-fix.md");
+pub const CONTRACT_MERGE: &str = include_str!("../assets/contract-merge.md");
 /// The PR body shape `/deliver` fills (`deliver/pr-body.md`), this repo's copy.
 pub const PR_BODY: &str = include_str!("../assets/pr-body.md");
 pub const AUTONOMY: &str = include_str!("../assets/autonomy.md");
@@ -308,6 +309,92 @@ impl Pack {
         })
     }
 
+    /// The merge worker's pack (PRD-005 FR-4): `# Conflict` (the conflicted
+    /// paths one per line, the lane commit `sha`'s message and its
+    /// `git show --stat`), `# Slice`, for an answered slice the block and its
+    /// answer, then the log, the merge contract, the autonomy rules and the
+    /// inner loop. `sha` is read in the main tree, which shares the lanes'
+    /// objects.
+    #[allow(clippy::too_many_arguments)]
+    pub fn for_merge(
+        docs: &Docs,
+        board: &Status,
+        slice: u32,
+        conflicted: &[String],
+        sha: &str,
+        packs_dir: &Path,
+        spawn: u32,
+        block: Option<&BlockSection>,
+    ) -> Result<Pack> {
+        let entry = board
+            .slices
+            .iter()
+            .find(|s| s.number == slice)
+            .ok_or_else(|| Error::Msg(format!("slice {slice:02} is not on the board")))?;
+        let slice_rel = format!("docs/features/{}", entry.file);
+        let repo = docs.root();
+        let slice_text = read(&repo.join(&slice_rel))?;
+        let inner = docs.gate_inner()?;
+        let feature = format!("{:03}", board.number);
+        let nn = format!("{slice:02}");
+        let message = git_text(repo, &["log", "-1", "--format=%B", sha])?;
+        let stat = git_text(repo, &["show", "--stat", "--format=", sha])?;
+        let contract = contract(CONTRACT_MERGE)
+            .replace("{NNN}", &feature)
+            .replace("{NN}", &nn)
+            .replace("{N}", &slice.to_string());
+
+        let mut files = vec![slice_rel.clone()];
+        if let Some(b) = block
+            && !files.contains(&b.source)
+        {
+            files.push(b.source.clone());
+        }
+        let mut sections = vec![
+            format!(
+                "# Conflict\n\n<!-- lane commit {sha} -->\n\nConflicted paths:\n\n```\n{}\n```\n\n\
+                 The lane commit's message:\n\n```\n{}\n```\n\n\
+                 What it changed (`git show --stat`):\n\n```\n{}\n```",
+                conflicted.join("\n"),
+                message.trim(),
+                stat.trim()
+            ),
+            format!(
+                "# Slice\n\n<!-- {slice_rel} -->\n\n{}",
+                slice_text.trim_end()
+            ),
+        ];
+        if let Some(b) = block {
+            sections.push(format!(
+                "# Block and answer\n\n<!-- {}: {} -->\n\n{}",
+                b.source,
+                b.id,
+                b.text.trim_end()
+            ));
+        }
+        sections.push(log_section(docs, board)?);
+        sections.push(format!("# Contract\n\n{}", contract.trim_end()));
+        sections.push(format!("# Autonomy\n\n{}", AUTONOMY.trim_end()));
+        sections.push(format!("# Inner loop\n\n{}", inner.trim()));
+        let (text, parts) = assemble(
+            format!("<!-- factory-pack files: {} -->\n\n", files.join(",")),
+            sections,
+        );
+
+        fs::create_dir_all(packs_dir).map_err(io(format!("mkdir {}", packs_dir.display())))?;
+        let path = packs_dir.join(format!("merge-{nn}-{spawn}.md"));
+        fs::write(&path, text).map_err(io(format!("write {}", path.display())))?;
+        Ok(Pack {
+            path,
+            prompt: format!(
+                "Resolve the conflicted landing of slice {nn} of PRD-{feature} as the appended system prompt says. Return the STATUS block."
+            ),
+            files,
+            missing_sections: Vec::new(),
+            parts,
+        })
+    }
+
     /// The checkpoint worker's pack (FR-4): `# Gate transcript` (the green
     /// log), `# Covered slices` (each covered slice's Prove task and Progress
     /// line), `# QA rows` (the PRD § QA plan rows those Prove tasks name, or
@@ -335,11 +422,18 @@ impl Pack {
             .map(|c| format!("{c:02}"))
             .collect::<Vec<_>>()
             .join(", ");
+        // `{covers}` is prose; the `--covers` flag needs one shell word.
+        let covers_csv = covers
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
         let contract = contract(CONTRACT_CHECKPOINT)
             .replace("{NNN}", &feature)
             .replace("{n}", &n.to_string())
             .replace("{NN}", &format!("{last:02}"))
             .replace("{covers}", &covers_text)
+            .replace("{covers csv}", &covers_csv)
             .replace("{feature dir}", &board.dir);
 
         let mut files = Vec::new();
@@ -833,6 +927,22 @@ fn read(path: &Path) -> Result<String> {
     fs::read_to_string(path).map_err(io(format!("read {}", path.display())))
 }
 
+/// `git <args>` in `repo`, its stdout; a nonzero exit is an error.
+fn git_text(repo: &Path, args: &[&str]) -> Result<String> {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .map_err(io(format!("run git {}", args.join(" "))))?;
+    if !out.status.success() {
+        return Err(Error::Tool {
+            cmd: format!("git {}", args.join(" ")),
+            detail: String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        });
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
 /// The `§n` numbers on the slice's first `**Source**:` line, in order, once
 /// each. A slice's task-level `**Source**` lines repeat the top one's set by
 /// convention, and a section cited only there is read from the top line's
@@ -928,6 +1038,121 @@ mod tests {
         assert_eq!(cut_section(prd, 2), Some("## 2. Users\n\nthem\n"));
         assert_eq!(cut_section(prd, 3), None);
         assert_eq!(cut_section(prd, 11), None);
+    }
+
+    #[test]
+    fn a_checkpoint_pack_passes_its_covers_as_one_word() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        let dir = "docs/features/001-x";
+        fs::create_dir_all(repo.join(dir)).unwrap();
+        fs::write(repo.join("docs/project.toml"), "[docs]\nframework = 3\n").unwrap();
+        fs::write(repo.join(dir).join("prd.md"), "# PRD\n").unwrap();
+        let docs = Docs::open(repo).unwrap();
+        let board = Status {
+            number: 1,
+            dir: dir.to_string(),
+            ..Default::default()
+        };
+        let log = repo.join("gate.log");
+        fs::write(&log, "ok\n").unwrap();
+        let packs = repo.join("packs");
+        let cp =
+            Pack::for_checkpoint(&docs, &board, 1, &[1, 2, 4], &log, false, &packs, 1).unwrap();
+        let text = fs::read_to_string(&cp.path).unwrap();
+        assert!(text.contains("--slice 04 --covers 1,2,4 --title"), "{text}");
+        assert!(text.contains("**Covers:** slices 01, 02, 04"), "{text}");
+    }
+
+    #[test]
+    fn a_merge_pack_leads_with_the_conflict_and_fills_the_contract() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .current_dir(repo)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        let dir = "docs/features/001-x";
+        fs::create_dir_all(repo.join(dir)).unwrap();
+        fs::write(
+            repo.join("docs/project.toml"),
+            "[docs]\nframework = 3\ninner = \"./gate.sh --inner\"\n",
+        )
+        .unwrap();
+        fs::write(repo.join(dir).join("prd.md"), "# PRD\n").unwrap();
+        fs::write(
+            repo.join(dir).join("slice-02-b.md"),
+            "# Slice 02 — b\n\nrewrite line three\n",
+        )
+        .unwrap();
+        fs::write(repo.join("shared.txt"), "1\n2\ntwo\n4\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "feat(001): slice-02 B"]);
+        let docs = Docs::open(repo).unwrap();
+        let board = Status {
+            number: 1,
+            dir: dir.to_string(),
+            slices: vec![crate::docs::Slice {
+                number: 2,
+                file: "001-x/slice-02-b.md".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let pack = Pack::for_merge(
+            &docs,
+            &board,
+            2,
+            &["shared.txt".to_string()],
+            "HEAD",
+            &repo.join("packs"),
+            1,
+            None,
+        )
+        .unwrap();
+        let text = fs::read_to_string(&pack.path).unwrap();
+        let body = text.split_once("\n\n").unwrap().1;
+        assert!(body.starts_with("# Conflict\n"), "{text}");
+        assert!(text.contains("```\nshared.txt\n```"), "{text}");
+        assert!(text.contains("feat(001): slice-02 B"), "{text}");
+        assert!(
+            text.lines()
+                .any(|l| l.trim_start().starts_with("shared.txt") && l.ends_with("| 4 ++++")),
+            "{text}"
+        );
+        assert!(text.contains("rewrite line three"), "{text}");
+        assert!(text.contains("slice 02 of PRD-001"), "{text}");
+        assert!(
+            text.contains("docs log add 001 --kind block --slice 2 "),
+            "{text}"
+        );
+        assert!(!text.contains("{NNN}") && !text.contains("{N}"), "{text}");
+        assert!(pack.path.ends_with("merge-02-1.md"));
+        assert_eq!(
+            sections_of(&pack),
+            [
+                "conflict",
+                "slice",
+                "log",
+                "contract",
+                "autonomy",
+                "inner_loop"
+            ]
+        );
+
+        let job = crate::worker::Job::Merge {
+            slice: 2,
+            attempt: 1,
+        };
+        assert_eq!(job.role(), "merge");
+        assert_eq!(job.slice(), Some(2));
     }
 
     /// The parts' chars against the pack file: its text after the header

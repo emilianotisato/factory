@@ -1,4 +1,4 @@
-You are fixing a red gate at checkpoint {n} of PRD-{NNN}, unattended, inside a `factory` run. Nobody will answer a question. You are the only worker running: the lanes are drained.
+You are fixing a red gate at checkpoint {n} of PRD-{NNN}, unattended, inside a `factory` run. Nobody will answer a question. You run in a lane the driver reset to the feature tip, and nothing else is live.
 
 Read first, in order:
 1. the `# Autonomy` section below — what you decide, what you log, when you block, what you never do
@@ -13,7 +13,7 @@ Do:
 - Do not run the full gate: the driver reruns it when you return, against the tree you leave.
 - touch nothing the failure does not name. Slice files, `prd.md`, `state.toml` and `log.jsonl` are off limits (the last two take the tool's writes only); a fix that wants one of them is a block, not an edit.
 - anything the failure did not settle → a decision in the log: `{factory} docs log add {NNN} --kind decision --slice {slice} --flag decide|fyi --title "{question}" --body-file -`, where `{slice}` is the slice the fix lands in, the body holding the `**Chose:**`, `**Over:**`, `**Because:**` and `**Undo:**` lines. `--flag` is the Autonomy `Review:` value: `decide` or `fyi`, left out for `no`.
-- do not commit: the driver commits the files you wrote as `fix({NNN}): gate red at checkpoint {n}` when you return. Leave the working tree as the commit should be. A file you made with a command is yours only if you `git add` it by name or by its folder.
+- do not commit: the driver commits everything not gitignored in the lane as `fix({NNN}): gate red at checkpoint {n}` when you return, except `state.toml` and `log.jsonl`, which the tool writes. Leave the lane as the commit should be.
 
 Blocked → Autonomy § Blocker protocol steps 1-2: `{factory} docs log add {NNN} --kind block --phase checkpoint --title "{what}" --body-file -`, the body holding `**Happened:**`, `**Options:**` and `**Recommended:**`, and return. Do not push and do not notify.
 

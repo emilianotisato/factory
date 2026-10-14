@@ -363,6 +363,30 @@ fn short(sha: &str) -> &str {
     &sha[..7]
 }
 
+/// The canonical worktree of lane `n`, as `pwd -P` prints it.
+fn lane_path(fx: &Fixture, n: u32) -> PathBuf {
+    let lanes = data_dir(fx).canonicalize().unwrap().join("lanes");
+    fx.git(&["worktree", "list", "--porcelain"])
+        .split("\n\n")
+        .filter_map(|b| Some(PathBuf::from(b.lines().next()?.strip_prefix("worktree ")?)))
+        .find(|p| p.starts_with(&lanes) && p.ends_with(format!("lane-{n}")))
+        .unwrap_or_else(|| panic!("no lane-{n} worktree"))
+}
+
+/// The cwd a stub call ran in.
+fn cwd_of(call: &Value) -> PathBuf {
+    PathBuf::from(
+        call["cwd"]
+            .as_str()
+            .unwrap_or_else(|| panic!("no cwd: {call}")),
+    )
+}
+
+/// How many commits are titled `subject`.
+fn count_subject(fx: &Fixture, subject: &str) -> usize {
+    subjects(fx).iter().filter(|s| *s == subject).count()
+}
+
 #[test]
 fn a_finished_board_polishes_ships_pushes_and_opens_the_draft_pr() {
     let fx = Fixture::new("closeout-green");
@@ -394,6 +418,9 @@ fn a_finished_board_polishes_ships_pushes_and_opens_the_draft_pr() {
     let w = &state(&dir)["workers"][5];
     assert_eq!(w["role"], "polish");
     assert_eq!(w["outcome"], "done");
+    // PRD-005 FR-5: the polish worker ran in lane 1, not the main tree.
+    assert_eq!(cwd_of(&fx.calls()[5]), lane_path(&fx, 1));
+    assert_ne!(cwd_of(&fx.calls()[5]), fx.path().canonicalize().unwrap());
 
     // The pack: branch, retro template, PR body shape, contract, autonomy.
     let (name, pack) = pack_of(&fx.calls()[5]);
@@ -680,6 +707,8 @@ fn a_finished_board_polishes_ships_pushes_and_opens_the_draft_pr() {
         stdout(&out)
     );
 
+    assert_eq!(fx.git(&["status", "--porcelain"]).trim(), "", "tree dirty");
+
     // No `retro.md`: `factory retro` refuses, naming the path.
     fs::remove_file(fx.path().join(RETRO)).unwrap();
     let out = factory(&fx, &["retro", &run_id(&dir)]);
@@ -926,6 +955,37 @@ fn a_polish_worker_that_wrote_neither_gets_both_flagged() {
     }
 }
 
+/// PRD-005 FR-3, FR-5: a file the polish worker made with a command, which
+/// no tool call names, lands with its commit: the lane is committed whole.
+#[test]
+fn a_file_the_polish_worker_made_with_a_command_lands_with_its_commit() {
+    let fx = Fixture::new("closeout-polish-sh");
+    fx.chain();
+    fx.write_plan(&plan_with(&[json!({
+        "outcome": "polish",
+        "sh": "printf 'made by sh\\n' > src/polished.txt",
+    })]));
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "finished", 90);
+    let call = &fx.calls()[5];
+    assert_eq!(cwd_of(call), lane_path(&fx, 1));
+    assert!(
+        !call
+            .to_string()
+            .contains("\"file_path\":\"src/polished.txt"),
+        "a tool call names the file: {call}"
+    );
+    assert_eq!(count_subject(&fx, "fix(001): polish review fixes"), 1);
+    let polish_sha = sha_of(&fx, "fix(001): polish review fixes");
+    assert!(
+        files_of(&fx, &polish_sha).contains(&"src/polished.txt".to_string()),
+        "{:?}",
+        files_of(&fx, &polish_sha)
+    );
+    assert_eq!(fx.read("src/polished.txt"), "made by sh\n");
+    assert_eq!(fx.git(&["status", "--porcelain"]).trim(), "", "tree dirty");
+}
+
 #[test]
 fn a_slice_not_done_at_ship_blocks_the_closeout_in_phase_polish() {
     let fx = Fixture::new("closeout-ship-refused");
@@ -997,6 +1057,8 @@ fn a_red_check_gets_one_fix_round_then_green() {
     assert_eq!(fixer.outcome.as_deref(), Some("done"));
     let (name, pack) = pack_of(&fx.calls()[6]);
     assert_eq!(name, "ci-fix-1-7.md");
+    // PRD-005 FR-5: the CI fix worker ran in lane 1.
+    assert_eq!(cwd_of(&fx.calls()[6]), lane_path(&fx, 1));
     for want in [
         "<!-- factory-pack files: -->\n\n# CI failure",
         "# CI failure\n\n<!-- round 1, attempt 1, check: test -->",
@@ -1790,48 +1852,6 @@ fn a_head_off_the_feature_branch_blocks_the_polish_before_a_worker_runs() {
     assert_eq!(origin_head(&fx, "stray"), None);
 }
 
-/// A tracked `src/extra.txt` a closeout worker can change without naming it.
-fn track_extra(fx: &Fixture) {
-    fs::write(fx.path().join("src/extra.txt"), "extra\n").unwrap();
-    fx.git(&["add", "src/extra.txt"]);
-    fx.git(&["commit", "-q", "-m", "chore: track extra"]);
-}
-
-#[test]
-fn closeout_workers_commit_their_unnamed_tracked_changes_and_list_the_rest() {
-    let fx = Fixture::new("closeout-unnamed");
-    fx.chain();
-    track_extra(&fx);
-    fx.script_ci(&["red:test", "green"]);
-    // A formatter's edit to a tracked file, and a scratch file: the polish
-    // worker leaves both, then the CI fix worker the same again (AD-50002).
-    let stray = json!(["src/extra.txt", "scratch.txt"]);
-    fx.write_plan(&plan_with(&[
-        json!({"outcome": "polish", "stray": stray}),
-        json!({"outcome": "fix", "stray": stray}),
-    ]));
-    let dir = start(&fx);
-    wait_phase(&fx, &dir, "finished", 120);
-
-    let polish = files_of(&fx, &sha_of(&fx, "fix(001): polish review fixes"));
-    assert!(polish.contains(&"src/extra.txt".to_string()), "{polish:?}");
-    assert!(!polish.contains(&"scratch.txt".to_string()), "{polish:?}");
-    let fix = files_of(&fx, &sha_of(&fx, "fix(001): CI test"));
-    assert!(fix.contains(&"src/extra.txt".to_string()), "{fix:?}");
-    assert!(!fix.contains(&"scratch.txt".to_string()), "{fix:?}");
-    // Listed once, by the worker that left it; never committed.
-    let left = of_kind(&dir, "closeout_leftovers");
-    assert_eq!(left.len(), 1, "{left:?}");
-    assert_eq!(left[0]["role"], "polish");
-    assert_eq!(left[0]["files"], json!(["scratch.txt"]));
-    assert_eq!(fx.git(&["status", "--porcelain"]).trim(), "?? scratch.txt");
-    assert!(
-        driver_log(&dir).contains("polish: worker changed 1 tracked file(s) no tool call named"),
-        "{}",
-        driver_log(&dir)
-    );
-}
-
 #[test]
 fn a_shipped_board_without_its_ship_commit_ships_again() {
     let fx = Fixture::new("closeout-ship-uncommitted");
@@ -2260,6 +2280,51 @@ fn a_polish_orphan_adopted_by_a_resumed_driver_files_its_friction() {
     let log = driver_log(&dir);
     assert!(log.contains("of an earlier driver returned"), "{log}");
     friction_id(&src, &before, &log);
+    // PRD-005 FR-3: the orphan's lane landed once, and no second polish ran.
+    assert_eq!(count_subject(&fx, "fix(001): polish review fixes"), 1);
+    let polish_sha = sha_of(&fx, "fix(001): polish review fixes");
+    assert!(files_of(&fx, &polish_sha).contains(&"src/lib.txt".to_string()));
+    assert_eq!(
+        roles(&fx, &dir).iter().filter(|r| *r == "polish").count(),
+        1
+    );
+}
+
+/// PRD-005 FR-3: a CI fix worker that outlives its driver lands its lane
+/// when a resumed driver finds it returned, once.
+#[test]
+fn a_ci_fix_orphan_adopted_by_a_resumed_driver_lands_once() {
+    let fx = Fixture::new("closeout-ci-fix-orphan");
+    fx.chain();
+    fx.script_ci(&["red:test", "green"]);
+    fx.write_plan(&plan_with(&[
+        step("polish"),
+        json!({"outcome": "fix", "delay_ms": 3000}),
+    ]));
+    let dir = start(&fx);
+    wait_until(&fx, &dir, "the CI fix worker", 120, || {
+        state(&dir)["workers"]
+            .as_array()
+            .is_some_and(|w| w.len() == 7)
+    });
+    let s = state(&dir);
+    let driver = s["pid"].as_u64().unwrap() as i32;
+    let fixer = s["workers"][6]["pid"].as_u64().unwrap() as u32;
+    assert_eq!(unsafe { libc::kill(driver, libc::SIGKILL) }, 0);
+    wait_until(&fx, &dir, "the orphan CI fix worker to exit", 30, || {
+        !factory::run::pid_alive(fixer)
+    });
+    assert_eq!(count_subject(&fx, "fix(001): CI test"), 0);
+
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    wait_phase(&fx, &dir, "finished", 120);
+    let log = driver_log(&dir);
+    assert!(log.contains("of an earlier driver returned"), "{log}");
+    assert_eq!(count_subject(&fx, "fix(001): CI test"), 1, "{log}");
+    let fix_sha = sha_of(&fx, "fix(001): CI test");
+    assert_eq!(files_of(&fx, &fix_sha), ["src/lib.txt".to_string()]);
+    assert_eq!(fx.git(&["status", "--porcelain"]).trim(), "", "tree dirty");
 }
 
 fn today() -> String {

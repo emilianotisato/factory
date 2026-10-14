@@ -14,7 +14,7 @@ The first version of this workflow was a family of Claude Code skills and a 2,00
 - **Slow.** Every gate run, every `git` call, every log merge cost a model turn to decide and another to read the result. Builds were serial: one feature took 254 build minutes for its first 12 slices.
 - **Messy.** Twelve projects carried copies of the same skills. The rules lived in prose a model had to re-derive every run.
 
-The inversion is the whole idea. **The binary orchestrates; the model only builds, reviews and decides.** Running a gate, committing by pathspec, merging a log, watching CI, opening a PR, pausing on quota: none of these need intelligence, so none of them cost tokens. The savings are fixed per run, and the builders get a clean, small context instead of a 170k-token session at the compaction ceiling.
+The inversion is the whole idea. **The binary orchestrates; the model only builds, reviews and decides.** Running a gate, committing a lane, merging a log, watching CI, opening a PR, pausing on quota: none of these need intelligence, so none of them cost tokens. The savings are fixed per run, and the builders get a clean, small context instead of a 170k-token session at the compaction ceiling.
 
 ## The loop
 
@@ -33,7 +33,7 @@ The inversion is the whole idea. **The binary orchestrates; the model only build
 
 **The docs framework.** `docs/project.toml` holds the project's knobs: the gate, the inner loop, lane count, model and effort per role, a per-run token budget. Each feature folder has `prd.md`, its slices, a `state.toml` written only by the binary under a lock, an append-only `log.jsonl` of decisions, blocks and notes, and a `retro.md`. `factory docs check` validates the board and runs as a pre-commit hook. `factory docs migrate` moves a repo from the previous format in one reviewable diff.
 
-**The skills.** The judgment calls stay in Claude Code as thin skills, shipped from this repo and installed by `factory` into each project: `/prd`, `/slice`, `/deliver` (the cockpit), `/polish`, `/gate`, `/harness`, `/prune`, `/ux`, and `/lanes` (planned). They live in `skills/` and ship inside the binary. `factory init` writes byte-identical copies into each repo's `.claude/skills/`, with a manifest of their hashes, so `factory docs doctor` says when a repo's copy is behind, ahead or hand-edited.
+**The skills.** The judgment calls stay in Claude Code as thin skills, shipped from this repo and installed by `factory` into each project: `/prd`, `/slice`, `/deliver` (the cockpit), `/polish`, `/gate`, `/harness`, `/prune`, `/ux`, and `/lanes`. They live in `skills/` and ship inside the binary. `factory init` writes byte-identical copies into each repo's `.claude/skills/`, with a manifest of their hashes, so `factory docs doctor` says when a repo's copy is behind, ahead or hand-edited.
 
 **The gate.** `/gate` interviews a project into one command that proves a change is done: tiered checks for lint, types, coverage floors, complexity, mutation, size budgets and architecture rules, measured against reality and proven to fail before they are declared. Every slice's Verify task, every checkpoint and the polish pass run that one command. A fast subset is the inner loop.
 
@@ -57,7 +57,7 @@ The inversion is the whole idea. **The binary orchestrates; the model only build
 
 ## Where it stands
 
-Early and green. The driver (PRD-001), the metrics store (PRD-003) and the docs port (PRD-002) are built and merged, and the binary has delivered three features in this repo and two in production Laravel repos. Workers are Claude Code only. Lanes share a working tree today; isolated lanes are the next driver PRD. The skills now live in `skills/` and ship inside the binary; the installer that writes them into a repo is PRD-004. The learn loop, stack plugins and a bug inbox fed by production errors are ideas with a shape, not code.
+Early and green. The driver (PRD-001), the metrics store (PRD-003) and the docs port (PRD-002) are built and merged, and the binary has delivered three features in this repo and two in production Laravel repos. Workers are Claude Code only. Each lane is its own git worktree, and a worker's work lands as one commit (PRD-005). The skills now live in `skills/` and ship inside the binary; the installer that writes them into a repo is PRD-004. The learn loop, stack plugins and a bug inbox fed by production errors are ideas with a shape, not code.
 
 It is built for one developer so far. What a team repo commits, and what stays on the machine that ran it, is an open decision.
 
