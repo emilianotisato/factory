@@ -13,6 +13,9 @@
 - **Greps.** `grep -rnE "from_stream|fn unnamed|fn leftovers|untracked-before" src`: exit 1. `grep -rnE "Leftovers|_leftovers|Pathspec" src tests`: three hits, all prose in `tests/fixture/prd-004/log.jsonl`, left as is (AD-18, decide). `grep -rnE "same working tree|by pathspec|next driver PRD" docs/reference/lanes README.md`: exit 1.
 - **Inner loop.** 4 runs, 2 red, 4.4 min. Red 1 was `cargo fmt --check` on this slice's files. Red 2 was `tests/lanes.rs` still keeping polish in the main tree. Last run: 562 passed.
 - **Left for the checkpoint (task 7).** The FR-6 grep and full gate; FR-5's polish row (recorded cwd, `git show --stat` of the polish commit with `src/polished.txt`); FR-2's polish row (`factory report --per-worker` polish `subagents` 2).
+- **CP-4 FR-6:** the §8 grep over `src` prints nothing, exit 1; the gate is green, 1 run, 562 passed, 1.4 min — evidence: `evidence/cp-4-fr-6-grep-and-gate.txt`
+- **CP-4 FR-5 (polish):** the polish call's `cwd` is `data/lanes/repo-…/lane-1` at head `docs(001): checkpoint 2`; `fix(001): polish review fixes` holds `src/polished.txt`, main tree clean — evidence: `evidence/cp-4-fr-5-polish-in-lane.txt`
+- **CP-4 FR-2 (polish):** `factory report --per-worker` reads `worker 5 polish … subagents 2`, the call's `cwd` lane 1, subagents read under the lane's slug — evidence: `evidence/cp-4-fr-2-polish-report.txt`
 
 
 **Slice**: After this slice the polish worker and each CI fix worker run in the lowest free lane, reset to the feature tip, with the lane's env. Their result lands as slices do: `commit_lane`, then `land`, with today's subjects. No driver gate runs after polish. With no caller left, the guessing code goes: `Pathspec` and its stream readers, `unnamed`, the spawn baselines, the three leftover events and the leftover notes. This repo's own lane files lose their shared-tree paragraph, and the README stops calling isolated lanes "next". It runs alone and last.

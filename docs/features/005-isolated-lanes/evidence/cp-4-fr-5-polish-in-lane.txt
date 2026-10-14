@@ -1,0 +1,41 @@
+# CP-4 FR-5 (polish) + FR-2 (polish half): polish runs in a lane and lands as one commit
+# FACTORY_KEEP_FIXTURE=1 cargo test --test closeout --test metrics -- --exact a_file_the_polish_worker_made_with_a_command_lands_with_its_commit recount_rewrites_the_tokens_and_tool_calls_from_the_streams a_polish_with_subagents_counts_them_apart_from_its_own --nocapture --test-threads=1
+
+     Running tests/closeout.rs (/mnt/devcache/emiliano/cargo-target/debug/deps/closeout-a3022f7a28ac279f)
+test a_file_the_polish_worker_made_with_a_command_lands_with_its_commit ... fixture closeout-polish-sh kept at /tmp/factory-closeout-polish-sh-hBu129
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 37 filtered out; finished in 1.50s
+     Running tests/metrics.rs (/mnt/devcache/emiliano/cargo-target/debug/deps/metrics-265d5776e365b879)
+test a_polish_with_subagents_counts_them_apart_from_its_own ... fixture metrics-subagents kept at /tmp/factory-metrics-subagents-aD7EKJ
+test recount_rewrites_the_tokens_and_tool_calls_from_the_streams ... fixture metrics-recount kept at /tmp/factory-metrics-recount-ljS2p4
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 2.73s
+
+## closeout-polish-sh: stub calls (cwd, first heading of the pack)
+1.json /tmp/factory-closeout-polish-sh-hBu129/data/lanes/repo-09a1ce88/lane-1  # # Slice
+2.json /tmp/factory-closeout-polish-sh-hBu129/data/lanes/repo-09a1ce88/lane-1  # # Slice
+3.json /tmp/factory-closeout-polish-sh-hBu129/data/lanes/repo-09a1ce88/lane-1  # # Gate transcript
+4.json /tmp/factory-closeout-polish-sh-hBu129/data/lanes/repo-09a1ce88/lane-1  # # Slice
+5.json /tmp/factory-closeout-polish-sh-hBu129/data/lanes/repo-09a1ce88/lane-1  # # Gate transcript
+6.json /tmp/factory-closeout-polish-sh-hBu129/data/lanes/repo-09a1ce88/lane-1  # # Branch
+6.json is polish ("# Branch" pack, pr-body write line); its head: 0397fa2467497640f9b9ed6ce0feecca7fc8d864 = docs(001): checkpoint 2, the feature tip
+
+## git log
+3a0af4af229a9fda95691013ed9f1729eeaee7cb docs(001): ship PRD-001
+a1a13fc94132b93dfc216ba43626a073a44fdada fix(001): polish review fixes
+0397fa2467497640f9b9ed6ce0feecca7fc8d864 docs(001): checkpoint 2
+3f858b651aaebfe2f3f484aa36a4f8a08170b2b9 feat(001): slice-03 C
+190d383c6b2519864b0215a556c5214cfb46a30e docs(001): checkpoint 1
+4506eebf9555dbc9339ea401dc65c9385872f679 feat(001): slice-02 B
+3fd1e6a0982162f13f16b1e173df53973f8639e8 feat(001): slice-01 A
+3917d8fb68a65c0506f8beed2fd1d76b7cd35014 chore: chain the fixture slices
+2f42448a5bf79bc3a42cce5cf57ba617e1d98784 chore: fixture repo
+
+## git show --stat fix(001): polish review fixes
+a1a13fc94132b93dfc216ba43626a073a44fdada fix(001): polish review fixes
+
+ docs/features/001-fixture/retro.md   | 9 +++++++++
+ docs/features/001-fixture/state.toml | 1 +
+ src/lib.txt                          | 1 +
+ src/polished.txt                     | 1 +
+ 4 files changed, 12 insertions(+)
+## main tree after the run: git status --porcelain = []
+## src/polished.txt in the main tree: made by sh
