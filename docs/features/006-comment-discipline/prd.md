@@ -308,7 +308,21 @@ reads as if the plan never existed.
 
 ## 10. Slices
 
-_(Not sliced yet. Run `/slice`, or write "No slices — build straight from this document" if it is small.)_
+Five slices on `feat/comment-discipline`: one branch, one PR, one commit per slice, Prove at the checkpoints. `factory docs status` is the board.
+
+- **01, the `factory leaks` verb** (FR-3: the rule table, the input, the allowlist, the verb). The scan is a library function that returns the hits and the two figures, so the checkpoint, the doctor line and the retro call it without a process. The spine: 03, 04 and 05 call it.
+- **02, the rule, the skill texts and 0.4.0** (FR-1, FR-2, and FR-3's polish call). The FR-1 section in `assets/autonomy.md` and its pack test, the slice, PRD and harness-template edits, the four anecdotes, polish's § 1 Collect, and the one version bump. Text and one test, no code 01 touches.
+- **03, ⚠ the highest risk: tuning, the allowlist, doctor and preflight** (FR-3's tuning and "Where it runs" item 3, FR-5's run row). The detectors meet three real trees: Go's `slice1`, `cp1252` and factory's `ad1` read like leaks by shape alone. Factory's own allowlist and its two test-module renames land here.
+- **04, leaks at the checkpoint** (FR-3's "Where it runs" item 1). The driver scans after a green gate, the pack carries `# Leaks`, the contract gains its Do step, and the stub gains a key that fixes the hits.
+- **05, retro columns and the friction line** (FR-4). Ship stores the comment share and the id hits, the compare table shows both, and the template's friction section gains its prompt line.
+
+**Order.** 01 goes first because every later code slice calls its `scan`. 02 depends on nothing and runs beside it. 03, 04 and 05 each depend on 01 only, and run three wide after it: they touch different files, except two hunks of `src/closeout.rs` (04 makes `default_branch` visible to the checkpoint, 05 edits ship). Width 2, then 3, within `lanes = 4`.
+
+**Checkpoints** (`checkpoint_every = 2`). The first covers 01 and 02, so the verb and the rule are proven before three slices build on the verb. The second covers the first two of 03 to 05 to finish; the last covers the third. FR-5's run row belongs to 03, and 04 and 05 name it too, so the final checkpoint reruns it on the tree that ships whichever lands last.
+
+**The installed 0.3.0 driver builds this run**, and it predates every part of this feature. Its checkpoints scan nothing, its workers' packs lack FR-1's section (the autonomy text is compiled in), and polish's `factory leaks` call exits 2, which slice 02's polish text says out loud as "did not run". The checkpoints run the verb from the lane's build instead (`cargo run -q -- leaks --all`), so FR-5's row is what catches a leak a builder writes in this run. Once 03 lands `[leaks]` in `docs/project.toml`, the old driver reads it as an unknown key: a warning, not an error (`src/config.rs:186`). 0.4.0 is tagged after the merge, not in the run.
+
+**[`qa-guide.md`](qa-guide.md)** holds the one Human row: FR-5's sample read of the cleanup merge.
 
 ## 11. Non-goals
 
