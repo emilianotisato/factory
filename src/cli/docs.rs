@@ -125,7 +125,7 @@ enum IdeaVerb {
         /// open, or owed when someone outside the repo owes an answer
         #[arg(long, default_value = "open")]
         state: String,
-        /// Where it came from: `owner`, `PRD-016 polish`
+        /// Where it came from: `owner`, `PRD-NNN polish`
         #[arg(long)]
         origin: Option<String>,
         /// The event that should make someone look again
