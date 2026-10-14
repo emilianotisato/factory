@@ -1,0 +1,70 @@
+# CP-3 FR-4: two-lane conflict, resolved (a) and markers left (b)
+# FACTORY_KEEP_FIXTURE=1 cargo test --test merge -- --exact <3 tests> --nocapture --test-threads=1
+
+     Running tests/merge.rs (/mnt/devcache/emiliano/cargo-target/debug/deps/merge-688a8248800c6a97)
+running 3 tests
+test a_conflicting_landing_spawns_a_merge_worker_in_the_slices_lane ... fixture merge-spawn kept at /tmp/factory-merge-spawn-HnikUc
+test a_merge_that_leaves_markers_blocks_the_slice ... fixture merge-markers kept at /tmp/factory-merge-markers-Ghyzy4
+test a_resolved_merge_lands_after_the_slice_it_conflicted_with ... fixture merge-resolved kept at /tmp/factory-merge-resolved-FGRe0r
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 10.36s
+
+## merge spawn: stub calls (cwd, pack heading) — call 3 is the merge worker, in slice 02's lane-2
+1.json /tmp/factory-merge-spawn-HnikUc/data/lanes/repo-40512d18/lane-1  # Slice
+2.json /tmp/factory-merge-spawn-HnikUc/data/lanes/repo-40512d18/lane-2  # Slice
+3.json /tmp/factory-merge-spawn-HnikUc/data/lanes/repo-40512d18/lane-2  # Conflict
+4.json /tmp/factory-merge-spawn-HnikUc/data/lanes/repo-40512d18/lane-1  # Slice
+
+## (a) resolved: stub calls
+1.json /tmp/factory-merge-resolved-FGRe0r/data/lanes/repo-4a55d91c/lane-1  # Slice
+2.json /tmp/factory-merge-resolved-FGRe0r/data/lanes/repo-4a55d91c/lane-2  # Slice
+3.json /tmp/factory-merge-resolved-FGRe0r/data/lanes/repo-4a55d91c/lane-2  # Conflict
+4.json /tmp/factory-merge-resolved-FGRe0r/data/lanes/repo-4a55d91c/lane-1  # Slice
+5.json /tmp/factory-merge-resolved-FGRe0r/data/lanes/repo-4a55d91c/lane-1  # Gate transcript
+6.json /tmp/factory-merge-resolved-FGRe0r/repo  # Branch
+
+## (a) resolved: final git log --oneline
+99def85 docs(001): ship PRD-001
+3adc6c6 fix(001): polish review fixes
+2ca19ba docs(001): checkpoint 1
+be14e6e feat(001): slice-03 C
+ef1ac57 feat(001): slice-02 B
+a278aaa feat(001): slice-01 A
+ba88e32 chore: a shared file
+bcf97c1 chore: fixture repo
+
+## (a) shared.txt
+1
+2
+both
+4
+
+## (b) markers left: stub calls
+1.json /tmp/factory-merge-markers-Ghyzy4/data/lanes/repo-b9a85884/lane-1  # Slice
+2.json /tmp/factory-merge-markers-Ghyzy4/data/lanes/repo-b9a85884/lane-2  # Slice
+3.json /tmp/factory-merge-markers-Ghyzy4/data/lanes/repo-b9a85884/lane-2  # Conflict
+
+## (b) markers left: lane-2 shared.txt (kept for the answer's merge worker)
+1
+2
+<<<<<<< HEAD
+one
+=======
+two
+>>>>>>> ef78641 (feat(001): slice-02 B)
+4
+
+## (b) main tree HEAD
+2f90091 feat(001): slice-01 A
+
+## (b) factory status 001-20261014-9e59
+run 001-20261014-9e59 · finished (stopped) · 0m 02s elapsed
+slices 3: done: 01 · building: — · blocked: 02 · pending: 03
+lanes: 2 (1 parked) — 1: free · 2: slice 02 blocked
+checkpoints: 0 done · last gate: not run yet
+open: BLOCK-1 (slice 02)
+quota: not paused · no rate_limit_event yet · budget: 34.8k/30M
+PR: no PR yet
+last: run_waiting → stop_requested → run_stopped
+
+## (b) block entry
+{"id":"BLOCK-1","slice":2,"title":"slice 02's merge left conflict markers in shared.txt"}
