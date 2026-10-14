@@ -1,0 +1,21 @@
+# FR-3 --all rerun at checkpoint 2, lane build target/lane-1/debug/factory (factory 0.4.0, tip daea025)
+
+## cody-agent — HEAD d858bc464cf843eaf16f286879f28d3af97c5f9f
+$ (cd /home/emiliano/Projects/CODESM/cody-agent && factory leaks --all)
+... (report body, 2192 lines)
+
+comment share: 12.9% (24136 of 186903 added lines)
+2172 fix hits
+exit 1
+diff against evidence/leaks-cody-agent.txt (from its line 2): identical — every hit and its verdict in slice 03's Progress stands
+
+## arca-api — HEAD 91b4c597121094b2904d9d0fde84539397479656
+$ (cd /home/emiliano/Projects/Prokey/arca-api && factory leaks --all)
+... (report body, 1306 lines)
+
+comment share: 12.8% (27331 of 213616 added lines)
+1280 fix hits
+exit 1
+diff against evidence/leaks-arca-api.txt (from its line 2): identical — every hit and its verdict in slice 03's Progress stands
+
+## factory (this lane) — see cp-2-fr5-all-and-doctor.txt
