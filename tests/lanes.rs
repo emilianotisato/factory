@@ -1450,13 +1450,13 @@ fn a_fresh_run_makes_its_lanes_and_builds_in_them() {
             "{text}"
         );
     }
-    // Build workers run in their lanes; the checkpoint and polish workers
-    // stay in the main tree until slices 09 and 10.
+    // Build and checkpoint workers run in their lanes; the polish worker
+    // stays in the main tree until slice 10.
     let calls = fx.calls();
     assert_eq!(builds(&calls).len(), 3, "{calls:?}");
     for c in &calls {
         let want = match lane_env(c) {
-            Some(n) if c["prompt"].as_str().unwrap().starts_with("Build slice ") => {
+            Some(n) if !c["prompt"].as_str().unwrap().starts_with("/polish") => {
                 lane_path(&fx, n.parse().unwrap())
             }
             _ => fx.path().to_path_buf(),

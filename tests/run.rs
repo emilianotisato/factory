@@ -939,6 +939,7 @@ fn worker_ref(session: &str) -> WorkerRef {
     WorkerRef {
         slice: Some(1),
         checkpoint: None,
+        lane: None,
         role: "build".into(),
         session_id: session.into(),
         pid: dead_pid(),
