@@ -10,7 +10,7 @@
 //! `<data dir>/lanes/<repo key>/lane-N`, into which the ignored state
 //! `[lanes] seed` names is cloned once (a plain copy when the clone fails).
 //! This module owns where a lane lives, creating and seeding it, resetting
-//! it to a commit, and running its setup there.
+//! it to a commit, running its setup there, and removing it (FR-10).
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output};
@@ -353,6 +353,43 @@ pub fn reset(lane: &Path, rev: &str) -> Result<()> {
     git(lane, &["reset", "-q", "--hard", "HEAD"])?;
     git(lane, &["clean", "-q", "-fd"])?;
     Ok(())
+}
+
+/// The `lane-N` dirs under `main`'s lane dir, in number order, whether git
+/// still lists them or not.
+pub fn on_disk(data: &Path, main: &Path) -> Result<Vec<(u32, PathBuf)>> {
+    let root = data.join("lanes").join(key(main));
+    let entries = match fs::read_dir(&root) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(io(format!("read {}", root.display()))(e)),
+    };
+    let mut lanes: Vec<(u32, PathBuf)> = entries
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let n = name.strip_prefix("lane-")?.parse::<u32>().ok()?;
+            Some((n, e.path()))
+        })
+        .collect();
+    lanes.sort_unstable();
+    Ok(lanes)
+}
+
+/// The lane at `lane` gone: `git worktree remove --force` from the main
+/// tree, then the dir itself when git left it (a dir git no longer lists).
+pub fn remove_lane(main: &Path, lane: &Path) -> Result<()> {
+    let at = lane.to_string_lossy();
+    // A dir git does not list fails here; the removal below covers it.
+    let _ = git(main, &["worktree", "remove", "--force", &at]);
+    remove(lane)
+}
+
+/// `git worktree prune` in the main tree: drops the rows of worktrees whose
+/// dir is gone.
+pub fn prune(main: &Path) -> Result<()> {
+    git(main, &["worktree", "prune"]).map(|_| ())
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<String> {

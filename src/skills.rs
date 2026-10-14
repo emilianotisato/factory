@@ -1,5 +1,5 @@
 //! The skill family, embedded (PRD-004 §3 FR-1). `skills/` in this repo is
-//! the source; the binary carries every file under the eight skill folders
+//! the source; the binary carries every file under the nine skill folders
 //! and `skills/_shared/` as one bundle, listed by hand like the assets in
 //! [`crate::pack`]. `skills/README.md` and `skills/bundle.lock` describe the
 //! source folder, so neither is bundled. `tests/skills_bundle.rs` walks
@@ -23,10 +23,10 @@ pub const LINKS_DIR: &str = ".agents/skills";
 /// The manifest (FR-3): a loose file at the skills root is no skill to any agent.
 pub const MANIFEST: &str = ".claude/skills/factory.toml";
 
-/// The eight skills, the folders that get an `.agents/skills` link.
+/// The nine skills, the folders that get an `.agents/skills` link.
 /// `_shared` is not a skill: it has no `SKILL.md`.
-pub const NAMES: [&str; 8] = [
-    "prd", "slice", "deliver", "polish", "gate", "harness", "prune", "ux",
+pub const NAMES: [&str; 9] = [
+    "prd", "slice", "deliver", "polish", "gate", "harness", "lanes", "prune", "ux",
 ];
 
 /// `(path relative to skills/, content)`, sorted by path, `/` separators.
@@ -68,6 +68,7 @@ pub const FILES: &[(&str, &str)] = &[
         "harness/references/skill-template.md",
         include_str!("../skills/harness/references/skill-template.md"),
     ),
+    ("lanes/SKILL.md", include_str!("../skills/lanes/SKILL.md")),
     ("polish/SKILL.md", include_str!("../skills/polish/SKILL.md")),
     ("prd/SKILL.md", include_str!("../skills/prd/SKILL.md")),
     ("prune/SKILL.md", include_str!("../skills/prune/SKILL.md")),
@@ -342,7 +343,7 @@ fn layout(root: &Path) -> Result<bool> {
 }
 
 /// Writes every [`FILES`] entry to `.claude/skills/`, byte-identical and over
-/// whatever is there, then the eight `.agents/skills` links unless
+/// whatever is there, then the nine `.agents/skills` links unless
 /// [`layout`] finds them shared, then the manifest.
 pub fn render(root: &Path) -> Result<Rendered> {
     let shared = layout(root)?;

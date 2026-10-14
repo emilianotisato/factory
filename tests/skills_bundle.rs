@@ -97,6 +97,22 @@ fn models_md_holds_no_invocation_and_the_skills_call_review_second() {
     }
 }
 
+#[test]
+fn polish_fixers_run_one_after_another_with_no_lane_rule() {
+    // PRD-005 FR-5: fixers run in turn inside the polish worker's lane.
+    let text = fs::read_to_string(root().join("skills/polish/SKILL.md")).unwrap();
+    let start = text.find("## 5. Fix").expect("§5");
+    let end = start + text[start..].find("## 6.").expect("§6");
+    let fix = &text[start..end];
+    let lower = fix.to_lowercase();
+    for bad in ["lane", "sibling"] {
+        assert!(!lower.contains(bad), "{bad:?} in polish §5:\n{fix}");
+    }
+    for keep in ["factory docs log add", "factory docs gate"] {
+        assert!(fix.contains(keep), "{keep:?} left polish §5");
+    }
+}
+
 /// The lock this run checks against. With `FACTORY_BUNDLE_WRITE` set, the
 /// first caller rewrites it (FR-5's refusal applies) and every test in this
 /// binary sees the same result, so no reader races the write.

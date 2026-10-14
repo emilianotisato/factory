@@ -4,6 +4,7 @@
 pub mod answer;
 pub mod docs;
 pub mod hook;
+pub mod lanes;
 pub mod report;
 pub mod retro;
 pub mod review;

@@ -21,15 +21,18 @@ lane = 4
 depends_on = []
 
 [slices.5]
-status = "pending"
+status = "building"
+lane = 1
 depends_on = []
 
 [slices.6]
-status = "pending"
+status = "done"
+lane = 2
 depends_on = [3]
 
 [slices.7]
-status = "pending"
+status = "building"
+lane = 3
 depends_on = [1, 2, 3, 4]
 
 [slices.8]

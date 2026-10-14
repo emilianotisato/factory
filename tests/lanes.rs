@@ -1424,3 +1424,171 @@ fn a_fresh_run_makes_its_lanes_and_workers_still_run_in_the_main_tree() {
         assert_eq!(c["cwd"], fx.path().to_str().unwrap(), "call {}", c["n"]);
     }
 }
+
+// ── PRD-005 slice 06: `lanes up --prove` and `lanes prune` ───────────────────
+
+/// `docs/project.toml`'s `[docs]` key `key` set to `value` in the working
+/// file, uncommitted: the lane verbs read the main tree's file.
+fn set_docs_key(fx: &Fixture, key: &str, value: &str) {
+    let file = fx.path().join("docs/project.toml");
+    let text = fs::read_to_string(&file).unwrap();
+    let prefix = format!("{key} = ");
+    let out: Vec<String> = text
+        .lines()
+        .map(|l| {
+            if l.starts_with(&prefix) {
+                format!("{key} = {value}")
+            } else {
+                l.to_string()
+            }
+        })
+        .collect();
+    assert_ne!(out.join("\n") + "\n", text, "no `{key}` line to set");
+    fs::write(&file, out.join("\n") + "\n").unwrap();
+}
+
+/// `(start, end)` of each run `prove.sh` recorded for lane `n`.
+fn prove_times(base: &Path, n: u32) -> (f64, f64) {
+    let text = fs::read_to_string(base.join(format!("times-{n}"))).unwrap();
+    let at = |what: &str| -> f64 {
+        text.lines()
+            .find_map(|l| l.strip_prefix(what))
+            .unwrap_or_else(|| panic!("no {what}in {text}"))
+            .trim()
+            .parse()
+            .unwrap()
+    };
+    (at("start "), at("end "))
+}
+
+#[test]
+fn lanes_up_prove_runs_the_inner_loop_in_every_lane_at_once_and_names_a_red_lane() {
+    let fx = Fixture::new("lanes-prove");
+    let base = data_dir(&fx).parent().unwrap().to_path_buf();
+    let script = base.join("prove.sh");
+    fs::write(
+        &script,
+        format!(
+            "t={}/times-$FACTORY_LANE\necho \"start $(date +%s.%N)\" >> \"$t\"\nsleep 1\necho \"end $(date +%s.%N)\" >> \"$t\"\npwd -P > {}/pwd-$FACTORY_LANE\n",
+            base.display(),
+            base.display()
+        ),
+    )
+    .unwrap();
+    set_docs_key(&fx, "inner", &format!("\"sh {}\"", script.display()));
+
+    let out = factory(&fx, &["lanes", "up", "--prove"]);
+    let text = stdout(&out);
+    assert_eq!(out.status.code(), Some(0), "{text}");
+    let inner: Vec<&str> = text.lines().filter(|l| l.contains("  inner  ")).collect();
+    assert_eq!(inner.len(), 2, "{text}");
+    for (n, line) in (1..=2).zip(&inner) {
+        assert!(
+            line.starts_with(&format!("lane-{n}  inner  exit 0  ")),
+            "{line}"
+        );
+        assert!(line.ends_with('s'), "{line}");
+    }
+    let (s1, e1) = prove_times(&base, 1);
+    let (s2, e2) = prove_times(&base, 2);
+    eprintln!("lane-1 {s1}..{e1}  lane-2 {s2}..{e2}");
+    assert!(
+        s1 < e2 && s2 < e1,
+        "the lanes overlap: {s1}..{e1} and {s2}..{e2}"
+    );
+    let lanes = lane_worktrees(&fx);
+    for (n, (path, _)) in (1..=2).zip(&lanes) {
+        let pwd = fs::read_to_string(base.join(format!("pwd-{n}"))).unwrap();
+        assert_eq!(pwd.trim(), path.canonicalize().unwrap().to_str().unwrap());
+    }
+
+    // Lane 2 red: exit 1, its line says so, the last line names it alone.
+    set_docs_key(
+        &fx,
+        "inner",
+        "\"echo lane $FACTORY_LANE says hi; test $FACTORY_LANE != 2\"",
+    );
+    let out = factory(&fx, &["lanes", "up", "--prove"]);
+    let text = stdout(&out);
+    assert_eq!(out.status.code(), Some(1), "{text}");
+    assert!(text.contains("lane-1  inner  exit 0  "), "{text}");
+    assert!(text.contains("lane-2  inner  exit 1  "), "{text}");
+    assert!(
+        text.contains("    lane 2 says hi"),
+        "a red lane's output: {text}"
+    );
+    let last = text.lines().last().unwrap();
+    assert!(last.contains("lane-2"), "{last}");
+    assert!(!last.contains("lane-1"), "{last}");
+}
+
+#[test]
+fn lanes_up_prove_stops_at_a_failed_up() {
+    let fx = Fixture::new("lanes-prove-no-seed");
+    fx.drop_lanes_table();
+    let out = factory(&fx, &["lanes", "up", "--prove"]);
+    let text = stdout(&out);
+    assert_eq!(out.status.code(), Some(1), "{text}");
+    assert!(!text.contains("  inner  "), "{text}");
+}
+
+#[test]
+fn lanes_prune_removes_the_lanes_above_the_count_and_all_with_all() {
+    let fx = Fixture::with_index("lanes-prune", &[("lanes", "3")]);
+    let out = factory(&fx, &["lanes", "up"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let lanes: Vec<PathBuf> = lane_worktrees(&fx).into_iter().map(|(p, _)| p).collect();
+    assert_eq!(lanes.len(), 3, "{lanes:?}");
+    for p in &lanes {
+        fs::write(p.join("marker"), "kept").unwrap();
+    }
+
+    set_docs_key(&fx, "lanes", "2");
+    let out = factory(&fx, &["lanes", "prune"]);
+    let text = stdout(&out);
+    eprintln!("{text}");
+    assert_eq!(out.status.code(), Some(0), "{text}");
+    assert!(
+        text.contains("lane-3  ") && !text.contains("lane-1  "),
+        "{text}"
+    );
+    assert!(!lanes[2].exists(), "lane-3's dir is gone");
+    let left: Vec<PathBuf> = lane_worktrees(&fx).into_iter().map(|(p, _)| p).collect();
+    assert_eq!(left, lanes[..2], "no worktree row for lane-3");
+    for p in &lanes[..2] {
+        assert_eq!(fs::read_to_string(p.join("marker")).unwrap(), "kept");
+    }
+
+    // Nothing above the count: said, exit 0.
+    let out = factory(&fx, &["lanes", "prune"]);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(stdout(&out).contains("no lane above 2"), "{}", stdout(&out));
+
+    let out = factory(&fx, &["lanes", "prune", "--all"]);
+    let text = stdout(&out);
+    eprintln!("{text}");
+    assert_eq!(out.status.code(), Some(0), "{text}");
+    assert!(lane_worktrees(&fx).is_empty());
+    assert!(lanes.iter().all(|p| !p.exists()));
+}
+
+#[test]
+fn lanes_prune_refuses_while_a_run_is_unfinished_and_removes_nothing() {
+    // A run parked on a preflight ask: no driver alive, phase not over.
+    let fx = Fixture::with_index("lanes-prune-open", &[("lanes", "1")]);
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let id = run_id(&only_run_dir(&fx));
+    let lanes = lane_worktrees(&fx);
+    assert_eq!(lanes.len(), 1, "{lanes:?}");
+
+    for args in [&["lanes", "prune"][..], &["lanes", "prune", "--all"]] {
+        let out = factory(&fx, args);
+        let text = stdout(&out);
+        eprintln!("{text}");
+        assert_eq!(out.status.code(), Some(1), "{text}");
+        assert!(text.contains(&id), "names the run: {text}");
+        assert_eq!(lane_worktrees(&fx).len(), 1);
+        assert!(lanes[0].0.is_dir());
+    }
+}
