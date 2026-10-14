@@ -1,25 +1,4 @@
-//! `factory answer <BLOCK-n|ASK-n> "<text>"` (PRD §5 FR-3, §3 FR-1): the
-//! owner's half of a parked run.
-//!
-//! `BLOCK-n`: the `block` entry is found in a feature's `log.jsonl`; the
-//! answer lands in `runs/<id>/answers/BLOCK-n.json`, an `answer` entry with
-//! `ref = BLOCK-n` is appended to the log (the block's line stays as it was),
-//! and a slice the block left `blocked` goes back to `building` in
-//! `state.toml`, lane unchanged. The driver's slow tick sees a `building`
-//! slice with nothing alive on it and an answer naming it, and respawns it
-//! with the block and the answer in the pack. A retry of an answer that
-//! failed after the `answer` entry landed finishes it. Block ids restart at
-//! `BLOCK-1` in every feature, so the same id open in two features goes to
-//! the one whose run is parked.
-//!
-//! `ASK-n`: an `ask` entry (phase `preflight`) in the feature's log,
-//! `ask_answered`, then the answer file; the run starts when the last ask is answered. ASK numbers are per
-//! run: two open runs waiting on the same one are refused by name, and
-//! `--run <id>` picks one.
-//!
-//! Either way, a run with no live driver gets one here, so the owner's one
-//! command is the whole resume — unless it is parked on its budget, which
-//! `factory run NNN --budget` resumes.
+//! The owner's half of a parked run: answer a block or a preflight ask, then wake the driver.
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -107,8 +86,7 @@ fn answer_block(
         return Ok(1);
     }
     let at = |e: &answers::BlockEntry| format!("{} line {}", rel(repo, &e.path), e.line);
-    // Only an open block takes an answer; a resolved one of the same id (an
-    // earlier feature's) is not a target.
+    // Block ids restart per feature, so a resolved one of the same id is another block.
     let mut open: Vec<(PathBuf, answers::BlockEntry)> =
         hits.iter().filter(|(_, e)| !e.resolved).cloned().collect();
     if open.is_empty() {
@@ -143,8 +121,7 @@ fn answer_block(
     }
     let (feature_dir, entry) = open.remove(0);
     let where_ = at(&entry);
-    // What can refuse goes first: a block naming a slice with no file
-    // writes nothing.
+    // What can refuse goes first: a block naming a slice with no file writes nothing.
     if let Some(n) = entry.slice {
         slice_file(&feature_dir, n)?;
     }
@@ -152,12 +129,7 @@ fn answer_block(
     let now = clock::now_rfc3339();
     let feature = feature_number(&feature_dir)?;
     let mut run = Run::find_resumable(data_dir, repo, &feature)?;
-    // The answer file and `block_answered` before the slice flips: a driver
-    // that reads `building` must already find the answer, or it would take
-    // the slice for a dead worker's (slice 04 task 3's trap), and the log
-    // must read `block_answered` before the `slice_spawned` it causes. They
-    // go before the `answer` entry too: a retry finds the block open until
-    // every step that cannot be redone is done, and redoes them.
+    // The answer file goes first, or a driver reading `building` takes the slice for a dead worker's.
     if let Some(run) = &mut run {
         answers::write(
             run.dir(),
@@ -174,17 +146,14 @@ fn answer_block(
             text: text.to_string(),
         })?;
     }
-    // The `answer` entry before the flip: the respawned worker's pack quotes
-    // the block with its answer as the log holds them.
+    // The `answer` entry before the flip: the respawned worker's pack quotes it from the log.
     answers::resolve(&feature_dir, &entry, text)?;
     writeln!(out, "{id} resolved ({where_}): {text}").map_err(io("stdout"))?;
     deliver(repo, &feature_dir, &feature, slice, run, out)?;
     Ok(0)
 }
 
-/// Every `id` found is resolved. A retry of an answer that stopped after
-/// the `answer` entry landed — the slice still `blocked`, or the parked run never
-/// woken — finishes it; anything else is refused.
+/// Finishes a retry that failed after its `answer` entry landed; anything else is refused.
 fn answer_resolved(
     repo: &Path,
     data_dir: &Path,
@@ -224,9 +193,6 @@ fn answer_resolved(
     Ok(1)
 }
 
-/// After the log: the slice back to `building` if the block parked it —
-/// a slice that is `done`, `pending` or already `building` is left as is —
-/// then the run woken.
 fn deliver(
     repo: &Path,
     feature_dir: &Path,
@@ -267,14 +233,11 @@ fn deliver(
     Ok(())
 }
 
-/// The slice's status in `state.toml`; `None` when the file or the slice
-/// has none.
 fn slice_status(feature_dir: &Path, n: u32) -> Result<Option<String>> {
     Ok(state::read(feature_dir)?.and_then(|s| s.slices.get(&n).map(|s| s.status.clone())))
 }
 
-/// Whether a try that failed later already logged this ask's answer: an
-/// `ask` entry titled `title` with its `**Chose:**` line.
+/// Whether a failed earlier try already logged this ask's answer.
 fn preflight_logged(entries: &[log::Entry], title: &str, text: &str) -> bool {
     let chose = format!("**Chose:** {text}");
     entries
@@ -290,8 +253,7 @@ fn answer_ask(
     only: Option<&str>,
     out: &mut dyn Write,
 ) -> Result<i32> {
-    // `ASK-n` is numbered per run: every open run of this repo that asked
-    // it, newest first, with whether its answer is on file.
+    // ASK ids restart per run, so every open run that asked this one is a candidate.
     let mut asked: Vec<(Run, String, bool)> = Vec::new();
     for s in run::list_open(data_dir, repo)?.into_iter().rev() {
         if only.is_some_and(|o| o != s.id.as_str()) {
@@ -321,8 +283,7 @@ fn answer_ask(
         return Ok(1);
     }
     let Some(i) = asked.iter().position(|(_, _, answered)| !answered) else {
-        // A retry of an answer whose wake failed: every ask is on file and
-        // the parked run has no driver.
+        // A retry whose wake failed: every ask on file, the parked run without a driver.
         if let Some((run, _, _)) = asked.iter().find(|(run, _, _)| {
             run.state().phase == Phase::WaitingOwner && !run.state().driver_alive()
         }) && answers::asks_pending(run)?.is_empty()
@@ -339,10 +300,7 @@ fn answer_ask(
     let now = clock::now_rfc3339();
     let feature = run.state().feature.clone();
     let dir = feature_dir(repo, &feature)?;
-    // The `ask` entry and `ask_answered` before the answer file: the file is
-    // what the driver starts on and what takes the ask off the list, so a
-    // retry after a failure here still finds the ask open. Each step is
-    // skipped when a failed try already did it.
+    // The answer file goes last: it takes the ask off the list, so a failed try leaves it open.
     let title = format!("Preflight {id}: {item}");
     let (logged, _) = log::entries(&dir)?;
     if !preflight_logged(&logged, &title, text) {
@@ -400,10 +358,7 @@ fn answer_ask(
     Ok(0)
 }
 
-/// A live driver picks the answer up on its slow tick; a parked run with no
-/// driver gets one — unless it is parked on its budget, which a driver would
-/// only park on again: that takes `factory run NNN --budget`; anything else
-/// is `factory run`'s to resume.
+/// A budget-parked run gets no driver: it would only park again.
 fn wake(run: &Run, out: &mut dyn Write) -> Result<()> {
     let pid = run.state().pid;
     if run.state().driver_alive() {
@@ -444,7 +399,6 @@ fn wake(run: &Run, out: &mut dyn Write) -> Result<()> {
     Ok(())
 }
 
-/// `docs/features/NNN-*/`, in order.
 fn feature_dirs(repo: &Path) -> Result<Vec<PathBuf>> {
     let features = repo.join("docs/features");
     let rd = match fs::read_dir(&features) {
@@ -460,7 +414,6 @@ fn feature_dirs(repo: &Path) -> Result<Vec<PathBuf>> {
     Ok(dirs)
 }
 
-/// `001` from `docs/features/001-fixture`.
 fn feature_number(feature_dir: &Path) -> Result<String> {
     let name = feature_dir
         .file_name()
@@ -476,7 +429,6 @@ fn feature_number(feature_dir: &Path) -> Result<String> {
     Ok(digits)
 }
 
-/// The feature folder of `NNN`.
 fn feature_dir(repo: &Path, feature: &str) -> Result<PathBuf> {
     feature_dirs(repo)?
         .into_iter()
@@ -484,7 +436,6 @@ fn feature_dir(repo: &Path, feature: &str) -> Result<PathBuf> {
         .ok_or_else(|| Error::Msg(format!("no docs/features/{feature}-* folder")))
 }
 
-/// `slice-NN-*.md` in the feature folder.
 fn slice_file(feature_dir: &Path, n: u32) -> Result<PathBuf> {
     let prefix = format!("slice-{n:02}-");
     fs::read_dir(feature_dir)

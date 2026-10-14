@@ -1,7 +1,4 @@
-//! `factory docs retro NNN [--set score=N]` (PRD-002 FR-19): a feature's
-//! `retros` row in the metrics store, and the one way to set its `score`.
-//! The key is the canonical repo root, the string `runs.repo` holds, and the
-//! feature's number from the board.
+//! The row's key is the canonical repo root, as `runs.repo` holds it, and the feature number.
 use std::fmt::Display;
 use std::path::Path;
 
@@ -17,7 +14,6 @@ struct Key {
     slug: String,
 }
 
-/// `feature` is a number, a slug or a path, live or archived.
 fn key(root: &Path, feature: &str) -> Result<Key> {
     let board = board::scan(root)?;
     let f = board.resolve(feature)?;
@@ -35,13 +31,11 @@ fn store() -> Result<Db> {
     Db::open(&Run::db_path(&paths::data_dir()))
 }
 
-/// The feature's row; `None` when nothing wrote one yet.
 pub fn show(root: &Path, feature: &str) -> Result<Option<RetroRow>> {
     let k = key(root, feature)?;
     store()?.retro(&k.repo, k.feature)
 }
 
-/// `value` is `score=<integer>`; it is checked before the store is opened.
 pub fn set_score(root: &Path, feature: &str, value: &str) -> Result<RetroRow> {
     let score = parse_set(value)?;
     let k = key(root, feature)?;
@@ -63,7 +57,6 @@ fn parse_set(pair: &str) -> Result<i64> {
     }
 }
 
-/// One `key: value` line per column, `repo` to `written_at`, empty for null.
 pub fn lines(r: &RetroRow) -> Vec<String> {
     fn opt<T: Display>(v: &Option<T>) -> String {
         v.as_ref().map_or_else(String::new, ToString::to_string)

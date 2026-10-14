@@ -1,6 +1,4 @@
-//! The subcommands, one module each. Each takes its parsed `clap` arguments
-//! and the writer for stdout, and returns the exit code, so tests drive them
-//! in-process and `main` stays a dispatch table.
+//! One subcommand per module, taking a writer and returning an exit code so tests drive it in-process.
 pub mod answer;
 pub mod docs;
 pub mod hook;

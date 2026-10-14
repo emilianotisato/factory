@@ -1,11 +1,4 @@
-//! `factory status [<run>]` (PRD §9 FR-7): the board in ten lines — the
-//! run, the slices, the lanes, the checkpoints, the open questions, the
-//! quota, the PR, the last three events, and two lines that appear only when
-//! a stop is pending or the driver is dead. Slices and lanes come from the
-//! board (`docs status --json`, the truth); everything else from the run's
-//! own files. No run id, or an unknown one, lists the live runs and exits 1.
-//! An `events.jsonl` line that does not parse is skipped, and one line on
-//! stderr says which (DEC-3).
+//! Slices and lanes come from the board, the truth; everything else from the run's own files.
 use std::io::Write;
 
 use clap::Args;
@@ -43,7 +36,6 @@ pub fn status(args: &StatusArgs, out: &mut dyn Write, err: &mut dyn Write) -> Re
     Ok(0)
 }
 
-/// The ten lines, in order; the last two only when they apply.
 pub fn board(run: &Run) -> Result<Vec<String>> {
     let s = run.state();
     let events = run.events()?;
@@ -106,8 +98,7 @@ pub fn board(run: &Run) -> Result<Vec<String>> {
             ))
         )
     });
-    // Rounded up: `used > budget` exactly when the sum passed it (1.4 of 1
-    // reads `2/1`, not `1/1`).
+    // Rounded up, so `used > budget` reads as such (1.4 of 1 is `2/1`, not `1/1`).
     let used = quota::weighted_sum(run.db(), run.id().as_str())?.ceil() as u64;
     lines.push(format!(
         "quota: {pause} · {limit} · budget: {}/{}{}",
@@ -175,8 +166,6 @@ fn slices_line(b: &Status) -> String {
     )
 }
 
-/// `lanes: 2 (1 parked) — 1: slice 01 blocked · 2: free`. A `blocked` slice
-/// keeps its lane parked (AD-401); a `building` one holds it with a worker.
 fn lanes_line(b: &Status) -> String {
     let holders: Vec<(u32, u32, &str)> = b
         .slices
@@ -231,7 +220,6 @@ fn checkpoints_line(events: &[Event]) -> String {
     )
 }
 
-/// `BLOCK-101 (slice 01)`, `BLOCK-5 (checkpoint 2)`, `BLOCK-1 (closeout ci)`, `ASK-1`.
 fn describe(id: &str, events: &[Event]) -> String {
     let where_ = events.iter().find_map(|e| match &e.kind {
         EventKind::SliceBlocked {
@@ -254,8 +242,6 @@ fn describe(id: &str, events: &[Event]) -> String {
     }
 }
 
-/// The last `rate_limit_event` on disk, newest worker first; the streams of
-/// at most the last five workers are read.
 fn last_rate_limit(run: &Run) -> Option<RateLimit> {
     run.state()
         .workers
@@ -265,9 +251,6 @@ fn last_rate_limit(run: &Run) -> Option<RateLimit> {
         .find_map(|w| worker::summary_from_disk(run.dir(), &w.session_id).rate_limit)
 }
 
-/// `slice_done(03) → run_waiting → stop_requested`: the kind and the one
-/// field that names its subject, when it has one. A kind this binary does
-/// not know is passed over.
 fn last_three(events: &[Event]) -> String {
     let known: Vec<&Event> = events
         .iter()

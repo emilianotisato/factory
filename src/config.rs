@@ -1,10 +1,4 @@
-//! `~/.config/factory/config.toml` (PRD §11 FR-9, §19). Only the keys the PRD
-//! names: `budget_weighted_tokens` and the per-role model and effort. A
-//! missing file is the defaults; an unknown key is a warning, never an error.
-//!
-//! PRD-003 FR-23 adds the project scope, `<repo>/docs/project.toml`, read
-//! over the user file key by key, the scope each knob came from, and
-//! [`knobs`], the JSON a run row records at its start.
+//! A missing file is the defaults; an unknown key warns, never fails.
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -22,26 +16,20 @@ pub const DEFAULT_EFFORT: &str = "high";
 pub struct Config {
     pub budget_weighted_tokens: u64,
     pub workers: Workers,
-    /// `[source]`: the skills checkout friction ideas land in (PRD-004 FR-7).
     pub source: Option<SourceRepo>,
-    /// `[review]`: the cross-vendor second opinion (PRD-004 FR-6).
     pub review: Review,
 }
 
-/// `[source] path`: a checkout of the factory repo. `Source` is taken: it
-/// names the scope a knob came from.
+/// `Source` is taken: it names the scope a knob came from.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceRepo {
     pub path: PathBuf,
 }
 
-/// `[review]`: who `factory review second` runs and how. The owner's own
-/// facts (a renamed binary, a rate-limited model) live in this file, never
-/// in the skills.
+/// The owner's own facts (a renamed binary, a rate-limited model) live here, never in the skills.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Review {
-    /// A name on PATH or a path.
     pub agent: String,
     pub model: String,
     pub timeout_secs: u64,
@@ -95,18 +83,15 @@ impl Default for Worker {
     }
 }
 
-/// A loaded config and the warnings reading it raised.
 #[derive(Debug, Clone)]
 pub struct Loaded {
     pub config: Config,
     pub path: PathBuf,
     pub warnings: Vec<String>,
-    /// Which scope set each knob (PRD-003 FR-23).
     pub sources: Sources,
 }
 
-/// The scope a knob came from: `runs.knobs` records it (PRD-003 FR-23).
-/// `Flag` is `--budget` on the command line, budget only.
+/// `Flag` is `--budget` on the command line: the budget is the only knob a flag sets.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Source {
@@ -145,10 +130,8 @@ const WORKER_KEYS: [&str; 2] = ["model", "effort"];
 const SOURCE_KEYS: [&str; 1] = ["path"];
 const REVIEW_KEYS: [&str; 4] = ["agent", "model", "timeout_secs", "pass_lines"];
 
-/// The project scope, relative to the repo the run targets (PRD-003 FR-23).
 pub const PROJECT_FILE: &str = "docs/project.toml";
 
-/// `<config_dir>/config.toml`, or the defaults when there is none.
 pub fn load(config_dir: &Path) -> Result<Loaded> {
     let path = config_dir.join("config.toml");
     let mut loaded = Loaded {
@@ -184,7 +167,6 @@ pub fn load(config_dir: &Path) -> Result<Loaded> {
     Ok(loaded)
 }
 
-/// A leading `~/` against `$HOME`; any other path as written.
 fn expand_home(path: &Path) -> PathBuf {
     match path.strip_prefix("~") {
         Ok(rest) => crate::paths::home().join(rest),
@@ -192,10 +174,7 @@ fn expand_home(path: &Path) -> PathBuf {
     }
 }
 
-/// The user file, then `<repo>/docs/project.toml` when present, its
-/// `[run] budget` and `[workers.<role>] model | effort` overriding key by key.
-/// Unknown keys there warn and never fail. `[docs]` and `[lanes]` are the docs tool's
-/// (PRD-002 FR-13, `docs::project`), known here and read there.
+/// `[docs]` and `[lanes]` are known here only so they do not warn; `docs::project` reads them.
 pub fn load_with_project(config_dir: &Path, repo: &Path) -> Result<Loaded> {
     let mut loaded = load(config_dir)?;
     let path = repo.join(PROJECT_FILE);
@@ -236,9 +215,6 @@ pub fn load_with_project(config_dir: &Path, repo: &Path) -> Result<Loaded> {
     Ok(loaded)
 }
 
-/// `runs.knobs`: per role `{model, effort, source}`, with `effort_source`
-/// beside it only when the effort came from another scope than the model;
-/// the budget and its source; the lanes; both versions.
 pub fn knobs(loaded: &Loaded, lanes: Option<u32>, claude_version: Option<&str>) -> Value {
     let w = &loaded.config.workers;
     let s = &loaded.sources.workers;
@@ -264,7 +240,6 @@ pub fn knobs(loaded: &Loaded, lanes: Option<u32>, claude_version: Option<&str>) 
     })
 }
 
-/// `docs/project.toml` as FR-23 reads it: every key optional.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct Project {
@@ -305,7 +280,6 @@ impl RoleSources {
     }
 }
 
-/// A TOML file as a table; `None` when it does not exist.
 fn read_table(path: &Path) -> Result<Option<toml::Table>> {
     let text = match fs::read_to_string(path) {
         Ok(t) => t,
@@ -320,7 +294,6 @@ fn read_table(path: &Path) -> Result<Option<toml::Table>> {
         })
 }
 
-/// `scope` when `table` holds the dotted key `at`, else `Default`.
 fn scope(table: &toml::Table, at: &[&str], scope: Source) -> Source {
     let mut v = table.get(at[0]);
     for k in &at[1..] {
@@ -329,9 +302,7 @@ fn scope(table: &toml::Table, at: &[&str], scope: Source) -> Source {
     if v.is_some() { scope } else { Source::Default }
 }
 
-/// A `[source]` with no string `path` (`[source] dir = …`) is taken out
-/// before the typed read, so it loads as no `[source]` and warns instead of
-/// failing every command that reads the config. `true` when it was.
+/// Taken out before the typed read, so a bad `[source]` warns instead of failing every command.
 fn drop_pathless_source(table: &mut toml::Table) -> bool {
     let pathless = table
         .get("source")
@@ -361,8 +332,6 @@ fn unknown_keys(table: &toml::Table, top: &[&str]) -> Vec<String> {
                 .map(|k| format!("run.{k}")),
         );
     }
-    // A misspelled `[review]` or `[source]` key (`timeout` for
-    // `timeout_secs`) would otherwise fall back to the default unsaid.
     for (name, keys) in [("source", &SOURCE_KEYS[..]), ("review", &REVIEW_KEYS[..])] {
         if let (true, Some(toml::Value::Table(t))) = (top.contains(&name), table.get(name)) {
             out.extend(

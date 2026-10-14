@@ -1,7 +1,3 @@
-//! `factory docs hook [--here]` (PRD-002 FR-15, FR-17): the pre-commit body
-//! and its install, ported from `docs.mjs:1930-1975`. The body refuses edits
-//! under `docs/archive/` and runs `factory docs check` on a staged `docs/`
-//! change, which routes: native in a v3 repo, node in a v2 one.
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -13,10 +9,7 @@ use crate::{Error, Result};
 /// v2's marker, kept so a repo with the v2 hook reads as installed.
 pub const MARKER: &str = "# feature-docs hook";
 
-/// The body names `factory`, not the absolute path workers get: it runs at
-/// commit time in the owner's shell, maybe after this binary was rebuilt
-/// elsewhere, and a missing `factory` must exit 0 as the owner's hook does
-/// when its `DOCS_TOOL` is gone.
+/// Names `factory`, not this binary's path: the hook outlives a rebuild, and a missing `factory` exits 0.
 pub fn body() -> String {
     [
         MARKER,
@@ -34,15 +27,9 @@ pub fn body() -> String {
     .join("\n")
 }
 
-/// What `hook` did.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Outcome {
-    /// `core.hooksPath` is set and `--here` was not given: `.git/hooks` is
-    /// dead, so the body is printed for the owner to append there.
-    Printed {
-        hooks_path: String,
-    },
-    /// Written at this path, relative to the repo when it is inside it.
+    Printed { hooks_path: String },
     Installed(String),
     Already,
 }
@@ -64,8 +51,6 @@ impl Outcome {
     }
 }
 
-/// Installs the body at `<git-common-dir>/hooks/pre-commit`. A foreign
-/// `pre-commit` is refused with the body to append by hand.
 pub fn install(root: &Path, here: bool) -> Result<Outcome> {
     if git(root, &["rev-parse", "--is-inside-work-tree"]).is_none() {
         return Err(Error::Msg("not a git repository".into()));

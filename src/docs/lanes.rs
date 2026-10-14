@@ -1,6 +1,3 @@
-//! `factory docs lanes [set N] [--env] [--setup]` (PRD-002 FR-15), ported
-//! from `docs.mjs:1461-1544`. The count lives in `[docs] lanes`; the files
-//! are the driver's own (`crate::lanes`), read and placed with its helpers.
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -9,8 +6,7 @@ use super::{frontmatter, project};
 use crate::error::io;
 use crate::{Error, Result};
 
-/// `laneTemplate` (`docs.mjs:1487`): the frontmatter the driver injects and
-/// the prose an agent needs that no schema holds.
+/// The frontmatter the driver injects, and the prose an agent needs that no schema holds.
 fn template(n: u32, env: &[String], setup: &str) -> String {
     format!(
         "---
@@ -27,7 +23,6 @@ Run `setup` above before the first test run; it is written to be safe to run twi
     )
 }
 
-/// `lane-N.md` files on disk, in number order.
 fn on_disk(root: &Path) -> Vec<u32> {
     let mut v: Vec<u32> = fs::read_dir(root.join(crate::lanes::DIR))
         .into_iter()
@@ -84,8 +79,7 @@ pub fn run(
             let mut written = Vec::new();
             for i in 1..=n {
                 let f = crate::lanes::file(root, i);
-                // Never overwrite: the prose half is hand-written and is the
-                // point of the file.
+                // Never overwrite: the prose half is hand-written.
                 if f.exists() {
                     continue;
                 }
@@ -149,8 +143,7 @@ pub fn run(
                     if prose { "" } else { "  ! no prose" }
                 ));
             }
-            // `lanes = 1` is the default and means no parallelism: it wants
-            // no lane file at all.
+            // `lanes = 1` means no parallelism and wants no lane file at all.
             let missing: Vec<String> = if p.lanes >= 2 {
                 (1..=p.lanes)
                     .filter(|i| !disk.contains(i))

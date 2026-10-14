@@ -1,11 +1,4 @@
-//! `factory docs gate` (PRD-002 FR-15): the verify gate `[docs] gate` and the
-//! inner loop `[docs] inner` of `docs/project.toml`, and the foundations the
-//! board reports beside them. A port of `docs.mjs:383-606`: the tool checks
-//! that the entry point exists and never runs the command.
-//!
-//! The driver lifts `gate` and `gate --inner` stdout whole
-//! (`Docs::gate`, `Docs::gate_inner`), so stdout carries the bare command and
-//! every warning goes to stderr.
+//! Checks a gate's entry point exists and never runs it; stdout is the bare command the driver lifts, warnings go to stderr.
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -17,7 +10,7 @@ use super::{Gate, Harness};
 use crate::error::io;
 use crate::{Error, Result};
 
-/// Gate script names, best first (`GATE_NAMES`).
+/// Gate script names, best first.
 pub const NAMES: [&str; 6] = ["verify", "check", "ci", "ci:check", "qa", "test"];
 
 const RUNNERS: [&str; 17] = [
@@ -25,8 +18,7 @@ const RUNNERS: [&str; 17] = [
     "gradle", "gradlew", "swift", "flutter", "dart",
 ];
 
-/// Toolchains whose tasks the tool cannot enumerate cheaply: the manifest
-/// proves the runner fits the repo (`GATE_MANIFESTS`).
+/// Runners whose tasks are not enumerated: the manifest alone proves the runner fits.
 fn manifests(runner: &str) -> &'static [&'static str] {
     match runner {
         "cargo" => &["Cargo.toml"],
@@ -55,8 +47,6 @@ fn part(status: &'static str, detail: impl Into<String>) -> Part {
     }
 }
 
-/// Likely gate commands by [`NAMES`] order, and `verify` hints from the agent
-/// instruction files.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Candidates {
     pub commands: Vec<String>,
@@ -74,7 +64,6 @@ fn first_existing(root: &Path, names: &[&str]) -> Option<String> {
         .map(|n| n.to_string())
 }
 
-/// `scripts` keys of a JSON manifest; `None` when it is absent or unparseable.
 fn json_scripts(root: &Path, file: &str) -> Option<Vec<String>> {
     let text = fs::read_to_string(root.join(file)).ok()?;
     let v: Value = serde_json::from_str(&text).ok()?;
@@ -92,7 +81,6 @@ fn name_len(s: &str, extra: &[char]) -> usize {
             .len()
 }
 
-/// `:` not followed by `=`.
 fn colon(rest: &str) -> bool {
     rest.starts_with(':') && !rest[1..].starts_with('=')
 }
@@ -132,7 +120,6 @@ fn just_recipes(root: &Path) -> Option<Vec<String>> {
     )
 }
 
-/// `[tasks.<name>]` headers and the keys of a bare `[tasks]` table.
 fn mise_tasks(root: &Path) -> Option<Vec<String>> {
     let f = first_existing(root, &["mise.toml", ".mise.toml"])?;
     let text = fs::read_to_string(root.join(f)).unwrap_or_default();
@@ -169,7 +156,6 @@ fn mise_tasks(root: &Path) -> Option<Vec<String>> {
     Some(out)
 }
 
-/// pnpm, yarn or bun by lockfile, else npm (`jsRunner`).
 fn js_runner(root: &Path) -> &'static str {
     if root.join("pnpm-lock.yaml").exists() {
         "pnpm run"
@@ -182,7 +168,6 @@ fn js_runner(root: &Path) -> &'static str {
     }
 }
 
-/// `resolveGatePart` (`docs.mjs:431-481`).
 pub fn resolve_part(root: &Path, text: &str) -> Part {
     let tokens: Vec<&str> = text.split_whitespace().collect();
     let Some(idx) = tokens.iter().position(|t| RUNNERS.contains(&basename(t))) else {
@@ -256,8 +241,7 @@ pub fn resolve_part(root: &Path, text: &str) -> Part {
     }
 }
 
-/// `` `[^`]*\bverify\b[^`]*` ``, case-insensitive: any span between two
-/// backticks holding the word.
+/// Any span between two backticks holding the word `verify`, case-insensitive.
 fn verify_hint(line: &str) -> bool {
     let spans: Vec<&str> = line.split('`').collect();
     let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
@@ -273,7 +257,6 @@ fn verify_hint(line: &str) -> bool {
 /// How one manifest's task becomes a command line.
 type Runner = Box<dyn Fn(&str) -> String>;
 
-/// `gateCandidates` (`docs.mjs:483-510`), the hints capped at three.
 pub fn candidates(root: &Path) -> Candidates {
     let mut sources: Vec<(Vec<String>, Runner)> = Vec::new();
     if let Some(s) = json_scripts(root, "composer.json") {
@@ -317,7 +300,6 @@ pub fn candidates(root: &Path) -> Candidates {
     Candidates { commands, hints }
 }
 
-/// Split on `&&`, `||` and `;`, the parts trimmed, empty ones dropped.
 fn parts(cmd: &str) -> Vec<&str> {
     let mut out = Vec::new();
     let mut rest = cmd;
@@ -340,8 +322,6 @@ fn parts(cmd: &str) -> Vec<&str> {
     }
 }
 
-/// `gateStatus` (`docs.mjs:512-526`): the worst part wins. `candidates` is
-/// `null`, as the board prints it.
 pub fn status(root: &Path, declared: Option<&str>) -> Gate {
     let declared = declared.filter(|g| !parts(g).is_empty());
     let Some(declared) = declared else {
@@ -389,7 +369,6 @@ pub fn status(root: &Path, declared: Option<&str>) -> Gate {
     }
 }
 
-/// `gateLine` (`docs.mjs:528`).
 pub fn line(g: &Gate) -> String {
     let declared = g.declared.as_deref().unwrap_or("");
     let detail = g.detail.as_deref().unwrap_or("");
@@ -401,8 +380,6 @@ pub fn line(g: &Gate) -> String {
     }
 }
 
-/// `harnessStatus` (`docs.mjs:592-606`): `verify-*` skills holding a
-/// `SKILL.md`, each with its feature-map count.
 pub fn harness(root: &Path) -> Harness {
     let none = || Harness {
         present: false,
@@ -443,7 +420,6 @@ pub fn harness(root: &Path) -> Harness {
     }
 }
 
-/// `docs/ux-rubric.md` is there.
 pub fn rubric(root: &Path) -> bool {
     root.join("docs/ux-rubric.md").exists()
 }
@@ -454,8 +430,7 @@ fn loaded(root: &Path) -> Result<Project> {
     })
 }
 
-/// The verb: `gate [set <cmd…>] [--inner] [--candidates]` (`gateCmd`,
-/// `docs.mjs:543-578`). Exit 1 when nothing is declared to print.
+/// Exit 1 when nothing is declared to print.
 pub fn run(
     root: &Path,
     args: &[String],
@@ -499,8 +474,6 @@ pub fn run(
         None => {}
     }
     if inner {
-        // Bare command on stdout; falls back to the full gate so a Verify
-        // task always has something to run.
         if let Some(i) = &p.inner {
             say(out, i)?;
             return Ok(0);
@@ -545,7 +518,6 @@ pub fn run(
         }
         return Ok(i32::from(none));
     }
-    // Bare command on stdout so a skill can lift it; problems go to stderr.
     say(out, g.declared.as_deref().unwrap_or(""))?;
     if g.status != "ok" {
         say(err, &format!("! {}", g.detail.as_deref().unwrap_or("")))?;

@@ -1,9 +1,3 @@
-//! Slice 10 of PRD-001: the cockpit (PRD §9 FR-7, §3 FR-1 bullet 4).
-//! `factory wait` blocks until the next event the owner must see and replays
-//! what a dead cockpit missed; `factory status` is the board in ten lines;
-//! `factory stop` ends a run cleanly after its in-flight workers and says so;
-//! the cockpit skill is under 60 lines. Every `gh` here is the stub in
-//! `tests/stubs/`; `origin` is the fixture's bare repo.
 #[path = "harness/mod.rs"]
 mod harness;
 
@@ -25,8 +19,7 @@ const BLOCK_LINE: &str =
 
 fn factory(fx: &Fixture, args: &[&str]) -> Output {
     let out = fx.command(BIN).args(args).output().unwrap();
-    // The command and what it said, for a checkpoint's transcript: `cargo test`
-    // keeps it unless `-- --nocapture` (AD-9002).
+    // Echoed so a failing test's capture shows every command and what it said.
     eprintln!(
         "$ factory {}\n{}{}exit={}",
         args.join(" "),
@@ -130,14 +123,11 @@ fn checkpoint() -> Value {
     json!({"outcome": "checkpoint"})
 }
 
-// ── tasks 1 and 2: wait, replay, status ──────────────────────────────────────
+// ── wait, replay, status ─────────────────────────────────────────────────────
 
 #[test]
 fn wait_relays_the_block_the_still_running_line_the_dead_driver_and_the_end() {
-    // The slice 04 parked fixture: 01 blocks on lane 1 while 02 and 03 build
-    // on lane 2; one trailing checkpoint; the polish worker and the PR come
-    // from the stubs' defaults (a missing plan step is `done`, a missing
-    // `scenario/ci` line is green).
+    // The polish worker and the PR come from the stubs' defaults: a missing plan step is `done`.
     let fx = Fixture::with_index("cockpit-wait", &[("checkpoint_every", "10")]);
     fx.write_plan(&[
         json!({"outcome": "blocked", "question": QUESTION}),
@@ -155,16 +145,12 @@ fn wait_relays_the_block_the_still_running_line_the_dead_driver_and_the_end() {
         state(&dir)["phase"] == "waiting-owner"
     });
 
-    // The first `wait`: the block, one line, exit 0; the cursor is at it.
     let out = factory(&fx, &["wait", &id, "--timeout", "10"]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     assert_eq!(stdout(&out), format!("{BLOCK_LINE}\n"));
     assert_eq!(cursor(&dir), Some(seq_first(&dir, "slice_blocked")));
 
-    // Nothing new, but the block is still open: a cockpit that died after
-    // the first `wait` never relayed it, so the next `wait` prints it again
-    // at once, exit 0, and leaves the cursor where it was (AD-40005). The
-    // `still running` line is pinned in the stop test below.
+    // An open block prints again on every `wait`: a cockpit that died may never have relayed it.
     let t = Instant::now();
     let out = factory(&fx, &["wait", &id, "--timeout", "10"]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
@@ -172,7 +158,6 @@ fn wait_relays_the_block_the_still_running_line_the_dead_driver_and_the_end() {
     assert_eq!(cursor(&dir), Some(seq_first(&dir, "slice_blocked")));
     assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
 
-    // The board in ten lines.
     let out = factory(&fx, &["status", &id]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     let text = stdout(&out);
@@ -194,7 +179,6 @@ fn wait_relays_the_block_the_still_running_line_the_dead_driver_and_the_end() {
     }
     assert!(!text.contains("driver dead"), "{text}");
 
-    // An unknown run id: exit 1 and the live runs.
     let out = factory(&fx, &["status", "001-20000101-dead"]);
     assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
     let text = stdout(&out);
@@ -204,14 +188,10 @@ fn wait_relays_the_block_the_still_running_line_the_dead_driver_and_the_end() {
         text.contains(&format!("  {id}  waiting-owner  PRD-001")),
         "{text}"
     );
-    // No run id at all: the same listing, exit 1.
     let out = factory(&fx, &["status"]);
     assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
     assert!(stdout(&out).contains(&id), "{}", stdout(&out));
 
-    // The driver killed: `wait` exits 4 with the command that resumes it;
-    // `status` says so on its last line.
-    // SAFETY: a plain kill(2) on the test's own detached driver.
     let rc = unsafe { libc::kill(driver as i32, libc::SIGKILL) };
     assert_eq!(rc, 0);
     wait_until(&fx, &dir, "the driver to die", 5, || !pid_alive(driver));
@@ -227,9 +207,6 @@ fn wait_relays_the_block_the_still_running_line_the_dead_driver_and_the_end() {
         "{text}"
     );
 
-    // The owner answers: a driver is started for the parked run, the slice
-    // respawns, the checkpoint and the closeout run; `wait` returns on
-    // `run_finished` with the PR URL.
     let out = factory(&fx, &["answer", "BLOCK-1", ANSWER]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     let out = factory(&fx, &["wait", &id, "--timeout", "120"]);
@@ -237,12 +214,11 @@ fn wait_relays_the_block_the_still_running_line_the_dead_driver_and_the_end() {
     assert_eq!(stdout(&out), format!("finished: {PR_URL}\n"));
     assert_eq!(state(&dir)["phase"], "finished");
     assert_eq!(cursor(&dir), Some(seq_first(&dir, "run_finished")));
-    // A `wait` on a run that is over says the end again and never blocks.
     let out = factory(&fx, &["wait", &id]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     assert_eq!(stdout(&out), format!("finished: {PR_URL}\n"));
 
-    // A dead cockpit: no cursor replays both lines; `--replay` ignores it.
+    // A missing cursor is a dead cockpit.
     fs::remove_file(dir.join("cockpit.cursor")).unwrap();
     let out = factory(&fx, &["wait", &id]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
@@ -251,7 +227,6 @@ fn wait_relays_the_block_the_still_running_line_the_dead_driver_and_the_end() {
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     assert_eq!(stdout(&out), format!("{BLOCK_LINE}\nfinished: {PR_URL}\n"));
 
-    // `status` on the finished run: the PR URL, no open question.
     let out = factory(&fx, &["status", &id]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     let text = stdout(&out);
@@ -269,8 +244,7 @@ fn wait_relays_the_block_the_still_running_line_the_dead_driver_and_the_end() {
     }
 }
 
-/// The lines of `events.jsonl` that parse, as `(line number, event)`: the
-/// file holds a torn line on purpose here, which `events()` would refuse.
+/// Unlike `events()`, tolerates the torn line this test plants.
 fn readable(dir: &Path) -> Vec<(usize, Value)> {
     fs::read_to_string(dir.join("events.jsonl"))
         .unwrap()
@@ -280,10 +254,6 @@ fn readable(dir: &Path) -> Vec<(usize, Value)> {
         .collect()
 }
 
-/// DEC-3: a line of a kind this binary does not know and a torn one break
-/// no reader. `status` and `wait` still answer and say which line they
-/// skipped on stderr; the driver says it once in its log; the next emit
-/// takes the next `seq` on a line of its own and the run finishes.
 #[test]
 fn an_unreadable_event_line_is_skipped_and_said_and_the_run_goes_on() {
     let fx = Fixture::with_index("cockpit-torn-event", &[("checkpoint_every", "10")]);
@@ -302,8 +272,7 @@ fn an_unreadable_event_line_is_skipped_and_said_and_the_run_goes_on() {
         state(&dir)["phase"] == "waiting-owner"
     });
 
-    // A newer `factory`'s kind, then a write cut short, under the emitters'
-    // lock so no event of the driver's lands between them.
+    // Under the emitters' lock so no driver event lands between the two lines.
     let last = events(&dir).last().unwrap()["seq"].as_u64().unwrap();
     let unknown = last + 1;
     let path = dir.join("events.jsonl");
@@ -341,8 +310,6 @@ fn an_unreadable_event_line_is_skipped_and_said_and_the_run_goes_on() {
     assert_eq!(stdout(&out), format!("{BLOCK_LINE}\n"));
     assert_eq!(String::from_utf8_lossy(&out.stderr), note);
 
-    // The answer's event goes on the line after the torn one, with the
-    // next `seq` after the last line that parses; the run finishes.
     let out = factory(&fx, &["answer", "BLOCK-1", ANSWER]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     let after = readable(&dir);
@@ -365,8 +332,6 @@ fn an_unreadable_event_line_is_skipped_and_said_and_the_run_goes_on() {
         "said once: {log}"
     );
     assert!(!log.contains(&format!("line {} is not", torn - 1)), "{log}");
-    // Every seq is still unique, and the torn line is now a middle one:
-    // `status` reads the finished run and still names it.
     let seqs: Vec<u64> = readable(&dir)
         .iter()
         .map(|(_, e)| e["seq"].as_u64().unwrap())
@@ -384,9 +349,7 @@ fn an_unreadable_event_line_is_skipped_and_said_and_the_run_goes_on() {
 
 #[test]
 fn a_budget_park_is_relayed_and_is_not_a_dead_driver() {
-    // FR-9's budget park exits the driver by design (AD-703): `wait` relays
-    // the park, and again on every call while it stands (AD-40005), instead
-    // of telling the cockpit to restart a driver that would park again.
+    // A budget park exits the driver by design; restarting it would only park again.
     let fx = Fixture::with_index("cockpit-budget", &[("checkpoint_every", "10")]);
     fx.chain();
     let out = factory(&fx, &["run", "001", "--budget", "1"]);
@@ -418,7 +381,7 @@ fn a_budget_park_is_relayed_and_is_not_a_dead_driver() {
     assert!(!text.contains("driver dead"), "{text}");
 }
 
-// ── task 3: factory stop ─────────────────────────────────────────────────────
+// ── factory stop ─────────────────────────────────────────────────────────────
 
 #[test]
 fn stop_ends_the_run_after_the_worker_and_the_next_run_builds_the_rest() {
@@ -434,8 +397,6 @@ fn stop_ends_the_run_after_the_worker_and_the_next_run_builds_the_rest() {
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     let dir = only_run_dir(&fx);
     let id = run_id(&dir);
-    // The stop lands while the first worker runs (the slice's "300 ms after
-    // start", made deterministic: once the worker is on the slice).
     wait_until(&fx, &dir, "slice 01 under a worker", 20, || {
         fx.calls().len() == 1
             && fx.slice_status(1) == "building"
@@ -443,8 +404,6 @@ fn stop_ends_the_run_after_the_worker_and_the_next_run_builds_the_rest() {
                 .as_array()
                 .is_some_and(|w| w.len() == 1)
     });
-    // Nothing for the owner yet: `still running` with the status line, exit
-    // 3, at the timeout, and no cursor written.
     let out = factory(&fx, &["wait", &id, "--timeout", "0"]);
     assert_eq!(out.status.code(), Some(3), "{}", stdout(&out));
     let text = stdout(&out);
@@ -463,7 +422,6 @@ fn stop_ends_the_run_after_the_worker_and_the_next_run_builds_the_rest() {
             state(&dir)["pid"]
         )
     );
-    // Asked again while it still runs: the remaining count.
     let out = factory(&fx, &["stop", &id]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     assert!(
@@ -483,8 +441,6 @@ fn stop_ends_the_run_after_the_worker_and_the_next_run_builds_the_rest() {
         "{text}"
     );
 
-    // The worker finishes, its slice is committed, the run ends on
-    // `run_stopped` with phase `finished` and `stopped: true`.
     wait_until(&fx, &dir, "the run to stop", 30, || {
         state(&dir)["phase"] == "finished"
     });
@@ -508,7 +464,6 @@ fn stop_ends_the_run_after_the_worker_and_the_next_run_builds_the_rest() {
         "{}",
         driver_log(&dir)
     );
-    // The cockpit sees the stop as the end of the run.
     let out = factory(&fx, &["wait", &id]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     assert_eq!(
@@ -523,7 +478,6 @@ fn stop_ends_the_run_after_the_worker_and_the_next_run_builds_the_rest() {
         stdout(&out)
     );
 
-    // `factory run 001` is a new run that builds the other two from the board.
     let out = factory(&fx, &["run", "001"]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     assert!(!stdout(&out).contains("resumed"), "{}", stdout(&out));
@@ -542,7 +496,7 @@ fn stop_ends_the_run_after_the_worker_and_the_next_run_builds_the_rest() {
     assert_eq!(k.iter().filter(|k| *k == "slice_done").count(), 2, "{k:?}");
 }
 
-// ── task 4: the cockpit skill ────────────────────────────────────────────────
+// ── the cockpit skill ────────────────────────────────────────────────────────
 
 #[test]
 fn the_cockpit_skill_is_under_sixty_lines_and_names_the_five_commands() {
@@ -558,24 +512,23 @@ fn the_cockpit_skill_is_under_sixty_lines_and_names_the_five_commands() {
         "factory stop",
         "AskUserQuestion",
         "PushNotification",
-        // The `/deliver` §8 round shape.
+        // the review round's shape
         "Review all n now (Recommended) / Only the d decide ones / Later",
         "four questions",
-        // PRD-002 FR-18: §3 reads and writes the log through the tool.
+        // the log, read and written through the tool
         "factory docs log show NNN --decide",
         "--kind review --ref AD-{n} --verdict kept",
-        // The slice-entry answer about background Bash: the 25-minute poll.
         "--timeout 1500",
-        // A dead cockpit reattaches.
+        // a dead cockpit reattaches
         "replays every event",
         "repeats every question and park still open",
         "prints a question again on every call until it is answered",
-        // AD-904: a template stand-in is relayed, not asked about.
+        // a template stand-in is relayed, not asked about
         "`stand-in: …`: information",
     ] {
         assert!(text.contains(needle), "{needle:?} missing in:\n{text}");
     }
-    // §19: nothing owner-specific.
+    // nothing owner-specific
     for forbidden in ["/home/", "~/Dropbox", "Dropbox", "emiliano", "Emiliano"] {
         assert!(!text.contains(forbidden), "{forbidden:?} in the skill");
     }

@@ -1,16 +1,4 @@
-//! `factory review second` (PRD-004 FR-6): `--diff <base> [-- <paths>]` for
-//! `/polish`, `--doc <file> --prompt <text>` for `/prd`. One markdown section
-//! per pass on stdout, the log dir last. Exit 0 when a pass returned text, 2
-//! when none did (the skills' fallback starts), 1 on a usage error.
-//!
-//! Every flag is optional to clap and the combination is checked here: clap's
-//! own usage error exits 2, which the skills read as "unreviewed". A
-//! misspelled flag still exits 2 through clap, the safe side.
-//!
-//! Once the probe passed, a pass that fails is that pass's `unreviewed`
-//! line, never the command's error: the passes before it keep their
-//! findings, the exit is still decided by what returned text, and the log
-//! line still comes last.
+//! The flags are optional to clap: its usage error exits 2, which the skills read as "unreviewed", the safe side.
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -144,8 +132,6 @@ pub fn review(verb: &ReviewVerb, out: &mut dyn Write, err: &mut dyn Write) -> Re
     Ok(if reviewed > 0 { 0 } else { 2 })
 }
 
-/// One pass: its prompt, its diff file, the run. An error here is the
-/// pass's, printed under its header.
 fn run_one(
     mode: &Mode,
     cfg: &Review,
@@ -174,16 +160,11 @@ fn run_one(
     review::run_pass(cfg, root, dir, n, &prompt)
 }
 
-/// `exit 1`, or `killed by a signal`.
 fn exit_words(code: Option<i32>) -> String {
     code.map_or("killed by a signal".to_string(), |c| format!("exit {c}"))
 }
 
-/// A pass's text under its header, and whether it counts as reviewed. A
-/// `result` is findings and an error result never is. A kill's partial
-/// counts: the reviewer had the whole timeout. A non-zero exit's partial is
-/// printed under its own header and does not count (AD-20001), so an
-/// opening "I'll read the diff" never stops the skills' fallback.
+/// A kill's partial counts (it had the whole timeout); an exit's does not, or an opening line stops the fallback.
 fn body(o: &Outcome, timeout_secs: u64) -> (String, bool) {
     let p = &o.parsed;
     if let Some(r) = p.result.as_deref().filter(|r| !r.trim().is_empty()) {

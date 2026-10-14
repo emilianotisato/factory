@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 'use strict'
-// Stub `cursor-agent` for `factory review second` (PRD-004 FR-6). Records
+// Stub `cursor-agent` for `factory review second`. Records
 // every call to $FACTORY_STUB_DIR/cursor-agent.log, one JSON argv array per
 // line, and answers from $FACTORY_STUB_DIR/cursor-agent.json when present:
 //

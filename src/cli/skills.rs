@@ -1,8 +1,3 @@
-//! `factory skills update` (PRD-004 FR-4): brings a `behind`, `differs` or
-//! `missing` repo's skills to the binary's bundle, deleting what the bundle
-//! dropped. Refuses `none`, a source checkout, `ahead`, `hand-edited` and an
-//! unreadable manifest with exit 1, writing nothing. Commits nothing: it
-//! prints the line that would.
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -28,7 +23,6 @@ fn say(out: &mut dyn Write, line: &str) -> Result<()> {
     writeln!(out, "{line}").map_err(io("stdout"))
 }
 
-/// The verdict decides; only `behind`, `differs` and `missing` write.
 pub fn update(root: &Path, out: &mut dyn Write) -> Result<i32> {
     let verdict = skills::verdict(root);
     let (version, hand_edited, missing) = match &verdict {
@@ -75,8 +69,7 @@ pub fn update(root: &Path, out: &mut dyn Write) -> Result<i32> {
         return Ok(0);
     }
 
-    // `render` rewrites the manifest: the old one is read first, or the files
-    // the new bundle dropped are invisible.
+    // `render` rewrites the manifest: read the old one first, or the dropped files are invisible.
     let old = skills::read_manifest(root)
         .map_err(|e| Error::Msg(format!("unreadable {MANIFEST}: {e}")))?
         .ok_or_else(|| Error::Msg(format!("{MANIFEST} vanished")))?;

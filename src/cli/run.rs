@@ -1,17 +1,3 @@
-//! `factory run NNN [--budget N]` up to the first board read (PRD §3 FR-1).
-//!
-//! A live run for this repo and feature refuses. An unfinished one resumes —
-//! unless HEAD is off the run's branch, which refuses (the driver commits
-//! only there): no preflight, `run_resumed`, the board. Otherwise `docs preflight --json`
-//! decides: `refuse[]` prints the tool's own lines and exits 1 with no run
-//! directory; `ask[]` parks a new run on one `ASK-n` per item (the answer
-//! path is slice 04); `judge[]` lines are noted as events and never waited on
-//! (BLOCK-201); `pass` creates or switches to the feature branch, creates the
-//! run, emits `judge_noted` per line and `run_started`, and prints the ready
-//! slices. Then the loop (slice 03): a daemon re-executed as the hidden
-//! `factory daemon <id>` and detached with `setsid`, or in this process with
-//! `--foreground`. A fresh run makes and seeds its lane worktrees after the
-//! refusals and before the run exists (PRD-005 FR-1).
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -37,7 +23,7 @@ pub struct RunArgs {
     /// Keep the driver attached to this terminal instead of detaching it
     #[arg(long)]
     pub foreground: bool,
-    /// The one line this run tests, stored on its row (PRD-003 FR-23)
+    /// The one line this run tests, stored on its row
     #[arg(long, value_name = "TEXT")]
     pub hypothesis: Option<String>,
 }
@@ -48,7 +34,6 @@ pub struct DaemonArgs {
     pub run: String,
 }
 
-/// Run the command from the current directory; returns the exit code.
 pub fn run(args: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i32> {
     let cwd = std::env::current_dir().map_err(io("current directory"))?;
     let repo = paths::repo_root(&cwd)?;
@@ -62,8 +47,7 @@ pub fn run(args: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i
         loaded.sources.budget = config::Source::Flag;
     }
     let budget = loaded.config.budget_weighted_tokens;
-    // A repo not on v3 is refused before preflight (FR-18). `main` maps an
-    // `Err` to exit 1, so the hint is printed here and the exit is 2.
+    // `main` maps an `Err` to exit 1; the not-on-v3 hint exits 2, so it is printed here.
     let docs = match Docs::open(&repo) {
         Ok(d) => d,
         Err(Error::NotV3(hint)) => {
@@ -86,9 +70,7 @@ pub fn run(args: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i
         return Ok(1);
     }
     if let Some(mut run) = Run::find_resumable(&data_dir, &repo, &feature)? {
-        // The driver commits on the run's branch and nowhere else: a tree the
-        // owner switched away (or a branch that is the default) refuses the
-        // resume before the run is touched.
+        // The driver commits only on the run's branch: a tree switched away refuses before the run is touched.
         if let Some(branch) = run.state().branch.clone() {
             let default = load_preflight(run.dir())?.and_then(|pf| pf.branch.default);
             if let Some(why) = commit::branch_refusal(&repo, &branch, default.as_deref())? {
@@ -116,8 +98,7 @@ pub fn run(args: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i
         writeln!(out, "\nrefused: {} blocker(s)", pf.refuse.len()).map_err(io("stdout"))?;
         return Ok(1);
     }
-    // A fresh run makes and seeds its lanes before any run exists; setup is
-    // left to each lane's first spawn (PRD-005 FR-1).
+    // Lanes are made before the run exists, so a lane failure leaves no run behind.
     if !lanes::ensure_all(&data_dir, &crate::lanes::main_tree(&repo)?, out)? {
         writeln!(out, "\nrefused: a lane could not be made").map_err(io("stdout"))?;
         return Ok(1);
@@ -149,10 +130,9 @@ pub fn run(args: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i
     let branch = ensure_branch(&repo, &pf.branch)?;
     let mut run = Run::create(&data_dir, &repo, &feature, Some(branch), budget)?;
     record_start(&run, &docs, &loaded, args.hypothesis.as_deref(), err)?;
-    // The closeout reads `branch.default` from here (FR-6: `--base`).
+    // The closeout reads `branch.default` from here.
     save_preflight(run.dir(), &pf)?;
-    // The driver is the judge: each line is noted for the cockpit and the run
-    // goes on (FR-1, BLOCK-201).
+    // Judge lines are noted for the cockpit, never waited on.
     for text in &pf.judge {
         writeln!(out, "  · {text}").map_err(io("stdout"))?;
         run.emit(EventKind::JudgeNoted { text: text.clone() })?;
@@ -161,8 +141,6 @@ pub fn run(args: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i
     launch(&mut run, &docs, &loaded.config, args.foreground, out)
 }
 
-/// Hand the run to the loop: in this process with `--foreground`, else to a
-/// detached daemon, returning once it owns the run.
 pub fn launch(
     run: &mut Run,
     docs: &Docs,
@@ -184,12 +162,10 @@ pub fn launch(
     Ok(0)
 }
 
-/// The daemon's side: take the run over, then drive it. Errors go to the
-/// driver log; the run is already `failed` by the time one returns.
+/// By the time `drive` returns an error the run is already `failed`.
 pub fn daemon(args: &DaemonArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i32> {
     let mut run = Run::open(&paths::data_dir(), &args.run)?;
     run.adopt()?;
-    // The project file of the run's repo, as `factory run` resolved it.
     let loaded = config::load_with_project(&paths::config_dir(), &run.state().repo)?;
     for w in &loaded.warnings {
         writeln!(err, "factory: {w}").map_err(io("stderr"))?;
@@ -213,8 +189,6 @@ pub fn daemon(args: &DaemonArgs, out: &mut dyn Write, err: &mut dyn Write) -> Re
     }
 }
 
-/// A `--hypothesis` given to a run that already exists keeps the stored
-/// one: it is written once, at creation (PRD-003 FR-23).
 fn hypothesis_ignored(args: &RunArgs, id: &str, err: &mut dyn Write) -> Result<()> {
     if args.hypothesis.is_some() {
         writeln!(err, "hypothesis ignored: run {id} already exists").map_err(io("stderr"))?;
@@ -222,9 +196,6 @@ fn hypothesis_ignored(args: &RunArgs, id: &str, err: &mut dyn Write) -> Result<(
     Ok(())
 }
 
-/// A new run's row gets what it resolved (`runs.knobs`) and its
-/// hypothesis (PRD-003 FR-23). Lanes come from the board; `null` when it
-/// cannot be read, as is the claude version when `claude --version` fails.
 fn record_start(
     run: &Run,
     docs: &Docs,
@@ -243,8 +214,7 @@ fn record_start(
     Ok(())
 }
 
-/// A resume's `--budget` replaces the budget in `runs.knobs`, so the row
-/// says what the run went on with, not only what it started with.
+/// So the row says what the run went on with, not only what it started with.
 fn budget_knob(run: &Run, budget: u64) -> Result<()> {
     let id = run.id().as_str();
     let Some(text) = run.db().run_row(id)?.and_then(|r| r.knobs) else {
@@ -257,8 +227,6 @@ fn budget_knob(run: &Run, budget: u64) -> Result<()> {
     run.db().set_run_knobs(id, &knobs.to_string())
 }
 
-/// The trimmed stdout of `claude --version`; one stderr line and `None`
-/// when it cannot be run or fails.
 fn claude_version(err: &mut dyn Write) -> Result<Option<String>> {
     let why = match Command::new("claude")
         .arg("--version")
@@ -284,8 +252,7 @@ fn claude_version(err: &mut dyn Write) -> Result<Option<String>> {
     Ok(None)
 }
 
-/// The `pass` path once the branch is right: `run_started`, then the board.
-/// Slice 04 calls it again when the last `ASK-n` is answered.
+/// Called again when the last `ASK-n` is answered.
 pub fn begin(run: &mut Run, docs: &Docs, out: &mut dyn Write) -> Result<i32> {
     run.emit(EventKind::RunStarted)?;
     writeln!(
@@ -298,9 +265,7 @@ pub fn begin(run: &mut Run, docs: &Docs, out: &mut dyn Write) -> Result<i32> {
     print_board(docs, &run.state().feature.clone(), out)
 }
 
-/// `runs/<id>/preflight.json`: the preflight a run parked on asks was created
-/// from, so the ask→branch step (slice 04) follows its `branch` instead of
-/// re-running preflight against a tree the owner may since have touched.
+/// The ask→branch step follows this `branch` rather than re-running preflight on a tree the owner may have touched.
 pub const PREFLIGHT_FILE: &str = "preflight.json";
 
 pub fn save_preflight(run_dir: &Path, pf: &Preflight) -> Result<()> {
@@ -320,11 +285,6 @@ pub fn load_preflight(run_dir: &Path) -> Result<Option<Preflight>> {
     }
 }
 
-/// Follow `branch.feature` from preflight (today's `/deliver` §0 rule): on the
-/// default branch, create the feature branch or switch to the existing one; on
-/// the feature branch already, nothing; anywhere else, refuse naming the two
-/// acceptable branches. A feature branch that is the default branch refuses:
-/// the driver never commits there. Returns the branch the repo is now on.
 pub fn ensure_branch(repo: &Path, b: &Branch) -> Result<String> {
     let feature = b
         .feature
@@ -373,7 +333,6 @@ fn git(repo: &Path, args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-/// The ready slices as `<number> <file>`, one per line.
 fn print_board(docs: &Docs, feature: &str, out: &mut dyn Write) -> Result<i32> {
     let board = docs.status(feature)?;
     if board.ready.is_empty() {
@@ -385,7 +344,6 @@ fn print_board(docs: &Docs, feature: &str, out: &mut dyn Write) -> Result<i32> {
     Ok(0)
 }
 
-/// `001` as given or from `1`; a slug is resolved through the board.
 fn feature_number(docs: &Docs, arg: &str) -> Result<String> {
     if let Ok(n) = arg.parse::<u32>() {
         return Ok(format!("{n:03}"));

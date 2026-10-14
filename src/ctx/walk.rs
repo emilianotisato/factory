@@ -1,27 +1,17 @@
-//! The file walk every `ctx` verb starts from (PRD §14 FR-12): the `ignore`
-//! crate's walker, which honours `.gitignore` and skips hidden files, plus
-//! the vendor and build directories no lookup wants. `--vendor` lifts both, since a
-//! vendor tree is usually gitignored too. Only files of a known language
-//! come out, sorted by path so the output never depends on thread timing.
+//! `--vendor` also lifts `.gitignore`, since a vendor tree is usually gitignored; files sort by path so threads never reorder output.
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ignore::{WalkBuilder, WalkState};
 
-/// Dependency directories skipped unless `--vendor`, at any depth.
 pub const VENDOR_DIRS: [&str; 3] = ["vendor", "node_modules", "target"];
 
-/// Build output and Laravel's `storage/`, skipped unless `--vendor` only
-/// directly under the search root: deeper, a `build/` or `storage/` is as
-/// often source (`src/build/`, `app/storage/`), AD-40004.
+/// Only directly under the root: deeper, a `build/` or `storage/` is as often source.
 pub const ROOT_DIRS: [&str; 3] = ["dist", "build", "storage"];
 
-/// A file larger than this is skipped and counted in the trailer.
 pub const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 
-/// The languages with a definition regex. Vue shares TypeScript's regexes;
-/// slice 12 parses its `<script>` block apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Lang {
     Php,
@@ -46,19 +36,15 @@ impl Lang {
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct WalkOpts {
-    /// Walk vendor directories and gitignored paths too.
     pub vendor: bool,
 }
 
-/// What a walk found: the source files, sorted by path, and how many were
-/// left out for size.
 #[derive(Debug, Default)]
 pub struct Walk {
     pub files: Vec<(PathBuf, Lang)>,
     pub too_large: usize,
 }
 
-/// Walks `root` in parallel and returns its source files, sorted.
 pub fn walk(root: &Path, opts: &WalkOpts) -> Walk {
     let mut builder = WalkBuilder::new(root);
     if opts.vendor {
@@ -104,9 +90,6 @@ pub fn walk(root: &Path, opts: &WalkOpts) -> Walk {
     }
 }
 
-/// Reads every file in `files` on all cores and hands its bytes to `f`.
-/// Binary files (a NUL byte anywhere) and unreadable ones are skipped; the
-/// first count is returned. Results come back in `files` order.
 pub fn scan<T, F>(files: &[(PathBuf, Lang)], f: F) -> (Vec<(usize, T)>, usize)
 where
     T: Send,

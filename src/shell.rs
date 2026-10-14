@@ -1,24 +1,12 @@
-//! Just enough of a shell command line to read a worker's `Bash` call: the
-//! words of its first simple command and what ends that command. Quotes and
-//! backslashes are honoured, operators split words even when glued
-//! (`a|b`), and a redirection's target is not an argument. Used by the
-//! PreToolUse hook (`cli::hook`, slice 13) and by `metrics` for the `ctx-*`
-//! kinds and the pack-doc reads.
-//!
-//! [`script`] reads further, for the hook's guard: every simple command the
-//! line can run, at any depth, and whether the reading is sure.
+//! Just enough of a shell command line to read a worker's `Bash` call; not a shell.
 
-/// A token: a word with its quotes removed, or a control operator.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Tok {
     Word(String),
-    /// `|`, `|&`, `||`, `&&`, `;`, `&` (a newline reads as `;`).
     Op(&'static str),
-    /// `>`, `>>`, `<`, `2>&1`…: the next word is its target.
     Redirect,
 }
 
-/// The tokens of `cmd`. Unbalanced quotes run to the end of the line.
 pub fn tokens(cmd: &str) -> Vec<Tok> {
     let mut out = Vec::new();
     let mut word = String::new();
@@ -135,9 +123,7 @@ pub fn tokens(cmd: &str) -> Vec<Tok> {
     out
 }
 
-/// Eat the rest of a redirection operator (`>>`, `>&`, `<<<`) and, for a
-/// descriptor duplication (`>&2`), its descriptor; true when that was one,
-/// so no target word follows.
+/// True for a descriptor duplication (`>&2`): no target word follows.
 fn redirect(chars: &mut std::iter::Peekable<std::str::Chars>) -> bool {
     while let Some(&n) = chars.peek() {
         if n == '>' || n == '<' {
@@ -159,19 +145,14 @@ fn redirect(chars: &mut std::iter::Peekable<std::str::Chars>) -> bool {
     false
 }
 
-/// The first simple command: its words after leading `cd …`/`pushd …`
-/// segments, `env`, `time` and `VAR=value` prefixes (redirection targets
-/// left out), and the operator that ends it (`None` at the end of the line).
 pub fn first_command(cmd: &str) -> (Vec<String>, Option<&'static str>) {
     let (words, end, _) = first_command_in(cmd);
     (words, end)
 }
 
-/// [`first_command`], and where the leading `cd`/`pushd` segments it skips
-/// went, in order: each one's target, `None` when it names none (`cd`).
+/// The third: each skipped leading `cd`/`pushd` target in order, `None` for a bare `cd`.
 pub type FirstCommand = (Vec<String>, Option<&'static str>, Vec<Option<String>>);
 
-/// See [`FirstCommand`].
 pub fn first_command_in(cmd: &str) -> FirstCommand {
     let toks = tokens(cmd);
     let mut i = 0;
@@ -214,7 +195,6 @@ fn is_prefix(w: &str) -> bool {
     w == "env" || w == "time" || is_assignment(w)
 }
 
-/// `NAME=value`.
 pub fn is_assignment(tok: &str) -> bool {
     let Some((name, _)) = tok.split_once('=') else {
         return false;
@@ -224,15 +204,10 @@ pub fn is_assignment(tok: &str) -> bool {
         && !name.starts_with(|c: char| c.is_ascii_digit())
 }
 
-/// A program word without its directory: `/usr/bin/grep` → `grep`.
 pub fn program(word: &str) -> &str {
     word.rsplit('/').next().unwrap_or(word)
 }
 
-/// One simple command of a [`Script`]: its words, quotes removed and
-/// expansions kept as written (`$x`, `$(…)`), what here-documents and
-/// here-strings hand its stdin, and the files its output redirections
-/// (`>`, `>>`, `>|`, `&>`) name.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Simple {
     pub words: Vec<String>,
@@ -240,30 +215,22 @@ pub struct Simple {
     pub writes: Vec<String>,
 }
 
-/// Every simple command a command line can run, at any depth: `&&`, `||`,
-/// `;`, `|` and `&` lists, `( … )` and `{ …; }` groups, and the bodies of
-/// `$( … )`, backquotes and `<( … )`/`>( … )` — inside double quotes and
-/// unquoted here-documents too. A string a command hands another shell
-/// (`sh -c '…'`) stays a word: reading that is the caller's.
+/// A string handed to another shell (`sh -c '…'`) stays a word: reading it is the caller's.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Script {
     pub commands: Vec<Simple>,
-    /// A quote, substitution or here-document never closed, or nesting too
-    /// deep to follow: the reading may have missed a command.
+    /// The reading may have missed a command.
     pub unbalanced: bool,
 }
 
-/// How deep [`script`] follows substitutions before it gives up.
 const MAX_NEST: usize = 32;
 
-/// Read `cmd` as [`Script`].
 pub fn script(cmd: &str) -> Script {
     let mut lx = Lexer::new(cmd, 0);
     lx.list(false);
     lx.finish()
 }
 
-/// A here-document waiting for the newline its body starts after.
 struct Doc {
     delim: String,
     strip_tabs: bool,
@@ -271,8 +238,6 @@ struct Doc {
     owner: usize,
 }
 
-/// A word as [`Lexer::word`] reads it; `quoted` when any of it was quoted
-/// or escaped (a here-document delimiter then turns expansion off).
 struct Word {
     text: String,
     quoted: bool,
@@ -319,14 +284,12 @@ impl Lexer {
         }
     }
 
-    /// Take in what a nested lexer found.
     fn absorb(&mut self, lx: Lexer) {
         let sc = lx.finish();
         self.unbalanced |= sc.unbalanced;
         self.out.extend(sc.commands);
     }
 
-    /// The command being built, opened on first use.
     fn slot(&mut self, cur: &mut Option<usize>) -> usize {
         *cur.get_or_insert_with(|| {
             self.out.push(Simple::default());
@@ -334,9 +297,7 @@ impl Lexer {
         })
     }
 
-    /// Commands up to the end, or with `sub` up to the `)` that closes a
-    /// `$(`, `<(` or `>(` (true when it came). A `case` pattern's `)` does
-    /// not close it.
+    /// A `case` pattern's `)` does not close a substitution.
     fn list(&mut self, sub: bool) -> bool {
         let mut cur: Option<usize> = None;
         let mut depth = 0usize;
@@ -410,9 +371,6 @@ impl Lexer {
         false
     }
 
-    /// A redirection for the command at `owner`: the operator, then its
-    /// target — a here-document's delimiter, a here-string (the command's
-    /// stdin) or a file — unless it duplicates a descriptor (`2>&1`).
     fn redirect(&mut self, owner: usize) {
         if self.peek(0) == Some('&') {
             self.bump(1);
@@ -463,7 +421,6 @@ impl Lexer {
         }
     }
 
-    /// The bodies of the here-documents opened on the line just ended.
     fn bodies(&mut self) {
         for doc in std::mem::take(&mut self.docs) {
             let mut body = String::new();
@@ -499,8 +456,6 @@ impl Lexer {
         }
     }
 
-    /// One word: quotes removed, expansions kept as written, and every
-    /// substitution in it read for its commands.
     fn word(&mut self) -> Word {
         let mut w = Word {
             text: String::new(),
@@ -544,7 +499,6 @@ impl Lexer {
         w
     }
 
-    /// The rest of a single-quoted string.
     fn single(&mut self, text: &mut String) {
         while let Some(c) = self.peek(0) {
             self.bump(1);
@@ -556,8 +510,7 @@ impl Lexer {
         self.unbalanced = true;
     }
 
-    /// Inside double quotes up to the closing one, or with `closing` false
-    /// an unquoted here-document's body to its end.
+    /// `closing` false reads an unquoted here-document body to its end instead.
     fn dquoted(&mut self, text: &mut String, closing: bool) {
         while let Some(c) = self.peek(0) {
             match c {
@@ -589,9 +542,7 @@ impl Lexer {
         }
     }
 
-    /// A `$`: `$(…)` and `${…}` are read and kept as written; `$'…'`
-    /// outside double quotes is ANSI-C quoting, kept as written when an
-    /// escape in it could spell anything.
+    /// `$'…'` is ANSI-C quoting: kept as written when an escape in it could spell anything.
     fn dollar(&mut self, text: &mut String, in_dquotes: bool) {
         let start = self.i;
         match self.peek(1) {
@@ -635,7 +586,6 @@ impl Lexer {
         text.extend(&self.s[start..self.i]);
     }
 
-    /// The body of `$(`, `<(` or `>(` up to its `)`, read as commands.
     fn subst(&mut self) {
         if self.nest >= MAX_NEST {
             self.unbalanced = true;
@@ -649,7 +599,6 @@ impl Lexer {
         self.nest -= 1;
     }
 
-    /// The rest of `${…}`; a substitution inside it is read.
     fn param(&mut self) {
         let mut sink = String::new();
         while let Some(c) = self.peek(0) {
@@ -675,8 +624,6 @@ impl Lexer {
         self.unbalanced = true;
     }
 
-    /// A backquoted substitution: kept as written, its body read as
-    /// commands.
     fn backquote(&mut self, text: &mut String) {
         let start = self.i;
         self.bump(1);
@@ -811,12 +758,10 @@ mod tests {
                 false
             )
         );
-        // Redirections: targets are not words; descriptors are not words.
         assert_eq!(
             all("a 2>&1 >out <in 3>x b &>/dev/null"),
             (w(&[&["a", "b"]]), false)
         );
-        // A case pattern's `)` does not close the substitution.
         assert_eq!(
             all("echo \"$(case x in a) y;; esac)\""),
             (

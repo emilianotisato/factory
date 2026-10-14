@@ -1,10 +1,4 @@
-//! PRD-005 slice 07: a done slice lands (FR-3). The driver commits the
-//! slice's lane whole on the lane's base, under `refs/factory/<NNN>/slice-NN`,
-//! and cherry-picks it onto the feature tip with the main tree's board files:
-//! one commit per slice, one parent, today's subject. A driver killed at
-//! either commit leaves the worker for the resume; a dirty path in the main
-//! tree parks the run. No `log-*.md` is ever written. A conflicting pick is
-//! `tests/merge.rs`'s.
+//! A done lane lands as one pick onto the tip from its `refs/factory/` ref; conflicts: `merge.rs`.
 #[path = "harness/mod.rs"]
 mod harness;
 
@@ -78,8 +72,7 @@ fn driver_log(dir: &Path) -> String {
     fs::read_to_string(dir.join("driver.log")).unwrap_or_default()
 }
 
-/// Polls `ok`; on timeout, dumps the run so a failure in the detached
-/// driver can be read from the test output.
+/// On timeout, dumps the run: the driver is detached, so its failure is otherwise invisible.
 fn wait_until(fx: &Fixture, dir: &Path, what: &str, secs: u64, mut ok: impl FnMut() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(secs);
     while !ok() {
@@ -111,7 +104,6 @@ fn start(fx: &Fixture) -> PathBuf {
     only_run_dir(fx)
 }
 
-/// Subjects, oldest first.
 fn subjects(fx: &Fixture) -> Vec<String> {
     fx.git(&["log", "--reverse", "--format=%s"])
         .lines()
@@ -126,7 +118,6 @@ fn sha_of(fx: &Fixture, subject: &str) -> String {
     shas[0].to_string()
 }
 
-/// The files a commit touches, sorted.
 fn files_of(fx: &Fixture, sha: &str) -> Vec<String> {
     let mut v: Vec<String> = fx
         .git(&["show", "--format=", "--name-only", sha])
@@ -146,7 +137,6 @@ fn slice_rel(fx: &Fixture, n: u8) -> String {
         .into_owned()
 }
 
-/// The feature's board and log, which every slice commit stages.
 fn board_files() -> [String; 2] {
     [
         format!("{FEATURE_DIR}/state.toml"),
@@ -154,7 +144,6 @@ fn board_files() -> [String; 2] {
     ]
 }
 
-/// No `log-*.md` (fragment or merged log) in the feature folder.
 fn assert_no_md_log(fx: &Fixture) {
     let md: Vec<String> = fs::read_dir(fx.path().join(FEATURE_DIR))
         .unwrap()
@@ -169,10 +158,6 @@ fn sorted(mut v: Vec<String>) -> Vec<String> {
     v
 }
 
-/// One slice's landed commit: `feat(NNN): slice-NN <title>`, no body, the
-/// repo's own author, exactly the named paths plus slice file, `state.toml`
-/// and `log.jsonl`;
-/// the `slice_committed` event and the worker row name the same sha.
 fn assert_slice_commit(fx: &Fixture, dir: &Path, n: u8, title: &str, code: &[&str]) -> String {
     let sha = sha_of(fx, &format!("feat(001): slice-{n:02} {title}"));
     assert_eq!(
@@ -209,12 +194,10 @@ fn assert_slice_commit(fx: &Fixture, dir: &Path, n: u8, title: &str, code: &[&st
     sha
 }
 
-/// The `refs/factory/` refs left in the repo, one per line.
 fn factory_refs(fx: &Fixture) -> String {
     fx.git(&["for-each-ref", "--format=%(refname)", "refs/factory/"])
 }
 
-/// The number of parents of `sha`.
 fn parents(fx: &Fixture, sha: &str) -> usize {
     fx.git(&["rev-list", "--parents", "-n", "1", sha])
         .split_whitespace()
@@ -254,7 +237,7 @@ fn each_done_slice_lands_as_one_commit_from_its_lane() {
     assert_slice_commit(&fx, &dir, 2, "B", &["src/slice-02.txt"]);
     assert_slice_commit(&fx, &dir, 3, "C", &["src/slice-03.txt"]);
 
-    // Each slice's decision is in log.jsonl, ids allocated in landing order.
+    // Decision ids are allocated in landing order.
     let ads: Vec<(String, u64)> = fx
         .log_of("decision")
         .iter()
@@ -270,11 +253,8 @@ fn each_done_slice_lands_as_one_commit_from_its_lane() {
         [("AD-1".into(), 1), ("AD-2".into(), 2), ("AD-3".into(), 3)],
         "{ads:?}"
     );
-    // After the full run: no fragment, no agent-log.md.
     assert_no_md_log(&fx);
 
-    // The checkpoint commit stages the feature dir: no index render, no
-    // fragment. HEAD itself is the ship commit, two commits later.
     let cp_files = files_of(&fx, &sha_of(&fx, "docs(001): checkpoint 1"));
     assert!(
         cp_files.contains(&format!("{FEATURE_DIR}/log.jsonl")),
@@ -295,7 +275,6 @@ fn each_done_slice_lands_as_one_commit_from_its_lane() {
         "log_merged is never emitted"
     );
 
-    // Nothing left in the main tree, and no lane commit waits on a ref.
     assert_eq!(fx.git(&["status", "--porcelain"]), "");
     assert_eq!(factory_refs(&fx), "");
     fx.git(&["fsck", "--strict"]);
@@ -333,8 +312,7 @@ fn each_done_slice_lands_as_one_commit_from_its_lane() {
 #[test]
 fn two_lanes_land_out_of_order_and_each_commit_takes_only_its_own_files() {
     let fx = Fixture::with_index("commits-two-lanes", &[("checkpoint_every", "10")]);
-    // 01 and 02 start together; 02 finishes first and lands while 01 is
-    // still writing in its own lane. 03 follows 02.
+    // 02 (200ms) lands while 01 (800ms) still writes in its lane; 03 follows 02.
     fx.write_plan(&[
         json!({"outcome": "done", "delay_ms": 800}),
         json!({"outcome": "done", "delay_ms": 200}),
@@ -364,7 +342,7 @@ fn two_lanes_land_out_of_order_and_each_commit_takes_only_its_own_files() {
         ]),
         "{subjects:?}"
     );
-    // One commit per slice, one parent each: a pick, never a merge.
+    // One parent each: a pick, never a merge.
     for (n, title) in [(1, "A"), (2, "B"), (3, "C")] {
         let sha = assert_slice_commit(&fx, &dir, n, title, &[&format!("src/slice-{n:02}.txt")]);
         assert_eq!(parents(&fx, &sha), 1, "slice {n:02}");
@@ -388,9 +366,7 @@ fn a_slice_edited_only_through_bash_lands_every_path_byte_equal() {
     fs::write(fx.path().join("src/edit.txt"), "one\ntwo\n").unwrap();
     fx.git(&["add", "src/old.txt", "src/edit.txt"]);
     fx.git(&["commit", "-q", "-m", "chore: files to edit"]);
-    // No tool call names a file: a rename, a redirect, an inline rewrite, a
-    // new directory and a symlink to it. The lane's result is copied out
-    // before the worker returns, to compare with what lands.
+    // No tool call names a file; the lane is copied out before the worker returns, to compare.
     let sh = "git mv src/old.txt src/renamed.txt \
               && printf 'new\\n' > src/new.txt \
               && sed -i 's/two/TWO/' src/edit.txt \
@@ -420,7 +396,6 @@ fn a_slice_edited_only_through_bash_lands_every_path_byte_equal() {
     }
     assert_eq!(fx.git(&["status", "--porcelain"]), "");
 
-    // The landed commit alone holds what the lane held.
     let alone = fx.stub_dir().join("alone");
     fx.git(&[
         "worktree",
@@ -452,10 +427,7 @@ fn a_slice_edited_only_through_bash_lands_every_path_byte_equal() {
 
 // ── a driver killed mid-landing leaves the worker for the resume ───────────
 
-/// The `kill_at`-th `git commit` from now kills the driver (the hook's
-/// grandparent) in its `hook`: a `pre-commit` kill fails that commit, a
-/// `post-commit` one leaves it made. Hooks and the counter live in the
-/// common dir, which every lane shares.
+/// A `pre-commit` kill fails that commit, a `post-commit` one leaves it made; lanes share the count.
 fn kill_at_commit(fx: &Fixture, hook: &str, kill_at: u32) {
     let hook = fx.path().join(".git/hooks").join(hook);
     fs::write(
@@ -474,8 +446,6 @@ fn kill_at_commit(fx: &Fixture, hook: &str, kill_at: u32) {
     fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
 }
 
-/// Slice 01 done, the driver killed at its `kill_at`-th commit, the run
-/// resumed: one slice-01 commit, a settled worker, one `slice_done`.
 fn killed_and_resumed(name: &str, hook: &str, kill_at: u32, after_kill: impl Fn(&Fixture)) {
     let fx = Fixture::with_index(name, &[("checkpoint_every", "10")]);
     fx.chain();
@@ -490,7 +460,6 @@ fn killed_and_resumed(name: &str, hook: &str, kill_at: u32, after_kill: impl Fn(
     wait_until(&fx, &dir, "the driver to die at the commit", 20, || {
         !pid_alive(driver)
     });
-    // Slice 01 is done and its worker is not settled.
     assert_eq!(fx.slice_status(1), "done");
     assert_eq!(state(&dir)["workers"][0]["outcome"], Value::Null);
     assert_eq!(count(&kinds(&dir), "slice_done"), 1);
@@ -508,7 +477,6 @@ fn killed_and_resumed(name: &str, hook: &str, kill_at: u32, after_kill: impl Fn(
         !state(&dir)["workers"][0]["outcome"].is_null()
     });
     assert_eq!(state(&dir)["workers"][0]["outcome"], "done");
-    // The resume did not log the slice done a second time.
     let done_01 = events(&dir)
         .iter()
         .filter(|e| e["kind"] == "slice_done" && e["slice"] == 1)
@@ -530,8 +498,7 @@ fn killed_and_resumed(name: &str, hook: &str, kill_at: u32, after_kill: impl Fn(
 
 #[test]
 fn a_driver_killed_at_the_lane_commit_leaves_the_worker_for_the_resume() {
-    // The first commit is the lane's: nothing is on a ref yet, and the
-    // resume commits the lane before it lands it.
+    // The first commit is the lane's: nothing is on a ref yet.
     killed_and_resumed("commit-kill-lane", "pre-commit", 1, |fx| {
         assert!(!subjects(fx).iter().any(|s| s == "feat(001): slice-01 A"));
         assert_eq!(factory_refs(fx), "");
@@ -540,8 +507,7 @@ fn a_driver_killed_at_the_lane_commit_leaves_the_worker_for_the_resume() {
 
 #[test]
 fn a_driver_killed_at_the_landing_leaves_its_ref_for_the_resume() {
-    // The second is the landing's: the lane commit is on its ref, the pick
-    // half done in the main tree, and the resume lands the ref.
+    // The second commit is the landing's: the lane commit is on its ref, the pick half done.
     killed_and_resumed("commit-kill-landing", "pre-commit", 2, |fx| {
         assert!(!subjects(fx).iter().any(|s| s == "feat(001): slice-01 A"));
         assert_eq!(factory_refs(fx), "refs/factory/001/slice-01\n");
@@ -550,8 +516,7 @@ fn a_driver_killed_at_the_landing_leaves_its_ref_for_the_resume() {
 
 #[test]
 fn a_driver_killed_after_the_landing_commit_records_it_on_the_resume() {
-    // The landing is made but not recorded, its ref not yet deleted: the
-    // resume finds it on the tip and picks nothing twice.
+    // The landing is made but not recorded and its ref not deleted: the resume picks nothing twice.
     killed_and_resumed("commit-kill-landed", "post-commit", 2, |fx| {
         assert!(subjects(fx).iter().any(|s| s == "feat(001): slice-01 A"));
         assert_eq!(factory_refs(fx), "refs/factory/001/slice-01\n");
@@ -563,8 +528,7 @@ fn a_driver_killed_after_the_landing_commit_records_it_on_the_resume() {
 #[test]
 fn a_dirty_path_in_the_main_tree_parks_the_landing_and_keeps_the_owners_edit() {
     let fx = Fixture::with_index("commits-dirty", &[("checkpoint_every", "10")]);
-    // 01 and 02 start together; 03 depends on 02. 01 is held by the owner's
-    // file where it lands; 02 lands meanwhile, and 03 must not spawn.
+    // The owner's file holds 01 where it lands; 02 lands meanwhile; 03 depends on 02.
     fx.write_plan(&[
         json!({"outcome": "done", "delay_ms": 1500}),
         json!({"outcome": "done", "delay_ms": 3000}),
@@ -597,8 +561,7 @@ fn a_dirty_path_in_the_main_tree_parks_the_landing_and_keeps_the_owners_edit() {
         "{}",
         driver_log(&dir)
     );
-    // Slice 02's landing already carried 01's board writes: 01's commit
-    // holds its own files only.
+    // 02's landing already carried 01's board writes, so 01's commit holds its own files only.
     let sha = sha_of(&fx, "feat(001): slice-01 A");
     assert_eq!(
         files_of(&fx, &sha),

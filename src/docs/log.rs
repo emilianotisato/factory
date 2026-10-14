@@ -1,9 +1,4 @@
-//! A feature's append-only `log.jsonl` (PRD-002 FR-14): one JSON object per
-//! line, appended only by [`add`], which allocates the id under the feature's
-//! `docs.lock` (DEC-3). [`entries`] reads it the way `events::scan` reads
-//! `events.jsonl`: a line that does not parse is skipped and returned, never a
-//! reason to fail. [`render`] prints today's `agent-log.md` shape on demand;
-//! no rendered copy lives in the repo.
+//! A feature's append-only `log.jsonl`; a line that does not parse is skipped and reported, never a failure.
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -17,7 +12,6 @@ use crate::{Error, Result};
 
 pub const FILE: &str = "log.jsonl";
 
-/// The `phase` vocabulary (prd §4, added at slicing).
 pub const PHASES: [&str; 6] = ["preflight", "slicing", "checkpoint", "polish", "pr", "ci"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
@@ -33,8 +27,7 @@ pub enum Kind {
 }
 
 impl Kind {
-    /// The id prefix of the kind's sequence; `None` for an id-less kind.
-    /// `decision` and `ask` share `AD`, so `log show` keeps one AD list.
+    /// `decision` and `ask` share `AD`, so `log show` keeps one list.
     pub fn sequence(self) -> Option<&'static str> {
         match self {
             Kind::Decision | Kind::Ask => Some("AD"),
@@ -71,7 +64,6 @@ pub enum Verdict {
     Changed,
 }
 
-/// One line of `log.jsonl`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -89,8 +81,7 @@ pub struct Entry {
     pub reference: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verdict: Option<Verdict>,
-    /// A checkpoint's covered slices (PRD-005 FR-7); empty on every other
-    /// kind and on a checkpoint written before the field existed.
+    /// A checkpoint's covered slices; empty means every slice up to `slice`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub covers: Vec<u32>,
     #[serde(default)]
@@ -100,7 +91,6 @@ pub struct Entry {
 }
 
 impl Entry {
-    /// An entry with only its kind, title and body set.
     pub fn new(kind: Kind, title: &str, body: &str) -> Entry {
         Entry {
             id: None,
@@ -117,7 +107,6 @@ impl Entry {
         }
     }
 
-    /// The `n` of `AD-n`, `BLOCK-n` or `CP-n`.
     pub fn n(&self) -> Option<u32> {
         id_number(self.id.as_deref()?).map(|(_, n)| n)
     }
@@ -162,8 +151,6 @@ fn read(p: &Path) -> Result<Vec<u8>> {
     }
 }
 
-/// Every entry of `<dir>/log.jsonl` in file order, and each line that does not
-/// parse. A feature with no log reads as an empty one.
 pub fn entries(dir: &Path) -> Result<(Vec<Entry>, Vec<Skipped>)> {
     Ok(parse(&read(&path(dir))?))
 }
@@ -204,9 +191,6 @@ fn validate(e: &Entry) -> Result<()> {
     Ok(())
 }
 
-/// Append `entry` to `<dir>/log.jsonl` with the next id of its sequence (the
-/// highest `n` read plus one) and a fresh `ts`, under the feature's
-/// `docs.lock`; returns the id, `None` for an `answer`, `review` or `note`.
 /// The line goes out in one write, on a line of its own after a torn one.
 pub fn add(dir: &Path, mut entry: Entry) -> Result<Option<String>> {
     validate(&entry)?;
@@ -244,11 +228,10 @@ pub fn add(dir: &Path, mut entry: Entry) -> Result<Option<String>> {
     Ok(entry.id)
 }
 
-/// Which part of the log `log show` prints.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Filter {
     All,
-    /// `decide` decisions no `review` refs: what `/deliver` §3 reads.
+    /// `decide` decisions no `review` refs.
     Decide,
     /// Blocks no `answer` refs.
     Open,
@@ -260,14 +243,12 @@ fn refs<'a>(all: &'a [Entry], kind: Kind, id: Option<&str>) -> Vec<&'a Entry> {
         .collect()
 }
 
-/// The entries of `kinds`, in id order.
 fn by_n<'a>(all: &'a [Entry], kinds: &[Kind]) -> Vec<&'a Entry> {
     let mut v: Vec<&Entry> = all.iter().filter(|e| kinds.contains(&e.kind)).collect();
     v.sort_by_key(|e| e.n().unwrap_or(u32::MAX));
     v
 }
 
-/// The entries `filter` keeps, in the order `log show` prints them.
 pub fn select(all: &[Entry], filter: Filter) -> Vec<&Entry> {
     match filter {
         Filter::All => all.iter().collect(),
@@ -283,7 +264,6 @@ pub fn select(all: &[Entry], filter: Filter) -> Vec<&Entry> {
     }
 }
 
-/// `slice-NN`, the phase, or both, as the heading's middle field.
 fn place(e: &Entry) -> String {
     let mut parts = Vec::new();
     if let Some(s) = e.slice {
@@ -379,9 +359,6 @@ fn section(out: &mut String, heading: &str, items: &[&Entry], each: impl Fn(&mut
     }
 }
 
-/// The log as markdown in today's `agent-log.md` shape: `## Notes`,
-/// `## Blockers`, `## Decisions`, `## Checkpoints`, each entry with the
-/// answers and reviews that ref it underneath. `number` titles it `PRD-NNN`.
 pub fn render(all: &[Entry], filter: Filter, number: u32) -> String {
     let mut out = String::new();
     match filter {
@@ -515,8 +492,7 @@ mod tests {
         assert_eq!(lines(&d).len(), 3);
     }
 
-    /// The fixed log of the slice's acceptance, review and answer last so a
-    /// prefix of it is the log before them.
+    /// Answer and review last, so a prefix is the log before them.
     fn fixed() -> Vec<Entry> {
         let ts = "2026-10-13T10:00:00Z";
         let mk = |id: Option<&str>, kind: Kind, title: &str, body: &str| Entry {

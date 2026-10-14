@@ -1,7 +1,4 @@
-//! Ideas, one markdown file per open idea under `docs/ideas/` (PRD-002
-//! FR-20). A file there means the idea is open; leaving is deleting, so there
-//! is no state beyond `open | owed`. `add` takes no lock: every idea is its own
-//! file, created with `O_EXCL`, so two worktrees never write the same one.
+//! One file per open idea, created `O_EXCL` so `add` needs no lock; leaving the folder is deleting.
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
@@ -20,7 +17,6 @@ pub const README: &str = "README.md";
 pub const STATES: [&str; 2] = ["open", "owed"];
 const SLUG_MAX: usize = 50;
 
-/// One idea's fields and body, as written and as read.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Idea {
     pub title: String,
@@ -48,8 +44,7 @@ impl Bad {
     }
 }
 
-/// `idea list --json`: the per-repo contract the cross-repo scanner reads.
-/// Absent optionals serialize as `null`, so every object has every key.
+/// The `idea list --json` contract; absent optionals are `null`, so every object has every key.
 #[derive(Debug, Clone, Serialize)]
 pub struct IdeaRow {
     pub id: String,
@@ -68,8 +63,7 @@ fn refuse<T>(msg: impl Into<String>) -> Result<T> {
     Err(Error::Msg(msg.into()))
 }
 
-/// The title lowercased, every run of other characters one `-`, cut to 50.
-/// ASCII only, so the stem always matches the name `check` accepts.
+/// ASCII only, so the stem always matches the name `id_ok` accepts.
 pub fn slug(title: &str) -> Result<String> {
     let mut s = String::new();
     for c in title.chars().flat_map(char::to_lowercase) {
@@ -89,8 +83,7 @@ pub fn slug(title: &str) -> Result<String> {
     Ok(s)
 }
 
-/// `^\d{4}-\d{2}-\d{2}-[a-z0-9]+(-[a-z0-9]+)*$`; a `-2` clash suffix is one
-/// more segment.
+/// `^\d{4}-\d{2}-\d{2}-[a-z0-9]+(-[a-z0-9]+)*$`; a `-2` clash suffix is one more segment.
 pub fn id_ok(stem: &str) -> bool {
     let b = stem.as_bytes();
     let digits = |r: std::ops::Range<usize>| b[r].iter().all(u8::is_ascii_digit);
@@ -109,9 +102,7 @@ pub fn id_ok(stem: &str) -> bool {
         })
 }
 
-/// One `key: "value"` line the frontmatter parser reads back unchanged:
-/// single quotes when the value holds `"`, and a refusal when it holds both
-/// quote kinds or a newline, since the parser has no escapes.
+/// The frontmatter parser has no escapes, so a value holding both quote kinds is refused.
 fn line(key: &str, value: &str) -> Result<String> {
     if value.contains(['\n', '\r']) {
         return refuse(format!("--{key} holds a newline; it must fit on one line"));
@@ -145,9 +136,6 @@ fn priority_ok(priority: Option<&str>) -> std::result::Result<(), String> {
     }
 }
 
-/// The file text: the frontmatter in FR-20's key order with absent keys
-/// omitted, a blank line, the body ending in one newline. Slice 08 writes
-/// migrated ideas through this too.
 pub fn render(idea: &Idea) -> Result<String> {
     state_ok(&idea.state)
         .and_then(|()| priority_ok(idea.priority.as_deref()))
@@ -181,8 +169,7 @@ pub fn render(idea: &Idea) -> Result<String> {
     Ok(s)
 }
 
-/// Write `idea` as `docs/ideas/<added>-<slug>.md`, or `-2`, `-3`, … when the
-/// name is taken, and return the id. Every refusal comes before a write.
+/// Every refusal comes before a write.
 pub fn add(root: &Path, idea: &Idea) -> Result<String> {
     let slug = slug(&idea.title)?;
     let text = render(idea)?;
@@ -207,8 +194,6 @@ pub fn add(root: &Path, idea: &Idea) -> Result<String> {
     unreachable!("the suffix loop only ends by returning")
 }
 
-/// The files in `docs/ideas/` that should be ideas, sorted: all but the
-/// README and dotfiles (a `.gitkeep`). `(repo-relative path, path)`.
 pub fn files(root: &Path) -> Vec<(String, PathBuf)> {
     let Ok(rd) = fs::read_dir(root.join(DIR)) else {
         return Vec::new();
@@ -228,9 +213,7 @@ fn text_of(v: Option<&Value>) -> Option<String> {
     v.and_then(Value::text).filter(|s| !s.trim().is_empty())
 }
 
-/// One idea file, named, parsed and checked against the vocabulary: the one
-/// reader `idea list`, `new --from-idea` and `check` share, so a file one
-/// skips is a file the others refuse or report.
+/// The one reader `idea list`, `new --from-idea` and `check` share, so they agree on what is an idea.
 pub fn read(path: &Path) -> std::result::Result<Idea, Bad> {
     let name = path
         .file_name()
@@ -284,8 +267,6 @@ pub fn read(path: &Path) -> std::result::Result<Idea, Bad> {
     })
 }
 
-/// The body's first non-empty line, up to and including the first `.`, `?`
-/// or `!` followed by a space; the whole line when there is none.
 pub fn first_sentence(body: &str) -> String {
     let Some(line) = body.lines().map(str::trim).find(|l| !l.is_empty()) else {
         return String::new();
@@ -296,7 +277,6 @@ pub fn first_sentence(body: &str) -> String {
     }
 }
 
-/// The open ideas sorted by id, and the files skipped as `(path, reason)`.
 pub fn list(root: &Path) -> (Vec<IdeaRow>, Vec<(String, String)>) {
     let mut rows = Vec::new();
     let mut skipped = Vec::new();
@@ -320,8 +300,6 @@ pub fn list(root: &Path) -> (Vec<IdeaRow>, Vec<(String, String)>) {
     (rows, skipped)
 }
 
-/// `<id>` or `<id>.md` → the id and its repo-relative path, refusing an id
-/// with no file behind it.
 pub fn locate(root: &Path, id: &str) -> Result<(String, String)> {
     let id = id.strip_suffix(".md").unwrap_or(id);
     let rel = format!("{DIR}/{id}.md");
@@ -331,7 +309,6 @@ pub fn locate(root: &Path, id: &str) -> Result<(String, String)> {
     Ok((id.to_string(), rel))
 }
 
-/// An idea to build on: located and read, or refused with why.
 pub fn open(root: &Path, id: &str) -> Result<(String, String, Idea)> {
     let (id, rel) = locate(root, id)?;
     match read(&root.join(&rel)) {
@@ -348,17 +325,13 @@ fn git(root: &Path, args: &[&str]) -> Result<std::process::Output> {
         .map_err(io(format!("run git {}", args.join(" "))))
 }
 
-/// Delete the idea and commit that one path with the reason as the body, so
-/// it lives in `git log -- docs/ideas/`. Refuses a file git does not hold as
-/// committed: an edit would be lost, and an untracked file has no history to
-/// put the reason in.
+/// The reason goes in the commit body, so `git log -- docs/ideas/` keeps it.
 pub fn drop(root: &Path, id: &str, because: &str) -> Result<String> {
     let (id, rel) = locate(root, id)?;
     if because.trim().is_empty() {
         return refuse("--because is empty: the reason is what the commit keeps");
     }
-    // A literal pathspec: an id is a file name, and `*` or `[` in one must
-    // not widen the commit to other ideas.
+    // A literal pathspec: `*` or `[` in an id must not widen the commit.
     let spec = format!(":(literal){rel}");
     let st = git(root, &["status", "--porcelain", "--", &spec])?;
     if !st.status.success() {
@@ -386,8 +359,7 @@ pub fn drop(root: &Path, id: &str, because: &str) -> Result<String> {
         &["commit", "-q", "-m", &msg, "-m", because, "--", &spec],
     )?;
     if !o.status.success() {
-        // Put the file back: a refused commit (a hook) must not leave the
-        // idea deleted with its reason nowhere.
+        // A hook can refuse the commit; the idea must not stay deleted with its reason nowhere.
         let _ = git(root, &["checkout", "--", &spec]);
         return refuse(format!(
             "git commit failed, {rel} restored: {}",

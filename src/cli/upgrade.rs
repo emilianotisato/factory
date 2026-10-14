@@ -1,11 +1,3 @@
-//! `factory upgrade` (PRD-004 FR-8): replaces a binary the release installer
-//! put down with the latest GitHub release, through `axoupdater` and the
-//! receipt the installer wrote. `--check` only prints. A binary with no
-//! receipt, or a receipt for another install dir, came from source: it
-//! prints the line that rebuilds it and exits 0.
-//!
-//! Doctor's `ahead` hint follows the same rule, through [`from_release`] and
-//! [`source_line`].
 use std::io::Write;
 
 use axoupdater::{AxoUpdater, Version};
@@ -24,8 +16,6 @@ pub struct UpgradeArgs {
     pub check: bool,
 }
 
-/// The updater with this binary's receipt loaded, `None` when the binary was
-/// not installed from a release.
 fn updater() -> Option<AxoUpdater> {
     let mut u = AxoUpdater::new_for("factory");
     u.load_receipt().ok()?;
@@ -35,13 +25,10 @@ fn updater() -> Option<AxoUpdater> {
     Some(u)
 }
 
-/// True when the release installer put this binary down.
 pub fn from_release() -> bool {
     updater().is_some()
 }
 
-/// The command that rebuilds a from-source binary: `cargo install --path`
-/// on `[source] path`, else the installer.
 pub fn source_line(cfg: &Config) -> String {
     match &cfg.source {
         Some(s) => format!("cargo install --path {}", s.path.display()),
@@ -49,8 +36,7 @@ pub fn source_line(cfg: &Config) -> String {
     }
 }
 
-/// What doctor's `ahead` line points at. A config that does not load reads
-/// as no `[source]`: doctor reports, it does not fail on the owner's file.
+/// A config that does not load reads as no `[source]`: doctor reports, never fails on the owner's file.
 pub fn ahead_hint() -> String {
     if from_release() {
         return "factory upgrade".into();
@@ -85,8 +71,7 @@ pub fn upgrade(args: &UpgradeArgs, out: &mut dyn Write) -> Result<i32> {
     u.set_current_version(current.clone()).map_err(failed)?;
 
     if args.check {
-        // `query_new_version` has no sync variant; a runtime here keeps every
-        // other command synchronous.
+        // `query_new_version` has no sync variant; a local runtime keeps every other command synchronous.
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

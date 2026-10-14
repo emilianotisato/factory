@@ -1,9 +1,4 @@
-//! The skill family, embedded (PRD-004 §3 FR-1). `skills/` in this repo is
-//! the source; the binary carries every file under the nine skill folders
-//! and `skills/_shared/` as one bundle, listed by hand like the assets in
-//! [`crate::pack`]. `skills/README.md` and `skills/bundle.lock` describe the
-//! source folder, so neither is bundled. `tests/skills_bundle.rs` walks
-//! `skills/` and fails on a file this list misses.
+//! Listed by hand; `tests/skills_bundle.rs` fails on a file under `skills/` this list misses (README and bundle.lock excepted).
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -16,20 +11,17 @@ use crate::error::io;
 use crate::metrics::sha256_hex;
 use crate::{Error, Result};
 
-/// Where `init` writes the bundle, relative to the repo root.
 pub const SKILLS_DIR: &str = ".claude/skills";
-/// Where the Codex links go, one per skill, relative to the repo root.
+/// Codex reads skills here.
 pub const LINKS_DIR: &str = ".agents/skills";
-/// The manifest (FR-3): a loose file at the skills root is no skill to any agent.
+/// A loose file at the skills root is no skill to any agent.
 pub const MANIFEST: &str = ".claude/skills/factory.toml";
 
-/// The nine skills, the folders that get an `.agents/skills` link.
-/// `_shared` is not a skill: it has no `SKILL.md`.
+/// `_shared` is not one: it has no `SKILL.md`.
 pub const NAMES: [&str; 9] = [
     "prd", "slice", "deliver", "polish", "gate", "harness", "lanes", "prune", "ux",
 ];
 
-/// `(path relative to skills/, content)`, sorted by path, `/` separators.
 pub const FILES: &[(&str, &str)] = &[
     (
         "_shared/models.md",
@@ -92,15 +84,11 @@ pub const FILES: &[(&str, &str)] = &[
     ),
 ];
 
-/// sha256 of one file's bytes, lowercase hex.
 pub fn file_hash(content: &str) -> String {
     sha256_hex(content.as_bytes())
 }
 
-/// The bundle hash: sha256, lowercase hex, over the entries sorted by path,
-/// each fed as `path`, `\0`, `content`, `\0`. The input order does not
-/// matter. A manifest's `bundle` and `skills/bundle.lock` record this value,
-/// so changing the definition invalidates both.
+/// Recorded in every manifest and in `skills/bundle.lock`: changing the definition invalidates both.
 pub fn hash_of(files: &[(&str, &str)]) -> String {
     let mut sorted: Vec<&(&str, &str)> = files.iter().collect();
     sorted.sort_by_key(|(path, _)| *path);
@@ -114,16 +102,13 @@ pub fn hash_of(files: &[(&str, &str)]) -> String {
     sha256_hex(&bytes)
 }
 
-/// [`hash_of`] the embedded [`FILES`].
 pub fn bundle_hash() -> String {
     hash_of(FILES)
 }
 
-/// The bundle lock (FR-5), relative to the source repo's root.
 pub const LOCK: &str = "skills/bundle.lock";
 
-/// `skills/bundle.lock`: the crate version the bundle last shipped under and
-/// its [`bundle_hash`]. A skill edit cannot ship under an old version.
+/// A skill edit cannot ship under an old version.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Lock {
     pub version: String,
@@ -143,17 +128,12 @@ impl Lock {
     }
 }
 
-/// `major.minor.patch` as three integers: `0.10.0` is above `0.9.0`, which
-/// a string comparison gets wrong.
 pub fn version_parts(v: &str) -> Option<(u64, u64, u64)> {
     let mut parts = v.split('.').map(|p| p.parse::<u64>().ok());
     let triple = (parts.next()??, parts.next()??, parts.next()??);
     parts.next().is_none().then_some(triple)
 }
 
-/// `Ok` only when the lock matches both the crate version and the bundle.
-/// The error names the lock, each side that differs, and the two lines that
-/// fix it.
 pub fn check_lock(lock: &Lock, version: &str, hash: &str) -> std::result::Result<(), String> {
     let mut why = Vec::new();
     if lock.sha256 != hash {
@@ -174,9 +154,6 @@ pub fn check_lock(lock: &Lock, version: &str, hash: &str) -> std::result::Result
     ))
 }
 
-/// The lock `FACTORY_BUNDLE_WRITE=1` writes. Refuses when the bundle changed
-/// and `version` is not above the old lock's: a skill edit needs a bump. A
-/// bump over an unchanged bundle (a binary-only release) re-locks freely.
 pub fn relock(old: Option<&Lock>, version: &str, hash: &str) -> std::result::Result<Lock, String> {
     let new = Lock {
         version: version.to_string(),
@@ -196,8 +173,6 @@ pub fn relock(old: Option<&Lock>, version: &str, hash: &str) -> std::result::Res
     }
 }
 
-/// `.claude/skills/factory.toml`. `files` keys are relative to
-/// `.claude/skills/`; `links` keys are repo-relative, valued with the target.
 /// BTreeMaps keep the file byte-stable across renders.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Manifest {
@@ -209,17 +184,14 @@ pub struct Manifest {
     pub links: BTreeMap<String, String>,
 }
 
-/// What [`render`] wrote, for `init`'s output.
 #[derive(Debug, Default)]
 pub struct Rendered {
     pub files: Vec<String>,
     pub links: Vec<String>,
-    /// `.agents/skills` already resolves to `.claude/skills`, so no links.
     pub shared: bool,
 }
 
 impl Rendered {
-    /// The `skills <v>: …` line `init` and `skills update` print.
     pub fn summary(&self) -> String {
         let v = env!("CARGO_PKG_VERSION");
         let n = self.files.len();
@@ -235,8 +207,7 @@ impl Rendered {
         }
     }
 
-    /// What the commit line stages. A shared `.agents/skills` is the owner's
-    /// link, not ours, and `git add` refuses a path beyond a symlinked `.agents`.
+    /// `git add` refuses a path beyond a symlinked `.agents`, and a shared link is the owner's.
     pub fn dirs(&self) -> Vec<&'static str> {
         if self.shared {
             vec![SKILLS_DIR]
@@ -246,13 +217,10 @@ impl Rendered {
     }
 }
 
-/// `../../.claude/skills/<name>`, the target of `.agents/skills/<name>`.
 pub fn link_target(name: &str) -> String {
     format!("../../{SKILLS_DIR}/{name}")
 }
 
-/// Removes whatever sits at `path` without following a symlink: a link or a
-/// file is unlinked, a real directory removed whole.
 fn clear(path: &Path) -> Result<()> {
     let Ok(meta) = fs::symlink_metadata(path) else {
         return Ok(());
@@ -265,8 +233,7 @@ fn clear(path: &Path) -> Result<()> {
     }
 }
 
-/// A real directory at `path`. A symlink there is removed first, so the
-/// bundle never writes through it into the link's target.
+/// A symlink is removed first so the bundle never writes through it.
 fn real_dir(path: &Path) -> Result<()> {
     if fs::symlink_metadata(path).is_ok_and(|m| !m.is_dir()) {
         clear(path)?;
@@ -274,7 +241,6 @@ fn real_dir(path: &Path) -> Result<()> {
     fs::create_dir_all(path).map_err(io(format!("mkdir {}", path.display())))
 }
 
-/// `fs::write` that never follows a symlink at `path`.
 fn write_real(path: &Path, text: &str) -> Result<()> {
     if fs::symlink_metadata(path).is_ok_and(|m| !m.is_file()) {
         clear(path)?;
@@ -282,8 +248,6 @@ fn write_real(path: &Path, text: &str) -> Result<()> {
     fs::write(path, text).map_err(io(format!("write {}", path.display())))
 }
 
-/// Why `rel` under `root` cannot take the bundle: a symlink or a
-/// non-directory there. Absent and real directories pass.
 fn not_real_dir(root: &Path, rel: &str) -> Option<String> {
     let meta = fs::symlink_metadata(root.join(rel)).ok()?;
     if meta.file_type().is_symlink() {
@@ -301,13 +265,7 @@ fn refuse_layout(why: String) -> Error {
     ))
 }
 
-/// Run before [`render`] writes a skill file. A symlinked `.claude`,
-/// `.claude/skills`, `.agents` or `.agents/skills` would carry the writes,
-/// and the link clearing, outside the repo or round a loop, so each must be a
-/// real directory or absent. The exception: `.agents/skills` resolving to
-/// `.claude/skills`, where Codex already reads the skills; `true` then, and
-/// no links go in. Creates `.claude/skills` to compare against it, and takes
-/// back what it created when it refuses.
+/// A symlinked `.claude` or `.agents` would carry the writes outside the repo; `.agents/skills` resolving to `.claude/skills` is fine.
 fn layout(root: &Path) -> Result<bool> {
     for rel in [".claude", SKILLS_DIR] {
         if let Some(why) = not_real_dir(root, rel) {
@@ -342,9 +300,6 @@ fn layout(root: &Path) -> Result<bool> {
     Ok(false)
 }
 
-/// Writes every [`FILES`] entry to `.claude/skills/`, byte-identical and over
-/// whatever is there, then the nine `.agents/skills` links unless
-/// [`layout`] finds them shared, then the manifest.
 pub fn render(root: &Path) -> Result<Rendered> {
     let shared = layout(root)?;
     let skills = root.join(SKILLS_DIR);
@@ -391,9 +346,7 @@ pub fn render(root: &Path) -> Result<Rendered> {
     Ok(done)
 }
 
-/// This repo's own layout: `.claude/skills/prd` resolves inside
-/// `<root>/skills/`, so a session reads the live source and `init` leaves the
-/// skills alone.
+/// This repo's own layout: a session reads the live source, so `init` leaves the skills alone.
 pub fn source_checkout(root: &Path) -> bool {
     let (Ok(prd), Ok(src)) = (
         fs::canonicalize(root.join(SKILLS_DIR).join("prd")),
@@ -404,7 +357,6 @@ pub fn source_checkout(root: &Path) -> bool {
     prd.starts_with(src)
 }
 
-/// The manifest's version against the binary's.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Version {
     Current(String),
@@ -413,29 +365,18 @@ pub enum Version {
     Differs(String),
 }
 
-/// What a repo's skills are against this binary's bundle (FR-3).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Verdict {
-    /// `.claude/skills/prd` resolves inside `<root>/skills/` (FR-2).
     SourceCheckout,
-    /// No manifest.
     None,
-    /// A manifest that does not parse, or a version, the manifest's or the
-    /// binary's, that is not three integers. Holds the whole line, naming
-    /// which side is at fault.
     Unreadable(String),
     Checked {
         version: Version,
-        /// Manifest files whose bytes differ, relative to `.claude/skills/`.
         hand_edited: Vec<String>,
-        /// What the manifest lists and the disk lacks: files relative to
-        /// `.claude/skills/`, and links, absent or retargeted, relative to
-        /// the repo (`.agents/skills/polish`).
         missing: Vec<String>,
     },
 }
 
-/// The manifest at `root`, `None` when there is none.
 pub fn read_manifest(root: &Path) -> std::result::Result<Option<Manifest>, String> {
     let text = match fs::read_to_string(root.join(MANIFEST)) {
         Ok(t) => t,
@@ -447,12 +388,10 @@ pub fn read_manifest(root: &Path) -> std::result::Result<Option<Manifest>, Strin
         .map_err(|e| e.message().trim().to_string())
 }
 
-/// Compares the repo's skills with the binary's. Reads only.
 pub fn verdict(root: &Path) -> Verdict {
     verdict_for(root, env!("CARGO_PKG_VERSION"))
 }
 
-/// [`verdict`] against a given binary version.
 fn verdict_for(root: &Path, binary: &str) -> Verdict {
     if source_checkout(root) {
         return Verdict::SourceCheckout;
@@ -487,7 +426,6 @@ fn verdict_for(root: &Path, binary: &str) -> Verdict {
     };
     let skills = root.join(SKILLS_DIR);
     let (mut hand_edited, mut missing) = (Vec::new(), Vec::new());
-    // A hand-written key must not make a read outside the dir it names.
     for (rel, hash) in m.files.iter().filter(|(r, _)| plain(r)) {
         match fs::read(skills.join(rel)) {
             Ok(bytes) if sha256_hex(&bytes) == *hash => {}
@@ -512,16 +450,11 @@ fn verdict_for(root: &Path, binary: &str) -> Verdict {
 }
 
 impl Verdict {
-    /// Doctor's `skills` lines: the version line unless current, then the
-    /// hand-edit and missing lines; `current (<v>)` only when none applies.
-    /// `ahead` points at `factory upgrade` or, for a binary built from
-    /// source, the line that rebuilds it (FR-8).
     pub fn lines(&self) -> Vec<String> {
         self.lines_with(crate::cli::upgrade::ahead_hint)
     }
 
-    /// [`Verdict::lines`] with the `ahead` hint given; read only on `ahead`,
-    /// since it looks for the install receipt.
+    /// The hint is read only on `ahead`: it looks for the install receipt.
     fn lines_with(&self, ahead_hint: impl FnOnce() -> String) -> Vec<String> {
         let (version, hand_edited, missing) = match self {
             Verdict::SourceCheckout => return vec!["source checkout".into()],
@@ -559,8 +492,6 @@ impl Verdict {
         out
     }
 
-    /// Preflight's `ok` side: `current` and `source checkout`. Every other
-    /// verdict is a judge line.
     pub fn is_ok(&self) -> bool {
         match self {
             Verdict::SourceCheckout => true,
@@ -574,8 +505,7 @@ impl Verdict {
     }
 }
 
-/// A manifest key that stays under the dir it is joined to: plain names
-/// only, no `..`, no root. A hand-written manifest must not reach out of it.
+/// A hand-written manifest key must not reach out of the dir it is joined to.
 fn plain(rel: &str) -> bool {
     !rel.is_empty()
         && Path::new(rel)
@@ -583,16 +513,7 @@ fn plain(rel: &str) -> bool {
             .all(|c| matches!(c, std::path::Component::Normal(_)))
 }
 
-/// After a [`render`]: removes what `old` lists and `new` lacks, files under
-/// `.claude/skills/` and links under `.agents/skills/`, then the directories
-/// under `.claude/skills/` the removals left empty. Returns the repo-relative
-/// paths removed.
-///
-/// `plain` keys can still pass through a symlinked directory, and an old key
-/// can name a directory the new bundle renders: a file key goes only when it
-/// is no directory and its resolved parent sits in `.claude/skills/`, a link
-/// key only when a symlink is there, and the empty-dir sweep stops at the
-/// first directory that resolves elsewhere.
+/// A `plain` key can still pass through a symlinked dir, so each removal checks what resolves where.
 pub fn remove_dropped(root: &Path, old: &Manifest, new: &Manifest) -> Result<Vec<String>> {
     let skills = root.join(SKILLS_DIR);
     let canon = fs::canonicalize(&skills).ok();
@@ -773,7 +694,6 @@ mod tests {
         assert!(root.join(SKILLS_DIR).join("prd/SKILL.md").is_file());
     }
 
-    /// Every entry under `dir`, sorted, relative names.
     fn listing(dir: &Path) -> Vec<String> {
         let mut names: Vec<String> = fs::read_dir(dir)
             .map(|rd| {

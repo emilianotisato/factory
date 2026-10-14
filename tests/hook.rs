@@ -1,15 +1,9 @@
-//! The worker hook's never-list (S1): workers never run `gh` and never
-//! `git push`; the driver does both. Every such command a worker writes is
-//! denied however it is wrapped — compound, nested, behind a wrapper or a
-//! git global option — and one the hook cannot read for sure is denied
-//! when it names either. Anything else gets no decision (Ln7).
+//! Workers never run `gh` or `git push`, however wrapped; the driver does both.
 use std::path::Path;
 
 use factory::cli::hook::{NEVER_HINT, guard, hook_with};
 use serde_json::{Value, json};
 
-/// The hook's stdout for one Bash call: `None` for no decision, else the
-/// decision and its reason, after checking it is one JSON line.
 fn decide(cmd: &str) -> Option<(String, String)> {
     let input = json!({"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": "/tmp"});
     let (mut out, mut err) = (Vec::new(), Vec::new());
@@ -198,9 +192,7 @@ fn the_rest_gets_no_decision() {
     }
 }
 
-/// PRD-005 FR-2: `FACTORY_REPO` set to a lane keys the pack guard there. A
-/// whole-file Read of `<lane>/<held>` through the binary is denied; with the
-/// main tree as the repo, the lane's path is outside it and allowed.
+// The pack's paths resolve against `FACTORY_REPO`, not the hook's cwd.
 #[test]
 fn a_whole_read_of_a_held_file_in_a_lane_is_denied() {
     use std::process::{Command, Stdio};

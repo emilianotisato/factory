@@ -1,8 +1,3 @@
-//! The skills fence (PRD-004 FR-3, FR-4, slice 03): `factory docs doctor`
-//! prints a `skills` line per verdict, preflight repeats a stale one as a
-//! judge line, and `factory skills update` re-renders only what is safe to.
-//! Every repo here is built by `factory init`; versions come from
-//! `CARGO_PKG_VERSION`, which slice 07 bumps.
 #[path = "harness/mod.rs"]
 mod harness;
 
@@ -24,8 +19,7 @@ fn run(dir: &Path, program: &str, args: &[&str]) -> Output {
     } else {
         program
     };
-    // The config and the install receipt live under `.git`, where git does
-    // not see them: never the owner's real `~/.config/factory`.
+    // Config and receipt under `.git`, unseen by git and never the owner's real ones.
     Command::new(program)
         .args(args)
         .current_dir(dir)
@@ -62,7 +56,6 @@ fn commit(dir: &Path, msg: &str) {
     ok(dir, "git", &["commit", "-q", "-m", msg]);
 }
 
-/// A git repo after `factory init`, committed.
 fn initialised() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     ok(dir.path(), "git", &["init", "-q", "-b", "main"]);
@@ -82,7 +75,6 @@ fn skill(root: &Path, rel: &str) -> std::path::PathBuf {
     root.join(".claude/skills").join(rel)
 }
 
-/// The eight verdict fixtures, by name, from a committed `init`.
 fn fixture(kind: &str) -> tempfile::TempDir {
     let dir = initialised();
     let root = dir.path();
@@ -104,7 +96,7 @@ fn fixture(kind: &str) -> tempfile::TempDir {
     dir
 }
 
-/// A repo laid out like this one: `.claude/skills/prd` → `../../skills/prd`.
+/// Laid out like this repo: `.claude/skills/prd` → `../../skills/prd`.
 fn source_checkout() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
@@ -118,7 +110,6 @@ fn source_checkout() -> tempfile::TempDir {
     dir
 }
 
-/// Doctor's `skills` lines, asserting git sees no change from running it.
 fn doctor_skills(root: &Path) -> Vec<String> {
     let before = ok(root, "git", &["status", "--porcelain"]);
     let out = ok(root, "factory", &["docs", "doctor"]);
@@ -133,7 +124,6 @@ fn padded(value: &str) -> String {
     format!("{:<15}{value}", "skills")
 }
 
-/// Every file and link under `.claude/skills` and `.agents/skills`.
 fn snapshot(root: &Path) -> BTreeMap<String, String> {
     fn walk(root: &Path, dir: &Path, into: &mut BTreeMap<String, String>) {
         let Ok(entries) = fs::read_dir(dir) else {
@@ -314,8 +304,6 @@ fn update_refuses_ahead_and_writes_nothing() {
     assert_eq!(snapshot(dir.path()), before);
 }
 
-/// A binary built from source with `[source] path` set: doctor and `skills
-/// update` both point at `cargo install --path` (FR-8).
 #[test]
 fn ahead_from_source_points_at_the_checkout() {
     let dir = fixture("ahead");
@@ -398,8 +386,7 @@ fn update_refuses_a_linked_agents_dir_and_writes_nothing() {
     );
 }
 
-/// `.agents/skills -> ../.claude/skills`, the way Codex is often pointed at
-/// the skills: update renders through no link loop and stages no links.
+/// `.agents/skills -> ../.claude/skills` is how Codex is often pointed at the skills.
 #[test]
 fn update_into_a_shared_agents_dir_writes_no_links() {
     let dir = fixture("behind");

@@ -1,5 +1,3 @@
-//! `factory docs log add|show` and the board's log fields (PRD-002 FR-14,
-//! slice 02).
 #[path = "harness/mod.rs"]
 mod harness;
 
@@ -12,7 +10,6 @@ use factory::docs::Status;
 use factory::docs::log::Entry;
 use harness::{FEATURE_DIR, Fixture, fixture_src};
 
-/// `factory docs <args>` with `stdin` piped in.
 fn docs_stdin(fx: &Fixture, args: &[&str], stdin: &str) -> Output {
     let mut child = fx
         .command(env!("CARGO_BIN_EXE_factory"))
@@ -217,8 +214,6 @@ fn refusals_exit_2_and_log_merge_points_at_log_add() {
     assert!(err.contains("factory docs log add"), "{err}");
 }
 
-/// The fixture's `state.toml` with slices `1..=all`, those in `done` done and
-/// the rest pending.
 fn write_state(fx: &Fixture, all: u32, done: &[u32]) {
     let mut toml = String::from("status = \"ready\"\n");
     for n in 1..=all {
@@ -291,14 +286,12 @@ fn a_slice_done_after_a_higher_checkpoint_stays_unverified() {
     assert_eq!(s.checkpoints[0].covers, [1, 2, 4, 5]);
 }
 
-/// PRD-004's own log, from before `covers` existed: its two checkpoints still
-/// cover all seven slices by the high-water rule.
 #[test]
 fn a_log_without_covers_keeps_the_high_water_rule() {
-    let fx = Fixture::new("log-covers-prd-004");
+    let fx = Fixture::new("log-without-covers");
     write_state(&fx, 7, &[1, 2, 3, 4, 5, 6, 7]);
     fs::copy(
-        fixture_src().join("prd-004/log.jsonl"),
+        fixture_src().join("log-without-covers/log.jsonl"),
         fx.path().join(FEATURE_DIR).join("log.jsonl"),
     )
     .unwrap();

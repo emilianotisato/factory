@@ -1,5 +1,4 @@
-//! One error type for the crate. Every variant says what the driver was doing
-//! when it failed: a bare `ENOENT` from a run with forty files open is useless.
+//! Every variant names what the driver was doing: a bare `ENOENT` from a run with forty files open is useless.
 use std::fmt;
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -19,15 +18,12 @@ pub enum Error {
         source: toml::de::Error,
     },
     Sql(rusqlite::Error),
-    /// A subprocess (`docs.mjs`, `git`) exited non-zero or did not produce
-    /// what was expected; `detail` quotes its stderr.
     Tool {
         cmd: String,
         detail: String,
     },
     Msg(String),
-    /// `Docs::open` on a repo that is not on v3: the text is the hint
-    /// (`docs are v2: run …`). `factory run` exits 2 on it, not 1.
+    /// Apart from `Msg` so `factory run` can exit 2 on it.
     NotV3(String),
 }
 
@@ -52,13 +48,11 @@ impl From<rusqlite::Error> for Error {
     }
 }
 
-/// `.map_err(io("read state.json"))`.
 pub fn io(what: impl Into<String>) -> impl FnOnce(std::io::Error) -> Error {
     let what = what.into();
     move |source| Error::Io { what, source }
 }
 
-/// `.map_err(json("parse state.json"))`.
 pub fn json(what: impl Into<String>) -> impl FnOnce(serde_json::Error) -> Error {
     let what = what.into();
     move |source| Error::Json { what, source }

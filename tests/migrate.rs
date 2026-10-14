@@ -1,7 +1,3 @@
-//! `factory docs migrate` on the checked-in v2 fixture (PRD-002 FR-16, slice
-//! 07): the dry run writes nothing, the real one leaves a tree `check` passes
-//! with the same board, the git undo restores the v2 tree, and a re-run lands
-//! on the same bytes. Needs `node` on PATH for the v2 side, as CI has.
 #[path = "harness/mod.rs"]
 mod harness;
 
@@ -72,10 +68,7 @@ fn sorted(v: &Value) -> Vec<i64> {
     n
 }
 
-/// What FR-16 says `status --json` keeps: the slices, the feature's status,
-/// the lanes, what is ready and next, the checkpoints and the log counts.
-/// `flagged` and `decide` are compared as sets: v2 lists them in file order,
-/// v3 by id.
+/// `flagged` and `decide` compare as sets: v2 lists them in file order, v3 by id.
 fn same_board(before: &Value, after: &Value) {
     let slices = |v: &Value| -> Vec<Value> {
         v["slices"]
@@ -116,7 +109,6 @@ fn same_board(before: &Value, after: &Value) {
     }
 }
 
-/// Every file under `docs/`, by path.
 fn snapshot(root: &Path) -> BTreeMap<String, Vec<u8>> {
     fn walk(dir: &Path, root: &Path, out: &mut BTreeMap<String, Vec<u8>>) {
         for e in fs::read_dir(dir).unwrap() {
@@ -149,14 +141,12 @@ fn row(fx: &Fixture, feature: u32) -> RetroRow {
         .unwrap_or_else(|| panic!("no retros row for {feature}"))
 }
 
-/// A retro frontmatter number as the store holds it.
 fn fm_number(fm: &str, key: &str) -> Option<f64> {
     fm.lines()
         .find_map(|l| l.strip_prefix(&format!("{key}:")))
         .and_then(|v| v.trim().parse().ok())
 }
 
-/// The row against the frontmatter it came from, all thirteen numbers.
 fn row_matches(row: &RetroRow, retro: &str) {
     let fm = &retro[..retro[4..].find("\n---").unwrap() + 4];
     let int = |k: &str| {
@@ -180,8 +170,6 @@ fn row_matches(row: &RetroRow, retro: &str) {
     assert_eq!(row.peak_context, int("peak_context"));
 }
 
-/// The `### ` headings outside fences of a v2 log, each with its body's
-/// first non-blank line.
 fn headings(log: &str) -> Vec<(String, Option<String>)> {
     let lines: Vec<&str> = log.lines().collect();
     let mut fenced = false;
@@ -203,15 +191,11 @@ fn headings(log: &str) -> Vec<(String, Option<String>)> {
     out
 }
 
-/// The whole of FR-16's acceptance on one repo, for each live feature in
-/// `features`: steps 1-4 of the slice's task 7.
 fn migrate_and_undo(fx: &Fixture, features: &[&str]) -> BTreeMap<String, Vec<u8>> {
-    // 1. The v2 tree is sound.
     let o = node_check(fx);
     assert!(o.status.success(), "node check before: {:?}", text(&o));
     let before: Vec<Value> = features.iter().map(|f| node_status(fx, f)).collect();
 
-    // 2. The dry run writes nothing, the store included.
     let o = migrate(fx, true);
     let (plan, err) = text(&o);
     assert_eq!(o.status.code(), Some(0), "migrate --dry\n{plan}\n{err}");
@@ -235,7 +219,6 @@ fn migrate_and_undo(fx: &Fixture, features: &[&str]) -> BTreeMap<String, Vec<u8>
     );
     eprintln!("--- migrate --dry\n{plan}");
 
-    // 3. The real run: a tree `check` passes, with the same board.
     let o = migrate(fx, false);
     let (out, err) = text(&o);
     assert_eq!(o.status.code(), Some(0), "migrate\n{out}\n{err}");
@@ -254,7 +237,6 @@ fn migrate_and_undo(fx: &Fixture, features: &[&str]) -> BTreeMap<String, Vec<u8>
     );
     let migrated = snapshot(fx.path());
 
-    // 4. The git undo restores v2; a second run lands on the same bytes.
     fx.git(&["checkout", "--", "docs"]);
     fx.git(&["clean", "-fdq", "docs"]);
     let o = node_check(fx);
@@ -289,7 +271,6 @@ fn the_v2_fixture_migrates_and_the_undo_restores_it() {
 
     let tree = migrate_and_undo(&fx, &["001"]);
 
-    // The log: every v2 heading, its body and its review line.
     let shown = fx.docs(&["log", "show", "001"]);
     for (h, first) in headings(&old_log) {
         assert!(shown.contains(&h), "log show lost {h}:\n{shown}");
@@ -330,7 +311,6 @@ fn the_v2_fixture_migrates_and_the_undo_restores_it() {
         ),
         (4, 1, 1, 1, 2, 1)
     );
-    // Each sequence ascending by number, five digits after three.
     let ads: Vec<&str> = entries
         .iter()
         .filter_map(|e| e["id"].as_str())
@@ -348,7 +328,6 @@ fn the_v2_fixture_migrates_and_the_undo_restores_it() {
     let polish = entries.iter().find(|e| e["id"] == "AD-501").unwrap();
     assert_eq!(polish["phase"], "polish");
 
-    // The retro: a row equal to the frontmatter; only its two links moved.
     row_matches(&row(&fx, 1), &old_retro);
     assert_eq!(
         fx.read(RETRO),
@@ -366,7 +345,6 @@ fn the_v2_fixture_migrates_and_the_undo_restores_it() {
         "{project}"
     );
     assert!(!fx.path().join(LOG).exists());
-    // The prose header's Related line stays, its `ideas.md` link moved.
     let prd = fx.read("docs/features/001-fixture/prd.md");
     assert!(
         prd.contains(
@@ -381,7 +359,6 @@ fn the_v2_fixture_migrates_and_the_undo_restores_it() {
     assert!(tree.contains_key("docs/ideas/README.md"));
     assert!(!tree.contains_key("docs/ideas.md"));
 
-    // A re-run's row is the same in every column but `written_at`.
     let first = row(&fx, 1);
     fx.git(&["checkout", "--", "docs"]);
     fx.git(&["clean", "-fdq", "docs"]);
@@ -398,7 +375,6 @@ fn the_v2_fixture_migrates_and_the_undo_restores_it() {
         }
     );
 
-    // 5. A migrated tree and a dirty one both refuse.
     let o = migrate(&fx, false);
     let (_, err) = text(&o);
     assert_eq!(o.status.code(), Some(2));
@@ -414,8 +390,6 @@ fn the_v2_fixture_migrates_and_the_undo_restores_it() {
     assert!(!project.contains("[docs]"), "a refused run wrote {project}");
 }
 
-/// A bullet's body as `ideas.md` holds it: the bytes after the bold title,
-/// one separator stripped, then its continuation lines.
 fn source_body(src: &str, title: &str) -> String {
     let lines: Vec<&str> = src.lines().collect();
     let at = lines
@@ -439,16 +413,12 @@ fn source_body(src: &str, title: &str) -> String {
     body
 }
 
-/// FR-20's migration half on the fixture's `ideas.md` (slice 08): one
-/// bullet per placement rule, the Parked guess listed first, the Graduated
-/// bullet left out, each body byte for byte. The undo and re-run of
-/// `docs/ideas/` is the fixture test's snapshot, which covers all of `docs/`.
+/// The undo and re-run of `docs/ideas/` are the fixture test's snapshot of all `docs/`.
 #[test]
 fn ideas_migrate() {
     let fx = Fixture::v2("migrate-ideas");
     let source = fx.git(&["show", "HEAD:docs/ideas.md"]);
 
-    // 1. The dry run: the guess first, every bullet and drop named.
     let o = migrate(&fx, true);
     let (plan, err) = text(&o);
     assert_eq!(o.status.code(), Some(0), "migrate --dry\n{plan}\n{err}");
@@ -489,7 +459,6 @@ fn ideas_migrate() {
     );
     assert!(rows.contains(&"delete docs/ideas.md"), "{plan}");
 
-    // 2. The real run: four files and the README, the fields, the bodies.
     let o = migrate(&fx, false);
     assert_eq!(o.status.code(), Some(0), "migrate: {:?}", text(&o));
     let mut names: Vec<String> = fs::read_dir(fx.path().join("docs/ideas"))
@@ -586,7 +555,6 @@ fn ideas_migrate() {
         "the index link"
     );
 
-    // 3. `check` is clean, with no warning at all.
     let o = fx.docs_output(&["check"]);
     let (out, err) = text(&o);
     eprintln!("--- factory docs check\n{out}{err}");

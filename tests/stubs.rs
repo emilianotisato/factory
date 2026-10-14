@@ -1,4 +1,3 @@
-//! The stub `claude` and `gh` (PRD-001 FR-10, slice 01 tasks 5 and 6).
 #[path = "harness/mod.rs"]
 mod harness;
 
@@ -12,7 +11,7 @@ use serde_json::{Value, json};
 
 const SESSION: &str = "11111111-2222-4333-8444-555555555555";
 
-/// The stub with FR-2's flags; `pack` is the `--append-system-prompt[-file]` pair.
+/// The stub with the driver's flags; `pack` is the `--append-system-prompt[-file]` pair.
 fn claude(fx: &Fixture, pack: &[&str]) -> Command {
     let mut c = fx.command(harness::stubs_dir().join("claude"));
     c.args([
@@ -46,12 +45,11 @@ fn tool_use_paths(events: &[Value]) -> Vec<String> {
                 .unwrap_or_default()
         })
         .filter(|c| c["type"] == "tool_use")
-        // Slice 08's stream also has a `Bash` inner run, which names no file.
+        // A `Bash` call names no file.
         .filter_map(|c| c["input"]["file_path"].as_str().map(str::to_string))
         .collect()
 }
 
-/// The `command` of every `Bash` tool call, in stream order.
 fn bash_commands(events: &[Value]) -> Vec<String> {
     events
         .iter()
@@ -95,7 +93,6 @@ fn stub_claude_flips_the_slice_then_replays_a_result() {
         .map(|l| serde_json::from_str(l).expect(l))
         .collect();
 
-    // The stream: init first, result last, tool_use events naming what moved.
     assert_eq!(events[0]["type"], "system");
     assert_eq!(events[0]["subtype"], "init");
     assert_eq!(events[0]["cwd"], fx.path().to_str().unwrap());
@@ -146,8 +143,7 @@ fn stub_claude_flips_the_slice_then_replays_a_result() {
         paths.contains(&slice.to_str().unwrap().to_string()),
         "{paths:?}"
     );
-    // The board writes are `factory docs` calls, never a file the worker
-    // edits (PRD-002 slice 09): its AD, the inner run, its status.
+    // Three Bash calls: the AD, the inner run, the status.
     let bash = bash_commands(&events);
     assert_eq!(bash.len(), 3, "{bash:?}");
     assert!(
@@ -161,11 +157,9 @@ fn stub_claude_flips_the_slice_then_replays_a_result() {
             .any(|p| p.ends_with(".md") && p.contains("/log-")),
         "{paths:?}"
     );
-    // One tool_result per tool_use: two Reads, the Write, the AD, the inner
-    // run, the status (slice 08 added the Reads and the `Bash ./gate.sh --inner`).
+    // One tool_result per tool_use: two Reads, the Write, the AD, the inner run, the status.
     assert_eq!(events.iter().filter(|e| e["type"] == "user").count(), 6);
 
-    // The side effects: the board moved before the stream was printed.
     assert_eq!(fx.slice_status(1), "done");
     let decisions = fx.log_of("decision");
     assert_eq!(decisions.len(), 1, "{decisions:?}");
@@ -178,8 +172,6 @@ fn stub_claude_flips_the_slice_then_replays_a_result() {
             .contains("**Review:** no"),
         "{decisions:?}"
     );
-    // The feature dir: the PRD, its board, three slices — no agent-log.md,
-    // no log fragment.
     let feature = fx.path().join("docs/features/001-fixture");
     for f in ["prd.md", "state.toml", "log.jsonl"] {
         assert!(feature.join(f).is_file(), "{f}");
@@ -195,7 +187,6 @@ fn stub_claude_flips_the_slice_then_replays_a_result() {
     );
     assert!(!names.iter().any(|n| n == "agent-log.md"), "{names:?}");
     assert!(!names.iter().any(|n| n.starts_with("log-")), "{names:?}");
-    // PRD-005 slice 07: a slice owns its own file by default.
     assert_eq!(fx.read("src/slice-01.txt"), "touched by spawn 1\n");
     assert_eq!(fx.read("src/lib.txt"), "fixture code file\n");
     assert!(
@@ -204,7 +195,6 @@ fn stub_claude_flips_the_slice_then_replays_a_result() {
             .contains("**Progress**: built by the stub claude (spawn 1)")
     );
 
-    // The call record slice 03's FR-2 acceptance reads.
     let calls = fx.calls();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0]["n"], 1);
@@ -225,7 +215,6 @@ fn stub_claude_flips_the_slice_then_replays_a_result() {
             .any(|a| a == "--permission-mode")
     );
 
-    // The board as the driver reads it: 01 done, 02 ready, 03 still waiting on 02.
     let s = fx.docs_json("status");
     assert_eq!(s["slices"][0]["status"], "done", "{s}");
     assert_eq!(
@@ -270,16 +259,17 @@ fn stub_claude_delay_leaves_the_slice_building_mid_spawn() {
 }
 
 #[test]
-fn stub_claude_refuses_an_outcome_a_later_slice_owns() {
+fn stub_claude_refuses_an_unknown_outcome() {
     let fx = Fixture::new("stub-unknown");
-    // `blocked` landed with slice 04; `rate_limit` is slice 07's (PRD §17).
     fx.write_plan(&[json!({ "outcome": "rate_limit" })]);
     let pack = format!("{}\n", fx.slice_path(1).display());
     let out = claude(&fx, &["--append-system-prompt", &pack])
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(65));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("\"rate_limit\" is not built yet"));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("\"rate_limit\" is not one the stub knows")
+    );
     assert_eq!(fx.slice_status(1), "pending");
     assert_eq!(
         fx.calls().len(),
@@ -339,7 +329,6 @@ fn stub_gh_records_calls_and_answers_pr_create() {
     );
 }
 
-/// The stub's stream, parsed; panics with its stderr when it failed.
 fn stream(out: &std::process::Output) -> Vec<Value> {
     assert!(
         out.status.success(),
@@ -379,8 +368,6 @@ fn stub_claude_sh_edits_through_one_bash_call_and_no_named_tool() {
     }
 }
 
-/// PRD-005 slice 07: a slice owns `src/slice-NN.txt` by default, the call
-/// records HEAD, and `linger_ms` holds a worker whose slice is `done`.
 #[test]
 fn stub_claude_slice_file_head_and_linger() {
     let fx = Fixture::new("stub-linger");

@@ -1,4 +1,3 @@
-//! `factory docs` on the v3 layout and the v2 routing shim (PRD-002 slice 01).
 #[path = "harness/mod.rs"]
 mod harness;
 
@@ -9,7 +8,6 @@ use std::process::{Command, Output};
 use factory::docs::{Status, state};
 use harness::{FEATURE_DIR, Fixture, fixture_src};
 
-/// `factory docs <args>` in `dir`, outside any fixture: no global git config.
 fn docs_in(dir: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_factory"))
         .arg("docs")
@@ -159,7 +157,6 @@ fn v2_repos_pass_through_to_docs_mjs() {
     let out = fx.docs_output(&["status", "001", "--json"]);
     assert_eq!(out.status.code(), Some(3));
     assert_eq!(stdout(&out), "status 001 --json\n");
-    // v2 keeps the verbs v3 removed: the format decides, not the shim.
     let out = fx.docs_output(&["render", "--write"]);
     assert_eq!(
         (out.status.code(), stdout(&out)),
@@ -318,7 +315,6 @@ fn concurrent_sets_on_two_slices_never_lose_one() {
     assert_eq!(st.slices[&2].status, "building");
 }
 
-/// The eighteen v3 verbs (PRD-002 FR-15).
 const DOCS_VERBS: [&str; 18] = [
     "init",
     "new",
@@ -340,8 +336,7 @@ const DOCS_VERBS: [&str; 18] = [
     "retro",
 ];
 
-/// The first word of each line under `Commands:`, which must be one verb
-/// per line indented two spaces: a wrapped line fails here.
+/// A wrapped help line (indented past two) fails here instead of reading as a verb.
 fn help_verbs(help: &str) -> std::collections::BTreeSet<String> {
     help.lines()
         .skip_while(|l| !l.starts_with("Commands:"))
@@ -398,7 +393,7 @@ fn hook_installs_once_prints_under_hooks_path_and_refuses_a_foreign_file() {
     );
     assert_eq!(fx.docs(&["hook"]).trim(), "hook already installed");
 
-    // A configured hooksPath makes .git/hooks dead: print, install nothing.
+    // With core.hooksPath set, git never runs .git/hooks.
     fs::remove_file(&file).unwrap();
     fx.git(&["config", "core.hooksPath", "/tmp/x"]);
     let printed = fx.docs(&["hook"]);
@@ -410,7 +405,6 @@ fn hook_installs_once_prints_under_hooks_path_and_refuses_a_foreign_file() {
     assert!(printed.contains("factory docs check"), "{printed}");
     assert!(!file.exists(), "nothing installed under a hooksPath");
 
-    // --here points the repo back at .git/hooks, then installs.
     let out = fx.docs(&["hook", "--here"]);
     assert_eq!(out.trim(), format!("installed {HOOK}"));
     assert_eq!(
@@ -418,7 +412,6 @@ fn hook_installs_once_prints_under_hooks_path_and_refuses_a_foreign_file() {
         ".git/hooks"
     );
 
-    // A pre-commit that is not ours: exit 2, the body to append, untouched.
     fx.git(&["config", "--unset", "core.hooksPath"]);
     let foreign = "#!/bin/sh\necho mine\n";
     fs::write(&file, foreign).unwrap();
@@ -437,7 +430,6 @@ fn hook_installs_once_prints_under_hooks_path_and_refuses_a_foreign_file() {
     assert_eq!(fs::read_to_string(&file).unwrap(), foreign);
 }
 
-/// `git commit -m <msg>` in the fixture with `path` as PATH.
 fn commit_with_path(fx: &Fixture, path: &str, msg: &str) -> Output {
     fx.command("git")
         .args(["commit", "-q", "-m", msg])
@@ -461,7 +453,6 @@ fn the_hook_refuses_an_archive_edit_and_a_broken_link_and_skips_without_factory(
     let head = || fx.git(&["rev-parse", "HEAD"]);
     let before = head();
 
-    // Case one: a staged modification under docs/archive/.
     fs::write(&archived, "thawed\n").unwrap();
     fx.git(&["add", "docs/archive"]);
     let out = commit_with_path(&fx, &with_factory, "docs: edit the archive");
@@ -475,7 +466,6 @@ fn the_hook_refuses_an_archive_edit_and_a_broken_link_and_skips_without_factory(
     fx.git(&["reset", "-q", "HEAD", "--", "docs/archive"]);
     fx.git(&["checkout", "--", "docs/archive"]);
 
-    // Case two: a broken link in a staged docs/ change, refused by check.
     let prd = fx.path().join(FEATURE_DIR).join("prd.md");
     let mut text = fs::read_to_string(&prd).unwrap();
     text.push_str("\nSee [the missing file](missing.md).\n");
@@ -487,7 +477,6 @@ fn the_hook_refuses_an_archive_edit_and_a_broken_link_and_skips_without_factory(
     assert!(said.contains("E-LINK-BROKEN"), "{said}");
     assert_eq!(head(), before);
 
-    // Case three: the same change with no factory on PATH commits.
     let dirs: Vec<String> = ["git", "sh"]
         .iter()
         .map(|t| {
@@ -511,8 +500,6 @@ fn the_hook_refuses_an_archive_edit_and_a_broken_link_and_skips_without_factory(
     assert_ne!(head(), before);
 }
 
-/// `factory docs <args>` in `dir` with the fixture's env and `FACTORY_BOARD`
-/// set to `board`; `stdin` goes to `--body-file -`.
 fn board_docs(fx: &Fixture, dir: &Path, board: &Path, args: &[&str], stdin: &str) -> Output {
     use std::io::Write as _;
     let mut child = fx
@@ -539,8 +526,6 @@ fn bytes(p: &Path) -> Vec<u8> {
     fs::read(p).unwrap_or_default()
 }
 
-/// PRD-005 FR-2: from a linked worktree, `FACTORY_BOARD` points the four
-/// board verbs at the main tree; a board of another repo is ignored.
 #[test]
 fn a_lane_writes_the_main_trees_board_and_ignores_another_repos() {
     let fx = Fixture::new("board-lane");
@@ -600,7 +585,6 @@ fn a_lane_writes_the_main_trees_board_and_ignores_another_repos() {
     ok(&o);
     assert!(stdout(&o).contains("score: 4"), "{}", stdout(&o));
 
-    // Another repo's board: the lane's own state.toml takes the write.
     let other = Fixture::new("board-other");
     let other_state = other.path().join(FEATURE_DIR).join("state.toml");
     let other_before = bytes(&other_state);

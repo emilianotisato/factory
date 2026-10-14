@@ -1,5 +1,3 @@
-//! Ideas as one file per idea: `idea add|list|drop`, `new --from-idea`,
-//! `init`'s README and `check` on the folder (PRD-002 slice 05, FR-20).
 #[path = "harness/mod.rs"]
 mod harness;
 
@@ -14,7 +12,6 @@ use serde_json::Value;
 
 const README: &str = include_str!("../assets/docs/ideas-README.md");
 
-/// `factory docs idea add …` with `body` on stdin.
 fn add(fx: &Fixture, args: &[&str], body: &str) -> Output {
     let mut child = fx
         .command(env!("CARGO_BIN_EXE_factory"))
@@ -35,7 +32,6 @@ fn add(fx: &Fixture, args: &[&str], body: &str) -> Output {
     child.wait_with_output().expect("idea add")
 }
 
-/// The id `idea add` printed; panics on a non-zero exit.
 fn add_ok(fx: &Fixture, args: &[&str], body: &str) -> String {
     let o = add(fx, args, body);
     assert!(o.status.success(), "idea add {args:?}: {}", stderr(&o));
@@ -50,7 +46,6 @@ fn stderr(o: &Output) -> String {
     String::from_utf8_lossy(&o.stderr).into_owned()
 }
 
-/// The idea files, README excluded.
 fn idea_files(root: &Path) -> Vec<String> {
     let mut v: Vec<String> = fs::read_dir(root.join("docs/ideas"))
         .map(|rd| {

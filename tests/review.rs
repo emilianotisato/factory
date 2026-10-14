@@ -1,5 +1,4 @@
-//! PRD-004 FR-6, slice 04: `factory review second` against the stub
-//! `cursor-agent`, which replays `tests/stubs/cursor-review.jsonl`.
+//! `factory review second` against a stub `cursor-agent` replaying `tests/stubs/cursor-review.jsonl`.
 #[path = "harness/mod.rs"]
 mod harness;
 
@@ -15,8 +14,6 @@ use serde_json::{Value, json};
 const BIN: &str = env!("CARGO_BIN_EXE_factory");
 const STREAM: &str = include_str!("stubs/cursor-review.jsonl");
 
-/// The fixture on a branch adding `a` to `e`: 300, 250, 700, 150 and 100
-/// lines over `main`, with `[review] timeout_secs` set.
 fn fixture(name: &str, timeout: u64) -> Fixture {
     let fx = Fixture::new(name);
     fx.git(&["checkout", "-q", "-b", "feat/review"]);
@@ -51,7 +48,6 @@ fn stdout(o: &Output) -> String {
     String::from_utf8_lossy(&o.stdout).into_owned()
 }
 
-/// The stub's argv, one array per call.
 fn calls(fx: &Fixture) -> Vec<Vec<String>> {
     match fs::read_to_string(fx.stub_dir().join("cursor-agent.log")) {
         Ok(t) => t
@@ -69,7 +65,6 @@ fn review_calls(fx: &Fixture) -> Vec<Vec<String>> {
         .collect()
 }
 
-/// The `log: <dir>` line, which comes last.
 fn log_dir(out: &str) -> PathBuf {
     let last = out.lines().last().expect("output");
     PathBuf::from(
@@ -279,7 +274,6 @@ fn a_bad_combination_is_a_usage_error_with_exit_1_and_no_call() {
     assert!(calls(&fx).is_empty());
 }
 
-/// The `## Pass n` section of `out`, up to the next section or the log line.
 fn section(out: &str, n: usize) -> &str {
     let start = out
         .find(&format!("## Pass {n} "))
@@ -308,7 +302,6 @@ fn a_pass_that_errors_is_unreviewed_and_the_others_still_run() {
     assert!(section(&out, 3).contains(first), "{out}");
     assert!(log_dir(&out).is_dir(), "{out}");
 
-    // The only pass errors: nothing reviewed, exit 2, the log line still last.
     let fx = fixture("review-pass-error-only", 20);
     scenario(&fx, json!({"unlink_stream_on_call": 1}));
     let o = review(&fx, &["--diff", "main", "--", "a", "b"]);
@@ -359,8 +352,7 @@ fn a_base_starting_with_a_dash_is_a_usage_error() {
     assert!(calls(&fx).is_empty());
 }
 
-/// Whether `pid` still runs. A zombie waiting to be reaped by its new
-/// parent is gone.
+/// A zombie waiting to be reaped by its new parent counts as gone.
 fn alive(pid: i32) -> bool {
     // SAFETY: signal 0 only checks that the pid exists.
     if unsafe { libc::kill(pid, 0) } != 0 {

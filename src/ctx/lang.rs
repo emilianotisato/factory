@@ -1,9 +1,3 @@
-//! The tree-sitter half of `factory ctx` (PRD §14 FR-12): one grammar per
-//! source language, each grammar's upstream `tags.scm` with a few patterns
-//! in front of it, and the node kinds that are comments or strings. Vue has
-//! no grammar here: each `<script>` block is cut out (`vue.rs`) and parsed
-//! with TypeScript's at its offset. Every call parses afresh; nothing is
-//! cached across calls (§19).
 use std::cmp::Reverse;
 use std::ops::Range;
 use std::path::Path;
@@ -15,8 +9,6 @@ use tree_sitter_tags::{TagsConfiguration, TagsContext};
 use super::vue;
 use super::walk::Lang;
 
-/// A grammar: PHP, TypeScript, Go and Rust (§14), plus the TSX dialect of
-/// the TypeScript crate for the files that may hold JSX.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Grammar {
     Php,
@@ -26,18 +18,13 @@ pub enum Grammar {
     Rust,
 }
 
-/// Patterns put in front of each upstream `tags.scm`. tree-sitter-tags keeps
-/// one tag per name, the one of the lowest pattern, so these win: a PHP
-/// method is a `method` (upstream: `function`) and an enum is tagged.
+/// tree-sitter-tags keeps the lowest pattern's tag per name, so patterns put in front of upstream win.
 const PHP_EXTRA: &str = r"
 (method_declaration name: (name) @name) @definition.method
 (enum_declaration name: (name) @name) @definition.class
 ";
 
-/// TypeScript's own `tags.scm` leaves functions, classes, methods and arrow
-/// functions to JavaScript's, which this crate does not ship: these are
-/// those patterns, the `const` one tagging the whole declaration, plus type
-/// aliases and enums.
+/// TypeScript's `tags.scm` leaves functions, classes and methods to JavaScript's, which this crate does not ship.
 const TS_EXTRA: &str = r"
 (function_declaration name: (identifier) @name) @definition.function
 (generator_function_declaration name: (identifier) @name) @definition.function
@@ -49,17 +36,12 @@ const TS_EXTRA: &str = r"
 (enum_declaration name: (identifier) @name) @definition.class
 ";
 
-/// A Go struct or interface is a `class` (upstream: `type`); an alias is
-/// tagged as a `type`.
 const GO_EXTRA: &str = r"
 (type_spec name: (type_identifier) @name type: [(struct_type) (interface_type)]) @definition.class
 (type_alias name: (type_identifier) @name) @definition.type
 ";
 
-/// A Rust type alias is a `type` (upstream: `class`); a function in a `mod`
-/// body is a `function` (upstream: `method`); a trait's method declaration,
-/// `const` and `static` are tagged; an `impl` block is a definition so the
-/// outline can nest its methods under it.
+/// An `impl` block is a definition so the outline can nest its methods under it.
 const RUST_EXTRA: &str = r"
 (type_item name: (type_identifier) @name) @definition.type
 (mod_item body: (declaration_list (function_item name: (identifier) @name) @definition.function))
@@ -72,8 +54,7 @@ const RUST_EXTRA: &str = r"
 impl Grammar {
     const ALL: usize = 5;
 
-    /// The grammar of a file: `.ts` and Vue scripts parse as TypeScript,
-    /// the other script extensions as TSX (JSX may appear in any of them).
+    /// Only `.ts` is plain TypeScript: JSX may appear in any other script extension.
     pub fn of(path: &Path, lang: Lang) -> Grammar {
         match lang {
             Lang::Php => Grammar::Php,
@@ -97,8 +78,7 @@ impl Grammar {
         }
     }
 
-    /// The tags configuration, built once per process. No locals query:
-    /// locals only hide references, and only definitions are read here.
+    /// No locals query: locals only hide references, and only definitions are read here.
     pub fn tags_config(self) -> &'static TagsConfiguration {
         static CONFIGS: [OnceLock<TagsConfiguration>; Grammar::ALL] =
             [const { OnceLock::new() }; Grammar::ALL];
@@ -114,7 +94,6 @@ impl Grammar {
         })
     }
 
-    /// Whether a node of this kind is a comment or a string literal.
     pub fn is_comment_or_string(self, kind: &str) -> bool {
         match self {
             Grammar::Php => matches!(
@@ -134,21 +113,15 @@ impl Grammar {
     }
 }
 
-/// One definition tag, its ranges in bytes of the whole file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Definition {
-    /// The definition node.
     pub range: Range<usize>,
-    /// The name inside it.
     pub name: Range<usize>,
-    /// The name's line, trimmed (tree-sitter-tags cuts it at 180 bytes).
+    /// tree-sitter-tags cuts it at 180 bytes.
     pub line: Range<usize>,
-    /// The `--kind` vocabulary, or the tag's own syntax type outside it.
     pub kind: &'static str,
 }
 
-/// A part of a file a grammar parses: the whole file, or one of a Vue
-/// file's `<script>` blocks, `offset` bytes in.
 #[derive(Debug, Clone, Copy)]
 pub struct Unit<'a> {
     pub grammar: Grammar,
@@ -157,9 +130,6 @@ pub struct Unit<'a> {
 }
 
 impl<'a> Unit<'a> {
-    /// Every part of `text` a grammar parses: the whole file, or each
-    /// `<script>` block of a Vue file, in file order (none without one: no
-    /// definitions).
     pub fn all(path: &Path, lang: Lang, text: &'a str) -> Vec<Unit<'a>> {
         if lang == Lang::Vue {
             return vue::script_blocks(text)
@@ -184,8 +154,6 @@ impl<'a> Unit<'a> {
         parser.parse(self.text, None)
     }
 
-    /// The definition tags in source order (outer before inner), and
-    /// whether the tree holds a syntax error; none when tagging failed.
     pub fn definitions(&self) -> Option<(Vec<Definition>, bool)> {
         let config = self.grammar.tags_config();
         let mut cx = TagsContext::new();
@@ -205,9 +173,6 @@ impl<'a> Unit<'a> {
         Some((defs, has_error))
     }
 
-    /// Whether the file bytes `at` lie inside a comment or a string of
-    /// `tree`; false outside this unit (a Vue template). A `${…}` inside a
-    /// template string is code.
     pub fn in_comment_or_string(&self, tree: &Tree, at: Range<usize>) -> bool {
         let Some(start) = at.start.checked_sub(self.offset) else {
             return false;
@@ -230,9 +195,6 @@ impl<'a> Unit<'a> {
     }
 }
 
-/// The definition tags of every unit of a file in source order (outer
-/// before inner), and whether any unit's tree holds a syntax error; none
-/// when tagging failed.
 pub fn definitions(units: &[Unit]) -> Option<(Vec<Definition>, bool)> {
     let mut all = Vec::new();
     let mut broken = false;
@@ -245,11 +207,9 @@ pub fn definitions(units: &[Unit]) -> Option<(Vec<Definition>, bool)> {
     Some((all, broken))
 }
 
-/// Every unit of a file with its tree, for the comment and string checks.
 pub struct Parsed<'a>(Vec<(Unit<'a>, Tree)>);
 
 impl<'a> Parsed<'a> {
-    /// None when a unit does not parse at all.
     pub fn of(units: &[Unit<'a>]) -> Option<Parsed<'a>> {
         units
             .iter()
@@ -258,13 +218,10 @@ impl<'a> Parsed<'a> {
             .map(Parsed)
     }
 
-    /// Whether any unit's tree holds a syntax error.
     pub fn has_error(&self) -> bool {
         self.0.iter().any(|(_, t)| t.root_node().has_error())
     }
 
-    /// Whether the file bytes `at` lie inside a comment or a string; false
-    /// outside every unit (a Vue template).
     pub fn in_comment_or_string(&self, at: Range<usize>) -> bool {
         self.0
             .iter()
@@ -272,10 +229,6 @@ impl<'a> Parsed<'a> {
     }
 }
 
-/// A tag's syntax type in the `--kind` vocabulary (slice 12 § Current
-/// code): `class` ← class, interface, trait, enum, struct; `fn` ←
-/// function; `method` and `type` as they are. Others (`module`, `impl`,
-/// `constant`, `field`, `macro`) pass through.
 pub fn kind(syntax: &'static str) -> &'static str {
     match syntax {
         "class" | "interface" | "trait" | "enum" | "struct" => "class",
@@ -284,20 +237,16 @@ pub fn kind(syntax: &'static str) -> &'static str {
     }
 }
 
-/// Whether `kind` passes `--kind want`: `fn` takes methods too (slice 12
-/// task 2: `def new --kind fn` finds the `impl` method, printed `method`).
 pub fn kind_matches(want: Option<&str>, kind: &str) -> bool {
     want.is_none_or(|w| w == kind || (w == "fn" && kind == "method"))
 }
 
-/// The byte offset where each line of `text` starts.
 pub fn line_starts(text: &str) -> Vec<usize> {
     std::iter::once(0)
         .chain(text.match_indices('\n').map(|(i, _)| i + 1))
         .collect()
 }
 
-/// The 0-based line holding byte `at`.
 pub fn line_of(starts: &[usize], at: usize) -> usize {
     starts.partition_point(|&s| s <= at).saturating_sub(1)
 }
@@ -313,8 +262,6 @@ mod tests {
         std::fs::read_to_string(p).unwrap()
     }
 
-    /// Task 1: every grammar builds against the 0.27 core, parses its
-    /// fixture and tags at least one definition.
     #[test]
     fn each_grammar_parses_its_fixture_and_tags_a_definition() {
         for (rel, lang, root) in [

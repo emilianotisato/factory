@@ -1,16 +1,4 @@
-//! Lanes (PRD-001 §5 FR-3, PRD-005 FR-1). `[docs] lanes` in
-//! `docs/project.toml` says how many there are and the board which are free;
-//! a lane file, `docs/reference/lanes/lane-N.md`, says what a worker on lane
-//! N gets: an `env` list of `KEY=value` and a `setup:` command the driver
-//! runs once per lane per run before the first spawn on it. A repo with no
-//! lane files has lanes that differ in nothing but their number; every
-//! worker still sees `FACTORY_LANE=N`.
-//!
-//! Lane N is also a place: a detached git worktree at
-//! `<data dir>/lanes/<repo key>/lane-N`, into which the ignored state
-//! `[lanes] seed` names is cloned once (a plain copy when the clone fails).
-//! This module owns where a lane lives, creating and seeding it, resetting
-//! it to a commit, running its setup there, and removing it (FR-10).
+//! A lane is both what a worker gets (env, setup) and where it runs: a detached worktree under the data dir.
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output};
@@ -21,10 +9,8 @@ use crate::{Error, Result, paths};
 
 pub const DIR: &str = "docs/reference/lanes";
 pub const ENV_LANE: &str = "FACTORY_LANE";
-/// What preflight and `factory lanes up` say to a repo with no `[lanes] seed`.
 pub const NO_SEED: &str = "no lanes declared — /lanes picks the seed list and writes the lane files (an interview, never unattended)";
 
-/// One lane as its file declares it; the bare lane when there is no file.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Lane {
     pub n: u32,
@@ -32,12 +18,10 @@ pub struct Lane {
     pub setup: Option<String>,
 }
 
-/// `docs/reference/lanes/lane-N.md`.
 pub fn file(repo: &Path, n: u32) -> PathBuf {
     repo.join(DIR).join(format!("lane-{n}.md"))
 }
 
-/// The lane file parsed, or the bare lane when the repo has none for `n`.
 pub fn load(repo: &Path, n: u32) -> Result<Lane> {
     let path = file(repo, n);
     match fs::read_to_string(&path) {
@@ -50,8 +34,7 @@ pub fn load(repo: &Path, n: u32) -> Result<Lane> {
     }
 }
 
-/// The frontmatter of a lane file: `env: [K=v, K2=v2]` and `setup: <cmd>`,
-/// the shape `docs lanes` writes (`laneTemplate`). Anything else is ignored.
+/// The frontmatter shape `docs lanes` writes; the two must stay in step.
 pub fn parse(n: u32, text: &str) -> Lane {
     let mut lane = Lane {
         n,
@@ -95,8 +78,7 @@ pub fn parse(n: u32, text: &str) -> Lane {
     lane
 }
 
-/// `value` without one pair of matching quotes around it: a command that
-/// ends in a quoted word keeps its closing quote.
+/// Only a matching pair: a command that ends in a quoted word keeps its closing quote.
 fn unquote(value: &str) -> &str {
     for q in ['"', '\''] {
         if let Some(inner) = value.strip_prefix(q).and_then(|v| v.strip_suffix(q)) {
@@ -107,16 +89,12 @@ fn unquote(value: &str) -> &str {
 }
 
 impl Lane {
-    /// What a worker on this lane gets on top of the driver's environment:
-    /// `FACTORY_LANE=N` first, then the file's `env` in order.
     pub fn env(&self) -> Vec<(String, String)> {
         let mut out = vec![(ENV_LANE.to_string(), self.n.to_string())];
         out.extend(self.env.iter().cloned());
         out
     }
 
-    /// Run `setup` in `dir` with the lane's env; nothing declared, nothing
-    /// run. A failing setup is a tool error: the lane is not usable.
     pub fn setup(&self, dir: &Path) -> Result<bool> {
         let Some(out) = self.run_setup(dir)? else {
             return Ok(false);
@@ -134,8 +112,6 @@ impl Lane {
         Ok(true)
     }
 
-    /// `setup` run in `dir` with the lane's env, whatever its exit; `None`
-    /// when the lane declares none.
     pub fn run_setup(&self, dir: &Path) -> Result<Option<Output>> {
         let Some(cmd) = &self.setup else {
             return Ok(None);
@@ -159,9 +135,7 @@ impl Lane {
     }
 }
 
-/// The main tree of the repo `from` is in: the parent of the absolute git
-/// common dir, canonical. The same from the main tree and from any lane,
-/// where `--show-toplevel` would answer the lane itself.
+/// Via the common dir: `--show-toplevel` from a lane would answer the lane itself.
 pub fn main_tree(from: &Path) -> Result<PathBuf> {
     let common = git(
         from,
@@ -175,8 +149,7 @@ pub fn main_tree(from: &Path) -> Result<PathBuf> {
         .map_err(io(format!("canonicalize {}", main.display())))
 }
 
-/// The repo key: the main tree's directory name, `-`, and the first 8 hex
-/// chars of the SHA-256 of its path. Two repos named `app` never share one.
+/// The hash keeps two repos named `app` apart.
 pub fn key(main: &Path) -> String {
     let name = main
         .file_name()
@@ -186,19 +159,15 @@ pub fn key(main: &Path) -> String {
     format!("{name}-{}", &hash[..8])
 }
 
-/// `<data>/lanes/<repo key>/lane-<n>`; `main` is the canonical main tree.
 pub fn dir(data: &Path, main: &Path, n: u32) -> PathBuf {
     data.join("lanes").join(key(main)).join(format!("lane-{n}"))
 }
 
-/// How one seed path reached a lane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Seeded {
     Clone,
     Copy,
-    /// The lane already had it: its own build state is kept.
     Kept,
-    /// Not in the main tree, so nothing to seed.
     Skipped,
 }
 
@@ -213,7 +182,6 @@ impl Seeded {
     }
 }
 
-/// What `ensure` did to one lane.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Report {
     pub n: u32,
@@ -223,7 +191,6 @@ pub struct Report {
 }
 
 impl Report {
-    /// `lane-N  <path>  big clone · .env copy`.
     pub fn line(&self) -> String {
         let seeds = if self.seeds.is_empty() {
             "no seed".to_string()
@@ -239,10 +206,6 @@ impl Report {
     }
 }
 
-/// Lane `n` of `main`, made and seeded: `git worktree add --detach` at
-/// `dir(data, main, n)` from the main tree's HEAD when it is not already a
-/// worktree of this repo, then each `seed` path the lane lacks. An existing
-/// lane is kept as it is.
 pub fn ensure(data: &Path, main: &Path, n: u32, seed: &[String]) -> Result<Report> {
     let want = dir(data, main, n);
     let parent = want.parent().expect("a lane dir has a parent");
@@ -271,8 +234,6 @@ pub fn ensure(data: &Path, main: &Path, n: u32, seed: &[String]) -> Result<Repor
     })
 }
 
-/// The worktree paths `git worktree list --porcelain` names, canonical where
-/// they exist.
 fn worktrees(main: &Path) -> Result<Vec<PathBuf>> {
     let list = git(main, &["worktree", "list", "--porcelain"])?;
     Ok(list
@@ -285,8 +246,6 @@ fn worktrees(main: &Path) -> Result<Vec<PathBuf>> {
         .collect())
 }
 
-/// One seed path into the lane: skipped when the main tree lacks it, kept
-/// when the lane has it, else cloned, else copied.
 fn seed_one(main: &Path, lane: &Path, rel: &str) -> Result<Seeded> {
     let inside = Path::new(rel)
         .components()
@@ -359,20 +318,15 @@ fn remove(p: &Path) -> Result<()> {
     .map_err(io(format!("remove {}", p.display())))
 }
 
-/// The lane at `rev`: a forced detached checkout, any cherry-pick or merge
-/// state dropped, and untracked files that are not ignored removed. Ignored
-/// seeded state stays (`clean -fd`, never `-x`). Nothing is saved first.
+/// `clean -fd`, never `-x`: ignored seeded state stays.
 pub fn reset(lane: &Path, rev: &str) -> Result<()> {
     git(lane, &["checkout", "-q", "--force", "--detach", rev])?;
-    // `reset` drops CHERRY_PICK_HEAD and MERGE_HEAD; HEAD is detached by
-    // now, so no branch moves.
+    // `reset` drops CHERRY_PICK_HEAD and MERGE_HEAD; HEAD is detached, so no branch moves.
     git(lane, &["reset", "-q", "--hard", "HEAD"])?;
     git(lane, &["clean", "-q", "-fd"])?;
     Ok(())
 }
 
-/// The `lane-N` dirs under `main`'s lane dir, in number order, whether git
-/// still lists them or not.
 pub fn on_disk(data: &Path, main: &Path) -> Result<Vec<(u32, PathBuf)>> {
     let root = data.join("lanes").join(key(main));
     let entries = match fs::read_dir(&root) {
@@ -393,8 +347,6 @@ pub fn on_disk(data: &Path, main: &Path) -> Result<Vec<(u32, PathBuf)>> {
     Ok(lanes)
 }
 
-/// The lane at `lane` gone: `git worktree remove --force` from the main
-/// tree, then the dir itself when git left it (a dir git no longer lists).
 pub fn remove_lane(main: &Path, lane: &Path) -> Result<()> {
     let at = lane.to_string_lossy();
     // A dir git does not list fails here; the removal below covers it.
@@ -402,8 +354,6 @@ pub fn remove_lane(main: &Path, lane: &Path) -> Result<()> {
     remove(lane)
 }
 
-/// `git worktree prune` in the main tree: drops the rows of worktrees whose
-/// dir is gone.
 pub fn prune(main: &Path) -> Result<()> {
     git(main, &["worktree", "prune"]).map(|_| ())
 }
@@ -534,8 +484,6 @@ mod tests {
         assert!(err.to_string().contains("lane 3 setup"), "{err}");
     }
 
-    /// A repo at `<tmp>/<name>` with `f.txt`, `g.txt` and an ignore file
-    /// that keeps `big/`, `.env` and `missing` out of git.
     fn repo(tmp: &Path, name: &str) -> PathBuf {
         let r = tmp.join(name);
         fs::create_dir_all(&r).unwrap();
@@ -555,7 +503,6 @@ mod tests {
         r.canonicalize().unwrap()
     }
 
-    /// Whether `cp` can clone a file inside `dir`: what a seed label is.
     fn clones(dir: &Path) -> bool {
         let probe = dir.join("probe");
         fs::write(&probe, "p").unwrap();
@@ -681,7 +628,6 @@ mod tests {
         let data = tmp.path().join("data");
         let main = repo(tmp.path(), "app");
         fs::write(main.join(".env"), "SECRET=1\n").unwrap();
-        // A commit off to the side that will conflict in the lane.
         git(&main, &["checkout", "-q", "-b", "side"]).unwrap();
         fs::write(main.join("f.txt"), "side\n").unwrap();
         git(&main, &["commit", "-q", "-am", "side"]).unwrap();

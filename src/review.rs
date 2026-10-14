@@ -1,13 +1,4 @@
-//! `factory review second` (PRD-004 FR-6): the cross-vendor second opinion.
-//! The probe spends nothing on a dead auth, the diff is split into passes of
-//! at most `pass_lines` changed lines, each pass runs read-only under the
-//! timeout with its stream logged to a file, and the stream's text is the
-//! pass's findings: the `result` when the run finished, the assistant text
-//! it had when it was killed.
-//!
-//! Every child writes to files, never to a pipe: a stream of 34 KB that
-//! nobody drains blocks the reviewer, and the timeout then fires on a
-//! working review.
+//! Every child writes to files, never a pipe: an undrained 34 KB stream blocks the reviewer.
 use std::fs::{self, File};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -21,10 +12,7 @@ use crate::config::Review;
 use crate::error::io;
 use crate::{Error, Result, clock, paths};
 
-/// The four flags that separate a review from a silent no-op: `--trust`
-/// (or it exits on `Workspace Trust Required`), `--mode ask` (read-only),
-/// `stream-json` (text mode buffers to the end) and partial output (or a
-/// kill keeps nothing).
+/// Without these the agent exits on trust, may write, buffers to the end, or leaves nothing when killed.
 pub const FLAGS: [&str; 6] = [
     "--trust",
     "--mode",
@@ -34,7 +22,6 @@ pub const FLAGS: [&str; 6] = [
     "--stream-partial-output",
 ];
 
-/// One pass: the files it covers and their changed lines.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pass {
     pub files: Vec<String>,
@@ -43,8 +30,6 @@ pub struct Pass {
     pub over: bool,
 }
 
-/// Files in order, grouped into passes of at most `cap` changed lines. A
-/// file is never split; one larger than the cap is a pass of its own.
 pub fn group(files: &[(String, u64)], cap: u64) -> Vec<Pass> {
     let mut out = Vec::new();
     let mut cur = Pass {
@@ -83,8 +68,6 @@ pub fn group(files: &[(String, u64)], cap: u64) -> Vec<Pass> {
     out
 }
 
-/// `git diff --numstat -z --no-renames` output: (path, added + deleted). A
-/// binary file's `-` counts 0.
 pub fn parse_numstat(text: &str) -> Vec<(String, u64)> {
     text.split('\0')
         .filter_map(|rec| {
@@ -96,8 +79,7 @@ pub fn parse_numstat(text: &str) -> Vec<(String, u64)> {
         .collect()
 }
 
-/// The changed files of `<base>...HEAD` under `paths`, sized, in git's
-/// order, relative to the repo root. `cwd` resolves `paths`.
+/// Paths come back relative to the repo root whatever `cwd` is.
 pub fn numstat(cwd: &Path, base: &str, paths: &[String]) -> Result<Vec<(String, u64)>> {
     let range = format!("{base}...HEAD");
     let out = git(
@@ -111,7 +93,6 @@ pub fn numstat(cwd: &Path, base: &str, paths: &[String]) -> Result<Vec<(String, 
     Ok(parse_numstat(&out))
 }
 
-/// `git diff <base>...HEAD -- <files>` from the repo root.
 pub fn diff(root: &Path, base: &str, files: &[String]) -> Result<String> {
     let range = format!("{base}...HEAD");
     git(
@@ -148,7 +129,6 @@ fn git(cwd: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// A fresh `<data_dir>/reviews/<YYYYMMDD-HHMMSS>/`, `-2`, `-3`… when taken.
 pub fn new_log_dir(data_dir: &Path) -> Result<PathBuf> {
     let parent = std::path::absolute(data_dir.join("reviews"))
         .map_err(io(format!("resolve {}", data_dir.display())))?;
@@ -173,19 +153,15 @@ pub fn new_log_dir(data_dir: &Path) -> Result<PathBuf> {
     unreachable!()
 }
 
-/// How a child under the timeout ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ended {
     Exited(Option<i32>),
     Killed,
 }
 
-/// The reviewer's process group while it runs, 0 otherwise. It sits in its
-/// own group, so a Ctrl-C or a closed terminal reaches factory alone: the
-/// handler kills this group, or the reviewer runs on with no timeout.
+/// The reviewer's own process group: a Ctrl-C reaches factory alone, so the handler must kill it.
 static CHILD_GROUP: AtomicI32 = AtomicI32::new(0);
 
-/// Clears `CHILD_GROUP` on every way out of `run_logged`.
 struct Watched;
 
 impl Drop for Watched {
@@ -196,9 +172,7 @@ impl Drop for Watched {
 
 extern "C" fn forward(sig: libc::c_int) {
     let group = CHILD_GROUP.load(Ordering::SeqCst);
-    // SAFETY: `kill`, `signal` and `raise` are async-signal-safe. The
-    // re-raise, with the default disposition back, ends factory as the
-    // signal would have, once the handler returns.
+    // SAFETY: async-signal-safe calls only; the re-raise under SIG_DFL ends factory as the signal would.
     unsafe {
         if group > 0 {
             libc::kill(-group, libc::SIGKILL);
@@ -208,14 +182,12 @@ extern "C" fn forward(sig: libc::c_int) {
     }
 }
 
-/// Route SIGINT, SIGTERM and SIGHUP through `forward`, once per process. A
-/// signal factory started out ignoring (`nohup`) stays ignored.
+/// A signal factory started out ignoring (`nohup`) stays ignored.
 fn forward_signals() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
-            // SAFETY: zeroed `sigaction`s are valid; the handler touches an
-            // atomic and async-signal-safe calls only.
+            // SAFETY: a zeroed `sigaction` is valid; the handler is async-signal-safe.
             unsafe {
                 let mut old: libc::sigaction = std::mem::zeroed();
                 libc::sigaction(sig, std::ptr::null(), &mut old);
@@ -231,9 +203,6 @@ fn forward_signals() {
     });
 }
 
-/// Run `cmd` with stdout to `out` and stderr to `err`, killing its process
-/// group once `timeout` passes, or when factory is signalled. The elapsed
-/// time with it.
 fn run_logged(
     mut cmd: Command,
     out: &Path,
@@ -261,7 +230,6 @@ fn run_logged(
             return Ok((Ended::Exited(status.code()), started.elapsed()));
         }
         if started.elapsed() >= timeout {
-            // SAFETY: a plain syscall on the group this child leads.
             unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
             let _ = child.kill();
             let _ = child.wait();
@@ -271,8 +239,6 @@ fn run_logged(
     }
 }
 
-/// `<agent> --list-models`: `Err(reason)` when the review cannot run, so no
-/// pass starts. Its output goes to `list-models.txt` in `dir`.
 pub fn probe(cfg: &Review, dir: &Path) -> std::result::Result<(), String> {
     let out = dir.join("list-models.txt");
     let mut cmd = Command::new(&cfg.agent);
@@ -311,30 +277,22 @@ pub fn probe(cfg: &Review, dir: &Path) -> std::result::Result<(), String> {
     }
 }
 
-/// Whether `--list-models` output names `model`. A token is compared with
-/// what cannot be part of a model id trimmed off its ends: the format was
-/// never seen working, and `grok-4.7-high,` or `(grok-4.7-high)` is a listing.
+/// Punctuation is trimmed off each token: the listing's format was never seen working.
 pub fn lists_model(text: &str, model: &str) -> bool {
     let id = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_');
     text.split_whitespace()
         .any(|t| t.trim_matches(|c| !id(c)) == model)
 }
 
-/// What a pass's stream said.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Parsed {
-    /// The `result` event's text: the run finished.
     pub result: Option<String>,
-    /// A `result` with `is_error`: the run failed, and its text is the
-    /// reason, never findings.
+    /// The reason a run failed, never findings.
     pub error: Option<String>,
-    /// Every `assistant` event's text items, joined: what a killed run had.
     pub partial: String,
 }
 
 impl Parsed {
-    /// The pass's text: the `result`, else the assistant text; `None` when
-    /// there is neither.
     pub fn text(&self) -> Option<&str> {
         match &self.result {
             Some(r) if !r.trim().is_empty() => Some(r),
@@ -344,7 +302,6 @@ impl Parsed {
     }
 }
 
-/// Parse a stream line by line, skipping lines that are not JSON.
 pub fn parse_stream(text: &str) -> Parsed {
     let mut p = Parsed::default();
     for line in text.lines() {
@@ -375,7 +332,6 @@ pub fn parse_stream(text: &str) -> Parsed {
     p
 }
 
-/// One pass's outcome.
 #[derive(Debug, Clone)]
 pub struct Outcome {
     pub ended: Ended,
@@ -385,8 +341,6 @@ pub struct Outcome {
     pub stderr: String,
 }
 
-/// Run one review: `<agent> -p <flags> --model <m> <prompt>` in `cwd`, its
-/// stream to `<dir>/review-<n>.jsonl` and stderr to `review-<n>.err`.
 pub fn run_pass(cfg: &Review, cwd: &Path, dir: &Path, n: usize, prompt: &str) -> Result<Outcome> {
     let stream = dir.join(format!("review-{n}.jsonl"));
     let err = dir.join(format!("review-{n}.err"));
@@ -413,7 +367,6 @@ pub fn run_pass(cfg: &Review, cwd: &Path, dir: &Path, n: usize, prompt: &str) ->
     })
 }
 
-/// The diff-mode prompt, `models.md`'s since 2026-09.
 pub fn diff_prompt(files: &[String], base: &str, diff_file: &Path) -> String {
     format!(
         "Adversarial code review. The diff of {} against {base} is in {}: read it, and read any file in the repository you need for context. Report only defects you can point to at file:line with a failure scenario; no praise, no style. Do not edit anything.",
@@ -422,7 +375,6 @@ pub fn diff_prompt(files: &[String], base: &str, diff_file: &Path) -> String {
     )
 }
 
-/// The doc-mode prompt: the caller's instruction, then the document.
 pub fn doc_prompt(text: &str, doc: &Path) -> String {
     format!(
         "{}\n\nThe document is {}: read it, and read any file in the repository you need for context. Do not edit anything.",
@@ -431,7 +383,6 @@ pub fn doc_prompt(text: &str, doc: &Path) -> String {
     )
 }
 
-/// `--others`: the other reviewers' findings and the question they raise.
 pub fn with_others(prompt: &str, others: &str) -> String {
     format!(
         "{prompt}\n\nThe other reviewers found:\n{}\n\nBesides your own review: what would fixing those still miss?",

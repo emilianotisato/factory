@@ -1,7 +1,3 @@
-//! PRD-004 slice 01: the embedded bundle matches `skills/` on disk, and this
-//! repo's `.claude/skills/` link into the live source. Slice 07: the bundle
-//! lock matches `Cargo.toml` and the bundle.
-
 use factory::skills::{self, FILES, LOCK, Lock, Manifest, NAMES, bundle_hash, check_lock, relock};
 use std::collections::BTreeSet;
 use std::fs;
@@ -14,7 +10,6 @@ fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// Every file under `dir`, relative to `base`, `/` separated.
 fn walk(base: &Path, dir: &Path, out: &mut BTreeSet<String>) {
     for entry in fs::read_dir(dir).unwrap() {
         let path = entry.unwrap().path();
@@ -68,8 +63,7 @@ fn this_repos_claude_skills_link_into_the_source() {
     }
 }
 
-/// PRD-004 FR-1 and FR-6: `models.md` names roles, not a machine's setup, and
-/// the two skills that run the second opinion call the command.
+// `models.md` names roles, never a machine's setup.
 #[test]
 fn models_md_holds_no_invocation_and_the_skills_call_review_second() {
     let read = |p: &str| fs::read_to_string(root().join("skills").join(p)).unwrap();
@@ -99,7 +93,6 @@ fn models_md_holds_no_invocation_and_the_skills_call_review_second() {
 
 #[test]
 fn polish_fixers_run_one_after_another_with_no_lane_rule() {
-    // PRD-005 FR-5: fixers run in turn inside the polish worker's lane.
     let text = fs::read_to_string(root().join("skills/polish/SKILL.md")).unwrap();
     let start = text.find("## 5. Fix").expect("§5");
     let end = start + text[start..].find("## 6.").expect("§6");
@@ -113,9 +106,7 @@ fn polish_fixers_run_one_after_another_with_no_lane_rule() {
     }
 }
 
-/// The lock this run checks against. With `FACTORY_BUNDLE_WRITE` set, the
-/// first caller rewrites it (FR-5's refusal applies) and every test in this
-/// binary sees the same result, so no reader races the write.
+/// One `OnceLock` so a `FACTORY_BUNDLE_WRITE` rewrite happens once and no reader races it.
 fn lock() -> &'static Result<Lock, String> {
     static LOCKED: OnceLock<Result<Lock, String>> = OnceLock::new();
     LOCKED.get_or_init(|| {
@@ -137,7 +128,7 @@ fn lock() -> &'static Result<Lock, String> {
     })
 }
 
-/// PRD-004 FR-5: a skill edit cannot ship under the old version.
+// A skill edit cannot ship under the old version.
 #[test]
 fn bundle_lock_matches() {
     if let Err(e) = lock() {
@@ -145,7 +136,6 @@ fn bundle_lock_matches() {
     }
 }
 
-/// PRD-004 FR-5: the lock records what `init` writes into a manifest.
 #[test]
 fn the_lock_records_what_a_manifest_carries() {
     let lock = lock().as_ref().unwrap_or_else(|e| panic!("{e}"));

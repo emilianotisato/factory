@@ -1,7 +1,3 @@
-//! FR-7's shared half (PRD §9): which events the cockpit must see, the one
-//! line each becomes, the cursor `factory wait` advances, the status line
-//! `wait` and `status` print, and the live-runs listing a missing run id
-//! gets. `cli/wait.rs` and `cli/status.rs` are thin over this.
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -11,14 +7,10 @@ use crate::events::{Event, EventKind};
 use crate::run::{self, Run, RunState};
 use crate::{Result, checkpoint, clock};
 
-/// `runs/<id>/cockpit.cursor`: the last `seq` the cockpit was shown.
+/// The last `seq` the cockpit was shown.
 pub const CURSOR_FILE: &str = "cockpit.cursor";
 
-/// §9: a block, an ask, a quota pause, a cap reached, finished, failed — and
-/// `run_stopped`, the end of a stopped run (AD-1002), and a closeout file
-/// filled from a template (`template_stand_in`, AD-904), and a worker whose
-/// subagents could not be counted (`subagents_unread`). Everything else is
-/// progress and only shows in `factory status`.
+/// What the owner must see; everything else is progress and shows only in `factory status`.
 pub fn is_cockpit(kind: &EventKind) -> bool {
     matches!(
         kind,
@@ -48,7 +40,6 @@ fn block_line(id: &str, where_: &str, question: &str) -> String {
     )
 }
 
-/// The line `factory wait` prints for a cockpit event; `None` for progress.
 pub fn line(ev: &Event, feature: &str) -> Option<String> {
     Some(match &ev.kind {
         EventKind::SliceBlocked {
@@ -68,8 +59,6 @@ pub fn line(ev: &Event, feature: &str) -> Option<String> {
             block_id,
             question,
         } => block_line(block_id, &format!("checkpoint {n}"), question),
-        // Legacy: only runs before PRD-002 merged fragment logs, so only
-        // their event logs hold this kind.
         EventKind::MergeRefused { block_id, detail } => block_line(
             block_id,
             "log merge refused",
@@ -125,7 +114,6 @@ pub fn line(ev: &Event, feature: &str) -> Option<String> {
     })
 }
 
-/// `31.2M`, `30M`, `11.6k`, `42`.
 pub fn tokens(n: u64) -> String {
     const M: u64 = 1_000_000;
     const K: u64 = 1_000;
@@ -148,9 +136,7 @@ pub fn tokens(n: u64) -> String {
     }
 }
 
-/// The `BLOCK-n` and `ASK-n` opened and not yet answered, in opening order.
-/// One source for `wait` and `status`: the run's own events, which is also
-/// what `factory answer` writes (AD-1003).
+/// From the run's own events: the one source `wait`, `status` and `factory answer` share.
 pub fn open_questions(events: &[Event]) -> Vec<String> {
     let mut open: Vec<String> = Vec::new();
     for e in events {
@@ -167,7 +153,6 @@ pub fn open_questions(events: &[Event]) -> Vec<String> {
     open
 }
 
-/// The `BLOCK-n` or `ASK-n` an event opens.
 fn opens(kind: &EventKind) -> Option<&str> {
     match kind {
         EventKind::SliceBlocked {
@@ -181,11 +166,7 @@ fn opens(kind: &EventKind) -> Option<&str> {
     }
 }
 
-/// What a cockpit was shown and the owner still owes (AD-40005): the event
-/// that opened each question still open and the park the run still waits
-/// on, at or before `cursor`, in `seq` order. A cockpit that died after
-/// `wait` printed them never relayed them, so `wait` prints them again
-/// until they close. None once the run is over.
+/// A cockpit that died after `wait` printed them never relayed them, so they print again until they close.
 pub fn owed<'a>(state: &RunState, events: &'a [Event], cursor: u64) -> Vec<&'a Event> {
     if state.phase.is_over() {
         return Vec::new();
@@ -213,8 +194,6 @@ fn owed_from(events: &[Event], cursor: u64, parked: bool) -> Vec<&Event> {
     owed
 }
 
-/// `waiting-owner, BLOCK-101 open` · `paused until …, no open question` ·
-/// `waiting-owner, parked: budget 31.2M/30M, no open question`.
 pub fn status_line(state: &RunState, events: &[Event]) -> String {
     let open = open_questions(events);
     let mut s = state.phase.to_string();
@@ -232,7 +211,6 @@ pub fn status_line(state: &RunState, events: &[Event]) -> String {
     s
 }
 
-/// Workers spawned, unsettled and still alive.
 pub fn in_flight(state: &RunState) -> usize {
     state
         .workers
@@ -241,9 +219,6 @@ pub fn in_flight(state: &RunState) -> usize {
         .count()
 }
 
-/// `parked: budget 31.2M/30M` while the run waits on a cap: the last
-/// `run_parked` is newer than the last start or resume and the phase is
-/// still `waiting-owner`. Such a run has no driver by design (AD-703).
 pub fn parked_on(state: &RunState, events: &[Event]) -> Option<String> {
     if state.phase != run::Phase::WaitingOwner {
         return None;
@@ -255,10 +230,7 @@ pub fn parked_on(state: &RunState, events: &[Event]) -> Option<String> {
     })?
 }
 
-/// Pid gone and the run not over — except a run parked on preflight asks,
-/// which has no driver until the last `factory answer ASK-n` (slice 04), and
-/// a run parked on its budget, which `factory run NNN --budget <n>` resumes
-/// (AD-703, AD-1004).
+/// Parked on preflight asks or on its budget, a run has no driver by design.
 pub fn driver_dead(state: &RunState, events: &[Event]) -> bool {
     if state.phase.is_over() || state.driver_alive() {
         return false;
@@ -269,7 +241,6 @@ pub fn driver_dead(state: &RunState, events: &[Event]) -> bool {
     !(state.branch.is_none() && asks_open) && parked_on(state, events).is_none()
 }
 
-/// The event that ends a run: `run_finished`, `run_stopped`, `run_failed`.
 pub fn is_terminal(kind: &EventKind) -> bool {
     matches!(
         kind,
@@ -277,7 +248,7 @@ pub fn is_terminal(kind: &EventKind) -> bool {
     )
 }
 
-/// The cursor, 0 when absent or unreadable (a fresh cockpit replays all).
+/// 0 when absent or unreadable: a fresh cockpit replays all.
 pub fn read_cursor(run_dir: &Path) -> u64 {
     fs::read_to_string(run_dir.join(CURSOR_FILE))
         .ok()
@@ -290,8 +261,6 @@ pub fn write_cursor(run_dir: &Path, seq: u64) -> Result<()> {
     fs::write(&path, format!("{seq}\n")).map_err(io(format!("write {}", path.display())))
 }
 
-/// `Run::open`, or `None` after printing `no run <id>` and the live runs:
-/// the caller exits 1.
 pub fn resolve(data_dir: &Path, id: &str, out: &mut dyn Write) -> Result<Option<Run>> {
     if Run::runs_dir(data_dir)
         .join(id)
@@ -305,7 +274,6 @@ pub fn resolve(data_dir: &Path, id: &str, out: &mut dyn Write) -> Result<Option<
     Ok(None)
 }
 
-/// Every run of every repo that is neither finished nor failed, one line each.
 pub fn list_live(data_dir: &Path, out: &mut dyn Write) -> Result<()> {
     let live: Vec<RunState> = run::list_runs(data_dir)?
         .into_iter()
@@ -353,7 +321,7 @@ mod tests {
     }
 
     #[test]
-    fn tokens_read_like_the_prd() {
+    fn tokens_print_in_tenths_of_a_million_or_a_thousand() {
         assert_eq!(tokens(31_200_000), "31.2M");
         assert_eq!(tokens(30_000_000), "30M");
         assert_eq!(tokens(11_609), "11.6k");
@@ -495,8 +463,7 @@ mod tests {
                     .into()
             )
         );
-        // A bare `template_stand_in` (AD-904's fields default) still parses
-        // and still names what it can.
+        // A bare `template_stand_in` still parses and names what it can.
         let bare: Event = serde_json::from_str(
             r#"{"seq":1,"ts":"2026-10-11T00:00:00Z","kind":"template_stand_in"}"#,
         )
@@ -619,8 +586,7 @@ mod tests {
                 .map(|e| e.seq)
                 .collect::<Vec<_>>()
         };
-        // The answered ASK-1 is not owed; BLOCK-102 by its re-opening; what
-        // the cursor has not reached is fresh, not owed.
+        // BLOCK-102 by its re-opening (6, not 4); past the cursor is fresh, not owed.
         assert_eq!(seqs(7, false), [2, 6, 7]);
         assert_eq!(seqs(6, false), [2, 6]);
         assert_eq!(seqs(0, false), Vec::<u64>::new());

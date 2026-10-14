@@ -1,6 +1,4 @@
-//! `factory docs doctor` (PRD-002 FR-15): which framework version a repo is on
-//! and what `check` would say. It never writes, so it is safe in a v2 repo,
-//! which has no `docs/.gitignore` to hide a `docs.lock`.
+//! Never writes: a v2 repo has no `docs/.gitignore` to hide a `docs.lock`.
 use std::fs;
 use std::path::Path;
 
@@ -34,8 +32,6 @@ impl Framework {
     }
 }
 
-/// `docs/project.toml` with `framework = 3`, else `docs/index.md`'s
-/// frontmatter `framework` (absent is 1, as `loadProject` reads it).
 pub fn detect(root: &Path) -> Framework {
     if project::is_v3(root) {
         return Framework::V3;
@@ -54,8 +50,6 @@ fn line(key: &str, value: impl std::fmt::Display) -> String {
     format!("{key:<15}{value}")
 }
 
-/// The report. `legacy_check` runs `docs.mjs check` for a v2 or v1 repo,
-/// captured; the CLI passes the shim's one `node` call.
 pub fn run(root: &Path, legacy_check: impl FnOnce() -> Result<ToolOutput>) -> String {
     let fw = detect(root);
     let mut out = vec![line("Framework", fw.label())];

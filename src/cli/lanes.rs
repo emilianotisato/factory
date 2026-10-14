@@ -1,11 +1,3 @@
-//! `factory lanes up` (PRD-005 FR-1): creates the missing lane worktrees
-//! `1..=lanes` of this repo, seeds them, runs each lane's setup inside it,
-//! and prints one line per lane: its path, how each seed path got there, the
-//! setup exit. Any failure still prints the other lanes, then exits 1. A
-//! repo with no `[lanes] seed` refuses, naming `/lanes`. A fresh
-//! `factory run` runs the create-and-seed half only (`ensure_all`).
-//! `up --prove` (FR-9) then runs the inner loop in every lane at once;
-//! `prune` (FR-10) removes the lanes above the declared count.
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -48,12 +40,10 @@ fn say(out: &mut dyn Write, line: &str) -> Result<()> {
     writeln!(out, "{line}").map_err(io("stdout"))
 }
 
-/// `[docs] lanes` of the main tree, 1 when undeclared.
 fn count(main: &Path) -> Result<u32> {
     Ok(project::load(main)?.map_or(1, |p| p.lanes))
 }
 
-/// Every lane of `main` made, seeded and set up, one line each.
 pub fn up(data: &Path, main: &Path, out: &mut dyn Write) -> Result<i32> {
     let Some(seed) = project::seed(main)? else {
         say(out, &format!("  ✗ {}", lanes::NO_SEED))?;
@@ -69,8 +59,7 @@ pub fn up(data: &Path, main: &Path, out: &mut dyn Write) -> Result<i32> {
                 continue;
             }
         };
-        // The lane file is read from the main tree: a lane holds the
-        // commit it was reset to, which may predate an edit to it.
+        // The lane file is read from the main tree: the lane's checkout may predate an edit to it.
         let (exit, detail) = match lanes::load(main, n).and_then(|l| l.run_setup(&report.dir)) {
             Ok(None) => ("-".to_string(), String::new()),
             Ok(Some(o)) if o.status.success() => ("0".to_string(), String::new()),
@@ -92,9 +81,6 @@ pub fn up(data: &Path, main: &Path, out: &mut dyn Write) -> Result<i32> {
     Ok(i32::from(failed))
 }
 
-/// `up`, then the inner loop in every lane at once: `sh -c <inner>`, cwd
-/// the lane, the lane's env. One line per lane in lane order, a red lane's
-/// output tail under its line, and a last line naming the red lanes.
 pub fn prove(data: &Path, main: &Path, out: &mut dyn Write) -> Result<i32> {
     let code = up(data, main, out)?;
     if code != 0 {
@@ -164,13 +150,8 @@ pub fn prove(data: &Path, main: &Path, out: &mut dyn Write) -> Result<i32> {
     Ok(1)
 }
 
-/// How many lines of a red lane's output `--prove` prints.
 const TAIL: usize = 20;
 
-/// The lane worktrees above the declared count (every one with `all`)
-/// removed, worktree and dir, then `git worktree prune`. Refuses, removing
-/// nothing, while a run of this repo is unfinished: a parked run's blocked
-/// slice holds its lane.
 pub fn prune(data: &Path, main: &Path, all: bool, out: &mut dyn Write) -> Result<i32> {
     let open = run::list_open(data, main)?;
     if !open.is_empty() {
@@ -202,9 +183,7 @@ pub fn prune(data: &Path, main: &Path, all: bool, out: &mut dyn Write) -> Result
     Ok(0)
 }
 
-/// The create-and-seed half, for a fresh `factory run`: every lane of
-/// `main` ensured, one line each; `false` at the first failure, printed.
-/// Setup is the run's, at each lane's first spawn.
+/// No setup here: the run does it at each lane's first spawn.
 pub fn ensure_all(data: &Path, main: &Path, out: &mut dyn Write) -> Result<bool> {
     let seed = project::seed(main)?.unwrap_or_default();
     for n in 1..=count(main)? {

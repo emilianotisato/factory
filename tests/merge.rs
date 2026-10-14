@@ -1,10 +1,3 @@
-//! PRD-005 slice 08: a landing that conflicts spawns a merge worker (FR-4).
-//! Slices 01 and 02 start side by side from one tip and rewrite line 3 of
-//! `shared.txt`; 02 waits for 01's landing, so 02's pick conflicts. The driver leaves
-//! the main tree untouched, redoes the pick in 02's lane, sets 02 back to
-//! `building` and spawns a merge worker there. A clean exit with no marker
-//! left lands the lane; markers left, a block the worker logged, or two
-//! merge deaths block the slice.
 #[path = "harness/mod.rs"]
 mod harness;
 
@@ -66,8 +59,7 @@ fn driver_log(dir: &Path) -> String {
     fs::read_to_string(dir.join("driver.log")).unwrap_or_default()
 }
 
-/// Polls `ok`; on timeout, dumps the run so a failure in the detached
-/// driver can be read from the test output.
+/// On timeout, dumps the run: the driver is detached, so its failure is otherwise invisible.
 fn wait_until(fx: &Fixture, dir: &Path, what: &str, secs: u64, mut ok: impl FnMut() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(secs);
     while !ok() {
@@ -104,15 +96,11 @@ const SLICE_02: &str = "feat(001): slice-02 B";
 /// A stub barrier: slice 01's landing is on the main tree's log.
 const SLICE_01_LANDED: &str = r#"git -C "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")" log --format=%s | grep -qxF 'feat(001): slice-01 A'"#;
 
-/// The fixture with a committed `shared.txt`, and a plan whose first two
-/// steps rewrite its line 3 in slices 01 and 02; 02 waits for 01's
-/// landing. `merge` is the steps after.
+/// 02 waits for 01's landing so its own pick conflicts; `merge` is the steps after.
 fn conflicting(name: &str, merge: &[Value]) -> (Fixture, PathBuf) {
     conflicting_on(name, "sed -i '3s/.*/one/' shared.txt", merge)
 }
 
-/// [`conflicting`] with slice 01's step running `first` in place of its
-/// rewrite of line 3.
 fn conflicting_on(name: &str, first: &str, merge: &[Value]) -> (Fixture, PathBuf) {
     let fx = Fixture::with_index(name, &[("checkpoint_every", "10")]);
     fs::write(fx.path().join("shared.txt"), "1\n2\n3\n4\n").unwrap();
@@ -145,7 +133,7 @@ fn blocks_of(fx: &Fixture, slice: u64) -> Vec<Value> {
         .collect()
 }
 
-// ── task 2: the merge worker runs in the slice's lane ──────────────────────
+// ── the merge worker runs in the slice's lane ──────────────────────────────
 
 #[test]
 fn a_conflicting_landing_spawns_a_merge_worker_in_the_slices_lane() {
@@ -172,7 +160,6 @@ fn a_conflicting_landing_spawns_a_merge_worker_in_the_slices_lane() {
     assert_eq!(row.role, "merge");
     assert_eq!(row.slice, Some(2));
 
-    // While it runs: 02 is building again, and the main tree has 01 only.
     assert_eq!(fx.slice_status(2), "building");
     assert_eq!(head_subject(&fx), SLICE_01);
     assert_eq!(fx.read("shared.txt"), "1\n2\none\n4\n");
@@ -185,7 +172,7 @@ fn a_conflicting_landing_spawns_a_merge_worker_in_the_slices_lane() {
     stop(&fx, &dir);
 }
 
-// ── task 3 (a): a resolution lands ─────────────────────────────────────────
+// ── a resolution lands ─────────────────────────────────────────────────────
 
 #[test]
 fn a_resolved_merge_lands_after_the_slice_it_conflicted_with() {
@@ -241,7 +228,7 @@ fn a_resolved_merge_lands_after_the_slice_it_conflicted_with() {
     assert!(blocks_of(&fx, 2).is_empty(), "{:?}", blocks_of(&fx, 2));
 }
 
-// ── task 3 (b): markers left block the slice ───────────────────────────────
+// ── markers left block the slice ───────────────────────────────────────────
 
 #[test]
 fn a_merge_that_leaves_markers_blocks_the_slice() {
@@ -276,7 +263,7 @@ fn a_merge_that_leaves_markers_blocks_the_slice() {
     stop(&fx, &dir);
 }
 
-// ── task 3 (c): two merge deaths block the slice ───────────────────────────
+// ── two merge deaths block the slice ───────────────────────────────────────
 
 #[test]
 fn two_dead_merge_workers_block_the_slice() {
@@ -301,7 +288,7 @@ fn two_dead_merge_workers_block_the_slice() {
     assert_eq!(fx.calls().len(), 4, "a third merge worker ran");
 }
 
-// ── task 3 (d): a block the merge worker logged ────────────────────────────
+// ── a block the merge worker logged ────────────────────────────────────────
 
 #[test]
 fn a_block_the_merge_worker_logged_blocks_the_slice() {
@@ -317,7 +304,7 @@ fn a_block_the_merge_worker_logged_blocks_the_slice() {
     stop(&fx, &dir);
 }
 
-// ── polish: what a merge leaves that is not a marker ───────────────────────
+// ── what a merge leaves that is not a marker ───────────────────────────────
 
 #[test]
 fn a_merge_that_leaves_nothing_to_land_keeps_the_ref_and_blocks() {

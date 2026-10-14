@@ -1,11 +1,4 @@
-//! `factory ctx def|refs|outline` (PRD §14 FR-12, slices 11 and 12): the
-//! textual engine and its tree-sitter confirmation on the fixture files
-//! under `tests/fixture/ctx/`, one directory per stack plus `refs/`, whose
-//! symbol `planted` has 300 textual hits in 40 files (two of them inside a
-//! comment and a string, which the tree drops) and one more in a test
-//! file. Each command's full output is pinned in `tests/snapshots/ctx/`;
-//! `FACTORY_BLESS=1 cargo test --test ctx` rewrites the snapshots after a
-//! deliberate change.
+//! `FACTORY_BLESS=1 cargo test --test ctx` rewrites the snapshots after a deliberate change.
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -19,7 +12,6 @@ fn fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixture/ctx")
 }
 
-/// Runs `factory ctx <args>` in `dir`: (exit code, stdout, stderr).
 fn ctx_in(dir: &Path, args: &[&str]) -> (i32, String, String) {
     let out = Command::new(BIN)
         .arg("ctx")
@@ -154,8 +146,6 @@ fn def_of_a_macro_made_function_finds_nothing_and_exits_0() {
     );
 }
 
-/// Slice 12 state: of the two textual hits only the class is printed; the
-/// docblock line that reads like a definition is counted, not shown.
 #[test]
 fn def_prints_only_the_definition_node() {
     let out = ctx(&["def", "OtherService"]);
@@ -171,7 +161,6 @@ fn def_prints_only_the_definition_node() {
     );
 }
 
-/// Slice 12 state (PRD §14 acceptance: "drops the docblock mention").
 #[test]
 fn def_drops_the_docblock_mention() {
     let out = ctx(&["def", "OtherService"]);
@@ -221,8 +210,6 @@ fn a_hit_in_a_test_file_shows_only_with_tests() {
     );
 }
 
-/// Slice 12 state: the first hit printed is the first call, not the
-/// comment or the string above it.
 #[test]
 fn refs_starts_at_the_first_real_hit() {
     let out = ctx(&["refs", "planted"]);
@@ -232,7 +219,6 @@ fn refs_starts_at_the_first_real_hit() {
     );
 }
 
-/// Slice 12 state (slice 12 task 3).
 #[test]
 fn refs_drops_the_comment_and_string_hits() {
     let out = ctx(&["refs", "planted"]);
@@ -243,8 +229,6 @@ fn refs_drops_the_comment_and_string_hits() {
     assert!(out.contains("2 dropped (comments/strings)"), "{out}");
 }
 
-/// Slice 12 task 2: `--kind` filters; `fn` takes the `impl` method, which
-/// is printed as a `method`.
 #[test]
 fn def_kind_filters_and_fn_takes_methods() {
     let out = ctx(&["def", "handle", "--kind", "method"]);
@@ -264,9 +248,6 @@ fn def_kind_filters_and_fn_takes_methods() {
     );
 }
 
-/// Slice 12 task 2: the body is the node's exact range: the class ends at
-/// its closing brace, the struct is whole, a long body is not cut and the
-/// last line stops where the node does.
 #[test]
 fn def_body_is_the_node_range() {
     let out = ctx(&["def", "UserService"]);
@@ -297,10 +278,6 @@ fn def_body_is_the_node_range() {
     );
 }
 
-/// CP-6 (AD-9003): a definition whose node opens with PHP attributes or a
-/// TypeScript decorator is located at its name's line, as `outline` puts
-/// it, with that line as the signature; the body is the node's whole
-/// range, so the attributes are still printed, in place.
 #[test]
 fn def_locates_an_attributed_definition_at_its_name() {
     let tmp = tempfile::tempdir().unwrap();
@@ -338,9 +315,6 @@ fn def_locates_an_attributed_definition_at_its_name() {
     assert!(out.contains("\n2  class  class Widget {\n"), "{out}");
 }
 
-/// Slice 12 task 4: classes with their methods indented, the trait and the
-/// interface; no `use` lines, properties or constants; `--depth 1` keeps
-/// the top level.
 #[test]
 fn outline_prints_definitions_and_nothing_else() {
     let out = ctx(&["outline", "php"]);
@@ -381,12 +355,6 @@ fn outline_prints_definitions_and_nothing_else() {
     );
 }
 
-/// C1 (AD-40001): every definition shape `outline` lists is found by `def`
-/// at the same line, whatever modifiers lead it or wherever its parameters
-/// end: default exports, a member whose parameters span lines, a getter, a
-/// generic method, PHP readonly, abstract and final in any order, Rust
-/// `const fn` and `extern "C" fn`, and a Go `type ( … )` group, whose
-/// struct field of the same name is not a definition.
 #[test]
 fn def_finds_every_shape_outline_lists() {
     let tmp = tempfile::tempdir().unwrap();
@@ -477,9 +445,6 @@ fn def_finds_every_shape_outline_lists() {
     );
 }
 
-/// C4 (AD-40002): a Vue file with `<script>` and `<script setup>` is
-/// tagged block by block, at its real line numbers, by `outline`, `def` and
-/// the comment check of `refs`.
 #[test]
 fn every_vue_script_block_is_read() {
     let tmp = tempfile::tempdir().unwrap();
@@ -504,8 +469,6 @@ fn every_vue_script_block_is_read() {
     assert!(out.contains("1 dropped (comments/strings)"), "{out}");
 }
 
-/// Cn6: a name that starts with `$` is found whole-word, as PHP writes a
-/// variable; a longer name holding it is not.
 #[test]
 fn refs_finds_a_dollar_name() {
     let tmp = tempfile::tempdir().unwrap();
@@ -526,9 +489,6 @@ fn refs_finds_a_dollar_name() {
     );
 }
 
-/// Slice 12 tasks 4 and 5: Go and Rust per language; the Vue `<script>`
-/// block at its real line numbers; an empty file and a template-only Vue
-/// file print their header alone.
 #[test]
 fn outline_covers_go_rust_vue_and_empty_files() {
     let out = ctx(&["outline", "go/client.go"]);
@@ -577,8 +537,7 @@ fn outline_covers_go_rust_vue_and_empty_files() {
     );
 }
 
-/// Slice 12 task 2: a file with a syntax error keeps slice 11's textual
-/// answer, with a trailer note, so a broken file never hides a definition.
+// Textual matches survive a parse error so a broken file never hides a definition.
 #[test]
 fn a_file_that_does_not_parse_keeps_its_textual_matches() {
     let tmp = tempfile::tempdir().unwrap();
@@ -644,10 +603,7 @@ fn source_files(dir: &Path, root: &Path, into: &mut BTreeSet<PathBuf>) {
     }
 }
 
-/// Task 1: the walker skips vendor directories and gitignored files unless
-/// `--vendor`; the trailer counts what it skipped for size or content.
-/// Cn5 (AD-40004): `build/`, `dist/` and `storage/` are skipped only at the
-/// root; `vendor/` and `node_modules/` at any depth.
+// `build/`, `dist/` and `storage/` are skipped only at the root; `vendor/` and `node_modules/` at any depth.
 #[test]
 fn the_walk_skips_vendor_and_gitignored_paths_unless_vendor() {
     let tmp = tempfile::tempdir().unwrap();

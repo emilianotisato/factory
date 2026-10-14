@@ -1,15 +1,10 @@
-//! The compact printer (PRD §14 FR-12): `path:line  kind  signature`, then
-//! the context indented four spaces (the body for `def`, the line after the
-//! hit for `refs`), hits separated by a blank line, and a trailer on the
-//! last line saying what was cut. Plain text, no colour, no width cap: a
-//! model reads it, not a terminal.
+//! Plain text, no colour, no width cap: a model reads it, not a terminal.
 use std::fmt::Write;
 
 use super::Searched;
 use super::def::{self, BODY_LINES};
 use super::{outline, refs};
 
-/// `def`'s output; `body` is false under `--no-body`.
 pub fn defs(name: &str, found: &def::Found, body: bool) -> String {
     let mut out = String::new();
     for d in &found.hits {
@@ -57,7 +52,6 @@ pub fn defs(name: &str, found: &def::Found, body: bool) -> String {
     finish(out, &trailer)
 }
 
-/// `refs`' output.
 pub fn refs(name: &str, found: &refs::Found) -> String {
     let mut out = String::new();
     for r in &found.shown {
@@ -103,9 +97,6 @@ pub fn refs(name: &str, found: &refs::Found) -> String {
     finish(out, &trailer)
 }
 
-/// `outline`'s output: a `== path ==` header per file, then its lines,
-/// two spaces deeper per nesting level. The trailer comes only when
-/// something was left out, so an empty file prints its header alone.
 pub fn outline(found: &outline::Found) -> String {
     let mut out = String::new();
     for f in &found.files {

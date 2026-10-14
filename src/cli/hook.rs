@@ -1,22 +1,4 @@
-//! `factory hook` (PRD §14 FR-12 decision 3, §4 FR-2 as corrected
-//! 2026-10-09): the PreToolUse command hook the driver injects into every
-//! worker through `--settings` (`worker::settings`). It reads the tool call
-//! as JSON on stdin and answers with a `hookSpecificOutput` deny on stdout,
-//! exit 0, with a one-line reason the model reads, in three cases:
-//!
-//! - `Bash` that runs `gh` or `git push` anywhere in the line ([`guard`]):
-//!   a worker never does either, the driver pushes and talks to GitHub.
-//! - `Bash` whose first command is `grep -r`/`-R` or `rg` over a directory
-//!   of the repo: use `factory ctx refs` (or `def`) instead.
-//! - a whole-file `Read`, or `Bash cat`, of a file a slice pack holds: name
-//!   the pack section that already carries it.
-//!
-//! Anything else gets no decision at all (empty stdout), so the worker's
-//! own permission rules still apply. So does anything the hook cannot
-//! parse — a hook bug must never block a worker — except that a line the
-//! guard cannot read is denied when it so much as names `gh` or `push`.
-//! No I/O beyond stdin, the pack's first line (`FACTORY_PACK`) and a `stat`
-//! of a grep's path operands, so it answers in milliseconds.
+//! The worker's PreToolUse hook: no I/O beyond stdin, the pack's first line and a `stat`, so it answers in milliseconds.
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Component, Path, PathBuf};
 
@@ -27,14 +9,10 @@ use crate::error::io;
 use crate::paths;
 use crate::shell;
 
-/// The worker env var naming the pack file (`worker::spawn`).
 pub const PACK_ENV: &str = "FACTORY_PACK";
 
-/// The deny reason for `gh` or `git push` in a worker's command.
 pub const NEVER_HINT: &str = "workers never run gh or git push: the driver pushes the branch and talks to GitHub; commit locally, and put what you need from GitHub in your report";
 
-/// The deny reason for a recursive grep over the repo (§14 decision 3),
-/// naming this binary by the path a worker's shell can run.
 pub fn grep_hint() -> String {
     format!(
         "use: {} ctx refs <word> (or ctx def <symbol>); grep only for literal strings and log output",
@@ -42,10 +20,8 @@ pub fn grep_hint() -> String {
     )
 }
 
-/// The pack's first line, as `pack::Pack` writes it (slice 03 task 2).
 const HEADER: &str = "<!-- factory-pack files: ";
 
-/// The hook's answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
     /// No decision: the call goes on to the worker's permission rules.
@@ -53,10 +29,7 @@ pub enum Verdict {
     Deny(String),
 }
 
-/// What the hook knows of the worker's pack: the files its header lists and
-/// whether it is a build worker's slice pack, the only kind that carries
-/// files in full (a checkpoint pack carries each slice's Prove task, the
-/// others carry no file).
+/// Only a slice pack carries files in full; a checkpoint pack carries each slice's Prove task.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Held {
     pub files: Vec<String>,
@@ -64,7 +37,6 @@ pub struct Held {
 }
 
 impl Held {
-    /// From the pack's file name and first line.
     pub fn parse(pack_name: &str, first_line: &str) -> Held {
         let files = first_line
             .trim_end()
@@ -84,8 +56,6 @@ impl Held {
         }
     }
 
-    /// Read the first line of the pack at `path`; nothing held when it
-    /// cannot be read.
     pub fn load(path: &Path) -> Held {
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         let mut line = String::new();
@@ -95,12 +65,7 @@ impl Held {
         Held::parse(name, &line)
     }
 
-    /// The section of the pack that carries `path` (absolute, normalised),
-    /// when a whole-file read of it is one to refuse. The pack's paths are
-    /// relative to `repo`: `path` must be `<repo>/<held>`, not merely end
-    /// in it. `prd.md` is never one (the pack has cuts, the file is
-    /// longer), nor is the log file of an answered block (the pack has the
-    /// entry only).
+    /// `prd.md` and `log.jsonl` are never held: the pack carries cuts of them, not the files.
     pub fn section(&self, path: &str, repo: &Path) -> Option<&'static str> {
         if !self.slice_pack {
             return None;
@@ -124,13 +89,10 @@ impl Held {
     }
 }
 
-/// The reason for a whole read of a held file.
 pub fn pack_hint(section: &str) -> String {
     format!("that file is in your pack under \"# {section}\"; read a range if you need more")
 }
 
-/// The verdict on one PreToolUse input: `repo` is what the pack's paths
-/// are relative to, `cwd` where the call runs.
 pub fn decide(input: &Value, held: &Held, repo: &Path, cwd: &Path) -> Verdict {
     let tool = input.get("tool_name").and_then(Value::as_str).unwrap_or("");
     let args = input.get("tool_input").unwrap_or(&Value::Null);
@@ -161,8 +123,7 @@ fn bash(command: &str, held: &Held, repo: &Path, cwd: &Path) -> Verdict {
         return Verdict::Deny(NEVER_HINT.to_string());
     }
     let (words, end, cds) = shell::first_command_in(command);
-    // `cd X && …` runs the rest in X. A target the hook cannot follow
-    // (`cd`, `cd -`, `cd ~`, `cd $D`) leaves nothing to judge paths by.
+    // A `cd` the hook cannot follow (`cd`, `cd -`, `cd ~`, `cd $D`) leaves nothing to judge paths by.
     let mut here = cwd.to_path_buf();
     for target in cds {
         match target
@@ -195,23 +156,13 @@ fn bash(command: &str, held: &Held, repo: &Path, cwd: &Path) -> Verdict {
     }
 }
 
-/// Does `command` run `gh`, or `git push`, anywhere: a list, a pipe, a
-/// group, a substitution, behind a wrapper (`env`, `timeout`, `xargs`,
-/// `find -exec` …), or in a string handed to `sh -c`, `eval` or `env -S`?
-/// Where the reading is unsure — an unbalanced quote, a program spelled by
-/// an expansion, a shell reading a pipe, inline code for an interpreter —
-/// naming `gh` or `push` anywhere in the line is enough. A script file the
-/// line runs, a git alias and a make target stay out of sight: the guard
-/// holds an agent under pressure to the never-list, not one set on
-/// getting round it.
+/// Script files, aliases and make targets are out of sight: this holds an agent under pressure, not one evading it.
 pub fn guard(command: &str) -> bool {
     forbidden(command, 0)
 }
 
-/// How deep [`guard`] follows strings handed to shells.
 const MAX_DEPTH: u32 = 8;
 
-/// What one simple command reaches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Reach {
     Fine,
@@ -236,8 +187,7 @@ fn forbidden(text: &str, depth: u32) -> bool {
     unsure && mentions(text)
 }
 
-/// A string another shell will read: forbidden or fine, never unsure (the
-/// nested read already weighed its own doubt against its own text).
+/// Never unsure: the nested read already weighed its own doubt against its own text.
 fn nested(text: &str, depth: u32) -> Reach {
     if forbidden(text, depth + 1) {
         Reach::Forbidden
@@ -246,8 +196,6 @@ fn nested(text: &str, depth: u32) -> Reach {
     }
 }
 
-/// `gh` or `push` as a word of its own, in any case (`$GH`): what an
-/// unsure reading denies on.
 fn mentions(text: &str) -> bool {
     let b = text.to_ascii_lowercase().into_bytes();
     let word = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
@@ -261,7 +209,6 @@ fn mentions(text: &str) -> bool {
     })
 }
 
-/// A program word the hook cannot know: an expansion or a glob.
 fn expansion(w: &str) -> bool {
     w.contains(['$', '`', '*', '?', '[', '{', '}'])
 }
@@ -271,7 +218,6 @@ const RESERVED: [&str; 12] = [
     "!", "{", "}", "if", "then", "elif", "else", "fi", "do", "done", "while", "until",
 ];
 
-/// The words of one simple command, after its prefixes.
 fn reach(w: &[&str], stdin: &[String], depth: u32) -> Reach {
     let mut i = 0;
     loop {
@@ -372,9 +318,7 @@ fn reach(w: &[&str], stdin: &[String], depth: u32) -> Reach {
     }
 }
 
-/// Past a wrapper's options to its command: `short` are its one-letter
-/// options that take a value, `long` its long ones (`--name value`);
-/// `positional` operands come before the command (`timeout`'s duration).
+/// `short` and `long` are the wrapper's options that take a value; `positional` operands precede its command.
 fn skip_opts(args: &[&str], short: &str, long: &[&str], positional: usize) -> usize {
     let mut i = 0;
     while i < args.len() {
@@ -405,8 +349,6 @@ fn skip_opts(args: &[&str], short: &str, long: &[&str], positional: usize) -> us
     (i + positional).min(args.len())
 }
 
-/// The value of `short` or `long` (`-c x`, `-cx`, `--command x`,
-/// `--command=x`) anywhere in `args`.
 fn option_value<'a>(args: &[&'a str], short: &str, long: &str) -> Option<&'a str> {
     let long_eq = format!("{long}=");
     for (k, a) in args.iter().enumerate() {
@@ -426,8 +368,6 @@ fn option_value<'a>(args: &[&'a str], short: &str, long: &str) -> Option<&'a str
     None
 }
 
-/// `env -S 'line'` (`--split-string`): the command line env splits, with
-/// the words after it.
 fn env_split(args: &[&str]) -> Option<String> {
     for (k, a) in args.iter().enumerate() {
         let (line, rest) = if *a == "-S" || *a == "--split-string" {
@@ -451,9 +391,7 @@ fn env_split(args: &[&str]) -> Option<String> {
     None
 }
 
-/// `git [global options] <subcommand>`: `push` and `send-pack` are
-/// forbidden, so are `subtree push` and `lfs push`, and so is an alias
-/// defined on the line (`-c alias.x=…`), which could spell either.
+/// An alias defined on the line (`-c alias.x=…`) could spell `push`, so it is forbidden outright.
 fn git(args: &[&str]) -> Reach {
     const VALUED: [&str; 8] = [
         "-C",
@@ -500,7 +438,6 @@ fn git(args: &[&str]) -> Reach {
     }
 }
 
-/// `find … -exec cmd … ;` (and `-execdir`, `-ok`, `-okdir`): each command.
 fn find_exec(args: &[&str], depth: u32) -> Reach {
     let mut worst = Reach::Fine;
     let mut k = 0;
@@ -523,9 +460,7 @@ fn find_exec(args: &[&str], depth: u32) -> Reach {
     worst
 }
 
-/// A shell: `-c 'line'` is read; a script file is out of sight; reading
-/// stdin, it runs the here-documents fed to it, or what a pipe brings,
-/// which the hook cannot see.
+/// A shell reading stdin runs what a pipe brings, which the hook cannot see; a here-document it can.
 fn shell_call(args: &[&str], stdin: &[String], depth: u32) -> Reach {
     let mut command = false;
     let mut i = 0;
@@ -576,9 +511,6 @@ fn shell_call(args: &[&str], stdin: &[String], depth: u32) -> Reach {
     }
 }
 
-/// An interpreter running code the hook cannot read — inline (`python
-/// -c`, `node -e`, `perl -e` …) or from stdin — is unsure; one running a
-/// script file is fine.
 fn interpreter(program: &str, args: &[&str]) -> Reach {
     let inline: &[&str] = match program {
         p if p.starts_with("python") || p.starts_with("pypy") => &["c"],
@@ -618,8 +550,6 @@ fn interpreter(program: &str, args: &[&str]) -> Reach {
     Reach::Unsure
 }
 
-/// A recursive search from `here` reaches the repo when it names no path
-/// and `here` is in the repo, or names a directory of the repo.
 fn over_repo(paths: Option<Vec<&str>>, here: &Path, repo: &Path) -> bool {
     match paths {
         None => false,
@@ -628,7 +558,6 @@ fn over_repo(paths: Option<Vec<&str>>, here: &Path, repo: &Path) -> bool {
     }
 }
 
-/// `grep`'s path operands when the call is recursive, else `None`.
 fn grep_paths(args: &[String]) -> Option<Vec<&str>> {
     const WITH_ARG: &[&str] = &[
         "--regexp",
@@ -699,8 +628,7 @@ fn grep_paths(args: &[String]) -> Option<Vec<&str>> {
     Some(positional)
 }
 
-/// `rg`'s path operands (it always recurses); `None` for `--files` and
-/// `--type-list`, which list rather than search.
+/// `rg` always recurses; `--files` and `--type-list` list rather than search.
 fn rg_paths(args: &[String]) -> Option<Vec<&str>> {
     const SHORT_ARG: &str = "efgtTmABCjMrEd";
     const WITH_ARG: &[&str] = &[
@@ -776,10 +704,7 @@ fn rg_paths(args: &[String]) -> Option<Vec<&str>> {
     Some(positional)
 }
 
-/// A path of the repo that is a directory on disk — `.env`, `Makefile` or
-/// `artisan` is a file whatever its name looks like. A glob whose last
-/// part is `*` or `**` (`src/*`) reaches directories too; a path that does
-/// not exist is no directory.
+/// A glob ending in `*` or `**` reaches directories; anything else is a directory only when the disk says so.
 fn repo_dir(p: &str, here: &Path, repo: &Path) -> bool {
     let Some(full) = absolute(p, here) else {
         return false;
@@ -793,7 +718,6 @@ fn repo_dir(p: &str, here: &Path, repo: &Path) -> bool {
     Path::new(&full).is_dir()
 }
 
-/// `full` is `repo` or inside it.
 fn under(full: &str, repo: &Path) -> bool {
     let Some(repo) = repo.to_str() else {
         return false;
@@ -802,9 +726,7 @@ fn under(full: &str, repo: &Path) -> bool {
     full == repo || full.starts_with(&format!("{repo}/"))
 }
 
-/// `p` made absolute against `cwd` and normalised lexically (`.` and `..`
-/// resolved); `None` for `~`, `$VAR` and the empty path, which the hook
-/// does not expand.
+/// Lexical, never touching the disk; `~` and `$VAR` are not expanded.
 fn absolute(p: &str, cwd: &Path) -> Option<String> {
     if p.is_empty() || p.starts_with('~') || p.starts_with('$') {
         return None;
@@ -823,8 +745,6 @@ fn absolute(p: &str, cwd: &Path) -> Option<String> {
     Some(format!("/{}", parts.join("/")))
 }
 
-/// The `hookSpecificOutput` line for a deny; `None` for no decision,
-/// which the hook answers with an empty stdout.
 pub fn output(v: &Verdict) -> Option<Value> {
     match v {
         Verdict::Allow => None,
@@ -838,9 +758,7 @@ pub fn output(v: &Verdict) -> Option<Value> {
     }
 }
 
-/// Read the call on `stdin`, answer on `out`; never a non-zero exit.
-/// `repo` is what the pack's paths are relative to; the call's cwd when
-/// `None`.
+/// Never a non-zero exit: a hook bug must not block a worker.
 pub fn hook_with(
     stdin: &mut dyn Read,
     pack: Option<&Path>,
@@ -877,8 +795,6 @@ pub fn hook_with(
     Ok(0)
 }
 
-/// Input the hook cannot read: no decision, with a line on stderr — but
-/// text that names `gh` or `push` is denied, the guard failing closed.
 fn unread(text: &str, why: &str, err: &mut dyn Write) -> Verdict {
     if mentions(text) {
         let _ = writeln!(err, "factory hook: {why}; it names gh or push: denied");
@@ -888,8 +804,6 @@ fn unread(text: &str, why: &str, err: &mut dyn Write) -> Verdict {
     Verdict::Allow
 }
 
-/// `factory hook`: the pack from `FACTORY_PACK`, the repo from
-/// `FACTORY_REPO` (`worker::REPO_ENV`).
 pub fn hook(stdin: &mut dyn Read, out: &mut dyn Write, err: &mut dyn Write) -> Result<i32> {
     let pack = std::env::var_os(PACK_ENV).map(PathBuf::from);
     let repo = std::env::var_os(crate::worker::REPO_ENV)
@@ -913,9 +827,7 @@ mod tests {
         )
     }
 
-    /// A repo on disk, so a grep's operands can be asked whether they are
-    /// directories: `src/`, `src/Http/`, `app/`, `storage/logs/` and a few
-    /// files, `.env`, `Makefile` and `artisan` among them.
+    /// On disk, so a grep operand can be asked whether it is a directory.
     fn repo() -> tempfile::TempDir {
         let tmp = tempfile::tempdir().unwrap();
         for d in ["src/Http", "app", "storage/logs", "docs/features/001-x"] {
@@ -1002,8 +914,6 @@ mod tests {
         }
     }
 
-    /// Cn4: a dotfile or an extensionless name is a directory only when the
-    /// filesystem says so.
     #[test]
     fn grep_operands_are_directories_only_when_they_are() {
         let tmp = repo();
@@ -1019,8 +929,6 @@ mod tests {
         assert!(denied(bash_in("rg foo storage", root, root)));
     }
 
-    /// Cn3: what follows `cd X &&` resolves against X, and the repo is the
-    /// pack's root wherever the call runs.
     #[test]
     fn a_leading_cd_moves_where_paths_resolve() {
         let tmp = repo();
@@ -1028,7 +936,6 @@ mod tests {
         let r = root.to_str().unwrap();
         let elsewhere = tempfile::tempdir().unwrap();
         let e = elsewhere.path().to_str().unwrap();
-        // From outside the repo, `cd` into it: the grep reaches it.
         assert!(denied(bash_in(
             &format!("cd {r} && grep -rn foo src"),
             root,
@@ -1036,12 +943,10 @@ mod tests {
         )));
         assert!(denied(bash_in("cd src && rg foo", root, root)));
         assert!(denied(bash_in("cd src && rg foo Http", root, root)));
-        // `cd` out of the repo: the same grep is not over it.
         assert_eq!(
             bash_in(&format!("cd {e} && grep -rn foo ."), root, root),
             Verdict::Allow
         );
-        // A target the hook cannot follow: no decision.
         for cmd in [
             "cd && rg foo",
             "cd - && rg foo",
@@ -1050,7 +955,6 @@ mod tests {
         ] {
             assert_eq!(bash_in(cmd, root, root), Verdict::Allow, "{cmd}");
         }
-        // `cat` of a held file through a `cd`.
         assert_eq!(
             bash_in("cd docs && cat features/001-x/slice-02-b.md", root, root),
             Verdict::Deny(pack_hint("Slice"))
@@ -1090,7 +994,6 @@ mod tests {
             read("/repo/docs/features/001-x/log.jsonl", json!({})),
             Verdict::Allow
         );
-        // v2's log has no exemption left: listed, it is any other held file.
         assert_eq!(
             read("/repo/docs/features/001-x/agent-log.md", json!({})),
             want("Outline")
@@ -1100,7 +1003,6 @@ mod tests {
         assert_eq!(bash("cd /repo && cat src/helper.rs"), want("Outline"));
         assert!(!denied(bash(&format!("cat {SLICE} | head -40"))));
         assert!(!denied(bash(&format!("sed -n 1,40p {SLICE}"))));
-        // A checkpoint pack carries no file in full.
         let cp = Held::parse(
             "checkpoint-1-4.md",
             &format!("<!-- factory-pack files: {SLICE} -->"),
@@ -1114,7 +1016,6 @@ mod tests {
         assert_eq!(v, Verdict::Allow);
     }
 
-    /// C3: a held path is `<repo>/<held>`, not anything that ends in it.
     #[test]
     fn only_the_repo_copy_of_a_held_file_is_held() {
         let h = held();
@@ -1132,7 +1033,6 @@ mod tests {
         ] {
             assert_eq!(h.section(other, repo), None, "{other}");
         }
-        // Read from a subdirectory: the path is still the repo's.
         let v = decide(
             &json!({"tool_name": "Read", "tool_input": {"file_path": "../src/helper.rs"}}),
             &h,
@@ -1165,7 +1065,6 @@ mod tests {
                 "{input:?}"
             );
         }
-        // Unreadable, and it names a push: the guard fails closed.
         let (mut out, mut err) = (Vec::new(), Vec::new());
         hook_with(
             &mut "{\"command\": \"git push".as_bytes(),

@@ -1,9 +1,4 @@
-//! `factory docs preflight NNN` (PRD-002 FR-15): can a run start, or resume,
-//! on this feature unattended? A port of `docs.mjs:1671-1771` reading
-//! `project.toml`, `state.toml` and the log instead of frontmatter. Four
-//! buckets: `refuse` (the run cannot start), `ask` (a one-time fix the owner
-//! answers first), `judge` (the agent decides alone), `ok`. Exit 0 pass,
-//! 1 refused, 2 asks pending.
+//! Can a run start unattended? `refuse` stops it, `ask` is a one-time fix for the owner, `judge` the agent decides alone.
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -13,7 +8,6 @@ use super::{Branch, FeatureRef, Preflight, Slice, check, gate, log, project};
 use crate::error::{io, json};
 use crate::{Result, skills};
 
-/// `git <args>` in `root`, stdout untrimmed; `None` on any failure.
 pub fn git(root: &Path, args: &[&str]) -> Option<String> {
     let out = Command::new("git")
         .args(args)
@@ -31,8 +25,6 @@ fn git_line(root: &Path, args: &[&str]) -> Option<String> {
     git(root, args).map(|s| s.trim().to_string())
 }
 
-/// `defaultBranch` (`docs.mjs:1649-1654`): `origin/HEAD`, else `main` or
-/// `master` when the branch exists.
 pub fn default_branch(root: &Path) -> Option<String> {
     if let Some(h) = git_line(
         root,
@@ -57,9 +49,7 @@ pub fn default_branch(root: &Path) -> Option<String> {
         .map(str::to_string)
 }
 
-/// `parallelWidth` (`docs.mjs:1093-1104`): the widest wave of a greedy
-/// schedule over `depends_on`. A dependency on a slice that is not listed
-/// counts as met; a cycle stops the count.
+/// The widest wave of a greedy schedule; an unlisted dependency counts as met, a cycle stops the count.
 pub fn parallel_width(slices: &[Slice]) -> usize {
     let mut pending: Vec<(u32, &[u32])> = slices
         .iter()
@@ -94,7 +84,6 @@ fn find<'a>(features: &'a [Feature], reference: &str) -> Option<&'a Feature> {
     })
 }
 
-/// The verdict and its exit code.
 pub fn run(root: &Path, reference: &str) -> Result<(Preflight, i32)> {
     let mut refuse: Vec<String> = Vec::new();
     let mut ask: Vec<String> = Vec::new();
@@ -120,7 +109,7 @@ pub fn run(root: &Path, reference: &str) -> Result<(Preflight, i32)> {
                     codes.join(", ")
                 ));
             }
-            // FR-3: a stale skill is the owner's to judge, never a refusal.
+            // A stale skill is the owner's to judge, never a refusal.
             let v = skills::verdict(root);
             let into = if v.is_ok() { &mut ok } else { &mut judge };
             into.extend(v.lines().into_iter().map(|l| format!("skills {l}")));
@@ -153,8 +142,7 @@ pub fn run(root: &Path, reference: &str) -> Result<(Preflight, i32)> {
         }
     }
 
-    // Either naming style counts: projects use both, and refusing the run's
-    // own branch cost a real run.
+    // Either branch naming style counts: projects use both.
     let mut branch = Branch {
         feature: f.map(|f| format!("feat/{}", f.slug)),
         alt: f.map(|f| format!("feat/{:03}-{}", f.number, f.slug)),
@@ -170,9 +158,6 @@ pub fn run(root: &Path, reference: &str) -> Result<(Preflight, i32)> {
             .filter(|s| s.status.as_deref() == Some("building"))
             .map(|s| format!("{:02}", s.number))
             .collect();
-        // A builder that died mid-slice leaves its work uncommitted; refusing
-        // the tree would make the run unresumable, so the run judges whether
-        // the diff is that builder's.
         if count > 0 && !building.is_empty() {
             judge.push(format!(
                 "working tree not clean ({count} path(s)) while slice {} is building — likely a builder that died mid-slice; hand its diff to a fresh builder, and stop if any path is not that slice's",
@@ -228,8 +213,6 @@ pub fn run(root: &Path, reference: &str) -> Result<(Preflight, i32)> {
         }
     }
 
-    // `pass` is "nothing mechanical refuses this run"; asks exit 2, which the
-    // driver puts to the owner.
     let code = if !refuse.is_empty() {
         1
     } else if !ask.is_empty() {
@@ -253,7 +236,6 @@ pub fn run(root: &Path, reference: &str) -> Result<(Preflight, i32)> {
     Ok((pf, code))
 }
 
-/// The feature half (`docs.mjs:1692-1727`).
 #[allow(clippy::too_many_arguments)]
 fn feature(
     root: &Path,
@@ -268,8 +250,6 @@ fn feature(
     let nnn = format!("{:03}", f.number);
     let st = f.status().unwrap_or_default();
     let (entries, _) = log::entries(&f.dir)?;
-    // A run ships in its closeout commit and still has the PR, CI and the
-    // owner's review ahead: shipped with a written log is a run to resume.
     if st == "shipped" && !entries.is_empty() {
         ok.push("status shipped by the run — resumes at the PR, CI or owner review".into());
     } else if !matches!(st.as_str(), "draft" | "ready" | "in-progress") {
@@ -284,8 +264,7 @@ fn feature(
             }
         ));
     }
-    // `reviewed` records /polish over the code. Set before any code exists,
-    // it makes a resumed run skip polish.
+    // A `reviewed` date set before any code exists makes a resumed run skip polish.
     if let Some(r) = f.state().and_then(|s| s.reviewed.as_deref())
         && matches!(st.as_str(), "draft" | "ready")
     {
@@ -349,8 +328,6 @@ fn feature(
     if g.status != "none" && inner.is_none() {
         ask.push("no inner loop declared — every slice runs the full gate. Declare the fast subset once (`factory docs gate set --inner \"<cmd>\"`) and every slice of every future run skips the slow tiers.".into());
     }
-    // Lanes let two agents run the suite at once, each with its own
-    // database, ports and scratch paths.
     let lanes = p.map_or(1, |p| p.lanes);
     let width = parallel_width(slices);
     if width >= 2 && lanes < 2 {
@@ -361,7 +338,6 @@ fn feature(
     } else if width >= 2 {
         ok.push(format!("lanes {lanes} · graph allows {width} at once"));
     }
-    // Only a measured false asks. Absent means nobody has looked.
     match p.and_then(|p| p.gate_parallel) {
         Some(false) => ask.push("the gate cannot run parallel workers (`gate_parallel = false`) — every gate run pays full serial wall-clock, and a run pays it dozens of times. One pass at making the suite worker-safe cuts every future run.".into()),
         None if g.status != "none" => judge.push("gate_parallel not measured — `/gate audit` times the suite serial and parallel and writes the answer to docs/project.toml".into()),
@@ -370,7 +346,6 @@ fn feature(
     Ok(())
 }
 
-/// The verb: the JSON with `--json`, else the `✓ ✗ ! ?` lines.
 pub fn cli(root: &Path, reference: &str, as_json: bool, out: &mut dyn Write) -> Result<i32> {
     let (pf, code) = run(root, reference)?;
     let mut text = String::new();

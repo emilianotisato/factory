@@ -1,10 +1,4 @@
-//! The fixture every integration test builds: a throwaway git repo on the
-//! v3 docs layout, built by the binary (`factory docs init`, `new`, `slice`,
-//! PRD-002 FR-18), a scripted gate and the stub `claude` and `gh` first on
-//! PATH (PRD-001 FR-10, slice 01). `Fixture::v2` keeps a v2 repo for the
-//! migration and refusal tests.
-//!
-//! Shared by `tests/*.rs` through `#[path = "harness/mod.rs"] mod harness;`.
+//! A throwaway v3 repo built by the binary, a scripted gate, stub `claude` and `gh` first on PATH.
 #![allow(dead_code)]
 
 use std::collections::BTreeMap;
@@ -21,10 +15,7 @@ use tempfile::TempDir;
 pub const FEATURE: &str = "001";
 pub const FEATURE_DIR: &str = "docs/features/001-fixture";
 
-/// `tests/stubs/`: the stub `claude` and `gh`.
-/// PRD-002 FR-18: a worker pack's contract calls the tool through the
-/// driver binary's absolute path, and names nothing of the v2 log: no seed,
-/// no `agent-log.md`, no fragment, no render.
+// The `bad` strings are the v2 log's vocabulary.
 pub fn assert_v3_contract(pack: &str) {
     let contract = &pack[pack.find("\n# Contract\n").expect("a # Contract section")..];
     let bin = env!("CARGO_BIN_EXE_factory");
@@ -49,12 +40,10 @@ pub fn stubs_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/stubs")
 }
 
-/// `tests/fixture/`: `gate.sh`, the v2 fixture and the stub `docs.mjs`.
 pub fn fixture_src() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixture")
 }
 
-/// One line of `scenario/gate.log`: `<epoch> <kind> <exit> <pwd> <head>`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GateRun {
     pub epoch: u64,
@@ -76,30 +65,22 @@ pub struct Fixture {
 }
 
 impl Fixture {
-    /// The v3 repo (PRD-002 FR-18), built by the binary: `factory docs
-    /// init`, `new`, `slice`, then `set 001 status=ready`, with the default
-    /// `[docs]` keys.
     pub fn new(name: &str) -> Fixture {
         Self::with_index(name, &[])
     }
 
-    /// A fixture whose `docs/project.toml` `[docs]` table also carries
-    /// `extra` keys (`checkpoint_every`, for one); a key it already has is
-    /// replaced. Values are TOML: a string is passed quoted.
+    /// `extra` values are raw TOML: a string is passed quoted.
     pub fn with_index(name: &str, extra: &[(&str, &str)]) -> Fixture {
         let fx = Self::bare(name);
         fx.build_v3(extra);
         fx
     }
 
-    /// The checked-in v2 repo of `tests/fixture/v2/` (PRD-002 slice 07), for
-    /// `migrate` and the v2 routing tests.
     pub fn v2(name: &str) -> Fixture {
         Self::v2_with_docs(name, &fixture_src().join("v2/docs"))
     }
 
-    /// The v2 fixture's tool and gate with another `docs/` tree, committed
-    /// once with fixed dates, so every `git blame` date in it is 2026-09-30.
+    /// Committed with a fixed date so every `git blame` in it reads 2026-09-30.
     pub fn v2_with_docs(name: &str, docs: &Path) -> Fixture {
         let fx = Self::bare(name);
         fx.init_repo();
@@ -122,19 +103,15 @@ impl Fixture {
         fx
     }
 
-    /// `$FACTORY_DATA_DIR`: where the metrics store lives.
     pub fn data_dir(&self) -> PathBuf {
         self.base.path().join("data")
     }
 
-    /// `[lanes] seed = [...]` in `docs/project.toml` in place of the
-    /// `[lanes]` table there, committed.
     pub fn set_seed(&self, paths: &[&str]) {
         let items: Vec<String> = paths.iter().map(|p| format!("{p:?}")).collect();
         self.rewrite_lanes(Some(&format!("[lanes]\nseed = [{}]\n", items.join(", "))));
     }
 
-    /// `docs/project.toml` with no `[lanes]` table, committed.
     pub fn drop_lanes_table(&self) {
         self.rewrite_lanes(None);
     }
@@ -164,15 +141,11 @@ impl Fixture {
         self.git(&["commit", "-q", "-m", "chore: lanes table"]);
     }
 
-    /// The temp dirs and the env, before any repo is built.
     fn bare(name: &str) -> Fixture {
         let mut base = tempfile::Builder::new()
             .prefix(&format!("factory-{name}-"))
             .tempdir()
             .expect("tempdir");
-        // `FACTORY_KEEP_FIXTURE=1` leaves the repo, the run dir and the stub's
-        // call log on disk after the test: a checkpoint's evidence (CP-2) is the
-        // `events.jsonl` and the pack a passing run leaves behind.
         if std::env::var_os("FACTORY_KEEP_FIXTURE").is_some() {
             base.disable_cleanup(true);
             eprintln!("fixture {name} kept at {}", base.path().display());
@@ -202,8 +175,6 @@ impl Fixture {
         }
     }
 
-    /// The origin, the git identity and the gate script, shared by both
-    /// layouts.
     fn init_repo(&self) {
         let origin = self.base.path().join("origin.git");
         self.git_in(
@@ -246,7 +217,7 @@ impl Fixture {
         for (k, v) in keys {
             toml.push_str(&format!("{k} = {v}\n"));
         }
-        // Preflight refuses a repo with no `[lanes] seed` (PRD-005 FR-1).
+        // Preflight refuses a repo with no `[lanes] seed`.
         toml.push_str("\n[lanes]\nseed = []\n");
         fs::write(self.root.join("docs/project.toml"), toml).unwrap();
         self.docs(&["new", "fixture", "--title", "Fixture"]);
@@ -265,8 +236,6 @@ impl Fixture {
         self.git(&["commit", "-q", "-m", "chore: fixture repo"]);
     }
 
-    /// The v3 scaffold with its `summary` filled, the harness line and one
-    /// `run` row per slice.
     fn patch_prd_v3(&self) {
         let p = self.root.join(FEATURE_DIR).join("prd.md");
         let text = fs::read_to_string(&p).expect("fixture prd.md");
@@ -297,8 +266,7 @@ impl Fixture {
         fs::write(&p, out.join("\n") + "\n").unwrap();
     }
 
-    /// `factory docs <args>`; panics on a non-zero exit so a shape change in
-    /// the tool fails the fixture, not a test three steps later.
+    /// Panics on a non-zero exit so a tool shape change fails the fixture, not a later test.
     pub fn docs(&self, args: &[&str]) -> String {
         let out = self.docs_output(args);
         assert!(
@@ -311,7 +279,6 @@ impl Fixture {
         String::from_utf8(out.stdout).expect("utf8")
     }
 
-    /// `factory docs <args>` whatever the exit code.
     pub fn docs_output(&self, args: &[&str]) -> Output {
         self.command(env!("CARGO_BIN_EXE_factory"))
             .arg("docs")
@@ -320,8 +287,7 @@ impl Fixture {
             .expect("run factory docs")
     }
 
-    /// `factory docs <cmd> 001 --json` parsed, whatever the exit code
-    /// (preflight exits 1 or 2 when it refuses or asks, and the JSON says why).
+    /// No exit check: preflight exits 1 or 2 when it refuses or asks, and the JSON says why.
     pub fn docs_json(&self, cmd: &str) -> Value {
         let out = self.docs_output(&[cmd, FEATURE, "--json"]);
         let stdout = String::from_utf8_lossy(&out.stdout);
@@ -333,31 +299,24 @@ impl Fixture {
         })
     }
 
-    /// The repo root.
     pub fn path(&self) -> &Path {
         &self.root
     }
 
-    /// `$FACTORY_STUB_DIR`: `calls/`, `plan.jsonl`, `gh.log`.
     pub fn stub_dir(&self) -> &Path {
         &self.stub_dir
     }
 
-    /// The environment the driver and the stubs run with: PATH with the stubs
-    /// first, the `FACTORY_*` dirs and an empty global git config.
     pub fn env(&self) -> &BTreeMap<String, String> {
         &self.env
     }
 
-    /// A command prepared with the fixture's env, cwd at the repo root.
     pub fn command<S: AsRef<OsStr>>(&self, program: S) -> Command {
         let mut c = Command::new(program);
         c.current_dir(&self.root).envs(&self.env);
         c
     }
 
-    /// The fixture feature's `log.jsonl` entries, as `log show --json` reads
-    /// them; empty when the log is.
     pub fn log_entries(&self) -> Vec<Value> {
         let out = self.docs(&["log", "show", FEATURE, "--json"]);
         match serde_json::from_str::<Value>(&out).expect("log show --json") {
@@ -366,7 +325,6 @@ impl Fixture {
         }
     }
 
-    /// The log entries of one `kind` (`block`, `decision`, `note`, …).
     pub fn log_of(&self, kind: &str) -> Vec<Value> {
         self.log_entries()
             .into_iter()
@@ -374,7 +332,6 @@ impl Fixture {
             .collect()
     }
 
-    /// The fixture feature's `state.toml`, parsed by the library.
     pub fn state(&self) -> factory::docs::state::State {
         factory::docs::state::read(&self.root.join(FEATURE_DIR))
             .expect("read state.toml")
@@ -401,12 +358,10 @@ impl Fixture {
         String::from_utf8(out.stdout).expect("utf8")
     }
 
-    /// A file under the repo root.
     pub fn read(&self, rel: &str) -> String {
         fs::read_to_string(self.root.join(rel)).unwrap_or_else(|e| panic!("read {rel}: {e}"))
     }
 
-    /// The fixture's `slice-0N-*.md`.
     pub fn slice_path(&self, n: u8) -> PathBuf {
         let prefix = format!("slice-{n:02}-");
         fs::read_dir(self.root.join(FEATURE_DIR))
@@ -420,7 +375,6 @@ impl Fixture {
             .unwrap_or_else(|| panic!("no slice {n:02} in {FEATURE_DIR}"))
     }
 
-    /// The slice's `status` in `state.toml`.
     pub fn slice_status(&self, n: u8) -> String {
         self.state()
             .slices
@@ -429,21 +383,15 @@ impl Fixture {
             .unwrap_or_else(|| panic!("slice {n:02} has no status in state.toml"))
     }
 
-    /// The slice's `lane` in `state.toml`, `None` when it holds none.
     pub fn slice_lane(&self, n: u8) -> Option<u32> {
         self.state().slices.get(&u32::from(n)).and_then(|s| s.lane)
     }
 
-    /// `factory docs set 001 slices.N.status=<status>`.
     pub fn set_slice_status(&self, n: u8, status: &str) {
         self.docs(&["set", FEATURE, &format!("slices.{n}.status={status}")]);
     }
 
-    /// Script the full gate: one outcome per line of `scenario/gate`.
-    /// Make slice 02 depend on 01 so the plan is a chain, 01 → 02 → 03, and
-    /// the two lanes of the index build one slice at a time. The default
-    /// fixture leaves 01 and 02 independent (slice 04 builds them at once);
-    /// the tests of the one-at-a-time loop want them in order.
+    /// Chains 01 → 02 → 03 so the two lanes build one slice at a time.
     pub fn chain(&self) {
         assert!(self.state().slices[&2].depends_on.is_empty());
         self.docs(&["set", FEATURE, "slices.2.depends_on=1"]);
@@ -455,18 +403,15 @@ impl Fixture {
         self.script("gate", outcomes);
     }
 
-    /// Script the inner loop: `scenario/inner`.
     pub fn script_inner(&self, outcomes: &[&str]) {
         self.script("inner", outcomes);
     }
 
-    /// Script the stub `gh`'s `pr checks` (slice 09): `scenario/ci`, one
-    /// line per call — `green`, `red:<check>[@<sha>]`, `flaky:<check>`.
+    /// One line per `gh pr checks` poll: `green`, or rows `<kind>:<check>[@<sha>]`.
     pub fn script_ci(&self, lines: &[&str]) {
         self.script("ci", lines);
     }
 
-    /// Every recorded stub `gh` call, one argv line each, in order.
     pub fn gh_log(&self) -> Vec<String> {
         fs::read_to_string(self.stub_dir.join("gh.log"))
             .unwrap_or_default()
@@ -484,7 +429,6 @@ impl Fixture {
         .unwrap();
     }
 
-    /// Run `./gate.sh` (or `./gate.sh --inner`) as the driver would.
     pub fn run_gate_output(&self, inner: bool) -> Output {
         let mut c = self.command(self.root.join("gate.sh"));
         if inner {
@@ -493,12 +437,10 @@ impl Fixture {
         c.output().expect("run gate.sh")
     }
 
-    /// The gate's exit code.
     pub fn run_gate(&self, inner: bool) -> i32 {
         self.run_gate_output(inner).status.code().unwrap_or(-1)
     }
 
-    /// `scenario/gate.log`, parsed; empty when no gate has run.
     pub fn gate_log(&self) -> Vec<GateRun> {
         let Ok(text) = fs::read_to_string(self.root.join("scenario/gate.log")) else {
             return Vec::new();
@@ -525,13 +467,12 @@ impl Fixture {
             .collect()
     }
 
-    /// The stub claude's plan: one step per spawn, in order.
+    /// One step per spawn, in order.
     pub fn write_plan(&self, steps: &[Value]) {
         let text: String = steps.iter().map(|s| format!("{s}\n")).collect();
         fs::write(self.stub_dir.join("plan.jsonl"), text).unwrap();
     }
 
-    /// Every recorded stub claude call, in spawn order.
     pub fn calls(&self) -> Vec<Value> {
         let dir = self.stub_dir.join("calls");
         let mut files: Vec<PathBuf> = match fs::read_dir(&dir) {
@@ -544,8 +485,7 @@ impl Fixture {
                 .and_then(|s| s.parse::<u32>().ok())
                 .unwrap_or(0)
         });
-        // The stub claims `N.json` empty (`wx`) and fills it a moment later:
-        // a poll that lands in between sees a claim, not a call, and skips it.
+        // The stub claims `N.json` with `wx` and fills it later: an empty file is a claim, not a call.
         files
             .iter()
             .filter_map(|p| {
@@ -591,29 +531,25 @@ fn build_env(
     BTreeMap::from([
         ("PATH".to_string(), path),
         ("FACTORY_STUB_DIR".to_string(), s(stub_dir)),
-        // The stub `claude` writes the board through the binary, as a real
-        // worker does through its contract's resolved path.
+        // The stub `claude` writes the board through this binary.
         (
             "FACTORY_BIN".to_string(),
             env!("CARGO_BIN_EXE_factory").to_string(),
         ),
         ("FACTORY_DATA_DIR".to_string(), s(&base.join("data"))),
         ("FACTORY_CONFIG_DIR".to_string(), s(&base.join("config"))),
-        // Never the owner's real install receipt: a test binary is always
-        // "from source" to `factory upgrade` and doctor's `ahead` hint.
+        // Never the owner's real install receipt: a test binary is always "from source".
         (
             "AXOUPDATER_CONFIG_PATH".to_string(),
             s(&base.join("axoupdater")),
         ),
         ("GIT_CONFIG_GLOBAL".to_string(), s(gitconfig)),
         ("GIT_CONFIG_NOSYSTEM".to_string(), "1".to_string()),
-        // Claude Code's config dir: where the stub writes a session's
-        // subagent transcripts and the driver reads them (PRD-003 FR-21).
+        // Where the stub writes a session's subagent transcripts and the driver reads them.
         ("CLAUDE_CONFIG_DIR".to_string(), s(&base.join("claude"))),
     ])
 }
 
-/// The first executable `name` on the test process's own PATH.
 pub fn find_in_path(name: &str) -> Option<PathBuf> {
     std::env::var_os("PATH")?
         .to_str()?

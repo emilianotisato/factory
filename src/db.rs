@@ -1,8 +1,3 @@
-//! The SQLite store at `<data_dir>/factory.db` (PRD §10 FR-8): `runs`,
-//! `workers`, `gates`, `events`, written as events happen. Migrations are
-//! idempotent: `CREATE TABLE IF NOT EXISTS` plus a `schema_version` row, and
-//! a guarded `ALTER TABLE` per column added after a table shipped.
-//! `tool_calls` landed in slice 08. `retros` is version 3 (PRD-002 FR-19).
 use std::path::Path;
 use std::time::Duration;
 
@@ -116,8 +111,7 @@ CREATE TABLE IF NOT EXISTS retros (
 );
 ";
 
-/// Columns added after a table shipped: `ALTER TABLE` is not `IF NOT
-/// EXISTS`, so [`Db::migrate`] guards each by the live column list.
+/// SQLite's `ALTER TABLE ADD COLUMN` has no `IF NOT EXISTS`; each is guarded by the live column list.
 const COLUMNS: [(&str, &str, &str); 29] = [
     ("workers", "commit_sha", "TEXT"),
     ("workers", "checkpoint", "INTEGER"),
@@ -128,23 +122,16 @@ const COLUMNS: [(&str, &str, &str); 29] = [
     ("runs", "pr_url", "TEXT"),
     ("workers", "pack_files", "TEXT"),
     ("tool_calls", "pack_doc", "INTEGER"),
-    // v2 (PRD-003). Null `sub_*` means not read: an older row, or a
-    // transcript dir that could not be read; zero means none.
     ("workers", "sub_input", "INTEGER"),
     ("workers", "sub_cache_write", "INTEGER"),
     ("workers", "sub_cache_read", "INTEGER"),
     ("workers", "sub_output", "INTEGER"),
     ("workers", "subagents", "INTEGER"),
     ("tool_calls", "in_subagent", "INTEGER NOT NULL DEFAULT 0"),
-    // FR-22: the pack's sections and their chars, as JSON.
     ("workers", "pack_parts", "TEXT"),
-    // FR-23: the knobs a run resolved, its hypothesis, and the model
-    // that answered a worker (its first own assistant message).
     ("runs", "knobs", "TEXT"),
     ("runs", "hypothesis", "TEXT"),
     ("workers", "model_id", "TEXT"),
-    // FR-24: the polish `FINDINGS` line (null when it had none) and
-    // the agent log's counts at ship.
     ("runs", "findings_high", "INTEGER"),
     ("runs", "findings_medium", "INTEGER"),
     ("runs", "findings_low", "INTEGER"),
@@ -153,12 +140,10 @@ const COLUMNS: [(&str, &str, &str); 29] = [
     ("runs", "decisions", "INTEGER"),
     ("runs", "decide", "INTEGER"),
     ("runs", "blocks", "INTEGER"),
-    // FR-25: `git diff --shortstat <base>..HEAD` at ship.
     ("runs", "lines_added", "INTEGER"),
     ("runs", "lines_removed", "INTEGER"),
 ];
 
-/// The `retros` columns in table order, `repo` to `written_at`.
 pub const RETRO_COLUMNS: [&str; 19] = [
     "repo",
     "feature",
@@ -185,7 +170,6 @@ pub struct Db {
     conn: Connection,
 }
 
-/// One `events` row, as tests and the cockpit read it back.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EventRow {
     pub seq: u64,
@@ -194,7 +178,6 @@ pub struct EventRow {
     pub payload: String,
 }
 
-/// One `runs` row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunRow {
     pub id: String,
@@ -205,27 +188,20 @@ pub struct RunRow {
     pub finished_at: Option<String>,
     pub phase: String,
     pub budget_weighted_tokens: u64,
-    /// The draft PR (FR-6), once opened.
     pub pr_url: Option<String>,
-    /// PRD-003 FR-23: what the run resolved at its start, as JSON
-    /// (`config::knobs`); null on a run from before it.
+    /// JSON, from `config::knobs`.
     pub knobs: Option<String>,
-    /// The one line `factory run --hypothesis` gave; most runs have none.
     pub hypothesis: Option<String>,
-    /// PRD-003 FR-24: the polish return's `FINDINGS` line; `None` when it
-    /// had none or polish has not returned.
     pub findings: Option<Findings>,
-    /// `docs status` `log` counts at ship: `AD` entries, `decide` ones, blocks.
+    /// Agent-log counts at ship: `AD` entries, `decide` ones, blocks.
     pub decisions: Option<u32>,
     pub decide: Option<u32>,
     pub blocks: Option<u32>,
-    /// PRD-003 FR-25: the branch's changed lines against its base, stored at
-    /// ship; `None` before it or when `git diff` failed.
+    /// Changed lines against the base at ship; `None` when `git diff` failed.
     pub lines_added: Option<u64>,
     pub lines_removed: Option<u64>,
 }
 
-/// One `workers` row.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct WorkerRow {
     pub id: i64,
@@ -248,32 +224,23 @@ pub struct WorkerRow {
     pub peak_context: Option<i64>,
     pub started_at: String,
     pub ended_at: Option<String>,
-    /// The slice's commit (FR-5), once the driver made it.
     pub commit_sha: Option<String>,
-    /// The checkpoint a `fix` or `checkpoint` worker served (FR-4).
     pub checkpoint: Option<u32>,
-    /// The first assistant message's context (FR-8 `start_context`).
     pub start_context: Option<i64>,
-    /// The repo-relative files the worker's pack held (slice 13), from the
-    /// pack header; empty for a worker spawned before slice 13.
+    /// Repo-relative; empty when none was recorded.
     pub pack_files: Vec<String>,
-    /// The pack's sections and their chars as JSON, `[{"section", "chars"}]`
-    /// (PRD-003 FR-22); null for a worker spawned before it.
+    /// JSON of [`crate::pack::Part`]s.
     pub pack_parts: Option<String>,
-    /// What the worker's subagents used, from its transcript dir (PRD-003
-    /// FR-21); null when not read.
+    /// Null when the transcript dir was not read; zero when it had none.
     pub sub_input: Option<i64>,
     pub sub_cache_write: Option<i64>,
     pub sub_cache_read: Option<i64>,
     pub sub_output: Option<i64>,
-    /// How many subagents had an assistant message; null when not read.
     pub subagents: Option<i64>,
-    /// The model of the worker's first own assistant message: what
-    /// answered, beside `model`, what was asked for (PRD-003 FR-23).
+    /// What answered, where `model` is what was asked for.
     pub model_id: Option<String>,
 }
 
-/// One `tool_calls` row to insert (FR-8).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolCallInsert<'a> {
     pub run_id: &'a str,
@@ -286,17 +253,12 @@ pub struct ToolCallInsert<'a> {
     pub repeat_in_worker: bool,
     pub repeat_in_run: bool,
     pub ts: Option<&'a str>,
-    /// On a `ctx-*` row: a named file read within the next two calls.
     pub label_followup: Option<bool>,
-    /// On a `read` or `ctx-refs` row: the same target widened within five.
     pub label_expanded: Option<bool>,
-    /// A `read`/`bash-cat` of a file the worker's pack held (slice 13).
     pub pack_doc: bool,
-    /// The call came from one of the worker's subagents (PRD-003 FR-21).
     pub in_subagent: bool,
 }
 
-/// One `tool_calls` row, as tests and the report read it back.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolCallRow {
     pub id: i64,
@@ -312,18 +274,16 @@ pub struct ToolCallRow {
     pub ts: Option<String>,
     pub label_followup: Option<bool>,
     pub label_expanded: Option<bool>,
-    /// Null (a row from before slice 13) reads as false.
     pub pack_doc: bool,
     pub in_subagent: bool,
 }
 
-/// One `gates` row to insert (FR-4, FR-8).
 #[derive(Debug, Clone, PartialEq)]
 pub struct GateInsert<'a> {
     pub run_id: &'a str,
     /// `driver` for the checkpoint gate, `worker` for a worker's inner run.
     pub source: &'a str,
-    /// `checkpoint` for the driver's, `slice` for a worker's, later `ci`.
+    /// `checkpoint` for the driver's, `slice` for a worker's.
     pub kind: &'a str,
     pub cmd: &'a str,
     pub red: bool,
@@ -336,7 +296,6 @@ pub struct GateInsert<'a> {
     pub attempt: Option<u32>,
 }
 
-/// One `gates` row, as tests and the report read it back.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GateRow {
     pub id: i64,
@@ -353,9 +312,7 @@ pub struct GateRow {
     pub attempt: Option<u32>,
 }
 
-/// One `retros` row (PRD-002 FR-19): a feature's score and its twelve retro
-/// numbers, keyed on `(repo, feature)`. `repo` is the canonical root, the
-/// string `runs.repo` holds.
+/// `repo` is the canonical root, the string `runs.repo` holds.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RetroRow {
     pub repo: String,
@@ -376,13 +333,11 @@ pub struct RetroRow {
     pub cache_read_tokens: Option<i64>,
     pub start_context: Option<i64>,
     pub peak_context: Option<i64>,
-    /// Set by [`Db::upsert_retro`] and [`Db::set_retro_score`], whatever the
-    /// caller passed.
+    /// Overwritten on every write; the caller's value is ignored.
     pub written_at: String,
 }
 
 impl Db {
-    /// Open (creating the parent directory) and migrate.
     pub fn open(path: &Path) -> Result<Db> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
@@ -395,9 +350,7 @@ impl Db {
         Ok(db)
     }
 
-    /// One migrator at a time: the column check and its `ALTER` run in one
-    /// write transaction, so two first opens (a driver and a hook) cannot
-    /// both see a column missing and the second fail on a duplicate.
+    /// Immediate: two first opens must not both see a column missing and the second fail on a duplicate.
     fn migrate(&self) -> Result<()> {
         let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         tx.execute_batch(SCHEMA)?;
@@ -434,14 +387,12 @@ impl Db {
         &self.conn
     }
 
-    /// The highest applied version.
     pub fn schema_version(&self) -> Result<i64> {
         Ok(self
             .conn
             .query_row("SELECT max(version) FROM schema_version", [], |r| r.get(0))?)
     }
 
-    /// The run row, written when the run dir is created.
     pub fn insert_run(&self, s: &RunState) -> Result<()> {
         self.conn.execute(
             "INSERT INTO runs (id, repo, feature, branch, started_at, finished_at, phase, budget_weighted_tokens)
@@ -459,8 +410,6 @@ impl Db {
         Ok(())
     }
 
-    /// Mirror the state file's mutable columns; `finished_at` is set once the
-    /// phase is terminal and never cleared.
     pub fn update_run(&self, s: &RunState) -> Result<()> {
         let finished_at = s.phase.is_over().then(|| s.updated_at.clone());
         self.conn.execute(
@@ -493,11 +442,7 @@ impl Db {
             .optional()?)
     }
 
-    /// PRD-003 FR-25: the `limit` runs of `repo` that finished by `before`
-    /// (a run's `started_at`), newest first, never `except` itself. A run
-    /// that finished later is never in it, so a rerun picks the same cohort.
-    /// The bound is inclusive: the store keeps whole seconds, and a run can
-    /// start in the second the one before it finished.
+    /// Bounded by `before` so a rerun sees the same cohort; inclusive since the store keeps whole seconds.
     pub fn earlier_runs(
         &self,
         repo: &str,
@@ -519,7 +464,6 @@ impl Db {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// FR-25: the changed lines at ship, or two nulls when `git diff` failed.
     pub fn set_run_lines(&self, run_id: &str, lines: Option<(u64, u64)>) -> Result<()> {
         self.conn.execute(
             "UPDATE runs SET lines_added = ?2, lines_removed = ?3 WHERE id = ?1",
@@ -528,7 +472,6 @@ impl Db {
         Ok(())
     }
 
-    /// FR-24: the polish `FINDINGS` counts, or five nulls.
     pub fn set_run_findings(&self, run_id: &str, f: Option<Findings>) -> Result<()> {
         self.conn.execute(
             "UPDATE runs SET findings_high = ?2, findings_medium = ?3, findings_low = ?4,
@@ -546,7 +489,6 @@ impl Db {
         Ok(())
     }
 
-    /// FR-24: the agent log's `AD` entries, `decide` ones and blocks at ship.
     pub fn set_run_log_counts(
         &self,
         run_id: &str,
@@ -561,7 +503,6 @@ impl Db {
         Ok(())
     }
 
-    /// FR-23: the knobs JSON, written once at run start.
     pub fn set_run_knobs(&self, run_id: &str, knobs: &str) -> Result<()> {
         self.conn.execute(
             "UPDATE runs SET knobs = ?2 WHERE id = ?1",
@@ -570,7 +511,6 @@ impl Db {
         Ok(())
     }
 
-    /// FR-23: the run's hypothesis, written once at run creation.
     pub fn set_run_hypothesis(&self, run_id: &str, hypothesis: &str) -> Result<()> {
         self.conn.execute(
             "UPDATE runs SET hypothesis = ?2 WHERE id = ?1",
@@ -594,7 +534,6 @@ impl Db {
         Ok(())
     }
 
-    /// A run's events in `seq` order.
     pub fn events(&self, run_id: &str) -> Result<Vec<EventRow>> {
         let mut stmt = self
             .conn
@@ -610,9 +549,7 @@ impl Db {
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
-    /// A worker at spawn: `outcome = running`, usage still null. A build
-    /// worker has a `slice`, a fix or checkpoint worker a `checkpoint`.
-    /// Returns the row id.
+    /// A build worker has a `slice`; a fix or checkpoint worker a `checkpoint`.
     #[allow(clippy::too_many_arguments)]
     pub fn insert_worker(
         &self,
@@ -642,8 +579,6 @@ impl Db {
         Ok(self.conn.last_insert_rowid())
     }
 
-    /// The row completed from the stream's `result` (FR-2, FR-8). A dead
-    /// worker's usage stays null; its `outcome` says why.
     pub fn finish_worker(
         &self,
         id: i64,
@@ -680,10 +615,6 @@ impl Db {
         Ok(())
     }
 
-    /// The usage half of [`Db::finish_worker`], for `report --recount`
-    /// (PRD-003 FR-21): `outcome`, `terminal_reason`, `duration_ms` and
-    /// `ended_at` say how the worker ended and stay as they are. A stream
-    /// with no model keeps the stored `model_id`.
     pub fn update_worker_usage(&self, id: i64, summary: &Summary) -> Result<()> {
         let u = summary.usage.as_ref();
         let as_i64 = |v: Option<u64>| v.map(|n| n as i64);
@@ -709,8 +640,6 @@ impl Db {
         Ok(())
     }
 
-    /// The files the worker's pack holds, as JSON (slice 13): what
-    /// `pack_doc_read_chars` counts reads of.
     pub fn set_worker_pack_files(&self, id: i64, files: &[String]) -> Result<()> {
         let text = serde_json::to_string(files)
             .map_err(|e| crate::Error::Msg(format!("pack files as JSON: {e}")))?;
@@ -721,7 +650,6 @@ impl Db {
         Ok(())
     }
 
-    /// The pack's sections and their chars, as JSON (PRD-003 FR-22).
     pub fn set_worker_pack_parts(&self, id: i64, parts: &[crate::pack::Part]) -> Result<()> {
         let text = serde_json::to_string(parts)
             .map_err(|e| crate::Error::Msg(format!("pack parts as JSON: {e}")))?;
@@ -732,7 +660,6 @@ impl Db {
         Ok(())
     }
 
-    /// The files the worker's pack held; empty when none was recorded.
     pub fn worker_pack_files(&self, id: i64) -> Result<Vec<String>> {
         let text: Option<String> = self
             .conn
@@ -748,8 +675,6 @@ impl Db {
             .unwrap_or_default())
     }
 
-    /// The worker's subagent usage as `(input, cache_write, cache_read,
-    /// output, count)`; `None` writes nulls (the dir could not be read).
     pub fn set_worker_subagents(
         &self,
         id: i64,
@@ -771,7 +696,6 @@ impl Db {
         Ok(())
     }
 
-    /// The slice's commit on the worker that built it (FR-5).
     pub fn set_worker_commit(&self, id: i64, sha: &str) -> Result<()> {
         self.conn.execute(
             "UPDATE workers SET commit_sha = ?2 WHERE id = ?1",
@@ -780,7 +704,6 @@ impl Db {
         Ok(())
     }
 
-    /// A run's workers in spawn order.
     pub fn workers(&self, run_id: &str) -> Result<Vec<WorkerRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, run_id, role, slice, session_id, model, effort, input, cache_write, cache_read,
@@ -831,7 +754,6 @@ impl Db {
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
-    /// One gate run (or cache hit) as a row. Returns the row id.
     pub fn insert_gate(&self, g: &GateInsert) -> Result<i64> {
         self.conn.execute(
             "INSERT INTO gates (run_id, source, kind, cmd, red, minutes, at, worker_id, cached, checkpoint, attempt)
@@ -853,7 +775,6 @@ impl Db {
         Ok(self.conn.last_insert_rowid())
     }
 
-    /// A run's gate rows in insertion order.
     pub fn gates(&self, run_id: &str) -> Result<Vec<GateRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, run_id, source, kind, cmd, red, minutes, at, worker_id, cached, checkpoint, attempt
@@ -878,8 +799,6 @@ impl Db {
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
-    /// A worker's tool calls as one transaction (FR-8): one `INSERT` per
-    /// call, all or none.
     pub fn insert_tool_calls(&self, rows: &[ToolCallInsert]) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         {
@@ -912,15 +831,12 @@ impl Db {
         Ok(())
     }
 
-    /// Every `tool_calls` row of the run, before `report --recount` writes
-    /// them again (PRD-003 FR-21).
     pub fn delete_tool_calls(&self, run_id: &str) -> Result<usize> {
         Ok(self
             .conn
             .execute("DELETE FROM tool_calls WHERE run_id = ?1", [run_id])?)
     }
 
-    /// A run's tool calls in insertion order.
     pub fn tool_calls(&self, run_id: &str) -> Result<Vec<ToolCallRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, run_id, worker_id, seq, tool, kind, result_chars, target_hash,
@@ -950,8 +866,6 @@ impl Db {
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
-    /// The distinct `target_hash` values a run's earlier workers hit
-    /// (`repeat_in_run`, FR-8).
     pub fn run_targets(&self, run_id: &str) -> Result<std::collections::HashSet<String>> {
         let mut stmt = self
             .conn
@@ -960,10 +874,7 @@ impl Db {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
-    /// Write a feature's `retros` row, `written_at` now. Not `INSERT OR
-    /// REPLACE`: that deletes the old row first, and closeout's write at ship
-    /// would erase the `score` the polish worker set minutes before. A row
-    /// with no score keeps the stored one.
+    /// Not `INSERT OR REPLACE`: that deletes the row first and would erase a score set before the numbers.
     pub fn upsert_retro(&self, row: &RetroRow) -> Result<()> {
         let updates: Vec<String> = RETRO_COLUMNS[2..]
             .iter()
@@ -1005,7 +916,6 @@ impl Db {
         Ok(())
     }
 
-    /// A feature's `retros` row; `repo` is the canonical root.
     pub fn retro(&self, repo: &str, feature: u32) -> Result<Option<RetroRow>> {
         let sql = format!(
             "SELECT {} FROM retros WHERE repo = ?1 AND feature = ?2",
@@ -1039,9 +949,6 @@ impl Db {
             .optional()?)
     }
 
-    /// Set a feature's `score`. With no row yet (the polish worker scores
-    /// before closeout writes the numbers) it inserts one with every number
-    /// null; otherwise only `score` and `written_at` change.
     pub fn set_retro_score(&self, repo: &str, feature: u32, slug: &str, score: i64) -> Result<()> {
         self.conn.execute(
             "INSERT INTO retros (repo, feature, slug, score, written_at) VALUES (?1, ?2, ?3, ?4, ?5)
@@ -1051,7 +958,6 @@ impl Db {
         Ok(())
     }
 
-    /// The user tables, for a schema check.
     pub fn tables(&self) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
@@ -1061,8 +967,7 @@ impl Db {
     }
 }
 
-/// A `runs` row read by [`Db::run_row`] and [`Db::earlier_runs`]'s shared
-/// column list.
+/// Positional: both callers' `SELECT` lists share this column order.
 fn run_from_row(r: &rusqlite::Row) -> rusqlite::Result<RunRow> {
     Ok(RunRow {
         id: r.get(0)?,
@@ -1132,7 +1037,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("factory.db");
         {
-            // The v1 store: the base schema plus the v1 guarded columns it lacks.
+            // A version-1 store: today's base tables plus the columns version 1 added by `ALTER`.
             let conn = Connection::open(&path).unwrap();
             conn.execute_batch(SCHEMA).unwrap();
             conn.execute_batch(
@@ -1163,7 +1068,6 @@ mod tests {
         );
     }
 
-    /// The PRD-003 `SCHEMA` text: today's, before `retros`.
     fn schema_v2() -> &'static str {
         SCHEMA
             .split("CREATE TABLE IF NOT EXISTS retros")
@@ -1184,7 +1088,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("factory.db");
         let before = {
-            // The v2 store PRD-003 made: no `retros`, every guarded column.
             let conn = Connection::open(&path).unwrap();
             conn.execute_batch(schema_v2()).unwrap();
             for (table, column, decl) in COLUMNS {
@@ -1223,7 +1126,7 @@ mod tests {
     }
 
     #[test]
-    fn the_prd_003_migrate_body_runs_on_a_version_3_store() {
+    fn migrate_body_runs_on_a_version_3_store() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("factory.db");
         drop(Db::open(&path).unwrap());

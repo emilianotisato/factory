@@ -1,17 +1,4 @@
-//! The context pack a worker reads as its appended system prompt (PRD §4
-//! FR-2): the slice file, the PRD sections its `**Source**` line cites, the
-//! slice contract, the autonomy rules and the inner-loop command. Nothing
-//! else. A checkpoint's workers (§6 FR-4) get the same layout with the slice
-//! replaced: the fix worker reads the gate failure, the checkpoint worker
-//! the green transcript, the covered slices and their QA rows. All prose
-//! assets are this repo's own copies under `assets/`, so a pack never
-//! depends on what is installed under the owner's home (§19).
-//!
-//! Slice 13 (§14 FR-12 decision 3) adds `# Outline` and `# Lookup` to a
-//! slice's pack, after the PRD sections: the `factory ctx outline` of every
-//! file the slice's `Current code / environment` cites and the `def` of
-//! every symbol it cites, run in-process, and the three verbs with their
-//! one rule.
+//! Every prose asset is embedded from `assets/`, so a pack never depends on what is installed in the owner's home.
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -26,18 +13,12 @@ pub const CONTRACT_CHECKPOINT: &str = include_str!("../assets/contract-checkpoin
 pub const CONTRACT_POLISH: &str = include_str!("../assets/contract-polish.md");
 pub const CONTRACT_CI_FIX: &str = include_str!("../assets/contract-ci-fix.md");
 pub const CONTRACT_MERGE: &str = include_str!("../assets/contract-merge.md");
-/// The PR body shape `/deliver` fills (`deliver/pr-body.md`), this repo's copy.
 pub const PR_BODY: &str = include_str!("../assets/pr-body.md");
 pub const AUTONOMY: &str = include_str!("../assets/autonomy.md");
-/// The retro template (PRD-002 FR-19): the heading and the prose sections,
-/// no frontmatter. The numbers live in the store and the `## Numbers` section.
 pub const RETRO: &str = include_str!("../assets/retro.md");
-/// The `# Lookup` section: the three `ctx` verbs, an example each, the rule.
 pub const LOOKUP: &str = include_str!("../assets/lookup.md");
 
-/// [`LOOKUP`] with each `factory ctx` command spelled the way a worker's
-/// shell can run it: the running binary's absolute path, so the verbs work
-/// from a build that is not installed (`paths::factory_command`).
+/// The running binary's absolute path, so the verbs work from a build that is not installed.
 pub fn lookup() -> String {
     LOOKUP.trim_end().replace(
         "`factory ctx ",
@@ -45,15 +26,10 @@ pub fn lookup() -> String {
     )
 }
 
-/// A contract with each `{factory}` spelled as [`lookup`] spells the `ctx`
-/// verbs: the running binary's absolute path (PRD-002 FR-18).
 fn contract(text: &str) -> String {
     text.replace("{factory}", &crate::paths::factory_command())
 }
 
-/// The `# Log` section: the feature's `log.jsonl` as `factory docs log show
-/// NNN` prints it, byte for byte, or "none yet" for an empty log. It takes
-/// the place of the `agent-log.md` a worker used to open (PRD-002 FR-18).
 fn log_section(docs: &Docs, board: &Status) -> Result<String> {
     let (entries, _) = log::entries(&docs.root().join(&board.dir))?;
     let text = if entries.is_empty() {
@@ -68,44 +44,27 @@ fn log_section(docs: &Docs, board: &Status) -> Result<String> {
     ))
 }
 
-/// The most characters of outlines `# Outline` carries (§14 decision 3).
 pub const OUTLINE_CAP: usize = 8000;
-/// The most characters of `def` answers `# Outline` carries.
 pub const DEF_CAP: usize = 6000;
 
-/// The most lines of a gate transcript a pack carries.
 pub const TAIL_LINES: usize = 200;
 
-/// A written pack and what to say to the worker about it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pack {
-    /// `runs/<id>/packs/slice-NN-<spawn>.md`.
     pub path: PathBuf,
-    /// The one-line `-p` prompt.
     pub prompt: String,
-    /// The repo-relative files the pack holds, slice first — the list the
-    /// header line carries for slice 13's hook.
     pub files: Vec<String>,
-    /// `§n` sections the slice cites that `prd.md` does not have (§4: a
-    /// warning event, not a crash).
     pub missing_sections: Vec<u32>,
-    /// Each section the pack wrote, in order, with its size (PRD-003 §4
-    /// FR-22): what the worker's starting context is made of.
     pub parts: Vec<Part>,
 }
 
-/// One `# Heading` section of a written pack: its name in lower snake case
-/// and its characters, heading through the blank line before the next one.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Part {
     pub section: String,
     pub chars: usize,
 }
 
-/// `header` then `sections`, each starting at its `# Heading` line, joined
-/// by a blank line that counts toward the section before it; the final
-/// newline counts toward the last. The header is no part, so the parts sum
-/// to the text after it.
+/// The joining blank line counts toward the section before it, so the parts sum to the text after the header.
 fn assemble(header: String, sections: Vec<String>) -> (String, Vec<Part>) {
     let mut text = header;
     let mut parts = Vec::new();
@@ -126,21 +85,16 @@ fn assemble(header: String, sections: Vec<String>) -> (String, Vec<Part>) {
     (text, parts)
 }
 
-/// The `# Block and answer` section of an answered slice's pack (PRD §5
-/// FR-3): the `BLOCK-n` entry with its `**Resolution**` line, verbatim from
-/// the log file it lives in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockSection {
     pub id: String,
-    /// The repo-relative file the entry was read from.
+    /// Repo-relative: the log file the entry was read from.
     pub source: String,
     pub text: String,
 }
 
 impl Pack {
-    /// Write the pack for `slice` (its board number) into `packs_dir`.
-    /// `spawn` numbers the file so a respawn never overwrites the record of
-    /// the pack a dead worker read.
+    /// `spawn` numbers the file so a respawn never overwrites the pack a dead worker read.
     pub fn for_slice(
         docs: &Docs,
         board: &Status,
@@ -151,8 +105,6 @@ impl Pack {
         Self::for_slice_with(docs, board, slice, packs_dir, spawn, None)
     }
 
-    /// [`Pack::for_slice`] with, for an answered slice, the block and its
-    /// answer as a `# Block and answer` section right after the slice.
     pub fn for_slice_with(
         docs: &Docs,
         board: &Status,
@@ -256,9 +208,6 @@ impl Pack {
 }
 
 impl Pack {
-    /// The fix worker's pack at checkpoint `n` (FR-4): `# Gate failure` — the
-    /// last [`TAIL_LINES`] of `gate_log`, the gate command and the inner
-    /// command — then the fix contract, the autonomy rules and the inner loop.
     #[allow(clippy::too_many_arguments)]
     pub fn for_fix(
         docs: &Docs,
@@ -309,12 +258,7 @@ impl Pack {
         })
     }
 
-    /// The merge worker's pack (PRD-005 FR-4): `# Conflict` (the conflicted
-    /// paths one per line, the lane commit `sha`'s message and its
-    /// `git show --stat`), `# Slice`, for an answered slice the block and its
-    /// answer, then the log, the merge contract, the autonomy rules and the
-    /// inner loop. `sha` is read in the main tree, which shares the lanes'
-    /// objects.
+    /// `sha` is read in the main tree, which shares the lanes' objects.
     #[allow(clippy::too_many_arguments)]
     pub fn for_merge(
         docs: &Docs,
@@ -395,11 +339,6 @@ impl Pack {
         })
     }
 
-    /// The checkpoint worker's pack (FR-4): `# Gate transcript` (the green
-    /// log), `# Covered slices` (each covered slice's Prove task and Progress
-    /// line), `# QA rows` (the PRD § QA plan rows those Prove tasks name, or
-    /// every row when they name none), the checkpoint contract and the
-    /// autonomy rules.
     #[allow(clippy::too_many_arguments)]
     pub fn for_checkpoint(
         docs: &Docs,
@@ -499,12 +438,7 @@ impl Pack {
         })
     }
 
-    /// The polish worker's pack (FR-6): `# Branch` (the default and feature
-    /// branch names, `git log --oneline <default>..HEAD`), `# Retro` (the
-    /// template and which keys the driver fills), `# PR body` (the shape and
-    /// the run-dir path to write), the polish contract and the autonomy rules.
-    /// The prompt is `/polish`: slash commands resolve inside `-p` (slice 03,
-    /// PRD §20), so the pack carries no skill body.
+    /// The prompt is `/polish`: slash commands resolve inside `-p`, so the pack carries no skill body.
     #[allow(clippy::too_many_arguments)]
     pub fn for_polish(
         docs: &Docs,
@@ -582,10 +516,6 @@ impl Pack {
         })
     }
 
-    /// The CI fix worker's pack (FR-6): `# CI failure` — the check's name,
-    /// the gate and inner commands, the last [`TAIL_LINES`] of
-    /// `gh run view --log-failed` — then the CI fix contract, the autonomy
-    /// rules and the inner loop.
     #[allow(clippy::too_many_arguments)]
     pub fn for_ci_fix(
         docs: &Docs,
@@ -637,15 +567,12 @@ impl Pack {
     }
 }
 
-/// The last `n` lines of `text`.
 pub fn tail(text: &str, n: usize) -> String {
     let lines: Vec<&str> = text.lines().collect();
     let skip = lines.len().saturating_sub(n);
     lines[skip..].join("\n")
 }
 
-/// The slice's `### k. Prove` task: its heading through the line before the
-/// next `### ` or `## `; empty when the slice has none.
 pub fn prove_section(slice_text: &str) -> &str {
     let mut start = None;
     let mut offset = 0;
@@ -663,14 +590,12 @@ pub fn prove_section(slice_text: &str) -> &str {
     start.map(|s| &slice_text[s..]).unwrap_or("")
 }
 
-/// The slice's `**Progress**:` line.
 pub fn progress_line(slice_text: &str) -> Option<&str> {
     slice_text
         .lines()
         .find(|l| l.trim_start().starts_with("**Progress**"))
 }
 
-/// Every `FR-n` in `text`, once each, in order.
 pub fn fr_ids(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut rest = text;
@@ -687,9 +612,6 @@ pub fn fr_ids(text: &str) -> Vec<String> {
     out
 }
 
-/// The § QA plan table of `prd`: its two header lines and the `| FR-n |`
-/// rows whose id is in `named` — every row when `named` is empty or none
-/// matches. A note when the PRD has no table.
 pub fn qa_rows(prd: &str, named: &[String]) -> String {
     let rows: Vec<&str> = prd
         .lines()
@@ -726,21 +648,14 @@ pub fn qa_rows(prd: &str, named: &[String]) -> String {
     out.join("\n")
 }
 
-/// A slice pack's `# Outline` body and the files it outlined (§14 FR-12
-/// decision 3).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Recon {
     pub text: String,
-    /// Repo-relative, in print order: the header line's additions.
     pub outlined: Vec<String>,
 }
 
 impl Recon {
-    /// The `def` of each symbol the slice's `Current code / environment`
-    /// cites, then the outline of each file it cites and of each file a
-    /// printed `def` hit lives in; [`DEF_CAP`] and [`OUTLINE_CAP`] with a
-    /// trailer when cut. A planned file (absent) and a `def` with no hit
-    /// are skipped; so is a file in no outlined language.
+    /// A cited file that does not exist yet is planned, not an error.
     pub fn of(repo: &Path, slice_text: &str) -> Result<Recon> {
         let (paths, symbols) = cited_in(current_code(slice_text));
         let opts = walk::WalkOpts { vendor: false };
@@ -822,8 +737,6 @@ impl Recon {
     }
 }
 
-/// `text` whole when it fits in `max` bytes; else cut at the last line
-/// that fits, with a trailer saying how to get the rest.
 fn cap(text: &str, max: usize, verb: &str) -> (String, bool) {
     if text.len() <= max {
         return (text.to_string(), false);
@@ -842,7 +755,6 @@ fn cap(text: &str, max: usize, verb: &str) -> (String, bool) {
     )
 }
 
-/// The slice's `## Current code / environment` section, to the next `## `.
 pub fn current_code(slice_text: &str) -> &str {
     let mut start = None;
     let mut offset = 0;
@@ -860,11 +772,6 @@ pub fn current_code(slice_text: &str) -> &str {
     start.map_or("", |s| &slice_text[s..])
 }
 
-/// The repo-relative paths (`` `src/a.rs` ``, `` `src/a.rs:12` ``,
-/// `` `src/a.rs:12-40` ``) and the symbol names (`` `name()` ``,
-/// `` `Type::name` ``, by their last segment) backticked in `text`, in
-/// order, once each. Absolute, home, variable and `..` paths are not the
-/// repo's and are left out.
 pub fn cited_in(text: &str) -> (Vec<String>, Vec<String>) {
     let mut paths: Vec<String> = Vec::new();
     let mut symbols: Vec<String> = Vec::new();
@@ -927,7 +834,6 @@ fn read(path: &Path) -> Result<String> {
     fs::read_to_string(path).map_err(io(format!("read {}", path.display())))
 }
 
-/// `git <args>` in `repo`, its stdout; a nonzero exit is an error.
 fn git_text(repo: &Path, args: &[&str]) -> Result<String> {
     let out = std::process::Command::new("git")
         .args(args)
@@ -943,10 +849,7 @@ fn git_text(repo: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// The `§n` numbers on the slice's first `**Source**:` line, in order, once
-/// each. A slice's task-level `**Source**` lines repeat the top one's set by
-/// convention, and a section cited only there is read from the top line's
-/// cut anyway.
+/// Only the top `**Source**` line: task-level ones repeat its set by convention.
 pub fn cited_sections(slice_text: &str) -> Vec<u32> {
     let Some(line) = slice_text
         .lines()
@@ -968,7 +871,6 @@ pub fn cited_sections(slice_text: &str) -> Vec<u32> {
     out
 }
 
-/// `prd.md` from its `## n.` heading to the line before the next `## `.
 pub fn cut_section(prd: &str, n: u32) -> Option<&str> {
     let prefix = format!("## {n}.");
     let mut start = None;
@@ -1155,8 +1057,6 @@ mod tests {
         assert_eq!(job.slice(), Some(2));
     }
 
-    /// The parts' chars against the pack file: its text after the header
-    /// comment lines and the blank line that ends them.
     fn sections_of(pack: &Pack) -> Vec<&str> {
         let text = fs::read_to_string(&pack.path).unwrap();
         let (_, body) = text.split_once("\n\n").unwrap();
