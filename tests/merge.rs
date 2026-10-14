@@ -297,15 +297,12 @@ fn two_dead_merge_workers_block_the_slice() {
 #[test]
 fn a_block_the_merge_worker_logged_blocks_the_slice() {
     let (fx, dir) = conflicting("merge-blocked", &[json!({"outcome": "blocked"})]);
+    // The driver flips the status before it writes its line: wait for both.
     wait_until(&fx, &dir, "slice 02 to block", 30, || {
         fx.slice_status(2) == "blocked"
+            && driver_log(&dir).contains("it logged a block, slice blocked")
     });
     // The stub's merge worker never runs `docs set`: the driver flipped it.
-    assert!(
-        driver_log(&dir).contains("it logged a block, slice blocked"),
-        "{}",
-        driver_log(&dir)
-    );
     assert_eq!(blocks_of(&fx, 2).len(), 1);
     assert_eq!(head_subject(&fx), SLICE_01);
     stop(&fx, &dir);
