@@ -145,24 +145,13 @@ static COMPILED: LazyLock<Vec<Option<Regex>>> = LazyLock::new(|| {
 });
 
 /// Shapes that read like a rule's pattern and are not leaks, blanked out of the text before that rule runs.
-const QUIET: [(&str, &str); 7] = [
+const QUIET: [(&str, &str); 4] = [
     // A package version: `slice-1.0.4.tgz`, `block-3.31.3`.
     ("id-comment", SEMVER),
     ("id-string", SEMVER),
     ("id-name", SEMVER),
     // A standard's or a vendor manual's own section: `RFC 7636 §4.2`, `manual (§10.6)`.
     ("id-comment", r"(?i)(?:\bRFC ?\d+|\bmanual)[^\w§]{0,3}§"),
-    // Purpose, not history: "a key used to sign", "is used to", "— used to".
-    (
-        "history",
-        r"(?i)(?:[,;:(—–-]\s*|\b(?:is|are|was|were|be|been|being|get|gets|got|can|could|may|might|must|shall|should|will|would|never|not|rules?|paths?|keys?|mappings?|fields?|columns?|headers?|tokens?|helpers?)\s+)used to\b",
-    ),
-    // An adjective, not history: "a previously accepted memory", "previously shared urls".
-    (
-        "history",
-        r"(?i)\b(?:a|an|the|any|its|their|our|this|that|these|those|every|each|no)\s+previously\b|\bpreviously \w+ed \w+s\b",
-    ),
-    ("history", r"(?i)\bfor now and\b"),
 ];
 
 const SEMVER: &str = r"(?i)\b(?:PRD|FR|AD|CP|OPEN|OQ|DEC|BLOCK|ASK|slice)[- ]?\d+\.\d+\.\d+";
@@ -904,7 +893,6 @@ mod tests {
             ["id-comment", "history"]
         );
         assert_eq!(hits("a.py", "# kept for now"), ["history"]);
-        assert!(hits("a.go", "// returns YYYYMM for now and the next month").is_empty());
         assert!(hits("a.rs", r#"bail!("the lane is kept for now");"#).is_empty());
         assert!(hits("a.go", "// skip a row that is no longer pending").is_empty());
         for real in [
@@ -914,6 +902,7 @@ mod tests {
         ] {
             assert_eq!(hits("a.go", real), ["history"], "{real}");
         }
+        // Deliberate: a false hit costs less than a history comment in these shapes passing.
         for purpose in [
             "// the key used to sign the request",
             "// Get the validation rules used to validate passwords.",
@@ -921,8 +910,9 @@ mod tests {
             "// a scratch dir, used to stage the files",
             "// A previously accepted memory stays",
             "// closes previously shared urls",
+            "// returns YYYYMM for now and the next month",
         ] {
-            assert!(hits("a.php", purpose).is_empty(), "{purpose}");
+            assert_eq!(hits("a.php", purpose), ["history"], "{purpose}");
         }
     }
 
