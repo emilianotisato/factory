@@ -1076,34 +1076,39 @@ mod tests {
         fs::write(feat(root).join(log::FILE), lines.join("\n") + "\n").unwrap();
     }
 
-    const AD1: &str = r#"{"id":"AD-1","kind":"decision","ts":"2026-10-13T00:00:00Z","title":"a"}"#;
-    const AD2: &str = r#"{"id":"AD-2","kind":"decision","ts":"2026-10-13T00:00:00Z","title":"b"}"#;
+    const FIRST_DECISION: &str =
+        r#"{"id":"AD-1","kind":"decision","ts":"2026-10-13T00:00:00Z","title":"a"}"#;
+    const SECOND_DECISION: &str =
+        r#"{"id":"AD-2","kind":"decision","ts":"2026-10-13T00:00:00Z","title":"b"}"#;
 
     #[test]
     fn the_log_rules() {
         let d = tree();
         let root = d.path();
-        log(root, &[AD1, AD2, r#"{"id":"AD-3","ki"#]);
+        log(
+            root,
+            &[FIRST_DECISION, SECOND_DECISION, r#"{"id":"AD-3","ki"#],
+        );
         let r = run(root);
         assert_eq!(r.codes(), ["E-LOG-PARSE"]);
         assert!(r.errors[0].1.contains("log.jsonl:3:"), "{:?}", r.errors);
 
-        log(root, &[AD1, AD1]);
+        log(root, &[FIRST_DECISION, FIRST_DECISION]);
         assert_eq!(codes(root), ["E-LOG-DUPLICATE"]);
 
-        let ask1 = r#"{"id":"AD-1","kind":"ask","ts":"2026-10-13T00:00:00Z","title":"q"}"#;
-        log(root, &[AD2, ask1]);
+        let ask_out_of_order =
+            r#"{"id":"AD-1","kind":"ask","ts":"2026-10-13T00:00:00Z","title":"q"}"#;
+        log(root, &[SECOND_DECISION, ask_out_of_order]);
         assert_eq!(codes(root), ["E-LOG-ORDER"]);
 
-        let block1 = r#"{"id":"BLOCK-1","kind":"block","ts":"2026-10-13T00:00:00Z","phase":"polish","title":"x"}"#;
-        let answer1 =
-            r#"{"kind":"answer","ts":"2026-10-13T00:00:00Z","ref":"BLOCK-1","title":"y"}"#;
-        log(root, &[AD1, block1, AD2, answer1]);
+        let block = r#"{"id":"BLOCK-1","kind":"block","ts":"2026-10-13T00:00:00Z","phase":"polish","title":"x"}"#;
+        let answer = r#"{"kind":"answer","ts":"2026-10-13T00:00:00Z","ref":"BLOCK-1","title":"y"}"#;
+        log(root, &[FIRST_DECISION, block, SECOND_DECISION, answer]);
         assert_eq!(codes(root), Vec::<String>::new());
 
-        let answer4 =
+        let stray_answer =
             r#"{"kind":"answer","ts":"2026-10-13T00:00:00Z","ref":"BLOCK-4","title":"y"}"#;
-        log(root, &[AD1, answer4]);
+        log(root, &[FIRST_DECISION, stray_answer]);
         assert_eq!(codes(root), ["E-LOG-REF"]);
     }
 

@@ -3,7 +3,36 @@
 **Source**: [`prd.md`](prd.md) → §5 FR-3 (the tuning against three repos, the allowlist entries, "Where it runs" item 3; its third and fourth acceptance bullets), §7 FR-5 (the false positives, the run's proof on the feature branch). **Depends on**: 01 (it tunes the detectors slice 01 wrote, and the doctor and preflight lines call its `scan`)
 **Created**: 2026-10-14
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+- **Built.** `src/leaks.rs` gained `QUIET`, a table of shapes blanked out of the text before a named rule runs. It also gained a three-or-more-digit `cp` skip in `name_hit`, a whole `slice<n>` identifier skip in `.go` files (`go_slice`), and a two-digit-only `L` and no `S3` in the `finding-id` row. "no longer" left the `history` row (AD-3); the other trades are AD-4 and AD-5. `leaks::verdict(root)` scans `--all` and returns `clean`, `N hits — run factory leaks --all and clean before the first run`, or `unknown: <error>`. `factory docs doctor` prints it as the `leaks` line after `drift` and its detail lines. The preflight puts `leaks clean` in `ok` and anything else in `judge`.
+- **Factory's own tree.** The test locals `ad1`, `ad2`, `ad3` and `b1` in `src/docs/log.rs` are now `lock`, `helper`, `ask` and `red`. `AD1`, `AD2`, `ask1`, `block1`, `answer1` and `answer4` in `src/docs/check.rs` are now `FIRST_DECISION`, `SECOND_DECISION`, `ask_out_of_order`, `block`, `answer` and `stray_answer`. `slice_01` and `slice_02` in `tests/lanes.rs` are now `first` and `dependency`. `docs/project.toml` carries `[leaks] allow`: the six `all` entries the PRD names, then 45 `strings` entries. Each `strings` file's only hits are id-shaped or `file:line` strings that are test data or the tool's own format text; `src/docs/migrate.rs:846` shows the FR id format in the migrate output. No multi-line literal in `src/leaks.rs` or `tests/leaks.rs` read as a comment, so both are `strings`.
+- **Evidence.** `docs/features/006-comment-discipline/evidence/leaks-cody-agent.txt` (2172 hits), `leaks-arca-api.txt` (1280 hits) and `leaks-factory.txt` (clean). Each has the repo's `HEAD` on line 1. The factory report scans this slice's uncommitted tree from a scratch commit, because `--all` reads `HEAD`; the checkpoint reruns it on the commit. `factory docs doctor` on that scratch commit printed `leaks          clean`.
+- **Verdicts, by rule and shape.** Every hit left is real.
+  - arca, `id-comment`: an uppercase plan id (`FR-n`, `PRD-n`, `AD-n`, `OPEN-n`, `DEC-n`), 704. A slice number (`(slice 2)`, `Slice 13:`), 62. A `§` cite into a PRD or a repo doc (`prd §10`, `architecture/…md § Cooldown`, `agent-log § Traps`), 72.
+  - arca, `id-name`: a test named after an FR (`TestFR4…`, `TestProveFR5…`), 19. A function named after a slice (`slice2Allowlists`…`slice12Allowlists`, `TestWriterAcceptsSlice3…`), 9. `FR43_ROWS`, 1. The path `internal/caea/informe_prove_fr45_integration_test.go`, 1.
+  - arca, `id-string`: a slice number in a console log, screenshot or run label (`[slice 17]`, `slice05 ${RUN_ID}`, `Org Slice 3`), 113. An uppercase plan id (`CP-3 fleet`, `(AD-26)`), 111. A lowercase plan id (`prd-016-capture`, `fr-4a-…` evidence names), 26.
+  - arca, `history`: "used to" in its past sense, 41. "Confirmed on prod DOKS", "a code added in", 2. "before PRD-013", 1. "were previously guillotined", 1.
+  - arca, `section-cite`: `prd §n`, 57. `<file>.md §`, 15. `architecture/31 § 5` in a `t.Logf`, 2.
+  - arca, `step-marker`: `Task n` and `--- task n:` beside a slice or FR, 28. `line-cite`: a `file:line` comment, 3. `finding-id`: the scenario ids `S0`, `S6` and `S11`, 12.
+  - cody, `id-comment`: an uppercase plan id, 1473. A slice number (`slice 04`, `slice-02`, `Slice 6.3`), 88. A bare `§3.3` PRD cite or a `--- §1` banner, 267.
+  - cody, `id-string`: an uppercase plan id (test titles with `(AD-10002)` and `(DEC-10)`), 128. Seeder lines with `slice 05`, 9. `%PDF-1.1 fr-158`, 3.
+  - cody, `history`: "used to" in its past sense, 44. "until slice NN" and "before PRD-0NN", 10. "previously" in its past sense, 5. "for now" as a temporary state, 2. "confirmed on" above a TODO tied to feature 007, 1.
+  - cody, `section-cite`: `PRD §n`, 106. `step-marker`: `task n` beside a slice or FR, 28. `line-cite`: a `file:line` comment (`Process.php:336,367`, `engine.ts:14`), 8.
+- **Tuned away**, each now a unit-test non-hit beside the example that must still hit:
+  - "no longer" as a state, about 45 (cody `app/…` and arca `internal/…`, e.g. "a row that is no longer pending").
+  - "used to" as purpose, about 55. Examples: cody `PasswordValidationRules.php:11,21` and `ProfileValidationRules.php:12,25,35` ("the validation rules used to validate"). Arca `caea/informe.go:126` ("the CAE path used to issue"), `health/state_store.go:281`, `wsaa/types.go:39`, `signing/parser.go:50`, `http/manage_grant.go:201`, `padroningest/runner.go:30`, `spaces/spaces.go:2` and `caea/informe_backoff.go:477`.
+  - "previously" as an adjective: cody `BuildSoulTest.php:97` and `GatedDownloadTest.php:162`.
+  - "for now and": arca `padroningest/schedule.go:42`.
+  - `L7`: arca `infra/k8s/cilium-arca-ingest-egress.yaml:32` and `deployment-api.yaml:101`.
+  - `S3`: arca `internal/spaces/spaces.go:1` and cody `LeafAssetFetcher.php:13`.
+  - `§` after a standard or a manual: cody `tests/Pest.php:1010` (RFC 7636), and arca `wsaa/cache.go:122,216` and `fiscal/money.go:11` (WSAA and WSFEX manuals).
+  - A package version: cody `package-lock.json:1985,3626`.
+  - Factory's `ad1`…`ad3`, `AD1`, `AD2` and `slice_01` were real leaks, renamed rather than tuned.
+- **Tests.** The unit tests in `src/leaks.rs` cover:
+  - No hit on `slice1` in a `.go` file, on `cp1252`, on L7, S3, RFC and manual `§`, a package version, or the purpose and adjective senses.
+  - A hit on `prd_003`, `tests/fixture/prd-004`, `fr157-switch.png`, `slice2Allowlists` (in .ts and .go), `section_14`, `cp12_resume`, `FR-1.2`, and the past senses.
+  - One integration test in `tests/leaks.rs`: on the clean fixture, `docs doctor` prints `leaks          clean` after `drift`, and the preflight prints `  ✓ leaks clean`. After two seeded leaks, doctor prints `leaks          2 hits — run factory leaks --all and clean before the first run`, and the preflight prints `  ? leaks 2 hits — …` with the same exit code.
+- **Inner loop.** 1 run, 0 red, about 1.5 minutes. Before it, a targeted `cargo test --test leaks` went red once. Preflight refuses a branch not named for the feature, so the seeded test commits on `feat/fixture`.
 
 **Slice**: After this slice `factory leaks --all` reports no false hit over cody-agent, arca-api and factory's own tree, factory's `docs/project.toml` carries its allowlist, and `factory docs doctor` and `factory run`'s preflight each print one `leaks` line from the same function: the hit count with the command to run, or `clean`. It warns and never blocks.
 

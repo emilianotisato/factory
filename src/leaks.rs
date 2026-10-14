@@ -74,7 +74,7 @@ pub const RULES: [Rule; 9] = [
         title: "history in a comment",
         looks: &[Look::Comment],
         detector: Detector::Pattern(
-            r"(?i)\b(?:until slice|for now|previously|no longer|added in|used to|not built yet|a later slice|before PRD|since slice|as corrected|confirmed on)\b",
+            r"(?i)\b(?:until slice|for now|previously|added in|used to|not built yet|a later slice|before PRD|since slice|as corrected|confirmed on)\b",
         ),
         severity: Severity::Fix,
         fix: "Delete it. A comment says what the code is; git log says what it was.",
@@ -109,9 +109,9 @@ pub const RULES: [Rule; 9] = [
         id: "finding-id",
         title: "a review-finding id in a comment",
         looks: &[Look::Comment],
-        // `L1` alone is a cache level, so the L row skips it.
+        // One-digit `L` is a cache level or a network layer, and `S3` is the storage service.
         detector: Detector::Pattern(
-            r"\b(?:C|Cn|K|Ln|S|X[a-d])\d{1,2}\b|\bL(?:[02-9]\d?|1\d)\b|finding [A-Z]+\d",
+            r"\b(?:C|Cn|K|Ln|X[a-d])\d{1,2}\b|\bS(?:[0-24-9]|\d\d)\b|\bL\d\d\b|finding [A-Z]+\d",
         ),
         severity: Severity::Fix,
         fix: "Delete the finding id. Keep the fact as one short line only if the code cannot show it.",
@@ -144,18 +144,62 @@ static COMPILED: LazyLock<Vec<Option<Regex>>> = LazyLock::new(|| {
         .collect()
 });
 
+/// Shapes that read like a rule's pattern and are not leaks, blanked out of the text before that rule runs.
+const QUIET: [(&str, &str); 7] = [
+    // A package version: `slice-1.0.4.tgz`, `block-3.31.3`.
+    ("id-comment", SEMVER),
+    ("id-string", SEMVER),
+    ("id-name", SEMVER),
+    // A standard's or a vendor manual's own section: `RFC 7636 §4.2`, `manual (§10.6)`.
+    ("id-comment", r"(?i)(?:\bRFC ?\d+|\bmanual)[^\w§]{0,3}§"),
+    // Purpose, not history: "a key used to sign", "is used to", "— used to".
+    (
+        "history",
+        r"(?i)(?:[,;:(—–-]\s*|\b(?:is|are|was|were|be|been|being|get|gets|got|can|could|may|might|must|shall|should|will|would|never|not|rules?|paths?|keys?|mappings?|fields?|columns?|headers?|tokens?|helpers?)\s+)used to\b",
+    ),
+    // An adjective, not history: "a previously accepted memory", "previously shared urls".
+    (
+        "history",
+        r"(?i)\b(?:a|an|the|any|its|their|our|this|that|these|those|every|each|no)\s+previously\b|\bpreviously \w+ed \w+s\b",
+    ),
+    ("history", r"(?i)\bfor now and\b"),
+];
+
+const SEMVER: &str = r"(?i)\b(?:PRD|FR|AD|CP|OPEN|OQ|DEC|BLOCK|ASK|slice)[- ]?\d+\.\d+\.\d+";
+
+static QUIETS: LazyLock<Vec<(&str, Regex)>> = LazyLock::new(|| {
+    QUIET
+        .iter()
+        .map(|&(id, p)| (id, Regex::new(p).expect("quiet pattern compiles")))
+        .collect()
+});
+
 static IDENT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b[A-Za-z_][A-Za-z0-9_]*").expect("ident pattern"));
 
 fn matches(rule: usize, text: &str) -> bool {
+    let mut text = std::borrow::Cow::Borrowed(text);
+    for (_, re) in QUIETS.iter().filter(|(id, _)| *id == RULES[rule].id) {
+        if let std::borrow::Cow::Owned(t) = re.replace_all(&text, " ") {
+            text = std::borrow::Cow::Owned(t);
+        }
+    }
     match &COMPILED[rule] {
-        Some(re) => re.is_match(text),
-        None => name_hit(text),
+        Some(re) => re.is_match(&text),
+        None => name_hit(&text),
     }
 }
 
+/// Go code names its slice variables by number, so there a whole identifier of that shape is a variable.
+fn go_slice(path: &str, word: &str) -> bool {
+    path.ends_with(".go")
+        && word
+            .strip_prefix("slice")
+            .is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
+}
+
 /// An item at an identifier or camelCase boundary, then `-`, `_` or nothing, then digits that do not run on into a
-/// lowercase word.
+/// lowercase word. A checkpoint has one or two digits, so `cp1252` is a codepage.
 fn name_hit(name: &str) -> bool {
     let c: Vec<char> = name.chars().collect();
     let starts = |i: usize| {
@@ -179,7 +223,9 @@ fn name_hit(name: &str) -> bool {
                 j += 1;
             }
             let digits = c[j..].iter().take_while(|ch| ch.is_ascii_digit()).count();
-            digits > 0 && !c.get(j + digits).is_some_and(char::is_ascii_lowercase)
+            digits > 0
+                && !(*item == "cp" && digits > 2)
+                && !c.get(j + digits).is_some_and(char::is_ascii_lowercase)
         })
     })
 }
@@ -529,7 +575,10 @@ pub fn check(allow: &[Allow], lines: &[Added], paths: &[String]) -> Report {
             let hit = r.looks.iter().any(|look| match look {
                 Look::Comment => parts.comment.as_deref().is_some_and(|t| matches(i, t)),
                 Look::String => strings && parts.strings.iter().any(|s| matches(i, s)),
-                Look::Name => IDENT.find_iter(&parts.code).any(|w| matches(i, w.as_str())),
+                Look::Name => IDENT
+                    .find_iter(&parts.code)
+                    .filter(|w| !go_slice(&a.path, w.as_str()))
+                    .any(|w| matches(i, w.as_str())),
                 Look::Path => false,
             });
             if hit {
@@ -687,6 +736,16 @@ pub fn scan(repo: &Path, input: Input) -> Result<Report> {
     Ok(check(&allow, &lines, &paths))
 }
 
+/// The doctor's and the preflight's `leaks` value: the whole tree's hits, `clean`, or why it could not scan.
+pub fn verdict(root: &Path) -> String {
+    match scan(root, Input::All).map(|r| r.fix_hits()) {
+        Ok(0) => "clean".into(),
+        Ok(1) => "1 hit — run factory leaks --all and clean before the first run".into(),
+        Ok(n) => format!("{n} hits — run factory leaks --all and clean before the first run"),
+        Err(e) => format!("unknown: {e}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -721,6 +780,8 @@ mod tests {
         assert_eq!(hits("a.rs", "    // FR-3: guard"), ["id-comment"]);
         assert_eq!(hits("a.rs", "x(); // see § Caps"), ["id-comment"]);
         assert!(hits("a.rs", "    // the fixture's own numbering").is_empty());
+        assert!(hits("a.php", " * the verifier (RFC 7636 §4.2) hashes it").is_empty());
+        assert!(hits("a.go", "// per the WSAA developer manual (§10.6)").is_empty());
     }
 
     #[test]
@@ -734,6 +795,10 @@ mod tests {
         }
         assert_eq!(path_hits(&[], "tests/fixture/prd-004/x.jsonl"), ["id-name"]);
         assert_eq!(path_hits(&[], "shots/fr157-switch.png"), ["id-name"]);
+        assert_eq!(hits("a.go", "\tslice2Allowlists(t)"), ["id-name"]);
+        assert!(hits("a.go", "\tslice1 := []int{1, 2}").is_empty());
+        assert!(hits("a.py", "data.decode(cp1252)").is_empty());
+        assert_eq!(hits("a.py", "def cp12_resume(): pass"), ["id-name"]);
         assert!(
             hits(
                 "a.rs",
@@ -754,6 +819,14 @@ mod tests {
         assert!(hits("a.rs", r#"let g = "checkpoint";"#).is_empty());
         assert!(hits("a.rs", r#"let f = format!("PRD-{feature}");"#).is_empty());
         assert!(hits("a.rs", r#"say("run polish §5");"#).is_empty());
+        assert!(
+            hits(
+                "a.json",
+                r#""resolved": "https://r.example/arraybuffer.prototype.slice-1.0.4.tgz","#
+            )
+            .is_empty()
+        );
+        assert_eq!(hits("a.ts", "const t = 'see FR-1.2';"), ["id-string"]);
     }
 
     #[test]
@@ -763,7 +836,26 @@ mod tests {
             ["id-comment", "history"]
         );
         assert_eq!(hits("a.py", "# kept for now"), ["history"]);
+        assert!(hits("a.go", "// returns YYYYMM for now and the next month").is_empty());
         assert!(hits("a.rs", r#"bail!("the lane is no longer running");"#).is_empty());
+        assert!(hits("a.go", "// skip a row that is no longer pending").is_empty());
+        for real in [
+            "// this used to panic on an empty list",
+            "// the field that used to hold the token",
+            "// tokens were previously guillotined at 64",
+        ] {
+            assert_eq!(hits("a.go", real), ["history"], "{real}");
+        }
+        for purpose in [
+            "// the key used to sign the request",
+            "// Get the validation rules used to validate passwords.",
+            "// The header is used to route the call",
+            "// a scratch dir, used to stage the files",
+            "// A previously accepted memory stays",
+            "// closes previously shared urls",
+        ] {
+            assert!(hits("a.php", purpose).is_empty(), "{purpose}");
+        }
     }
 
     #[test]
@@ -801,7 +893,13 @@ mod tests {
     fn finding_id() {
         assert_eq!(hits("a.rs", "// C3: the race"), ["finding-id"]);
         assert_eq!(hits("a.rs", "// see L11 and Ln6"), ["finding-id"]);
+        assert_eq!(
+            hits("a.go", "// S1 and S11 cover the retry"),
+            ["finding-id"]
+        );
         assert!(hits("a.rs", "// L1 holds the hot set").is_empty());
+        assert!(hits("a.yaml", "# L7 rules.dns needs the proxy").is_empty());
+        assert!(hits("a.go", "// an S3-compatible bucket").is_empty());
         assert!(hits("a.rs", "// c3 in lowercase is a name").is_empty());
     }
 

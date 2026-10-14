@@ -3,7 +3,7 @@ use std::fs;
 use std::path::Path;
 
 use super::{check, frontmatter, project};
-use crate::{Result, skills};
+use crate::{Result, leaks, skills};
 
 /// What `docs.mjs check` returned in a v2 or v1 repo.
 #[derive(Debug, Clone)]
@@ -72,6 +72,7 @@ pub fn run(root: &Path, legacy_check: impl FnOnce() -> Result<ToolOutput>) -> St
                 out.push(line("drift", r.counts()));
                 out.extend(r.lines());
             }
+            out.push(line("leaks", leaks::verdict(root)));
         }
         Framework::V2 | Framework::V1 => match legacy_check() {
             Err(e) => out.push(line("drift", format!("unknown: {e}"))),

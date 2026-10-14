@@ -177,3 +177,38 @@ fn a_seeded_branch_lists_each_leak_under_its_rule_and_skips_the_rest() {
         "{out}"
     );
 }
+
+#[test]
+fn doctor_and_preflight_print_the_leaks_line_and_never_block_on_it() {
+    let fx = Fixture::new("leaks-doctor");
+    let doctor =
+        |fx: &Fixture| String::from_utf8_lossy(&fx.docs_output(&["doctor"]).stdout).into_owned();
+    let preflight = |fx: &Fixture| {
+        let o = fx.docs_output(&["preflight", "001"]);
+        (
+            o.status.code(),
+            String::from_utf8_lossy(&o.stdout).into_owned(),
+        )
+    };
+
+    let out = doctor(&fx);
+    assert!(out.contains("\nleaks          clean\n"), "{out}");
+    let drift = out.find("\ndrift ").expect("a drift line");
+    assert!(out.find("\nleaks ").unwrap() > drift, "{out}");
+    let (clean_code, out) = preflight(&fx);
+    assert!(out.contains("  ✓ leaks clean\n"), "{out}");
+
+    fx.git(&["checkout", "-q", "-b", "feat/fixture"]);
+    write(
+        &fx,
+        "src/guard.rs",
+        "// FR-3: guard the lane\npub fn guard() {}\n// kept for now\n",
+    );
+    commit(&fx, "two leaks");
+    let line = "2 hits — run factory leaks --all and clean before the first run";
+    let out = doctor(&fx);
+    assert!(out.contains(&format!("\nleaks          {line}\n")), "{out}");
+    let (code, out) = preflight(&fx);
+    assert!(out.contains(&format!("  ? leaks {line}\n")), "{out}");
+    assert_eq!(code, clean_code, "{out}");
+}

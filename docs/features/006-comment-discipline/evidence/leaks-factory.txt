@@ -1,0 +1,3 @@
+HEAD 041b90944bd42fed791ed1f8d13d0412f7d51daa (factory, lane-1) plus this slice's uncommitted tree, scanned from a scratch commit
+comment share: 2.3% (1122 of 49148 added lines)
+clean

@@ -1452,13 +1452,13 @@ fn a_slice_taking_a_free_lane_resets_it_and_a_respawn_keeps_it() {
     wait_until(&fx, &dir, "the run to finish", 60, || {
         state(&dir)["phase"] == "finished"
     });
-    let slice_01 = commit_of(&fx, "feat(001): slice-01 A");
-    let files = fx.git(&["show", "--format=", "--name-only", &slice_01]);
+    let first = commit_of(&fx, "feat(001): slice-01 A");
+    let files = fx.git(&["show", "--format=", "--name-only", &first]);
     assert!(files.lines().any(|f| f == "kept.txt"), "{files}");
     let calls = fx.calls();
     assert_eq!(call_slice(&calls[2]), 2, "{calls:?}");
     assert_eq!(calls[2]["cwd"], lane.to_str().unwrap());
-    assert_eq!(calls[2]["head"], slice_01.as_str());
+    assert_eq!(calls[2]["head"], first.as_str());
     assert!(!lane.join("junk.txt").exists());
     assert_eq!(
         fx.read("scenario/lane-setup.log"),
@@ -1492,17 +1492,17 @@ fn a_dependent_waits_for_its_dependency_to_land() {
     };
     let (two, three) = (of(2), of(3));
     assert!(three["n"].as_u64() > two["n"].as_u64(), "{calls:?}");
-    let slice_02 = commit_of(&fx, "feat(001): slice-02 B");
+    let dependency = commit_of(&fx, "feat(001): slice-02 B");
     let head = three["head"].as_str().unwrap();
     let out = fx
         .command("git")
         .current_dir(fx.path())
-        .args(["merge-base", "--is-ancestor", &slice_02, head])
+        .args(["merge-base", "--is-ancestor", &dependency, head])
         .output()
         .unwrap();
     assert!(
         out.status.success(),
-        "slice 03 started on {head}, without {slice_02}"
+        "slice 03 started on {head}, without {dependency}"
     );
 }
 

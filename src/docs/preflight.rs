@@ -6,7 +6,7 @@ use std::process::{Command, Stdio};
 use super::board::{self, Feature};
 use super::{Branch, FeatureRef, Preflight, Slice, check, gate, log, project};
 use crate::error::{io, json};
-use crate::{Result, skills};
+use crate::{Result, leaks, skills};
 
 pub fn git(root: &Path, args: &[&str]) -> Option<String> {
     let out = Command::new("git")
@@ -113,6 +113,10 @@ pub fn run(root: &Path, reference: &str) -> Result<(Preflight, i32)> {
             let v = skills::verdict(root);
             let into = if v.is_ok() { &mut ok } else { &mut judge };
             into.extend(v.lines().into_iter().map(|l| format!("skills {l}")));
+            // Old leaks in the tree warn like a stale skill: the owner cleans first, the run never waits on it.
+            let l = leaks::verdict(root);
+            let into = if l == "clean" { &mut ok } else { &mut judge };
+            into.push(format!("leaks {l}"));
         }
         _ => refuse.push(
             "not on the framework: docs/project.toml has no [docs] framework = 3 — `factory docs doctor`".into(),
