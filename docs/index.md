@@ -35,7 +35,7 @@ Shipped or resolved features, folder moved to `archive/`. **Frozen** — read fo
 
 ## Reference (not feature work)
 
-_(none yet)_
+- [adopt-a-repo.md](reference/adopt-a-repo.md) — the prompt that moves another repo onto factory v3.
 
 ---
 
