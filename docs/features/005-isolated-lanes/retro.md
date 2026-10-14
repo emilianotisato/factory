@@ -47,3 +47,32 @@ Written by `/deliver` in the closeout commit, from the agent's side of the run.
 ## Score
 
 3: every FR landed and every checkpoint was green, but HEAD did not build until polish, and review found 7 high defects that 4 checkpoints passed.
+
+## Numbers
+
+<!-- factory:numbers -->
+| role | workers | own | subagents | weighted | minutes | turns |
+|---|---:|---:|---:|---:|---:|---:|
+| build | 10 | 9646020 | 0 | 9646020 | 137 | 534 |
+| fix | 1 | 117204 | 0 | 117204 | 2 | 10 |
+| checkpoint | 4 | 1018937 | 0 | 1018937 | 8 | 73 |
+| polish | 1 | 1574310 | 4212259 | 5786569 | 32 | 76 |
+| total | 16 | 12356471 | 4212259 | 16568730 | 179 | 693 |
+
+Knobs: build opus/high default · fix opus/high default · checkpoint opus/high default · polish opus/high default · budget 30000000 default · lanes 4 · factory 0.2.1 · claude 2.1.296
+
+Hypothesis: none
+
+quality: gate_red 1 · worker_gate_red 0 · fix_commits 1 · ci_red_rounds 0 · ci_reruns 0 · findings high=7 medium=13 low=20 fixed=15 parked=24 · decisions 24 decide 4 blocks 0
+
+Pack (build): slice 12665 · prd_sections 7951 · log 5422 · outline 12215 · lookup 890 · contract 3328 · autonomy 10906 · inner_loop 91 · total 53466 · start_context 48692
+
+Compared with:
+
+| run | feature | weighted | slices | per slice | lines changed | per line |
+|---|---|---:|---:|---:|---:|---:|
+| 005-20261014-d1ad (this run) | 005 | 16568730 | 10 | 1656873 | 9217 | 1798 |
+| 004-20261013-f6d3 | 004 | 7369085 | 7 | 1052726 | 9785 | 753 |
+| 002-20261013-e729 | 002 | 15464292 | 11 | 1405845 | 24701 | 626 |
+| 003-20261013-4139 | 003 | 6966177 | 5 | 1393235 | — | — |
+<!-- /factory:numbers -->
