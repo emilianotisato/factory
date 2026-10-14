@@ -307,7 +307,7 @@ The field repos model it directly:
 - Ids in docs and in run evidence.
 - Already clean: Go `t.Run` names (0 of 506), data-testid values, route names, build tags.
 
-**Options the report lists, not decided:**
+**Options the report lists.** The owner settled them on 2026-10-14: fold names into PRD-006 and take A to F, with G as the rule's last line (PRD OPEN-7).
 
 - **A. A naming rule** beside the comment rule (FR-1): names describe behavior, never a plan item. Cost: one skill release, and it depends on agents following it.
 - **B. Stop modeling ids in templates.** Reword `skill-template.md:12` and `:72`, `slice.scaffold.md:19` and the proof wording. Qualify or drop the four bare ids. Cost: a skill version bump.
