@@ -58,6 +58,22 @@
 // no call (the driver asks it once per run, for `runs.knobs`), and every
 // assistant line's `message.model` is `init.model`, so `--model` is what
 // answered (`workers.model_id`).
+// PRD-005 slice 01 adds `sh: "<script>"` on every role that takes `touch`
+// (slice, fix, polish, merge): after the touched files, the script runs as
+// `sh -c` in the stub's cwd with its env, and the stream carries one Bash call
+// whose command is the script and no tool call naming what it changed. A
+// nonzero exit fails the stub with exit 65 and the script's stderr. It also
+// adds the merge worker: a pack whose first section is `# Conflict` (FR-4).
+// `done` runs `touch` (none by default) and `sh`, the resolution, and with
+// neither changes nothing, so the conflict markers stay; `blocked` logs a
+// `block` entry on the pack's slice with no phase; `dead` exits 137. It never
+// sets the slice's status.
+// PRD-005 slice 07: a slice step with no `touch` appends to its own
+// `src/slice-NN.txt`, so two lanes landing from one base never meet in one
+// file by default (fix, polish and checkpoint keep `src/lib.txt`). The call
+// record gains `head`, `git rev-parse HEAD` in cwd (null outside a repo). A
+// `done` slice step takes `linger_ms`: a sleep after `done` is on the board
+// and before the stream, a worker that has written `done` and not exited.
 const fs = require('node:fs')
 const path = require('node:path')
 const crypto = require('node:crypto')
@@ -93,7 +109,7 @@ fs.mkdirSync(callsDir, { recursive: true })
 // filled through a rename (writeAtomic): a poll sees the claim or the whole
 // call, never a JSON cut off at a page boundary.
 const packName = path.basename(String(flags['--append-system-prompt-file'] ?? ''))
-const spawnNo = packName.match(/^(?:slice-\d{2}|fix-\d+|checkpoint-\d+|polish|ci-fix-\d+)-(\d+)\.md$/)
+const spawnNo = packName.match(/^(?:slice-\d{2}|merge-\d{2}|fix-\d+|checkpoint-\d+|polish|ci-fix-\d+)-(\d+)\.md$/)
 let n = spawnNo ? Number(spawnNo[1]) : 1
 let fd
 for (;;) {
@@ -108,10 +124,13 @@ for (;;) {
 const factoryEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith('FACTORY_')))
 const sessionId = flags['--session-id'] ?? crypto.randomUUID()
 fs.closeSync(fd)
+const headRev = require('node:child_process').spawnSync('git', ['rev-parse', 'HEAD'], { cwd, encoding: 'utf8' })
+const head = headRev.status === 0 ? headRev.stdout.trim() : null
 writeAtomic(path.join(callsDir, `${n}.json`), JSON.stringify({
   n,
   argv,
   cwd,
+  head,
   env: factoryEnv,
   env_keys: Object.keys(process.env).sort(),
   gh_config_dir: process.env.GH_CONFIG_DIR ?? null,
@@ -136,7 +155,11 @@ if (pack === null) fail(65, 'no pack: pass --append-system-prompt-file <path> or
 // The role is the pack's first section (slice 06): the driver's packs for the
 // checkpoint's workers carry no slice file. Slice 09 adds the closeout's two:
 // `# CI failure` is a fix worker on a red CI check, `# Branch` the polish.
-const role = /^# (?:Gate failure|CI failure)$/m.test(pack)
+// PRD-005 slice 01: a first section `# Conflict` is a merge worker; its pack
+// also names the slice file, so it is told apart before the slice fallback.
+const role = pack.match(/^# .*$/m)?.[0] === '# Conflict'
+  ? 'merge'
+  : /^# (?:Gate failure|CI failure)$/m.test(pack)
   ? 'fix'
   : /^# Gate transcript$/m.test(pack)
     ? 'checkpoint'
@@ -149,6 +172,7 @@ const allowed = {
   fix: ['fix', 'done', 'dead', ...limited],
   checkpoint: ['checkpoint', 'done', 'dead', 'blocked', ...limited],
   polish: ['polish', 'done', 'dead', 'blocked', ...limited],
+  merge: ['done', 'dead', 'blocked', ...limited],
 }
 if (!['done', 'dead', 'blocked', 'fix', 'checkpoint', 'polish', ...limited].includes(step.outcome)) fail(65, `outcome "${step.outcome}" is not built yet — a later slice adds it (PRD-001 §17)`)
 if (!allowed[role].includes(step.outcome)) fail(65, `outcome "${step.outcome}" on step ${n} does not fit a ${role} worker — the plan's order and the driver's spawn order disagree`)
@@ -223,9 +247,11 @@ if (role === 'fix') {
     fs.appendFileSync(f, `fixed by spawn ${n}\n`)
   }
   writeStray(step)
+  const sh = runSh(step)
   const rel = touched.map((f) => path.relative(cwd, f)).join(', ')
   emit(init)
   for (const f of touched) tool('Write', { file_path: f, content: `fixed by spawn ${n}\n` })
+  shCall(step, sh)
   innerRun(step)
   emit(assistant([{ type: 'text', text: 'STATUS: done' }]))
   result([
@@ -267,8 +293,9 @@ if (role === 'checkpoint') {
     result(['STATUS: blocked', 'PROVE: 0/0 — evidence: none — unreached: all', 'FIXED: none', `BLOCK: ${block} — ${question}`])
     process.exit(0)
   }
+  // PRD-005 slice 05: `--covers` passes the covered slices as the contract does.
   const last = covered[covered.length - 1] ?? '00'
-  const add = ['log', 'add', cpFeature, '--kind', 'checkpoint', '--phase', 'checkpoint', '--slice', String(Number(last)), '--title', `after slice-${last} · ${today}`, '--body-file', '-']
+  const add = ['log', 'add', cpFeature, '--kind', 'checkpoint', '--phase', 'checkpoint', '--slice', String(Number(last)), '--covers', covered.map(Number).join(','), '--title', `after slice-${last} · ${today}`, '--body-file', '-']
   const id = docs(add, [
     `**Covers:** slices ${covered.join(', ')}`,
     '**Gate:** 1 runs, 0 red, 0 min — caught: nothing (driver-run)',
@@ -333,6 +360,7 @@ if (role === 'polish') {
     fs.appendFileSync(f, `polished by spawn ${n}\n`)
   }
   writeStray(step)
+  const sh = runSh(step)
   const rel = touched.map((f) => path.relative(cwd, f)).join(', ')
   const skip = new Set(step.skip ?? [])
   // The template as the pack carries it: no frontmatter, the driver writes the numbers.
@@ -351,6 +379,7 @@ if (role === 'polish') {
   if (step.subagents) subagentRun(step)
   readFile(prd)
   for (const f of touched) tool('Write', { file_path: f, content: `polished by spawn ${n}\n` })
+  shCall(step, sh)
   innerRun(step)
   if (!skip.has('retro')) tool('Write', { file_path: retro, content: retroText })
   docsCall(reviewed, '')
@@ -368,27 +397,60 @@ if (role === 'polish') {
   process.exit(0)
 }
 
-// ── 3. find the slice ────────────────────────────────────────────────────────
-const m = pack.match(/((?:\/|\.\/)?[\w./-]*slice-(\d{2})-[\w-]+\.md)/)
-if (!m) fail(65, 'the pack names no slice-NN-*.md file')
-const nn = m[2]
-let slicePath = path.isAbsolute(m[1]) ? m[1] : path.resolve(cwd, m[1])
-if (!fs.existsSync(slicePath)) {
-  const base = path.basename(m[1])
-  const features = path.join(cwd, 'docs', 'features')
-  const hit = fs.existsSync(features)
-    ? fs.readdirSync(features).map((d) => path.join(features, d, base)).find((p) => fs.existsSync(p))
-    : null
-  if (!hit) fail(65, `slice file ${m[1]} not found under ${cwd}`)
-  slicePath = hit
+// ── 3d. a merge worker (PRD-005 slice 01) ────────────────────────────────────
+// FR-4: the driver redid a conflicted pick in the slice's lane. The slice's
+// status is the driver's: no outcome here writes it.
+if (role === 'merge') {
+  const { nn, slicePath, feature } = findSlice()
+  if (limited.includes(step.outcome)) rateLimited(step)
+  if (step.delay_ms) sleep(Number(step.delay_ms))
+  if (step.outcome === 'dead') {
+    emit(init)
+    process.exit(137)
+  }
+  if (step.outcome === 'blocked') {
+    const question = step.question ?? 'Which side of the conflict does the owner want?'
+    const add = ['log', 'add', feature, '--kind', 'block', '--slice', String(Number(nn)), '--title', question, '--body-file', '-']
+    const block = docs(add, [
+      `**Happened:** the stub merge worker on slice ${nn} could not resolve the conflict.`,
+      '**Options:** 1. the Recommended option; 2. the other one.',
+      '**Recommended:** 1 — it is the one the fixture expects.',
+    ].join('\n'))
+    emit(init)
+    docsCall(add, block)
+    emit(assistant([{ type: 'text', text: `STATUS: blocked\nBLOCK: ${block}` }]))
+    result(['STATUS: blocked', 'INNER: 0 runs, 0 red, 0 min — caught: nothing', 'DECISIONS: none', `BLOCK: ${block} — ${question}`])
+    process.exit(0)
+  }
+  const touched = (step.touch ?? []).map((f) => path.resolve(cwd, f))
+  for (const f of touched) {
+    fs.mkdirSync(path.dirname(f), { recursive: true })
+    fs.appendFileSync(f, `merged by spawn ${n}\n`)
+  }
+  const sh = runSh(step)
+  emit(init)
+  readFile(slicePath)
+  for (const f of touched) tool('Write', { file_path: f, content: `merged by spawn ${n}\n` })
+  shCall(step, sh)
+  innerRun(step)
+  emit(assistant([{ type: 'text', text: 'STATUS: done' }]))
+  result([
+    'STATUS: done',
+    `INNER: 1 runs, ${step.inner === 'red' ? 1 : 0} red, 0 min — caught: nothing`,
+    'DECISIONS: none',
+    'BLOCK: none',
+  ])
+  process.exit(0)
 }
-const featureDir = path.dirname(slicePath)
-const feature = featureOf(path.basename(featureDir))
+
+// ── 3. find the slice ────────────────────────────────────────────────────────
+const { nn, slicePath, featureDir, feature } = findSlice()
 
 // ── 4. side effects ──────────────────────────────────────────────────────────
 if (limited.includes(step.outcome)) rateLimited(step)
 setStatus(feature, nn, 'building')
 if (step.delay_ms) sleep(Number(step.delay_ms))
+if (step.wait_sh) waitFor(step.wait_sh)
 if (step.outcome === 'dead') {
   // FR-1's dead worker (slice 03): the session opened, the slice went
   // `building`, then the process vanished with no `result` line.
@@ -427,7 +489,7 @@ if (step.outcome === 'blocked' && !answered) {
   emit({ ...tpl.result, session_id: sessionId, uuid: crypto.randomUUID(), result: text })
   process.exit(0)
 }
-const touched = (step.touch ?? ['src/lib.txt']).map((f) => path.resolve(cwd, f))
+const touched = (step.touch ?? [`src/slice-${nn}.txt`]).map((f) => path.resolve(cwd, f))
 for (const f of touched) {
   fs.mkdirSync(path.dirname(f), { recursive: true })
   fs.appendFileSync(f, `touched by spawn ${n}\n`)
@@ -446,6 +508,7 @@ for (const f of step.heredoc ?? []) {
 if (step.git_add) {
   require('node:child_process').execFileSync('git', ['add', ...step.git_add.split(' ')], { cwd })
 }
+const sh = runSh(step)
 // `step.stray`: files written with no tool call naming them. The polish and
 // fix workers take it too (AD-50002).
 function writeStray(step) {
@@ -458,13 +521,14 @@ const touchedRel = touched.map((f) => path.relative(cwd, f)).join(', ')
 const adAdd = ['log', 'add', feature, '--kind', 'decision', '--slice', String(Number(nn)), '--title', 'Which code file does the stub worker touch?', '--body-file', '-']
 const ad = docs(adAdd, [
   `**Chose:** append one line to ${touchedRel} (spawn ${n})`,
-  '**Over:** a new file per spawn, which the driver could not name in its pathspec',
-  '**Because:** FR-10 leaves the touched set to the scenario step; the fixture has one code file on purpose',
+  '**Over:** a shared code file, which two lanes landing from one base would conflict on',
+  '**Because:** FR-10 leaves the touched set to the scenario step; by default each slice owns its src/slice-NN.txt',
   '**Undo:** drop the appended line',
   '**Review:** no',
 ].join('\n'))
 progress(slicePath, n, touchedRel, ad)
 setStatus(feature, nn, 'done')
+if (step.linger_ms) sleep(Number(step.linger_ms))
 
 // ── 5. the stream ────────────────────────────────────────────────────────────
 emit(init)
@@ -480,6 +544,7 @@ for (const f of step.heredoc ?? []) {
   tool('Bash', { command: `mkdir -p ${path.dirname(f)} && cat > ${f} <<'EOF'\nheredoc from spawn ${n}\nEOF`, description: 'write' })
 }
 if (step.git_add) tool('Bash', { command: `git add ${step.git_add}`, description: 'claim' })
+shCall(step, sh)
 docsCall(adAdd, ad)
 innerRun(step)
 docsCall(['set', feature, `slices.${Number(nn)}.status=done`], '')
@@ -497,6 +562,38 @@ emit({ ...tpl.result, session_id: sessionId, uuid: crypto.randomUUID(), result: 
 process.exit(0)
 
 // ── helpers ──────────────────────────────────────────────────────────────────
+// The slice file the pack names, resolved from cwd or found by its name under
+// docs/features/.
+function findSlice() {
+  const m = pack.match(/((?:\/|\.\/)?[\w./-]*slice-(\d{2})-[\w-]+\.md)/)
+  if (!m) fail(65, 'the pack names no slice-NN-*.md file')
+  let slicePath = path.isAbsolute(m[1]) ? m[1] : path.resolve(cwd, m[1])
+  if (!fs.existsSync(slicePath)) {
+    const base = path.basename(m[1])
+    const features = path.join(cwd, 'docs', 'features')
+    const hit = fs.existsSync(features)
+      ? fs.readdirSync(features).map((d) => path.join(features, d, base)).find((p) => fs.existsSync(p))
+      : null
+    if (!hit) fail(65, `slice file ${m[1]} not found under ${cwd}`)
+    slicePath = hit
+  }
+  const featureDir = path.dirname(slicePath)
+  return { nn: m[2], slicePath, featureDir, feature: featureOf(path.basename(featureDir)) }
+}
+
+// `step.sh`: one script run as `sh -c` in cwd, its output for the stream's
+// tool_result. Its edits name no file to any other tool call (FR-3).
+function runSh(step) {
+  if (typeof step.sh !== 'string') return null
+  const r = require('node:child_process').spawnSync('sh', ['-c', step.sh], { cwd, encoding: 'utf8' })
+  if (r.status !== 0) fail(65, `step ${n}'s sh exited ${r.status ?? r.signal}: ${r.stderr || r.error?.message || ''}`)
+  return `${r.stdout}${r.stderr}` || 'ok'
+}
+
+function shCall(step, out) {
+  if (out !== null) tool('Bash', { command: step.sh, description: 'edit' }, { text: out })
+}
+
 function parseFlags(args) {
   const out = {}
   for (let i = 0; i < args.length; i++) {
@@ -642,6 +739,19 @@ function subagentRun(step) {
 
 function sleep(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+// `step.wait_sh`: a barrier in place of a guessed delay. The script runs as
+// `sh -c` in cwd every 50 ms until it exits 0, for 30 s at most.
+function waitFor(cmd) {
+  const deadline = Date.now() + 30000
+  while (require('node:child_process').spawnSync('sh', ['-c', cmd], { cwd }).status !== 0) {
+    if (Date.now() > deadline) {
+      process.stderr.write(`wait_sh timed out: ${cmd}\n`)
+      return
+    }
+    sleep(50)
+  }
 }
 
 function assistant(content) {

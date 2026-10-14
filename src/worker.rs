@@ -263,7 +263,8 @@ impl Worker {
     /// its command line is absolute, so a relative data dir resolves against
     /// the driver's cwd and not the tree the worker runs in. `cwd` is its
     /// `FACTORY_REPO`; `FACTORY_BOARD` is always the run's main tree, whose
-    /// board a lane worker writes (PRD-005 FR-2).
+    /// board a lane worker writes (PRD-005 FR-2). `lane` is the lane `cwd`
+    /// is, recorded so an orphan finds it.
     pub fn spawn(
         run: &mut Run,
         job: Job,
@@ -271,6 +272,7 @@ impl Worker {
         cfg: &config::Worker,
         env: &[(String, String)],
         cwd: &Path,
+        lane: Option<u32>,
     ) -> Result<Worker> {
         let role = job.role();
         let slice = job.slice();
@@ -344,7 +346,7 @@ impl Worker {
             detail: format!("could not start claude: {e}"),
         })?;
         let pid = child.id();
-        let recorded = record(run, job, pack, cfg, &session_id, pid);
+        let recorded = record(run, job, pack, cfg, &session_id, pid, lane);
         let row_id = reaped_on_err(&mut child, recorded)?;
         Ok(Worker {
             job,
@@ -408,6 +410,7 @@ fn record(
     cfg: &config::Worker,
     session_id: &str,
     pid: u32,
+    lane: Option<u32>,
 ) -> Result<i64> {
     let role = job.role();
     let slice = job.slice();
@@ -427,6 +430,7 @@ fn record(
     run.add_worker(WorkerRef {
         slice,
         checkpoint: job.checkpoint(),
+        lane,
         role: role.to_string(),
         session_id: session_id.to_string(),
         pid,

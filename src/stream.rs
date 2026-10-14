@@ -5,6 +5,7 @@
 //! `peak_context` follows `measure.py:56-67`: per assistant message
 //! `input + cache_creation + cache_read`, peak is the maximum.
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -256,6 +257,9 @@ pub struct Summary {
     pub permission_denials: Vec<Value>,
     pub cost_usd: Option<f64>,
     pub session_id: Option<String>,
+    /// The first `system`/`init` line's `cwd`: where the worker ran, so its
+    /// transcript slug and its Read paths. `None` when the stream had none.
+    pub cwd: Option<PathBuf>,
     pub result_text: Option<String>,
     pub status_hint: Option<StatusHint>,
     /// `peak_context` and `start_context` read the worker's own lines
@@ -458,7 +462,12 @@ impl Collector {
             StreamEvent::RateLimitEvent { rest } => {
                 self.summary.rate_limit = Some(RateLimit::from_event(rest));
             }
-            StreamEvent::System { .. } | StreamEvent::Unknown => {}
+            StreamEvent::System { subtype, rest } => {
+                if subtype.as_deref() == Some("init") && self.summary.cwd.is_none() {
+                    self.summary.cwd = rest.get("cwd").and_then(Value::as_str).map(PathBuf::from);
+                }
+            }
+            StreamEvent::Unknown => {}
         }
     }
 
@@ -530,6 +539,18 @@ pub fn parse(text: &str) -> (Vec<StreamEvent>, Summary) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_init_line_gives_the_worker_cwd() {
+        let (_, s) = parse(concat!(
+            r#"{"type":"system","subtype":"init","cwd":"/x/lane-2","session_id":"s"}"#,
+            "\n",
+            r#"{"type":"system","subtype":"init","cwd":"/x/other"}"#,
+        ));
+        assert_eq!(s.cwd, Some(PathBuf::from("/x/lane-2")));
+        let (_, s) = parse(r#"{"type":"system","subtype":"init","session_id":"s"}"#);
+        assert_eq!(s.cwd, None);
+    }
 
     #[test]
     fn the_findings_line_needs_all_five_keys_colon_or_not() {

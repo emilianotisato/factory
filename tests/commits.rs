@@ -3,8 +3,8 @@
 //! and cherry-picks it onto the feature tip with the main tree's board files:
 //! one commit per slice, one parent, today's subject. A driver killed at
 //! either commit leaves the worker for the resume; a dirty path in the main
-//! tree parks the run; a conflicting pick blocks the slice. No `log-*.md` is
-//! ever written.
+//! tree parks the run. No `log-*.md` is ever written. A conflicting pick is
+//! `tests/merge.rs`'s.
 #[path = "harness/mod.rs"]
 mod harness;
 
@@ -610,57 +610,4 @@ fn a_dirty_path_in_the_main_tree_parks_the_landing_and_keeps_the_owners_edit() {
     );
     assert_eq!(fx.git(&["status", "--porcelain"]), "");
     assert_eq!(factory_refs(&fx), "");
-}
-
-// ── a conflicting landing blocks the slice (until PRD-005 slice 08) ────────
-
-#[test]
-fn a_conflicting_landing_blocks_the_slice_and_keeps_its_ref() {
-    let fx = Fixture::with_index("commits-conflict", &[("checkpoint_every", "10")]);
-    fs::write(fx.path().join("shared.txt"), "1\n2\n3\n4\n").unwrap();
-    fx.git(&["add", "shared.txt"]);
-    fx.git(&["commit", "-q", "-m", "chore: a shared file"]);
-    // 01 and 02 start together from one tip and rewrite the same line; 01
-    // lands first.
-    fx.write_plan(&[
-        json!({"outcome": "done", "sh": "sed -i '3s/.*/one/' shared.txt"}),
-        json!({"outcome": "done", "delay_ms": 1500, "sh": "sed -i '3s/.*/two/' shared.txt"}),
-    ]);
-    let dir = start(&fx);
-    wait_until(&fx, &dir, "slice 02 to block", 30, || {
-        fx.slice_status(2) == "blocked"
-    });
-
-    let sha = sha_of(&fx, "feat(001): slice-01 A");
-    assert!(files_of(&fx, &sha).contains(&"shared.txt".to_string()));
-    assert_eq!(fx.read("shared.txt"), "1\n2\none\n4\n");
-    let blocks: Vec<Value> = fx
-        .log_of("block")
-        .into_iter()
-        .filter(|e| e["slice"] == 2)
-        .collect();
-    assert_eq!(blocks.len(), 1, "{blocks:?}");
-    assert!(
-        blocks[0]["title"].as_str().unwrap().contains("shared.txt"),
-        "{blocks:?}"
-    );
-    assert!(
-        fx.git(&[
-            "rev-parse",
-            "--verify",
-            "refs/factory/001/slice-02^{commit}"
-        ])
-        .trim()
-        .len()
-            == 40
-    );
-    // The main tree is untouched: only the board moved.
-    assert_eq!(
-        fx.git(&["status", "--porcelain", "--", ".", ":!docs/features"]),
-        ""
-    );
-
-    let out = factory(&fx, &["stop", &run_id(&dir)]);
-    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
-    wait_phase(&fx, &dir, "finished", 30);
 }

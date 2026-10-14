@@ -153,7 +153,10 @@ fn a_worker_gets_no_github_and_no_session_but_keeps_the_account() {
         assert!(settings.is_absolute() && settings.is_file(), "{settings:?}");
         assert!(real(pack).starts_with(real(&dir)), "{pack:?}");
         assert_eq!(call["env"]["FACTORY_PACK"], pack.to_str().unwrap());
-        assert_eq!(call["env"]["FACTORY_REPO"], fx.path().to_str().unwrap());
+        // PRD-005 FR-2: the repo is the worker's cwd, its lane for a build
+        // worker; the board is always the main tree's.
+        assert_eq!(call["env"]["FACTORY_REPO"], call["cwd"]);
+        assert_eq!(call["env"]["FACTORY_BOARD"], fx.path().to_str().unwrap());
 
         let sid = flag(argv, "--session-id");
         for file in [

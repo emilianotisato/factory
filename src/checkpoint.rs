@@ -1,15 +1,18 @@
 //! The checkpoint (PRD §6 FR-4), run by the driver once the board says
-//! `checkpoint_due` and the lanes are drained. The gate is the driver's: the
-//! declared command through `sh -c` in the repo root, stdout and stderr to
+//! `checkpoint_due` and the lanes are drained, in the lowest lane no slice
+//! holds (PRD-005 FR-5), reset to the feature tip before each gate run and
+//! each spawn. The gate is the driver's: the declared command through
+//! `sh -c` in the lane with the lane's env, stdout and stderr to
 //! `runs/<id>/gates/<n>-<attempt>.log`, a `gates` row per run (source
 //! `driver`) or per cache hit (`cached = 1`, `minutes = 0`). Red spawns a
-//! fix worker with the failing output, commits its files by pathspec as
-//! `fix(NNN): gate red at checkpoint n` and reruns; three reds in a row block the
-//! run on a `block` entry in the feature's `log.jsonl` (phase `checkpoint`).
-//! Green spawns a checkpoint worker that reads the transcript, drives the
-//! covered Prove rows and writes `CP-n` through `factory docs log add`; the
-//! driver commits `docs(NNN): checkpoint n`. A worker that dies gets
-//! one more spawn, then the block; a worker that blocks parks the run.
+//! fix worker in the lane with the failing output, lands the lane as
+//! `fix(NNN): gate red at checkpoint n` (PRD-005 FR-3) and reruns; three reds
+//! in a row block the run on a `block` entry in the feature's `log.jsonl`
+//! (phase `checkpoint`). Green spawns a checkpoint worker there that reads
+//! the transcript, drives the covered Prove rows and writes `CP-n` through
+//! `factory docs log add`; the driver lands `docs(NNN): checkpoint n`. A
+//! worker that dies gets one more spawn, then the block; a worker that
+//! blocks parks the run.
 //!
 //! Every step is re-entrant from the board and the run dir alone: a resume
 //! (FR-1 "an unverified checkpoint runs first") lands here before any spawn,
@@ -22,20 +25,21 @@ use std::process::{Command, Stdio};
 use std::time::Instant;
 
 use crate::answers;
-use crate::commit::{self, Pathspec};
+use crate::commit;
 use crate::config::Config;
 use crate::db::GateInsert;
 use crate::docs::{Docs, Status};
 use crate::error::io;
 use crate::events::{Event, EventKind};
 use crate::gatecache::{self, Entry, GateCache};
+use crate::land::{self, Landing};
 use crate::pack::Pack;
 use crate::quota::{self, Hold, Limit};
 use crate::run::{Phase, Run, WorkerOutcome};
 use crate::scheduler::{self, DEATH_CAP, pad_list, say, short};
 use crate::stream::Summary;
 use crate::worker::{Exit, Job, Worker};
-use crate::{Result, clock, metrics};
+use crate::{Result, clock, lanes, metrics, paths};
 
 /// Consecutive red gates at one checkpoint before the run blocks.
 pub const RED_CAP: u32 = 3;
@@ -62,12 +66,13 @@ pub enum Outcome {
     Budget { weighted: u64, budget: u64 },
 }
 
-/// Run the checkpoint the board says is due.
+/// Run the checkpoint the board says is due, in `lane`.
 pub fn run(
     run: &mut Run,
     docs: &Docs,
     cfg: &Config,
     board: &Status,
+    lane: u32,
     out: &mut dyn Write,
 ) -> Result<Outcome> {
     let feature = run.state().feature.clone();
@@ -130,7 +135,10 @@ pub fn run(
         if run.state().stop_requested {
             return Ok(Outcome::Stopped);
         }
-        let result = gate_once(run, &repo, &gate, n, ran_red, out)?;
+        // Reset before every run, the one after a fix lands too: the cache
+        // key counts untracked files, so it is HEAD's tree only on a clean lane.
+        let (lane_dir, lane_def) = scheduler::prepare_lane(run, lane, true, out)?;
+        let result = gate_once(run, &lane_dir, &lane_def.env(), &gate, n, ran_red, out)?;
         if !result.red {
             green_log = result.log;
             green_cached = result.cached;
@@ -187,8 +195,20 @@ pub fn run(
             if let Some(o) = await_quota(run, out)? {
                 return Ok(o);
             }
-            if fix_once(run, docs, cfg, board, n, result.attempt, &result.log, out)? {
-                break;
+            match fix_once(
+                run,
+                docs,
+                cfg,
+                board,
+                lane,
+                n,
+                result.attempt,
+                &result.log,
+                out,
+            )? {
+                Fixed::Gate => break,
+                Fixed::Again => {}
+                Fixed::End(o) => return Ok(o),
             }
         }
     }
@@ -230,10 +250,15 @@ pub fn run(
                  The gate is green; the driver's once-only respawn is spent. \
                  Streams and stderr are under `{dir}/`.\n\
                  **Options:** 1. read the last worker's `.stderr` and `.jsonl`, fix the environment (login, PATH, quota) and answer this block — a fresh worker runs; \
-                 2. drive the Prove rows by hand, add `CP-{n}` (`factory docs log add {feature} --kind checkpoint --slice <last>`) and answer this block — the driver commits the checkpoint.\n\
+                 2. drive the Prove rows by hand, add `CP-{n}` (`factory docs log add {feature} --kind checkpoint --phase checkpoint --slice <last> --covers {covers_csv}`) and answer this block — the driver commits the checkpoint.\n\
                  **Recommended:** 1 — a worker that dies before its first tool call is the environment's fault, not the checkpoint's.\n",
                 sessions = sessions.join(", "),
                 dir = crate::worker::dir(run.dir()).display(),
+                covers_csv = covers
+                    .iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(","),
             );
             let id = answers::add_block(&feature_dir, None, Some("checkpoint"), &title, &body)?;
             run.emit(EventKind::CheckpointBlocked {
@@ -270,13 +295,16 @@ pub fn run(
             .into_iter()
             .map(|(id, _)| id)
             .collect();
-        let changed_before = scheduler::snapshot(run, &scheduler::checkpoint_key(n, "checkpoint"))?;
+        let (lane_dir, lane_def) = scheduler::prepare_lane(run, lane, true, out)?;
+        drop_ref(run, board, n, "checkpoint")?;
         let worker = Worker::spawn(
             run,
             Job::Checkpoint { n, attempt },
             &pack,
             &cfg.workers.checkpoint,
-            &[],
+            &lane_def.env(),
+            &lane_dir,
+            Some(lane),
         )?;
         let session_id = worker.session_id.clone();
         let row_id = worker.row_id;
@@ -292,8 +320,24 @@ pub fn run(
         green_cached = true; // a respawn reads the same transcript
         let after = docs.status(&feature)?;
         if after.checkpoints.iter().any(|c| c.n == n) {
-            let spec = Pathspec::from_stream(&exit.summary, board, &repo);
-            let sha = commit_checkpoint(run, board, n, row_id, &spec, &changed_before, out)?;
+            let sha = match land_here(run, board, n, "checkpoint", attempt, lane, row_id, out)? {
+                Ok(sha) => sha,
+                Err(o) => {
+                    if matches!(o, Outcome::Parked { .. }) {
+                        settle(
+                            run,
+                            row_id,
+                            &session_id,
+                            &exit.summary,
+                            WorkerOutcome::Blocked,
+                        )?;
+                    }
+                    return Ok(o);
+                }
+            };
+            if sha.is_none() {
+                say(out, &format!("checkpoint {n} done — nothing to commit"))?;
+            }
             settle(run, row_id, &session_id, &exit.summary, WorkerOutcome::Done)?;
             run.emit(EventKind::CheckpointDone { n, sha })?;
             return Ok(Outcome::Done);
@@ -431,9 +475,12 @@ fn reds_in_a_row(run: &Run, n: u32) -> Result<(u32, u32)> {
     Ok((reds, fixes))
 }
 
+/// `lane` is the lane's worktree, reset to the feature tip: the cache key is
+/// its tree, and the gate runs there with the lane's `env`.
 fn gate_once(
     run: &mut Run,
-    repo: &Path,
+    lane: &Path,
+    env: &[(String, String)],
     gate: &str,
     n: u32,
     trust_red: bool,
@@ -447,10 +494,10 @@ fn gate_once(
         .count() as u32
         + 1;
     let index = run.dir().join("gate-index");
-    let key = gatecache::tree_key(repo, &index, gate)?;
+    let key = gatecache::tree_key(lane, &index, gate)?;
     let mut cache = GateCache::load(run.dir())?;
     let at = clock::now_rfc3339();
-    let fits = |h: &Entry| (!h.red || trust_red) && h.checkpoint.is_none_or(|c| c == n);
+    let fits = |h: &Entry| !h.red || trust_red;
     if let Some(hit) = cache.get(&key).filter(|h| fits(h)).cloned() {
         run.db().insert_gate(&GateInsert {
             run_id: run.id().as_str(),
@@ -504,8 +551,8 @@ fn gate_once(
     let status = Command::new("sh")
         .arg("-c")
         .arg(gate)
-        .current_dir(repo)
-        .env_remove("FACTORY_LANE")
+        .current_dir(lane)
+        .envs(env.iter().map(|(k, v)| (k, v)))
         .stdin(Stdio::null())
         .stdout(Stdio::from(file))
         .stderr(Stdio::from(err))
@@ -529,11 +576,6 @@ fn gate_once(
         checkpoint: Some(n),
         attempt: Some(attempt),
     })?;
-    // A green run on a tree with changes outside `docs/` tested what HEAD
-    // does not hold: it holds for this checkpoint only (Xb7), where a rerun
-    // would test the same tree. Run B of the FR-11 A/B (2026-10-11) reran a
-    // 7-minute green after the owner's answer for want of it.
-    let dirty = !red && commit::dirty_outside_docs(repo)?;
     cache.put(
         &key,
         Entry {
@@ -541,7 +583,6 @@ fn gate_once(
             minutes,
             at: at.clone(),
             log: rel.clone(),
-            checkpoint: dirty.then_some(n),
         },
     )?;
     run.emit(EventKind::GateRun {
@@ -567,28 +608,39 @@ fn gate_once(
     })
 }
 
-/// A fix worker on the red transcript; what it changed is committed however
-/// it ended — done, dead or on a usage limit — and before its outcome is
-/// saved, so a driver killed in between leaves it to the resume. A dead
-/// worker is settled and counted by the gate that follows (a tree it did not
-/// change is a cache hit, red again). `false` when the worker hit a usage
-/// limit (FR-9): the run is paused and this attempt gets another fix worker,
-/// no gate run between.
+/// How a fix worker left its gate attempt.
+enum Fixed {
+    /// Its lane landed, or it changed nothing: the gate runs again.
+    Gate,
+    /// A usage limit (FR-9): the run is paused and this attempt gets another
+    /// fix worker, no gate run between.
+    Again,
+    /// The run stops or parks: a stop during a landing's wait, a conflict.
+    End(Outcome),
+}
+
+/// A fix worker in `lane` on the red transcript; its lane lands however it
+/// ended — done, dead or on a usage limit — and before its outcome is saved,
+/// so a driver killed in between leaves it to the resume. A dead worker is
+/// settled and counted by the gate that follows (a tree it did not change is
+/// a cache hit, red again).
 #[allow(clippy::too_many_arguments)]
 fn fix_once(
     run: &mut Run,
     docs: &Docs,
     cfg: &Config,
     board: &Status,
+    lane: u32,
     n: u32,
     attempt: u32,
     gate_log: &Path,
     out: &mut dyn Write,
-) -> Result<bool> {
+) -> Result<Fixed> {
     let spawn = run.state().workers.len() as u32 + 1;
     let packs = scheduler::packs_dir(run.dir());
     let pack = Pack::for_fix(docs, board, n, attempt, gate_log, &packs, spawn)?;
-    let before = scheduler::snapshot(run, &scheduler::checkpoint_key(n, "fix"))?;
+    let (lane_dir, lane_def) = scheduler::prepare_lane(run, lane, true, out)?;
+    drop_ref(run, board, n, "fix")?;
     let worker = Worker::spawn(
         run,
         Job::Fix {
@@ -597,14 +649,16 @@ fn fix_once(
         },
         &pack,
         &cfg.workers.fix,
-        &[],
+        &lane_def.env(),
+        &lane_dir,
+        Some(lane),
     )?;
     let session_id = worker.session_id.clone();
     let row_id = worker.row_id;
     say(
         out,
         &format!(
-            "checkpoint {n}: fix worker {session_id} spawned on gate attempt {attempt} (pid {}, pack {})",
+            "checkpoint {n}: fix worker {session_id} spawned on gate attempt {attempt} in lane {lane} (pid {}, pack {})",
             worker.pid,
             pack.path.display()
         ),
@@ -612,18 +666,26 @@ fn fix_once(
     let exit = worker.wait()?;
     let limit = Limit::from(&exit.summary);
     let dead = limit.is_none() && exit.summary.is_dead();
-    commit_fix(
-        run,
-        board,
-        n,
-        attempt,
-        row_id,
-        &session_id,
-        &exit.summary,
-        &before,
-        !dead && limit.is_none(),
-        out,
-    )?;
+    match land_here(run, board, n, "fix", attempt, lane, row_id, out)? {
+        Ok(Some(_)) => {}
+        Ok(None) if !dead && limit.is_none() => say(
+            out,
+            &format!("checkpoint {n}: fix worker {session_id} changed nothing to commit"),
+        )?,
+        Ok(None) => {}
+        Err(o) => {
+            if matches!(o, Outcome::Parked { .. }) {
+                settle(
+                    run,
+                    row_id,
+                    &session_id,
+                    &exit.summary,
+                    WorkerOutcome::Blocked,
+                )?;
+            }
+            return Ok(Fixed::End(o));
+        }
+    }
     if let Some(limit) = limit {
         settle(
             run,
@@ -641,7 +703,7 @@ fn fix_once(
                 clock::rfc3339(until)
             ),
         )?;
-        return Ok(false);
+        return Ok(Fixed::Again);
     }
     if dead {
         settle(run, row_id, &session_id, &exit.summary, WorkerOutcome::Dead)?;
@@ -658,158 +720,329 @@ fn fix_once(
                     .map_or("code unknown".to_string(), |c| format!("exit {c}"))
             ),
         )?;
-        return Ok(true);
+        return Ok(Fixed::Gate);
     }
     settle(run, row_id, &session_id, &exit.summary, WorkerOutcome::Done)?;
-    Ok(true)
+    Ok(Fixed::Gate)
 }
 
-/// A fix worker's commit: the paths its stream named (less the protected
-/// files) and the tracked files it changed unnamed — nothing else is live at
-/// a checkpoint (AD-20007); its new unnamed files are listed, not committed.
-/// `fix(NNN): gate red at checkpoint n`. A worker that changed nothing says so
-/// only when `say_nothing`. The scheduler settles a dead driver's fix worker
-/// through here too.
-#[allow(clippy::too_many_arguments)]
-pub fn commit_fix(
-    run: &mut Run,
-    board: &Status,
-    n: u32,
-    attempt: u32,
-    row_id: i64,
-    session_id: &str,
-    summary: &Summary,
-    before: &HashSet<String>,
-    say_nothing: bool,
-    out: &mut dyn Write,
-) -> Result<()> {
-    let repo = run.state().repo.clone();
-    let spec = Pathspec::from_stream(summary, board, &repo);
-    for path in &spec.protected {
-        say(
-            out,
-            &format!(
-                "checkpoint {n}: fix worker wrote {path}, which no fix may — left out of the commit"
-            ),
-        )?;
+/// What landing a checkpoint worker's lane came to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Landed {
+    /// On the feature tip; `None`, nothing to commit.
+    Done(Option<String>),
+    /// The owner's uncommitted work holds the pick: the park line.
+    Waiting(String),
+    /// The pick conflicts with the feature tip, which only the owner moved
+    /// while nothing else was live; `name` holds the lane's commit.
+    Conflict { paths: Vec<String>, name: String },
+}
+
+/// `refs/factory/<NNN>/checkpoint-n-<role>`: a fix or checkpoint worker's
+/// lane commit until it lands.
+pub fn worker_ref(board: &Status, n: u32, role: &str) -> String {
+    format!("refs/factory/{:03}/checkpoint-{n}-{role}", board.number)
+}
+
+fn worker_subject(board: &Status, n: u32, role: &str) -> String {
+    if role == "fix" {
+        commit::subject(board, "fix", &format!("gate red at checkpoint {n}"))
+    } else {
+        commit::subject(board, "docs", &format!("checkpoint {n}"))
     }
-    let skip: HashSet<String> = spec.paths.iter().chain(&spec.protected).cloned().collect();
-    let found = scheduler::unnamed(run, board, before, &skip, &spec.dirs, true)?;
-    note_leftovers(run, n, "fix", &found, out)?;
-    let mut paths = spec.paths.clone();
-    paths.extend(found.sweep);
-    match commit::commit(
-        &repo,
-        &paths,
-        &commit::subject(board, "fix", &format!("gate red at checkpoint {n}")),
-    )? {
-        Some(c) => {
-            run.db().set_worker_commit(row_id, &c.sha)?;
-            say(
-                out,
-                &format!(
-                    "checkpoint {n}: fix committed {} — {} file(s): {}",
-                    short(&c.sha),
-                    c.files.len(),
-                    c.files.join(", ")
-                ),
-            )?;
-            run.emit(EventKind::FixCommitted {
-                n,
-                attempt,
-                sha: c.sha,
-                files: c.files,
-            })?;
-        }
-        None if say_nothing => say(
-            out,
-            &format!("checkpoint {n}: fix worker {session_id} changed nothing to commit"),
-        )?,
-        None => {}
+}
+
+/// A ref an earlier worker of this role left unlanded (a conflict the owner
+/// answered) would land in place of the next worker's lane.
+fn drop_ref(run: &Run, board: &Status, n: u32, role: &str) -> Result<()> {
+    let repo = run.state().repo.clone();
+    let name = worker_ref(board, n, role);
+    if scheduler::resolve(&repo, &name)?.is_some() {
+        scheduler::git_ok(&repo, &["update-ref", "-d", &name])?;
     }
     Ok(())
 }
 
-/// The unnamed changes of a checkpoint's worker, said and logged: the swept
-/// ones go in its commit, the listed ones stay in the tree.
-fn note_leftovers(
+/// PRD-005 FR-3 for a fix or checkpoint worker (`role`) in `lane`: the lane
+/// committed whole under [`worker_ref`] on the lane's base, less the board
+/// and protected files, then picked onto the feature tip with the main
+/// tree's board files. Safe to call again for the same worker, which is how
+/// a resumed driver finishes it, in the slices' order: a row with a commit
+/// has landed; a commit with its subject on the tip since the lane's base is
+/// the landing; a ref that resolves is picked; else the lane is committed
+/// first. A checkpoint worker that proves without fixing changes no file in
+/// its lane while its `CP-n` sits in the main tree's log: then the board
+/// files are committed by pathspec. `lane` `None` is a worker of a driver
+/// from before lanes, which wrote the main tree: only the board files are
+/// the driver's to commit.
+#[allow(clippy::too_many_arguments)]
+pub fn land_worker(
+    run: &mut Run,
+    board: &Status,
+    n: u32,
+    role: &str,
+    attempt: u32,
+    lane: Option<u32>,
+    row_id: i64,
+    out: &mut dyn Write,
+) -> Result<Landed> {
+    let landed = run
+        .db()
+        .workers(run.id().as_str())?
+        .into_iter()
+        .find(|w| w.id == row_id)
+        .and_then(|w| w.commit_sha);
+    if landed.is_some() {
+        return Ok(Landed::Done(landed));
+    }
+    let repo = run.state().repo.clone();
+    let board_files = commit::tool_files(board).to_vec();
+    let name = worker_ref(board, n, role);
+    let subject = worker_subject(board, n, role);
+    let base = lane.and_then(|l| run.state().lane_bases.get(&l).cloned());
+    // A driver killed after the landing commit and before its record.
+    if let Some(base) = &base {
+        let tip = scheduler::git_ok(&repo, &["log", "--format=%H %s", &format!("{base}..HEAD")])?;
+        if let Some(sha) = tip
+            .lines()
+            .find_map(|l| l.split_once(' ').filter(|(_, s)| *s == subject))
+            .map(|(sha, _)| sha.to_string())
+        {
+            if scheduler::resolve(&repo, &name)?.is_some() {
+                scheduler::git_ok(&repo, &["update-ref", "-d", &name])?;
+            }
+            record(run, n, role, attempt, row_id, &sha, out)?;
+            return Ok(Landed::Done(Some(sha)));
+        }
+    }
+    let sha = match scheduler::resolve(&repo, &name)? {
+        Some(sha) => sha,
+        None => {
+            let (Some(lane), Some(base)) = (lane, base) else {
+                return Ok(Landed::Done(commit_board(
+                    run, board, n, role, attempt, row_id, out,
+                )?));
+            };
+            let main = lanes::main_tree(&repo)?;
+            let Some(c) = land::commit_lane(
+                &lanes::dir(&paths::data_dir(), &main, lane),
+                &base,
+                &board_files,
+                &commit::protected_files(board),
+                &subject,
+                &name,
+            )?
+            else {
+                return Ok(Landed::Done(commit_board(
+                    run, board, n, role, attempt, row_id, out,
+                )?));
+            };
+            let who = if role == "fix" {
+                "fix"
+            } else {
+                "checkpoint worker"
+            };
+            for path in &c.dropped {
+                say(
+                    out,
+                    &format!(
+                        "checkpoint {n}: {role} worker wrote {path}, which no {who} may — left out of the commit"
+                    ),
+                )?;
+            }
+            c.sha
+        }
+    };
+    scheduler::undo_half_pick(&repo, &sha)?;
+    match land::land(&repo, &sha, &board_files)? {
+        Landing::Landed { sha } => {
+            record(run, n, role, attempt, row_id, &sha, out)?;
+            Ok(Landed::Done(Some(sha)))
+        }
+        Landing::Dirty { paths } => Ok(Landed::Waiting(format!(
+            "checkpoint {n} cannot land: {} changed in the main tree — commit or discard them",
+            paths.join(", ")
+        ))),
+        Landing::Conflict { paths } => Ok(Landed::Conflict { paths, name }),
+    }
+}
+
+/// [`land_worker`] for a worker this driver waited on. A dirty main tree
+/// parks the run (said once, `waiting-owner`) and the landing is retried
+/// each tick, nothing else being live, until it goes through (phase
+/// `checkpoint` again) or the run is stopped; a conflict blocks. `Ok`: the
+/// landed sha, `None` for nothing to commit; `Err`: the run stops or parks.
+#[allow(clippy::too_many_arguments)]
+fn land_here(
+    run: &mut Run,
+    board: &Status,
+    n: u32,
+    role: &str,
+    attempt: u32,
+    lane: u32,
+    row_id: i64,
+    out: &mut dyn Write,
+) -> Result<std::result::Result<Option<String>, Outcome>> {
+    let (mut parked, mut announced) = (false, false);
+    loop {
+        match land_worker(run, board, n, role, attempt, Some(lane), row_id, out)? {
+            Landed::Done(sha) => {
+                if parked {
+                    say(
+                        out,
+                        &format!(
+                            "checkpoint {n}: the landing went through — the checkpoint goes on"
+                        ),
+                    )?;
+                    run.set_phase(Phase::Checkpoint)?;
+                }
+                return Ok(Ok(sha));
+            }
+            Landed::Waiting(what) => {
+                scheduler::park_with(run, &mut parked, &mut announced, &[], &[], &what, out)?;
+                scheduler::slow_tick(run)?;
+                if run.state().stop_requested {
+                    return Ok(Err(Outcome::Stopped));
+                }
+            }
+            Landed::Conflict { paths, name } => {
+                return Ok(Err(block_conflict(
+                    run, board, n, role, attempt, row_id, &paths, &name, out,
+                )?));
+            }
+        }
+    }
+}
+
+/// The main tree's board files as the worker's commit, for a lane that
+/// changed nothing: a checkpoint worker's `CP-n` entry lives there. A fix
+/// worker's board writes wait for the next commit.
+fn commit_board(
+    run: &mut Run,
+    board: &Status,
+    n: u32,
+    role: &str,
+    attempt: u32,
+    row_id: i64,
+    out: &mut dyn Write,
+) -> Result<Option<String>> {
+    if role == "fix" {
+        return Ok(None);
+    }
+    let repo = run.state().repo.clone();
+    let files = commit::tool_files(board).to_vec();
+    match commit::commit(&repo, &files, &worker_subject(board, n, role))? {
+        Some(c) => {
+            record(run, n, role, attempt, row_id, &c.sha, out)?;
+            Ok(Some(c.sha))
+        }
+        None => Ok(None),
+    }
+}
+
+/// A landed commit on the worker's row, in a line, and for a fix its event.
+fn record(
     run: &mut Run,
     n: u32,
     role: &str,
-    found: &scheduler::Unnamed,
+    attempt: u32,
+    row_id: i64,
+    sha: &str,
     out: &mut dyn Write,
 ) -> Result<()> {
-    if !found.sweep.is_empty() {
-        say(
+    let repo = run.state().repo.clone();
+    let files = scheduler::nul_split(&scheduler::git_ok(
+        &repo,
+        &[
+            "diff-tree",
+            "--no-commit-id",
+            "--name-only",
+            "-r",
+            "-z",
+            sha,
+        ],
+    )?);
+    run.db().set_worker_commit(row_id, sha)?;
+    if role != "fix" {
+        return say(
             out,
             &format!(
-                "checkpoint {n}: {role} worker changed {} tracked file(s) no tool call named — in its commit: {}",
-                found.sweep.len(),
-                found.sweep.join(", ")
+                "checkpoint {n} done — committed {} ({} file(s))",
+                short(sha),
+                files.len()
             ),
-        )?;
+        );
     }
-    if !found.listed.is_empty() {
-        run.emit(EventKind::CheckpointLeftovers {
-            n,
-            role: role.to_string(),
-            files: found.listed.clone(),
-            blobs: found.blobs.clone(),
-        })?;
-        say(
-            out,
-            &format!(
-                "checkpoint {n}: {role} worker left {} file(s) no tool call named — not committed: {}",
-                found.listed.len(),
-                found.listed.join(", ")
-            ),
-        )?;
-    }
+    say(
+        out,
+        &format!(
+            "checkpoint {n}: fix committed {} — {} file(s): {}",
+            short(sha),
+            files.len(),
+            files.join(", ")
+        ),
+    )?;
+    run.emit(EventKind::FixCommitted {
+        n,
+        attempt,
+        sha: sha.to_string(),
+        files,
+    })?;
     Ok(())
 }
 
-/// One commit of the feature folder (its `state.toml` and `log.jsonl`
-/// included) and whatever else the checkpoint worker's stream named.
+/// A worker's lane commit conflicts with the feature tip: a checkpoint block
+/// naming the paths and the ref, which keeps the commit. A checkpoint
+/// worker's `CP-n` is committed first, so the board's record of it is too.
 #[allow(clippy::too_many_arguments)]
-pub fn commit_checkpoint(
+pub fn block_conflict(
     run: &mut Run,
     board: &Status,
     n: u32,
+    role: &str,
+    attempt: u32,
     row_id: i64,
-    spec: &Pathspec,
-    before: &HashSet<String>,
+    paths: &[String],
+    name: &str,
     out: &mut dyn Write,
-) -> Result<Option<String>> {
-    let repo = run.state().repo.clone();
-    let mut want = vec![board.dir.clone()];
-    want.extend(spec.paths.iter().cloned());
-    let mut files = commit::expand(&repo, &want)?;
-    let skip: HashSet<String> = files.iter().chain(&spec.protected).cloned().collect();
-    let found = scheduler::unnamed(run, board, before, &skip, &spec.dirs, true)?;
-    note_leftovers(run, n, "checkpoint", &found, out)?;
-    files.extend(found.sweep);
-    match commit::commit(
-        &repo,
-        &files,
-        &commit::subject(board, "docs", &format!("checkpoint {n}")),
-    )? {
-        Some(c) => {
-            run.db().set_worker_commit(row_id, &c.sha)?;
-            say(
-                out,
-                &format!(
-                    "checkpoint {n} done — committed {} ({} file(s))",
-                    short(&c.sha),
-                    c.files.len()
-                ),
-            )?;
-            Ok(Some(c.sha))
-        }
-        None => {
-            say(out, &format!("checkpoint {n} done — nothing to commit"))?;
-            Ok(None)
-        }
-    }
+) -> Result<Outcome> {
+    commit_board(run, board, n, role, attempt, row_id, out)?;
+    let feature_dir = run.state().repo.join(&board.dir);
+    let title = answers::block_title(&format!(
+        "checkpoint {n}: the {role} worker's commit conflicts with the feature tip in {}",
+        paths.join(", ")
+    ));
+    // A checkpoint worker's `CP-n` is on the board by now: the answer lets
+    // the run go on past the checkpoint, not back into it.
+    let next = if role == "checkpoint" {
+        "the run goes on past the recorded checkpoint"
+    } else {
+        "the checkpoint goes on from the gate"
+    };
+    let body = format!(
+        "**Happened:** the {role} worker's lane, committed as `{name}`, does not apply on the feature tip, \
+         which moved during checkpoint {n}; it conflicts in {paths}. The main tree is untouched, and the run holds until this is answered.\n\
+         **Options:**\n\
+         1. `git cherry-pick {name}`, resolve, commit, answer this block — {next}\n\
+         2. answer this block without it — {next} on the tip as it is, and the next {role} worker's spawn deletes the ref\n\
+         **Recommended:** 1 — the commit holds everything the worker left in its lane.\n",
+        paths = paths.join(", "),
+    );
+    let id = answers::add_block(&feature_dir, None, Some("checkpoint"), &title, &body)?;
+    run.emit(EventKind::CheckpointBlocked {
+        n,
+        block_id: id.clone(),
+        question: title.clone(),
+    })?;
+    say(
+        out,
+        &format!("checkpoint {n}: {role} worker's commit conflicts — {id} written to log.jsonl"),
+    )?;
+    Ok(Outcome::Parked {
+        what: park_line(&id, &title),
+        id,
+        fresh: true,
+    })
 }
 
 /// What a refused v2 `docs log merge` said, on one line: every `✗` refusal
@@ -886,7 +1119,7 @@ fn settle(
     run.db()
         .finish_worker(row_id, summary, outcome.as_str(), &clock::now_rfc3339())?;
     // Never fails the exit: an unreadable dir is an event and null columns.
-    let _ = metrics::record_subagents(run, row_id, session_id);
+    let _ = metrics::record_subagents(run, row_id, session_id, summary.cwd.as_deref());
     metrics::record_exit(run, row_id, summary)?;
     run.set_worker_outcome(session_id, outcome.as_str())
 }
@@ -942,7 +1175,7 @@ fn spawned_before_answer(events: &[Event], n: u32) -> HashSet<String> {
         .collect()
 }
 
-fn park_line(id: &str, title: &str) -> String {
+pub(crate) fn park_line(id: &str, title: &str) -> String {
     format!(
         "checkpoint blocked — {title}: {id} in log.jsonl waits for the owner: `factory answer {id} \"<text>\"`"
     )

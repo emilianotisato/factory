@@ -100,3 +100,9 @@ Rows from [`prd.md`](prd.md) §14 this slice proves, below the UI:
 - **FR-1**: "run `factory lanes up` on a fixture with two lanes and a seed list; then `factory run` without `[lanes] seed`". Run the task 5 and task 6 tests and keep their transcripts, plus the `git worktree list` output from task 5's fixture and the refusal line from task 6.
 
 **Acceptance:** after the checkpoint, Progress holds the `lanes up` output (one line per lane, `clone` or `copy` per path), `git worktree list` with two detached lanes, and the refusal line naming `/lanes` with its exit code.
+
+**Code-review fixes (2026-10-14).**
+
+- A lane file's `setup:` and env items lost every leading and trailing quote, so a setup ending in `…log"` broke in sh. Now only one matching pair comes off (`unquote` in `src/lanes.rs`).
+- A seed path written `big/.` copied to an odd target. Seed paths keep only their normal components; an empty one is an error.
+- Preflight read an unreadable `[lanes] seed` as no seed and named the wrong fix. It now refuses with `[lanes] seed unreadable: {error}`.

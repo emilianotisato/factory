@@ -4,12 +4,13 @@
 mod harness;
 
 use std::collections::BTreeSet;
+use std::fs;
 use std::io::Write;
 use std::process::{Output, Stdio};
 
 use factory::docs::Status;
 use factory::docs::log::Entry;
-use harness::{FEATURE_DIR, Fixture};
+use harness::{FEATURE_DIR, Fixture, fixture_src};
 
 /// `factory docs <args>` with `stdin` piped in.
 fn docs_stdin(fx: &Fixture, args: &[&str], stdin: &str) -> Output {
@@ -214,4 +215,101 @@ fn refusals_exit_2_and_log_merge_points_at_log_add() {
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(err.contains("removed in v3"), "{err}");
     assert!(err.contains("factory docs log add"), "{err}");
+}
+
+/// The fixture's `state.toml` with slices `1..=all`, those in `done` done and
+/// the rest pending.
+fn write_state(fx: &Fixture, all: u32, done: &[u32]) {
+    let mut toml = String::from("status = \"ready\"\n");
+    for n in 1..=all {
+        let status = if done.contains(&n) { "done" } else { "pending" };
+        toml.push_str(&format!(
+            "\n[slices.{n}]\nstatus = \"{status}\"\ndepends_on = []\n"
+        ));
+    }
+    fs::write(fx.path().join(FEATURE_DIR).join("state.toml"), toml).unwrap();
+}
+
+#[test]
+fn a_checkpoint_records_the_slices_it_covers() {
+    let fx = Fixture::new("log-covers");
+    let cp = |extra: &[&str]| {
+        let mut a = vec![
+            "log",
+            "add",
+            "001",
+            "--kind",
+            "checkpoint",
+            "--slice",
+            "5",
+            "--title",
+            "t",
+        ];
+        a.extend_from_slice(extra);
+        fx.docs(&a);
+        let line: serde_json::Value = serde_json::from_str(log_lines(&fx).last().unwrap()).unwrap();
+        line
+    };
+    assert_eq!(
+        cp(&["--covers", "1,2,4,5"])["covers"],
+        serde_json::json!([1, 2, 4, 5])
+    );
+    assert!(cp(&[]).get("covers").is_none(), "{:?}", log_lines(&fx));
+
+    let before = log_lines(&fx);
+    let o = fx.docs_output(&[
+        "log", "add", "001", "--kind", "note", "--covers", "1", "--title", "n",
+    ]);
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("--covers"));
+    assert_eq!(log_lines(&fx), before);
+}
+
+#[test]
+fn a_slice_done_after_a_higher_checkpoint_stays_unverified() {
+    let fx = Fixture::with_index("log-covers-board", &[("checkpoint_every", "2")]);
+    write_state(&fx, 5, &[1, 2, 4, 5]);
+    fx.docs(&[
+        "log",
+        "add",
+        "001",
+        "--kind",
+        "checkpoint",
+        "--slice",
+        "5",
+        "--covers",
+        "1,2,4,5",
+        "--title",
+        "after 5",
+    ]);
+    assert!(status(&fx).unverified.is_empty());
+
+    fx.docs(&["set", "001", "slices.3.status=done"]);
+    let s = status(&fx);
+    assert_eq!(s.unverified, [3]);
+    assert!(s.checkpoint_due);
+    assert_eq!(s.checkpoints[0].covers, [1, 2, 4, 5]);
+}
+
+/// PRD-004's own log, from before `covers` existed: its two checkpoints still
+/// cover all seven slices by the high-water rule.
+#[test]
+fn a_log_without_covers_keeps_the_high_water_rule() {
+    let fx = Fixture::new("log-covers-prd-004");
+    write_state(&fx, 7, &[1, 2, 3, 4, 5, 6, 7]);
+    fs::copy(
+        fixture_src().join("prd-004/log.jsonl"),
+        fx.path().join(FEATURE_DIR).join("log.jsonl"),
+    )
+    .unwrap();
+    let s = status(&fx);
+    assert!(s.unverified.is_empty(), "{:?}", s.unverified);
+    assert!(!s.checkpoint_due);
+    assert_eq!(
+        s.checkpoints
+            .iter()
+            .map(|c| (c.n, c.after, c.covers.is_empty()))
+            .collect::<Vec<_>>(),
+        [(1, Some(5), true), (2, Some(7), true)]
+    );
 }

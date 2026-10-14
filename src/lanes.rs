@@ -75,7 +75,7 @@ pub fn parse(n: u32, text: &str) -> Lane {
             "env" => {
                 let inner = value.trim_start_matches('[').trim_end_matches(']');
                 for item in inner.split(',') {
-                    let item = item.trim().trim_matches(|c| c == '"' || c == '\'');
+                    let item = unquote(item.trim());
                     if let Some((k, v)) = item.split_once('=')
                         && !k.trim().is_empty()
                     {
@@ -84,7 +84,7 @@ pub fn parse(n: u32, text: &str) -> Lane {
                 }
             }
             "setup" => {
-                let cmd = value.trim_matches(|c| c == '"' || c == '\'').trim();
+                let cmd = unquote(value).trim();
                 if !cmd.is_empty() {
                     lane.setup = Some(cmd.to_string());
                 }
@@ -93,6 +93,17 @@ pub fn parse(n: u32, text: &str) -> Lane {
         }
     }
     lane
+}
+
+/// `value` without one pair of matching quotes around it: a command that
+/// ends in a quoted word keeps its closing quote.
+fn unquote(value: &str) -> &str {
+    for q in ['"', '\''] {
+        if let Some(inner) = value.strip_prefix(q).and_then(|v| v.strip_suffix(q)) {
+            return inner;
+        }
+    }
+    value
 }
 
 impl Lane {
@@ -277,11 +288,16 @@ fn worktrees(main: &Path) -> Result<Vec<PathBuf>> {
 /// One seed path into the lane: skipped when the main tree lacks it, kept
 /// when the lane has it, else cloned, else copied.
 fn seed_one(main: &Path, lane: &Path, rel: &str) -> Result<Seeded> {
-    let relative = Path::new(rel);
-    let inside = relative
+    let inside = Path::new(rel)
         .components()
         .all(|c| matches!(c, Component::Normal(_) | Component::CurDir));
-    if rel.is_empty() || !inside {
+    // `big/.` is `big`: a `.` left in would make the copy's target odd.
+    let relative: PathBuf = Path::new(rel)
+        .components()
+        .filter(|c| matches!(c, Component::Normal(_)))
+        .collect();
+    let relative = relative.as_path();
+    if relative.as_os_str().is_empty() || !inside {
         return Err(Error::Msg(format!(
             "[lanes] seed `{rel}` is not a repo-relative path"
         )));
@@ -423,6 +439,24 @@ mod tests {
         );
         assert_eq!(lane.env, vec![("PORT".to_string(), "8002".to_string())]);
         assert_eq!(lane.setup.as_deref(), Some("make db"));
+    }
+
+    #[test]
+    fn only_a_matching_pair_of_quotes_comes_off() {
+        let lane = parse(
+            2,
+            "---\nlane: 2\nenv: [\"A=1\", 'B=\"x\"']\nsetup: echo hi >> \"$(pwd)\"/log\n---\n",
+        );
+        assert_eq!(
+            lane.env,
+            vec![
+                ("A".to_string(), "1".to_string()),
+                ("B".to_string(), "\"x\"".to_string())
+            ]
+        );
+        assert_eq!(lane.setup.as_deref(), Some("echo hi >> \"$(pwd)\"/log"));
+        let quoted = parse(2, "---\nlane: 2\nsetup: \"make 'db'\"\n---\n");
+        assert_eq!(quoted.setup.as_deref(), Some("make 'db'"));
     }
 
     #[test]
@@ -629,6 +663,16 @@ mod tests {
 
         let err = ensure(&data, &main, 1, &["../out".to_string()]).unwrap_err();
         assert!(err.to_string().contains("../out"), "{err}");
+
+        // `big/.` names `big`, which the lane has by now.
+        let dot = ensure(&data, &main, 1, &["big/.".to_string()]).unwrap();
+        assert_eq!(dot.seeds[0].1, Seeded::Kept);
+        let fresh = ensure(&data, &main, 2, &["big/.".to_string()]).unwrap();
+        assert_eq!(fresh.seeds[0].1, want);
+        assert_eq!(
+            fs::read(fresh.dir.join("big/nested/two.bin")).unwrap(),
+            b"two"
+        );
     }
 
     #[test]

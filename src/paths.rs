@@ -110,6 +110,21 @@ pub fn claude_config_dir() -> PathBuf {
         .unwrap_or_else(|| home().join(".claude"))
 }
 
+/// The git common dir of `from`, canonical: one per repo, shared by its
+/// linked worktrees. `None` outside a repo.
+pub fn git_common_dir(from: &Path) -> Option<PathBuf> {
+    let out = Command::new("git")
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .current_dir(from)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let dir = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    PathBuf::from(dir).canonicalize().ok()
+}
+
 /// The git toplevel of `from`, canonical.
 pub fn repo_root(from: &Path) -> Result<PathBuf> {
     let out = Command::new("git")

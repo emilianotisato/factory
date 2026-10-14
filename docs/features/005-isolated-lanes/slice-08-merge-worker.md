@@ -75,3 +75,10 @@ Markers are checked at the start of a line and only for `<` and `>`: a line of `
 Rows from [`prd.md`](prd.md) §14 this slice proves, below the UI. **FR-4**: "run the two-lane conflict scenario, once resolved and once with markers left" — tests (a) and (b) of task 3, with `factory status` read after (b).
 
 **Acceptance:** after the checkpoint, Progress holds both transcripts, the merge call's recorded `cwd`, the final `git log --oneline` of (a), and `factory status` showing slice 2 `blocked` in (b).
+
+**Code-review fixes (2026-10-14).**
+
+- A merge worker that left a path unmerged with no marker (one side deleted, a binary) was committed as resolved. The driver now reads `git ls-files -u` and blocks on any such path; the merge contract tells the worker to `git add` or `git rm` it (AD-21).
+- A merge worker that resolved to nothing lost the slice's ref and freed its lane. The slice now blocks with the ref kept (AD-21).
+- The stub did not number merge packs, so their calls overwrote each other. Its spawn regex adds `merge-NN`.
+- `tests/merge.rs` ordered its two lanes with a 1.5 s delay. Slice 02's stub step now waits on a `wait_sh` barrier until slice 01's commit is on the main tree's log.

@@ -17,7 +17,7 @@ Do:
 - anything the slice, the PRD or a DEC did not settle → a decision in the log: `{factory} docs log add {NNN} --kind decision --slice {N} --flag decide|fyi --title "{question}" --body-file -`, the body holding the `**Chose:**`, `**Over:**`, `**Because:**` and `**Undo:**` lines. `--flag` is the Autonomy `Review:` value: `decide` or `fyi`, left out for `no`. The tool numbers it and prints its `AD-n`.
 - a trap about this repo that cost you a run → `{factory} docs log add {NNN} --kind note --slice {N} --title "{the trap}" --body-file -`, one line with what works instead
 - `{factory} docs set {NNN} slices.{N}.status=done`, then `{factory} docs check` with no errors
-- do not commit: the driver commits your slice's files when you return. Leave the working tree as the commit should be. A file you made with a command (a generator, a script) is yours only if you `git add` it by name or by its folder; `git add -A` and `git add .` claim nothing, and an unclaimed new file is left out and listed.
+- do not commit: the driver commits everything not gitignored in your lane when you return, so leave the lane as the commit should be: a scratch file you leave lands with the slice.
 - touch nothing outside your slice's files. A file another slice owns is off limits even when it looks one line from right; put it in a decision instead.
 
 Blocked → Autonomy § Blocker protocol steps 1-2: `{factory} docs log add {NNN} --kind block --slice {N} --title "{what}" --body-file -`, the body holding `**Happened:**`, `**Options:**` and `**Recommended:**`, then `{factory} docs set {NNN} slices.{N}.status=blocked`, and return. Do not push and do not notify.

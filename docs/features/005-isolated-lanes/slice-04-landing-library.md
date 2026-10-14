@@ -64,3 +64,12 @@ Prove (CP-1): no row of its own. The gate was green over it at checkpoint 1 (`la
 
 ### 4. Prove — none
 No row of [`prd.md`](prd.md) §14 is this slice's: it is a library nothing calls yet. FR-3's rows are proven through the driver by slice 07, FR-4's by slice 08. The checkpoint runs the gate over it.
+
+**Code-review fixes (2026-10-14).**
+
+- A commit that failed after the pick (a hook, a lock) left the pick half applied in the main tree, which read as the owner's dirty work. `land` now restores the picked paths and the board files from HEAD and returns the error.
+- A slice that changed a file the tip had renamed was checked and committed under the old name. The picked paths now come from `git merge-tree`'s tree against HEAD, so the change lands under the new name.
+- The dirty check missed an ignored file sitting under a picked path, which the pick then overwrote. It now passes `--ignored=matching` and parks.
+- `commit_lane` reset the branch a worker had switched to in its lane. It now detaches the lane's HEAD first, so no branch moves.
+- A path such as `[a].txt` read as a glob and matched other files. Every git call of the landing sets `GIT_LITERAL_PATHSPECS=1`.
+- A lane commit that changes nothing, or nothing on the tip, errors by name instead of landing an empty commit (AD-24).

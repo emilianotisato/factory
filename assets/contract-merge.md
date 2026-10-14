@@ -12,10 +12,11 @@ The feature's `state.toml` and `log.jsonl` are written through the tool only, ne
 
 Do:
 - resolve every conflicted path: keep what the tip landed and what the slice built, and remove every marker. `git diff` and `git show HEAD:<path>` show both sides.
+- a conflict with no markers (a file one side deleted, a binary file): resolve it, then `git add` or `git rm` that path. The driver blocks the slice on a path still unmerged that has no marker.
 - you may change anything in the lane: a call site, a test, another slice's landed code, when the resolution needs it.
 - Verify: run the inner-loop command given under `# Inner loop` below **in the foreground, and time every run** — never background it and never end your turn while it runs. Red → fix and rerun; 3 attempts on the same failure → block.
 - anything the slice, the PRD or a DEC did not settle → a decision in the log: `{factory} docs log add {NNN} --kind decision --slice {N} --flag decide|fyi --title "{question}" --body-file -`, the body holding the `**Chose:**`, `**Over:**`, `**Because:**` and `**Undo:**` lines. `--flag` is the Autonomy `Review:` value: `decide` or `fyi`, left out for `no`.
-- do not commit, do not `git cherry-pick --continue` or `--abort`, and do not run `docs set`: the slice's status is the driver's. It checks the conflicted paths for markers, commits everything not gitignored in this lane when you return and lands it, so leave the lane as the commit should be.
+- do not commit, do not `git cherry-pick --continue` or `--abort`, and do not run `docs set`: the slice's status is the driver's. It checks the conflicted paths for markers and unstaged deletions or binaries, commits everything not gitignored in this lane when you return and lands it, so leave the lane as the commit should be.
 
 Blocked → Autonomy § Blocker protocol step 1 only: `{factory} docs log add {NNN} --kind block --slice {N} --title "{what}" --body-file -`, the body holding `**Happened:**`, `**Options:**` and `**Recommended:**`, and return. The driver blocks the slice. Do not push and do not notify.
 

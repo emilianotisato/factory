@@ -20,7 +20,7 @@
 //! of a file the worker's pack held (`pack_doc_read_chars`, §4).
 use std::collections::HashSet;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -503,6 +503,18 @@ pub fn read_subagents(
     }
 }
 
+/// The dir a worker ran in: its stream's `init` cwd (a lane, PRD-005 FR-2),
+/// else the run's repo, for a stream with no `init` line. Its transcript
+/// slug and its Read paths both hang off it.
+pub fn worker_dir<'a>(cwd: Option<&'a Path>, repo: &'a Path) -> &'a Path {
+    cwd.unwrap_or(repo)
+}
+
+/// A worker's transcript, slugged by the dir it ran in ([`worker_dir`]).
+pub fn transcript_of(config: &Path, cwd: Option<&Path>, repo: &Path, session: &str) -> PathBuf {
+    measure::transcript_path(config, worker_dir(cwd, repo), session)
+}
+
 /// PRD-003 FR-21: what the worker's subagents used, read from Claude
 /// Code's transcript dir once the worker exited, onto its row. No dir is
 /// zeros, and so is no transcript: a worker killed before its first turn
@@ -511,8 +523,18 @@ pub fn read_subagents(
 /// fallback: their output count is an early snapshot. `Err` only when that
 /// event could not be written; the callers drop it, so an exit always
 /// settles.
-pub fn record_subagents(run: &mut Run, worker_id: i64, session_id: &str) -> Result<()> {
-    let path = measure::transcript_path(&paths::claude_config_dir(), &run.state().repo, session_id);
+pub fn record_subagents(
+    run: &mut Run,
+    worker_id: i64,
+    session_id: &str,
+    cwd: Option<&Path>,
+) -> Result<()> {
+    let path = transcript_of(
+        &paths::claude_config_dir(),
+        cwd,
+        &run.state().repo,
+        session_id,
+    );
     let written = match read_subagents(&path) {
         Ok(cols) => run.db().set_worker_subagents(worker_id, Some(cols)),
         Err(SubagentsUnread::TranscriptMissing) => run
@@ -589,7 +611,7 @@ pub fn record_exit(run: &Run, worker_id: i64, summary: &Summary) -> Result<()> {
         worker_id,
         &summary.tool_uses,
         run.gate_cmds(),
-        &run.state().repo,
+        worker_dir(summary.cwd.as_deref(), &run.state().repo),
         &mut seen_run,
     )?;
 
@@ -848,6 +870,35 @@ mod tests {
             rows(&[ctx("factory ctx def helper", REFS)])[0].label_expanded,
             None
         );
+    }
+
+    #[test]
+    fn a_lane_worker_is_measured_where_it_ran() {
+        let config = tempfile::tempdir().unwrap();
+        let (lane, repo) = (Path::new("/x/lane-2"), Path::new("/x/repo"));
+        let t = transcript_of(config.path(), Some(lane), repo, "s1");
+        assert_eq!(t, measure::transcript_path(config.path(), lane, "s1"));
+        assert_eq!(
+            transcript_of(config.path(), None, repo, "s1"),
+            measure::transcript_path(config.path(), repo, "s1"),
+            "no init cwd: the run's repo, as before lanes"
+        );
+        let sub = t.with_extension("").join("subagents");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(&t, "").unwrap();
+        let line = r#"{"type":"assistant","timestamp":"2026-10-13T10:00:00Z","message":{"id":"a","usage":{"input_tokens":2,"cache_creation_input_tokens":10,"cache_read_input_tokens":100,"output_tokens":5}}}"#;
+        fs::write(sub.join("agent-1.jsonl"), format!("{line}\n")).unwrap();
+        assert_eq!(read_subagents(&t), Ok((2, 10, 100, 5, 1)));
+        assert_eq!(
+            read_subagents(&transcript_of(config.path(), None, repo, "s1")),
+            Err(SubagentsUnread::TranscriptMissing)
+        );
+
+        let held = vec!["src/lib.txt".to_string()];
+        let r = read("/x/lane-2/src/lib.txt", None);
+        let kind = classify(&r, None);
+        assert!(pack_doc(&r, kind, &held, worker_dir(Some(lane), repo)));
+        assert!(!pack_doc(&r, kind, &held, worker_dir(None, repo)));
     }
 
     #[test]

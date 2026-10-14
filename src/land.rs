@@ -58,6 +58,11 @@ pub fn commit_lane(
     if !git(lane, &["ls-files", "-u"])?.trim().is_empty() {
         git(lane, &["add", "-A"])?;
     }
+    // A worker that switched to a branch in its lane would see `reset
+    // --soft` move that branch, which every worktree shares: detach first,
+    // touching neither the index nor the tree.
+    let head = git(lane, &["rev-parse", "HEAD"])?.trim().to_string();
+    git(lane, &["update-ref", "--no-deref", "HEAD", &head])?;
     git(lane, &["reset", "-q", "--soft", base])?;
     git(lane, &["add", "-A"])?;
     let drop: Vec<&str> = board.iter().chain(protected).map(String::as_str).collect();
@@ -113,10 +118,11 @@ pub fn commit_lane(
 /// the main tree's `board` files and the lane commit's message. Refuses,
 /// before reading anything, while a held main tree is off its branch
 /// ([`commit::hold_branch`]). [`Landing::Dirty`] when a path the pick
-/// touches is dirty or untracked in the main tree (board files aside, which
-/// workers write there by design); [`Landing::Conflict`] when the pick does
-/// not apply cleanly. Either leaves the main tree, its index and the
-/// `refs/factory/` ref as they were. Once landed, the ref is deleted.
+/// touches is dirty, untracked or ignored in the main tree (board files
+/// aside, which workers write there by design); [`Landing::Conflict`] when
+/// the pick does not apply cleanly. Either leaves the main tree, its index
+/// and the `refs/factory/` ref as they were, and so does an error after the
+/// pick: the picked paths go back to HEAD. Once landed, the ref is deleted.
 pub fn land(main: &Path, sha: &str, board: &[String]) -> Result<Landing> {
     if let Some((branch, default)) = commit::held(main)
         && let Some(why) = commit::branch_refusal(main, &branch, default.as_deref())?
@@ -124,19 +130,8 @@ pub fn land(main: &Path, sha: &str, board: &[String]) -> Result<Landing> {
         return Err(Error::Msg(format!("landing refused: {why}")));
     }
     let parent = format!("{sha}^");
-    let picked = nul_list(&git(
-        main,
-        &["diff", "--name-only", "--no-renames", "-z", &parent, sha],
-    )?);
-    if picked.is_empty() {
+    if code(main, &["diff", "--quiet", &parent, sha])? == 0 {
         return Err(Error::Msg(format!("lane commit {sha} changes nothing")));
-    }
-    let dirty: Vec<String> = dirty(main, &picked)?
-        .into_iter()
-        .filter(|p| !board.contains(p))
-        .collect();
-    if !dirty.is_empty() {
-        return Ok(Landing::Dirty { paths: dirty });
     }
     // `merge-tree` answers on objects alone: the tree and the index are not
     // touched, so a conflict leaves nothing to abort.
@@ -154,34 +149,49 @@ pub fn land(main: &Path, sha: &str, board: &[String]) -> Result<Landing> {
             sha,
         ],
     )?;
+    let out = String::from_utf8_lossy(&merge.stdout);
+    let mut fields = nul_list(&out).into_iter();
+    let tree = fields.next().unwrap_or_default();
     match merge.status.code() {
         Some(0) => {}
         Some(1) => {
-            let out = String::from_utf8_lossy(&merge.stdout);
-            let paths = nul_list(&out).into_iter().skip(1).collect();
-            return Ok(Landing::Conflict { paths });
+            return Ok(Landing::Conflict {
+                paths: fields.collect(),
+            });
         }
         _ => return Err(failed("merge-tree", &merge)),
+    }
+    // The paths the pick writes in the main tree, read off the merged tree:
+    // a file the tip renamed takes the lane's change under its new name.
+    let picked = nul_list(&git(
+        main,
+        &["diff", "--name-only", "--no-renames", "-z", "HEAD", &tree],
+    )?);
+    if picked.is_empty() {
+        return Err(Error::Msg(format!(
+            "lane commit {sha} changes nothing on the feature tip"
+        )));
+    }
+    let dirty: Vec<String> = dirty(main, &picked)?
+        .into_iter()
+        .filter(|p| !board.contains(p))
+        .collect();
+    if !dirty.is_empty() {
+        return Ok(Landing::Dirty { paths: dirty });
     }
     // `--no-commit` lets the index differ from HEAD: an owner's staged file
     // elsewhere does not stop the pick.
     git(main, &["cherry-pick", "--no-commit", sha])?;
     let known = known(main, board)?;
-    let boards: Vec<&str> = board
+    let boards: Vec<String> = board
         .iter()
         .filter(|p| known.contains(p.as_str()))
-        .map(String::as_str)
+        .cloned()
         .collect();
-    if !boards.is_empty() {
-        let mut add = vec!["add", "--"];
-        add.extend(&boards);
-        git(main, &add)?;
+    if let Err(e) = commit_pick(main, sha, &picked, &boards) {
+        undo_pick(main, &picked, &boards);
+        return Err(e);
     }
-    // By pathspec, never a bare commit: whatever else is staged stays staged.
-    let mut commit = vec!["commit", "-q", "-C", sha, "--"];
-    commit.extend(picked.iter().map(String::as_str));
-    commit.extend(boards.iter().filter(|b| !picked.iter().any(|p| p == *b)));
-    git(main, &commit)?;
     let head = git(main, &["rev-parse", "HEAD"])?.trim().to_string();
     let refs = git(
         main,
@@ -199,10 +209,52 @@ pub fn land(main: &Path, sha: &str, board: &[String]) -> Result<Landing> {
     Ok(Landing::Landed { sha: head })
 }
 
+/// The picked `paths` and the `boards` committed by pathspec, never a bare
+/// commit: whatever else is staged stays staged.
+fn commit_pick(main: &Path, sha: &str, picked: &[String], boards: &[String]) -> Result<()> {
+    if !boards.is_empty() {
+        let mut add = vec!["add", "--"];
+        add.extend(boards.iter().map(String::as_str));
+        git(main, &add)?;
+    }
+    let mut commit = vec!["commit", "-q", "-C", sha, "--"];
+    commit.extend(picked.iter().map(String::as_str));
+    commit.extend(
+        boards
+            .iter()
+            .filter(|b| !picked.contains(b))
+            .map(String::as_str),
+    );
+    git(main, &commit)?;
+    Ok(())
+}
+
+/// A pick whose commit failed (a hook, a signing key), undone: the picked
+/// paths back to HEAD in the index and the tree, the board files unstaged
+/// and left as the workers wrote them. Best effort: the error that brought
+/// us here is the one to report.
+fn undo_pick(main: &Path, picked: &[String], boards: &[String]) {
+    let mut restore = vec!["restore", "--source=HEAD", "--staged", "--worktree", "--"];
+    restore.extend(picked.iter().map(String::as_str));
+    let _ = run_git(main, &restore);
+    if !boards.is_empty() {
+        let mut reset = vec!["reset", "-q", "--"];
+        reset.extend(boards.iter().map(String::as_str));
+        let _ = run_git(main, &reset);
+    }
+}
+
 /// The `paths` that differ from HEAD in the index or the tree, or are
-/// untracked and not ignored.
+/// untracked, ignored ones included: the pick would overwrite those.
 fn dirty(repo: &Path, paths: &[String]) -> Result<Vec<String>> {
-    let mut status = vec!["status", "--porcelain", "-z", "--untracked-files=all", "--"];
+    let mut status = vec![
+        "status",
+        "--porcelain",
+        "-z",
+        "--untracked-files=all",
+        "--ignored=matching",
+        "--",
+    ];
     status.extend(paths.iter().map(String::as_str));
     let out = git(repo, &status)?;
     let mut fields = out.split('\0').filter(|s| !s.is_empty());
@@ -268,9 +320,12 @@ fn failed(args: &str, out: &Output) -> Error {
     }
 }
 
+/// Every path this module hands git is a file name, never a pattern: a
+/// `*` or `[` a worker put in one must not match its neighbours.
 fn run_git(repo: &Path, args: &[&str]) -> Result<Output> {
     Command::new("git")
         .args(args)
+        .env("GIT_LITERAL_PATHSPECS", "1")
         .current_dir(repo)
         .output()
         .map_err(|e| Error::Tool {
@@ -600,5 +655,107 @@ mod tests {
         assert!(err.contains("feat/x"), "{err}");
         assert_eq!(head(m), before);
         assert_eq!(fs::read_to_string(m.join("a.txt")).unwrap(), "a\n");
+    }
+
+    #[test]
+    fn a_change_to_a_file_the_tip_renamed_lands_under_its_new_name() {
+        let repo = Repo::new();
+        let m = repo.main();
+        let (lane, base) = repo.lane("l1");
+        ok(m, &["mv", "old.txt", "renamed.txt"]);
+        ok(m, &["commit", "-q", "-m", "rename on the tip"]);
+        write(&lane, "old.txt", "o2\n");
+        let c = commit(&lane, &base, "feat(005): slice-01 a", "slice-01").unwrap();
+
+        assert!(matches!(
+            land(m, &c.sha, &board()).unwrap(),
+            Landing::Landed { .. }
+        ));
+        assert_eq!(ok(m, &["show", "HEAD:renamed.txt"]), "o2\n");
+        assert_eq!(ok(m, &["status", "--porcelain"]), "");
+    }
+
+    #[test]
+    fn a_commit_that_fails_after_the_pick_leaves_the_main_tree_as_it_was() {
+        let repo = Repo::new();
+        let m = repo.main();
+        let (lane, base) = repo.lane("l1");
+        write(&lane, "a.txt", "lane\n");
+        write(&lane, "fresh.txt", "lane\n");
+        let c = commit(&lane, &base, "feat(005): slice-01 a", "slice-01").unwrap();
+        let hooks = repo.lanes.path().join("hooks");
+        write(&hooks, "pre-commit", "#!/bin/sh\nexit 1\n");
+        let hook = hooks.join("pre-commit");
+        let mut perm = fs::metadata(&hook).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perm, 0o755);
+        fs::set_permissions(&hook, perm).unwrap();
+        ok(m, &["config", "core.hooksPath", hooks.to_str().unwrap()]);
+        write(m, STATE, "main board\n");
+        let before = head(m);
+
+        assert!(land(m, &c.sha, &board()).is_err());
+        assert_eq!(head(m), before);
+        assert_eq!(fs::read_to_string(m.join("a.txt")).unwrap(), "a\n");
+        assert!(!m.join("fresh.txt").exists());
+        assert_eq!(ok(m, &["status", "--porcelain"]), format!(" M {STATE}\n"));
+        assert_eq!(
+            ok(m, &["rev-parse", "refs/factory/005/slice-01"]).trim(),
+            c.sha
+        );
+    }
+
+    #[test]
+    fn an_ignored_file_under_the_pick_parks_it() {
+        let repo = Repo::new();
+        let m = repo.main();
+        write(m, ".gitignore", "gen.txt\n");
+        ok(m, &["add", ".gitignore"]);
+        ok(m, &["commit", "-q", "-m", "ignore gen"]);
+        let (lane, base) = repo.lane("l1");
+        write(&lane, "gen.txt", "lane\n");
+        ok(&lane, &["add", "-f", "gen.txt"]);
+        let c = commit(&lane, &base, "feat(005): slice-01 a", "slice-01").unwrap();
+        write(m, "gen.txt", "owner\n");
+
+        assert_eq!(
+            land(m, &c.sha, &board()).unwrap(),
+            Landing::Dirty {
+                paths: strings(&["gen.txt"])
+            }
+        );
+        assert_eq!(fs::read_to_string(m.join("gen.txt")).unwrap(), "owner\n");
+    }
+
+    #[test]
+    fn a_branch_the_worker_switched_to_does_not_move() {
+        let repo = Repo::new();
+        let (lane, base) = repo.lane("l1");
+        ok(&lane, &["switch", "-q", "-c", "side"]);
+        write(&lane, "side.txt", "s\n");
+        ok(&lane, &["add", "side.txt"]);
+        ok(&lane, &["commit", "-q", "-m", "on side"]);
+        let side = head(&lane);
+
+        let c = commit(&lane, &base, "feat(005): slice-01 a", "slice-01").unwrap();
+        assert_eq!(c.files, ["side.txt"]);
+        assert_eq!(ok(&lane, &["rev-parse", "refs/heads/side"]).trim(), side);
+    }
+
+    #[test]
+    fn a_path_that_reads_as_a_glob_matches_only_itself() {
+        let repo = Repo::new();
+        let m = repo.main();
+        let (lane, base) = repo.lane("l1");
+        write(&lane, "[a].txt", "lane\n");
+        let c = commit(&lane, &base, "feat(005): slice-01 a", "slice-01").unwrap();
+        write(m, "a.txt", "owner\n");
+
+        assert!(matches!(
+            land(m, &c.sha, &board()).unwrap(),
+            Landing::Landed { .. }
+        ));
+        let landed = ok(m, &["show", "--name-only", "--format=", "HEAD"]);
+        assert_eq!(landed.trim(), "[a].txt");
+        assert_eq!(ok(m, &["status", "--porcelain"]), " M a.txt\n");
     }
 }

@@ -307,8 +307,10 @@ fn feature(
         "missing" => refuse.push(format!("gate {}", gate::line(&g))),
         _ => ok.push(format!("gate {}", gate::line(&g))),
     }
-    if project::seed(root).ok().flatten().is_none() {
-        refuse.push(crate::lanes::NO_SEED.into());
+    match project::seed(root) {
+        Ok(Some(_)) => {}
+        Ok(None) => refuse.push(crate::lanes::NO_SEED.into()),
+        Err(e) => refuse.push(format!("[lanes] seed unreadable: {e}")),
     }
     let open: Vec<String> = log::select(&entries, log::Filter::Open)
         .iter()

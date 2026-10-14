@@ -76,3 +76,8 @@ Delete `note_leftovers`, the two `scheduler::snapshot` calls (`:273`, `:591`), t
 Rows from [`prd.md`](prd.md) §14 this slice proves, below the UI. **FR-5**: "run a harness checkpoint with `gate.sh` recording `pwd`, a main-tree-only file, and lane 1 blocked" — the task 2 tests (`pwd` and HEAD at each checkpoint; the main-tree-only `needed.txt`) and the task 1 test (lane 1 blocked, gate in lane 2). Its polish rows are slice 10's.
 
 **Acceptance:** after the checkpoint, Progress holds the three transcripts, with the `gate.log` lines showing each `pwd` and `head`.
+
+**Code-review fixes (2026-10-14).**
+
+- An open checkpoint-phase block (a conflict, a dead checkpoint worker) did not hold the run: ready slices spawned past it. The run now parks on it (AD-23).
+- The death block's hint for recording the checkpoint by hand left out `--phase` and `--covers`, so the entry it made covered nothing. It now names both, with the checkpoint's covers list.

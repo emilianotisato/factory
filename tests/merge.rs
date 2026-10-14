@@ -1,6 +1,6 @@
 //! PRD-005 slice 08: a landing that conflicts spawns a merge worker (FR-4).
 //! Slices 01 and 02 start side by side from one tip and rewrite line 3 of
-//! `shared.txt`; 01 lands first, so 02's pick conflicts. The driver leaves
+//! `shared.txt`; 02 waits for 01's landing, so 02's pick conflicts. The driver leaves
 //! the main tree untouched, redoes the pick in 02's lane, sets 02 back to
 //! `building` and spawns a merge worker there. A clean exit with no marker
 //! left lands the lane; markers left, a block the worker logged, or two
@@ -101,17 +101,26 @@ fn stop(fx: &Fixture, dir: &Path) {
 const SLICE_01: &str = "feat(001): slice-01 A";
 const SLICE_02: &str = "feat(001): slice-02 B";
 
+/// A stub barrier: slice 01's landing is on the main tree's log.
+const SLICE_01_LANDED: &str = r#"git -C "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")" log --format=%s | grep -qxF 'feat(001): slice-01 A'"#;
+
 /// The fixture with a committed `shared.txt`, and a plan whose first two
-/// steps rewrite its line 3 in slices 01 and 02; 02 waits, so 01 lands
-/// first. `merge` is the steps after.
+/// steps rewrite its line 3 in slices 01 and 02; 02 waits for 01's
+/// landing. `merge` is the steps after.
 fn conflicting(name: &str, merge: &[Value]) -> (Fixture, PathBuf) {
+    conflicting_on(name, "sed -i '3s/.*/one/' shared.txt", merge)
+}
+
+/// [`conflicting`] with slice 01's step running `first` in place of its
+/// rewrite of line 3.
+fn conflicting_on(name: &str, first: &str, merge: &[Value]) -> (Fixture, PathBuf) {
     let fx = Fixture::with_index(name, &[("checkpoint_every", "10")]);
     fs::write(fx.path().join("shared.txt"), "1\n2\n3\n4\n").unwrap();
     fx.git(&["add", "shared.txt"]);
     fx.git(&["commit", "-q", "-m", "chore: a shared file"]);
     let mut plan = vec![
-        json!({"outcome": "done", "sh": "sed -i '3s/.*/one/' shared.txt"}),
-        json!({"outcome": "done", "delay_ms": 1500, "sh": "sed -i '3s/.*/two/' shared.txt"}),
+        json!({"outcome": "done", "sh": first}),
+        json!({"outcome": "done", "sh": "sed -i '3s/.*/two/' shared.txt", "wait_sh": SLICE_01_LANDED}),
     ];
     plan.extend_from_slice(merge);
     fx.write_plan(&plan);
@@ -305,5 +314,55 @@ fn a_block_the_merge_worker_logged_blocks_the_slice() {
     // The stub's merge worker never runs `docs set`: the driver flipped it.
     assert_eq!(blocks_of(&fx, 2).len(), 1);
     assert_eq!(head_subject(&fx), SLICE_01);
+    stop(&fx, &dir);
+}
+
+// ── polish: what a merge leaves that is not a marker ───────────────────────
+
+#[test]
+fn a_merge_that_leaves_nothing_to_land_keeps_the_ref_and_blocks() {
+    // The lane back at the tip, as a reset under the respawn leaves it.
+    let (fx, dir) = conflicting(
+        "merge-empty",
+        &[json!({"outcome": "done", "sh": "git reset -q --hard HEAD && git clean -fdq"})],
+    );
+    wait_until(&fx, &dir, "slice 02 to block", 30, || {
+        fx.slice_status(2) == "blocked"
+    });
+    let blocks = blocks_of(&fx, 2);
+    assert_eq!(blocks.len(), 1, "{blocks:?}");
+    assert!(
+        blocks[0]["title"]
+            .as_str()
+            .unwrap()
+            .contains("nothing to land"),
+        "{blocks:?}"
+    );
+    assert!(
+        factory_refs(&fx).contains("refs/factory/001/slice-02"),
+        "{}",
+        factory_refs(&fx)
+    );
+    assert_eq!(head_subject(&fx), SLICE_01);
+    stop(&fx, &dir);
+}
+
+#[test]
+fn a_merge_that_leaves_a_deleted_side_unstaged_blocks_the_slice() {
+    // 01 deletes the file 02 rewrites: git leaves no marker in it.
+    let (fx, dir) = conflicting_on(
+        "merge-modify-delete",
+        "rm shared.txt",
+        &[json!({"outcome": "done"})],
+    );
+    wait_until(&fx, &dir, "slice 02 to block", 30, || {
+        fx.slice_status(2) == "blocked"
+    });
+    let blocks = blocks_of(&fx, 2);
+    assert_eq!(blocks.len(), 1, "{blocks:?}");
+    let title = blocks[0]["title"].as_str().unwrap();
+    assert!(title.contains("open in shared.txt"), "{blocks:?}");
+    assert_eq!(head_subject(&fx), SLICE_01);
+    assert!(!fx.path().join("shared.txt").exists());
     stop(&fx, &dir);
 }

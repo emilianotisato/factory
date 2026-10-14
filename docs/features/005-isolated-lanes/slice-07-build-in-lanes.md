@@ -120,3 +120,8 @@ Rows from [`prd.md`](prd.md) §14 this slice proves, below the UI:
 - **FR-2**, the build half: "run a two-lane harness run; read each `calls/N.json` and the main tree's board" — the task 2 test.
 
 **Acceptance:** after the checkpoint, Progress holds the transcripts, the `git show --stat` of the Bash-only commit, the dependent's recorded HEAD, and the park line.
+
+**Code-review fixes (2026-10-14).**
+
+- A slice was marked `building` on its lane before the lane's reset, so a reset that failed left a claim on a dirty lane. The claim moved into `spawn_on`, after `prepare_lane`.
+- A driver error while landing a `done` slice settled its worker `failed`, and the respawn rebuilt work that was already done. A worker whose landing is owed is now left for the next driver to land (AD-22).
