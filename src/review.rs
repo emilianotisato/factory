@@ -230,6 +230,7 @@ fn run_logged(
             return Ok((Ended::Exited(status.code()), started.elapsed()));
         }
         if started.elapsed() >= timeout {
+            // SAFETY: a plain syscall on the group this child leads.
             unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
             let _ = child.kill();
             let _ = child.wait();

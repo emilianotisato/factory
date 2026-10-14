@@ -1093,7 +1093,7 @@ fn stop_and_wait(fx: &Fixture, dir: &Path) {
 fn deaths_count_from_the_last_answer_and_each_block_takes_a_free_id() {
     let fx = Fixture::with_index("dead-answered", &[("checkpoint_every", "10")]);
     fx.chain();
-    // A seeded, answered BLOCK-1: the death block must not take that number again.
+    // A seeded, answered block holds the first number: the death block must not take it again.
     let feature_dir = fx.path().join(FEATURE_DIR);
     let mut seeded = factory::docs::log::Entry::new(
         factory::docs::log::Kind::Block,

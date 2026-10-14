@@ -145,7 +145,7 @@ pub fn expand(repo: &Path, paths: &[String]) -> Result<Vec<String>> {
     Ok(out)
 }
 
-/// Scoped like the builders' own subjects (`feat(018): slice-02 Harness`), so a log search by feature finds it.
+/// Scoped like the builders' own subjects (`feat(NNN): slice-NN Title`), so a log search by feature finds it.
 pub fn subject(board: &Status, kind: &str, text: &str) -> String {
     format!("{kind}({:03}): {text}", board.number)
 }

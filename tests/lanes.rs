@@ -768,7 +768,7 @@ fn parked_run(fx: &Fixture) -> factory::run::Run {
 fn answer_takes_the_open_block_and_prefers_the_parked_feature() {
     let fx = Fixture::new("answer-pick");
     let one = fx.path().join(harness::FEATURE_DIR);
-    // Block ids restart per feature, so both can hold a BLOCK-1.
+    // Block ids restart per feature, so both features hold a block numbered one.
     fx.docs(&["new", "other", "--title", "Other"]);
     fx.docs(&["slice", "002", "x"]);
     let two = fx.path().join("docs/features/002-other");
@@ -965,7 +965,7 @@ fn an_answer_flips_only_a_blocked_slice() {
     assert!(run.dir().join("answers/BLOCK-1.json").is_file());
 }
 
-/// Parked on `ASK-1`; its pid is this test's, so it reads as alive.
+/// Parked on an open ask; its pid is this test's, so it reads as alive.
 fn parked_on_ask(fx: &Fixture, feature: &str) -> factory::run::Run {
     let mut run = factory::run::Run::create(&data_dir(fx), fx.path(), feature, None, 1).unwrap();
     run.emit(factory::events::EventKind::AskOpened {

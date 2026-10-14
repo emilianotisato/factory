@@ -586,7 +586,7 @@ mod tests {
                 .map(|e| e.seq)
                 .collect::<Vec<_>>()
         };
-        // BLOCK-102 by its re-opening (6, not 4); past the cursor is fresh, not owed.
+        // A re-opened block counts by its re-opening (6, not 4); past the cursor is fresh, not owed.
         assert_eq!(seqs(7, false), [2, 6, 7]);
         assert_eq!(seqs(6, false), [2, 6]);
         assert_eq!(seqs(0, false), Vec::<u64>::new());
