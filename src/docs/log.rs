@@ -500,36 +500,36 @@ mod tests {
             ts: ts.into(),
             ..Entry::new(kind, title, body)
         };
-        let mut ad1 = mk(
+        let mut lock = mk(
             Some("AD-1"),
             Kind::Decision,
             "Which lock?",
             "**Chose:** flock\n",
         );
-        ad1.slice = Some(2);
-        ad1.flag = Some(Flag::Decide);
-        let mut ad2 = mk(
+        lock.slice = Some(2);
+        lock.flag = Some(Flag::Decide);
+        let mut helper = mk(
             Some("AD-2"),
             Kind::Decision,
             "Helper?",
             "**Chose:** extract\n",
         );
-        ad2.slice = Some(3);
-        ad2.flag = Some(Flag::Fyi);
-        let mut ad3 = mk(
+        helper.slice = Some(3);
+        helper.flag = Some(Flag::Fyi);
+        let mut ask = mk(
             Some("AD-3"),
             Kind::Ask,
             "Use the cache?",
             "Yes, per the owner.\n",
         );
-        ad3.phase = Some("preflight".into());
-        let mut b1 = mk(
+        ask.phase = Some("preflight".into());
+        let mut red = mk(
             Some("BLOCK-1"),
             Kind::Block,
             "Gate red",
             "**Happened:** red\n",
         );
-        b1.phase = Some("checkpoint".into());
+        red.phase = Some("checkpoint".into());
         let mut cp = mk(
             Some("CP-1"),
             Kind::Checkpoint,
@@ -548,7 +548,7 @@ mod tests {
         let mut review = mk(None, Kind::Review, "review", "");
         review.reference = Some("AD-1".into());
         review.verdict = Some(Verdict::Kept);
-        vec![ad1, ad2, ad3, b1, cp, note, answer, review]
+        vec![lock, helper, ask, red, cp, note, answer, review]
     }
 
     #[test]

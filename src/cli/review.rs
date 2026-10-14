@@ -1,4 +1,5 @@
-//! The flags are optional to clap: its usage error exits 2, which the skills read as "unreviewed", the safe side.
+//! Exit 0: a pass's text counted. 2: none did, or clap refused a flag (the skills' fallback). 1: a bad combination.
+//! Once the probe passed, a failing pass is its own `unreviewed` line, never the command's error: earlier passes keep their findings.
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};

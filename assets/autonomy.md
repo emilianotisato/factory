@@ -59,6 +59,20 @@ An agent alone under pressure reaches for every one of these. All are forbidden.
 
 **Two narrow exceptions, each with an `AD` marked `Review: fyi`:** an inline suppression where the real fix is impossible (a third-party type, a generated file), naming why; and extending gate configuration to *cover* new code the feature adds, such as a new source path. Extending, never loosening. When that extension makes CI need a toolchain it lacks, adding the setup step to the workflow is part of the same extension, with the `AD` marked `decide`. Never remove, skip or weaken a CI step.
 
+## The plan stays in docs/
+Code is read for years by people and agents who never saw the PRD. Write it so it
+reads as if the plan never existed.
+- Never name a specific plan item in code: not in file or folder names, classes,
+  functions, tests, fixtures, strings or comments. No PRD-n, FR-n, AD-n, slice n,
+  checkpoint n. Name the behavior: seedUnbilledWorkspaces, not seedPre025Workspaces.
+- The QA plan maps each FR to its test. The test never names the FR.
+- Comments: default to none. One short line only for what the code cannot show: an
+  invariant no name or test expresses, a quirk of something we cannot change, or why
+  a choice is deliberate. No history, no narration, no TODOs.
+- A library crate's public API, an HTTP or CLI contract, and type annotations a
+  checker reads keep a doc comment. Every other docblock follows the line above.
+- Do not copy what is nearby when it breaks this. Fix it when you touch it.
+
 ## Tokens — every call re-reads everything before it
 
 Two thirds of a run's cost is the model re-reading its own context on every call. At 300k of context, a `grep | head` costs about what reading a novel does. The call count is what you control:

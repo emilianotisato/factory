@@ -34,6 +34,8 @@ A gate tier, floor or lint rule that cost more than it caught *in this project*.
 
 A step, rule or template in the framework itself. Name the skill and the section.
 
+A comment or name the leaks check should have caught: `file:line` and the line.
+
 ## Score
 
 One line on why.

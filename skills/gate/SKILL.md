@@ -129,9 +129,9 @@ sqlite3 -header ~/.local/share/factory/factory.db \
 
 `kind = checkpoint` is the driver running the declared gate; `kind = slice` is what builders actually ran as their inner loop, command by command. The findings that come only from here:
 
-- **A tier red at checkpoints and never in the inner loop** belongs in the inner loop (round 3's rule). Fmt and clippy at CP-2 of PRD-001 is the pattern.
+- **A tier red at checkpoints and never in the inner loop** belongs in the inner loop (round 3's rule). Fmt and clippy red at a checkpoint and never in the inner loop is the pattern.
 - **Builders not running the declared inner loop.** When the `cmd` column is a hand-rolled subset instead of the declared string, the declaration is wrong-sized or unknown to them.
-- **A test red in one run of five** is flaky. It needs a stabilise pass, named as a finding with the test's name, not a retry rule. One such test cost PRD-003 a full gate rerun and a Trap lookup each time it fired.
+- **A test red in one run of five** is flaky. It needs a stabilise pass, named as a finding with the test's name, not a retry rule. One such test cost a run a full gate rerun and a Trap lookup each time it fired.
 - **Minutes that dwarf reds.** A tier that burns most of the gate's wall-clock and never fails has no timeout, no escape hatch, or no reason to be in the gate.
 
 Then run the gate, prove its tiers as above, and check all of these:

@@ -347,6 +347,7 @@ impl Pack {
         covers: &[u32],
         gate_log: &Path,
         cached: bool,
+        leaks: &str,
         packs_dir: &Path,
         spawn: u32,
     ) -> Result<Pack> {
@@ -413,6 +414,7 @@ impl Pack {
                     gate_log.display(),
                     tail(&log_text, TAIL_LINES).trim_end()
                 ),
+                format!("# Leaks\n\n{}", leaks.trim_end()),
                 format!("# Covered slices\n\n{}", slices.trim_end()),
                 format!(
                     "# QA rows\n\n<!-- {prd_rel}: § QA plan -->\n\n{}",
@@ -959,8 +961,18 @@ mod tests {
         let log = repo.join("gate.log");
         fs::write(&log, "ok\n").unwrap();
         let packs = repo.join("packs");
-        let cp =
-            Pack::for_checkpoint(&docs, &board, 1, &[1, 2, 4], &log, false, &packs, 1).unwrap();
+        let cp = Pack::for_checkpoint(
+            &docs,
+            &board,
+            1,
+            &[1, 2, 4],
+            &log,
+            false,
+            "clean\n",
+            &packs,
+            1,
+        )
+        .unwrap();
         let text = fs::read_to_string(&cp.path).unwrap();
         assert!(text.contains("--slice 04 --covers 1,2,4 --title"), "{text}");
         assert!(text.contains("**Covers:** slices 01, 02, 04"), "{text}");
@@ -1132,11 +1144,13 @@ mod tests {
             sections_of(&fix),
             ["gate_failure", "log", "contract", "autonomy", "inner_loop"]
         );
-        let cp = Pack::for_checkpoint(&docs, &board, 1, &[1], &log, false, &packs, 1).unwrap();
+        let cp = Pack::for_checkpoint(&docs, &board, 1, &[1], &log, false, "clean\n", &packs, 1)
+            .unwrap();
         assert_eq!(
             sections_of(&cp),
             [
                 "gate_transcript",
+                "leaks",
                 "covered_slices",
                 "qa_rows",
                 "log",
@@ -1160,5 +1174,81 @@ mod tests {
             text.contains("# Log\n\n<!-- factory docs log show 001 -->\n\nnone yet\n\n# Outline"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn every_role_reads_the_plan_stays_in_docs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .current_dir(repo)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        let dir = "docs/features/001-x";
+        fs::create_dir_all(repo.join(dir)).unwrap();
+        fs::write(
+            repo.join("docs/project.toml"),
+            "[docs]\nframework = 3\ngate = \"./gate.sh\"\ninner = \"./gate.sh --inner\"\n",
+        )
+        .unwrap();
+        fs::write(repo.join(dir).join("prd.md"), "# PRD\n\n## 4. FR-1\n\nx\n").unwrap();
+        fs::write(
+            repo.join(dir).join("slice-01-a.md"),
+            "# Slice 01 — a\n\n**Source**: §4\n",
+        )
+        .unwrap();
+        fs::write(repo.join("shared.txt"), "1\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "feat(001): slice-01 A"]);
+        let docs = Docs::open(repo).unwrap();
+        let board = Status {
+            number: 1,
+            dir: dir.to_string(),
+            slices: vec![crate::docs::Slice {
+                number: 1,
+                file: "001-x/slice-01-a.md".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let packs = repo.join("packs");
+        let log = repo.join("gate.log");
+        fs::write(&log, "ok\n").unwrap();
+
+        let all = [
+            Pack::for_slice(&docs, &board, 1, &packs, 1).unwrap(),
+            Pack::for_fix(&docs, &board, 1, 1, &log, &packs, 1).unwrap(),
+            Pack::for_merge(
+                &docs,
+                &board,
+                1,
+                &["shared.txt".to_string()],
+                "HEAD",
+                &packs,
+                1,
+                None,
+            )
+            .unwrap(),
+            Pack::for_checkpoint(&docs, &board, 1, &[1], &log, false, "clean\n", &packs, 1)
+                .unwrap(),
+            Pack::for_polish(&docs, &board, repo, "main", "feat/x", "# Retro", &packs, 1).unwrap(),
+            Pack::for_ci_fix(&docs, &board, 1, 1, "test", "red\n", &packs, 1).unwrap(),
+        ];
+        for pack in &all {
+            let text = fs::read_to_string(&pack.path).unwrap();
+            assert_eq!(
+                text.matches("\n## The plan stays in docs/\n").count(),
+                1,
+                "{}",
+                pack.path.display()
+            );
+        }
     }
 }

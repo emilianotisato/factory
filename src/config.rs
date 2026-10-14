@@ -123,7 +123,7 @@ pub struct WorkerSources {
 }
 
 const TOP_KEYS: [&str; 4] = ["budget_weighted_tokens", "workers", "source", "review"];
-const PROJECT_TOP_KEYS: [&str; 4] = ["docs", "lanes", "run", "workers"];
+const PROJECT_TOP_KEYS: [&str; 5] = ["docs", "lanes", "leaks", "run", "workers"];
 const RUN_KEYS: [&str; 1] = ["budget"];
 const ROLE_KEYS: [&str; 4] = ["build", "fix", "checkpoint", "polish"];
 const WORKER_KEYS: [&str; 2] = ["model", "effort"];
@@ -174,7 +174,7 @@ fn expand_home(path: &Path) -> PathBuf {
     }
 }
 
-/// `[docs]` and `[lanes]` are known here only so they do not warn; `docs::project` reads them.
+/// `[docs]`, `[lanes]` and `[leaks]` are known here only so they do not warn; `docs::project` and `leaks` read them.
 pub fn load_with_project(config_dir: &Path, repo: &Path) -> Result<Loaded> {
     let mut loaded = load(config_dir)?;
     let path = repo.join(PROJECT_FILE);
@@ -421,6 +421,14 @@ mod tests {
     #[test]
     fn a_lanes_table_loads_without_a_warning() {
         let (cfg, repo) = dirs(None, Some("[docs]\nframework = 3\n\n[lanes]\nseed = []\n"));
+        let l = load_with_project(cfg.path(), repo.path()).unwrap();
+        assert!(l.warnings.is_empty(), "{:?}", l.warnings);
+    }
+
+    #[test]
+    fn a_leaks_table_loads_without_a_warning() {
+        let text = "[docs]\nframework = 3\n\n[leaks]\nallow = [{ path = \"tests/lanes.rs\" }]\n";
+        let (cfg, repo) = dirs(None, Some(text));
         let l = load_with_project(cfg.path(), repo.path()).unwrap();
         assert!(l.warnings.is_empty(), "{:?}", l.warnings);
     }

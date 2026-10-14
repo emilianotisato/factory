@@ -649,6 +649,145 @@ fn the_driver_runs_the_gate_at_each_checkpoint_and_commits_the_cp_entries() {
     );
 }
 
+// ── leaks at the checkpoint ─────────────────────────────────────────────────
+
+/// A rule's heading, its fix line and its hits, up to the blank line.
+fn rule_block<'a>(leaks: &'a str, rule: &str) -> &'a str {
+    let start = leaks
+        .find(&format!("\n{rule}: "))
+        .unwrap_or_else(|| panic!("no {rule} heading in\n{leaks}"))
+        + 1;
+    let body = &leaks[start..];
+    &body[..body.find("\n\n").unwrap_or(body.len())]
+}
+
+#[test]
+fn the_checkpoint_worker_reads_the_leaks_and_its_fixes_land_with_the_checkpoint() {
+    let fx = Fixture::new("cp-leaks");
+    fx.chain();
+    let project = fx.read("docs/project.toml");
+    fs::write(
+        fx.path().join("docs/project.toml"),
+        format!("{project}\n[leaks]\nallow = [{{ path = \"src/ids.rs\" }}]\n"),
+    )
+    .unwrap();
+    fx.git(&["add", "docs/project.toml"]);
+    fx.git(&["commit", "-q", "-m", "chore: allow the id table"]);
+
+    let seed = fx.stub_dir().join("seed");
+    for (rel, text) in [
+        (
+            "src/guard.rs",
+            "// FR-3: guard the lane before the merge\n\
+             // until slice 4 this runs twice\n\
+             pub fn guard() {}\n\
+             // The lock stays held across both writes, or a reader sees half a record.\n\
+             // git prints rename paths from the repo root, even when run in a subdirectory.\n",
+        ),
+        ("tests/guard.rs", "#[test]\nfn fr_12_guards_the_lane() {}\n"),
+        ("tests/fixture/prd-9/case.jsonl", "{\"a\": 1}\n"),
+        ("src/ids.rs", "pub const FIRST: &str = \"BLOCK-1\";\n"),
+    ] {
+        let p = seed.join(rel);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, text).unwrap();
+    }
+    let touch = json!(["src/parse.txt"]);
+    fx.write_plan(&[
+        json!({"outcome": "done", "touch": touch, "sh": "cp -R \"$FACTORY_STUB_DIR/seed/.\" ."}),
+        json!({"outcome": "done", "touch": touch}),
+        json!({"outcome": "checkpoint", "leaks": "fix"}),
+        json!({"outcome": "done", "touch": touch}),
+        json!({"outcome": "checkpoint", "leaks": "fix"}),
+    ]);
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "finished", 60);
+
+    let calls = fx.calls();
+    let first = calls
+        .iter()
+        .find(|c| c["prompt"] == checkpoint(1))
+        .expect("a checkpoint 1 call");
+    let (_, pack) = pack_of(first);
+    let start = pack.find("\n# Leaks\n").expect("a # Leaks section") + 1;
+    let leaks = &pack[start..start + pack[start..].find("\n# Covered slices\n").unwrap()];
+    assert!(
+        pack[..start].ends_with("```\n\n"),
+        "# Leaks follows the gate transcript"
+    );
+    assert!(
+        rule_block(leaks, "id-comment")
+            .contains("\n  src/guard.rs:1  // FR-3: guard the lane before the merge"),
+        "{leaks}"
+    );
+    assert!(
+        rule_block(leaks, "history")
+            .contains("\n  src/guard.rs:2  // until slice 4 this runs twice"),
+        "{leaks}"
+    );
+    let names = rule_block(leaks, "id-name");
+    assert!(
+        names.contains("\n  tests/guard.rs:2  fn fr_12_guards_the_lane() {}"),
+        "{leaks}"
+    );
+    assert!(
+        names
+            .lines()
+            .any(|l| l == "  tests/fixture/prd-9/case.jsonl"),
+        "{leaks}"
+    );
+    for absent in ["half a record", "subdirectory", "BLOCK-1", "src/ids.rs"] {
+        assert!(!leaks.contains(absent), "{absent} in\n{leaks}");
+    }
+
+    let planted = [
+        "src/guard.rs:1",
+        "src/guard.rs:2",
+        "tests/guard.rs:2",
+        "tests/fixture/prd-9/case.jsonl",
+    ];
+    let cps = logged(&fx, "checkpoint");
+    assert_eq!(cps.len(), 2, "{cps:?}");
+    let fixed = body(&cps[0])
+        .lines()
+        .find(|l| l.starts_with("**Fixed:** "))
+        .unwrap_or_else(|| panic!("no Fixed line in {}", cps[0]));
+    let mut named: Vec<&str> = fixed["**Fixed:** ".len()..]
+        .split(", ")
+        .map(|h| h.strip_prefix("leaks: ").unwrap_or(h))
+        .collect();
+    named.sort();
+    let mut want = planted.to_vec();
+    want.sort();
+    assert_eq!(named, want, "{fixed}");
+    assert!(body(&cps[1]).contains("**Fixed:** none"), "{}", cps[1]);
+    let last = calls
+        .iter()
+        .find(|c| c["prompt"] == checkpoint(2))
+        .expect("a checkpoint 2 call");
+    let (_, pack) = pack_of(last);
+    let start = pack.find("\n# Leaks\n").expect("a # Leaks section");
+    let leaks = &pack[start..start + pack[start..].find("\n# Covered slices\n").unwrap()];
+    assert!(leaks.contains("\nclean\n```"), "{leaks}");
+
+    let sha = sha_of(&fx, "docs(001): checkpoint 1");
+    let status = fx.git(&["show", "--format=", "--name-status", &sha]);
+    for line in [
+        "M\tsrc/guard.rs",
+        "M\ttests/guard.rs",
+        "D\ttests/fixture/prd-9/case.jsonl",
+    ] {
+        assert!(status.lines().any(|l| l == line), "{line} in\n{status}");
+    }
+    let diff = fx.git(&["show", "--format=", &sha, "--", "src/guard.rs"]);
+    assert!(diff.contains("\n-// FR-3: guard the lane"), "{diff}");
+    assert!(diff.contains("\n-// until slice 4"), "{diff}");
+
+    let out = factory(&fx, &["leaks", "--base", "main"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    assert!(stdout(&out).ends_with("clean\n"), "{}", stdout(&out));
+}
+
 // ── the cache on the code tree ──────────────────────────────────────────────
 
 #[test]

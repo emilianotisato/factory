@@ -101,6 +101,7 @@ pub fn run(
     let mut ran_red = false;
     let green_log: PathBuf;
     let mut green_cached;
+    let leaks: String;
     loop {
         if run.state().stop_requested {
             return Ok(Outcome::Stopped);
@@ -111,6 +112,12 @@ pub fn run(
         if !result.red {
             green_log = result.log;
             green_cached = result.cached;
+            let base = crate::closeout::default_branch(run, docs);
+            let scanned = crate::leaks::scan(&lane_dir, crate::leaks::Input::Base(&base));
+            if let Err(e) = &scanned {
+                say(out, &format!("checkpoint {n}: leaks not run — {e}"))?;
+            }
+            leaks = leaks_section(&base, scanned);
             break;
         }
         ran_red = true;
@@ -253,6 +260,7 @@ pub fn run(
             &covers,
             &green_log,
             green_cached,
+            &leaks,
             &packs,
             spawn,
         )?;
@@ -1074,6 +1082,20 @@ fn spawned_before_answer(events: &[Event], n: u32) -> HashSet<String> {
         .collect()
 }
 
+/// The body of the pack's `# Leaks`; a scan that fails reads `not run`, never a red.
+fn leaks_section(base: &str, scanned: Result<crate::leaks::Report>) -> String {
+    match scanned {
+        Ok(report) => {
+            let body = report.render();
+            // Longer than any backtick run in the hits, so a hit's own fence cannot close it.
+            let run = body.split(|c| c != '`').map(str::len).max().unwrap_or(0);
+            let fence = "`".repeat(run.max(2) + 1);
+            format!("<!-- factory leaks --base {base} -->\n\n{fence}\n{body}{fence}")
+        }
+        Err(e) => format!("not run: {e}"),
+    }
+}
+
 pub(crate) fn park_line(id: &str, title: &str) -> String {
     format!(
         "checkpoint blocked — {title}: {id} in log.jsonl waits for the owner: `factory answer {id} \"<text>\"`"
@@ -1115,6 +1137,30 @@ mod tests {
             slice: None,
             text: "a".to_string(),
         })
+    }
+
+    #[test]
+    fn a_scan_that_fails_reads_not_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let scanned = crate::leaks::scan(tmp.path(), crate::leaks::Input::Base("main"));
+        let body = leaks_section("main", scanned);
+        assert!(body.starts_with("not run: git "), "{body}");
+        assert_eq!(body.lines().count(), 1, "{body}");
+    }
+
+    #[test]
+    fn a_hit_holding_a_fence_cannot_close_the_leaks_block() {
+        let line = crate::leaks::Added {
+            path: "a.rs".into(),
+            line: 1,
+            text: "/// ```FR-3".into(),
+        };
+        let report = crate::leaks::check(&[], &[line], &[]);
+        let body = leaks_section("main", Ok(report));
+        assert!(
+            body.contains("\n````\n") && body.ends_with("````"),
+            "{body}"
+        );
     }
 
     #[test]

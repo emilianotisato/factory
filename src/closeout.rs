@@ -332,7 +332,7 @@ fn file_friction(run: &Run, board: &Status, cfg: &Config, out: &mut dyn Write) {
         return;
     };
     let section = friction(&text);
-    if section.is_empty() || section == friction(&retro_template()) {
+    if only_placeholder(&section) {
         return;
     }
     let name = repo
@@ -352,6 +352,16 @@ fn file_friction(run: &Run, board: &Status, cfg: &Config, out: &mut dyn Write) {
         let path = source.join(ideas::DIR).join(format!("{id}.md"));
         let _ = say(out, &format!("friction: filed {}", path.display()));
     }
+}
+
+/// Every paragraph left is one of the template's, whichever the writer kept or deleted.
+fn only_placeholder(section: &str) -> bool {
+    let template = friction(&retro_template());
+    let placeholders: Vec<&str> = template.split("\n\n").map(str::trim).collect();
+    section
+        .split("\n\n")
+        .map(str::trim)
+        .all(|p| p.is_empty() || placeholders.contains(&p))
 }
 
 fn friction(retro: &str) -> String {
@@ -681,6 +691,7 @@ fn landed_files(run: &Run, sha: &str) -> Result<Vec<String>> {
     )?))
 }
 
+/// Only the owner moves the tip while a closeout worker runs; the block names the paths and the ref keeping the commit.
 fn block_conflict(
     run: &mut Run,
     board: &Status,
@@ -867,6 +878,14 @@ fn ship(
         }
     };
     run.db().set_run_lines(run.id().as_str(), lines)?;
+    let leaks = match crate::leaks::scan(&repo, crate::leaks::Input::Base(&base)) {
+        Ok(r) => Some((r.comment_lines, r.added_lines, r.id_hits() as u64)),
+        Err(e) => {
+            say(out, &format!("ship: no leaks figures stored — {e}"))?;
+            None
+        }
+    };
+    run.db().set_run_leaks(run.id().as_str(), leaks)?;
     let report = report::compute(run.db(), run.id().as_str(), None)?;
     let retro = feature_dir.join("retro.md");
     if !retro.exists() {
@@ -2232,7 +2251,7 @@ fn settle(
     run.set_worker_outcome(session_id, outcome.as_str())
 }
 
-fn default_branch(run: &Run, docs: &Docs) -> String {
+pub(crate) fn default_branch(run: &Run, docs: &Docs) -> String {
     load_preflight(run.dir())
         .ok()
         .flatten()
@@ -2419,7 +2438,8 @@ mod tests {
         let template = retro_template();
         assert_eq!(
             friction(&template),
-            "A step, rule or template in the framework itself. Name the skill and the section."
+            "A step, rule or template in the framework itself. Name the skill and the section.\n\n\
+             A comment or name the leaks check should have caught: `file:line` and the line."
         );
         let two =
             "# Retro\n\n## Framework friction → skills repo\n\n- one\n- two\n\n## Score\n\nx\n";
@@ -2427,6 +2447,18 @@ mod tests {
         let last = "# Retro\n\n## Framework friction → skills repo\n- tail\n### sub\nmore\n";
         assert_eq!(friction(last), "- tail\n### sub\nmore");
         assert_eq!(friction("# Retro\n\n## Score\n"), "");
+    }
+
+    #[test]
+    fn a_friction_section_of_kept_placeholders_is_not_filed() {
+        let template = friction(&retro_template());
+        let (first, leaks) = template.split_once("\n\n").unwrap();
+        for kept in ["", template.as_str(), first, leaks] {
+            assert!(only_placeholder(kept), "{kept}");
+        }
+        assert!(!only_placeholder(&format!(
+            "{first}\n\n- `src/a.rs:3` // FR-2 slipped past"
+        )));
     }
 
     #[test]

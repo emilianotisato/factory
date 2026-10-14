@@ -3,7 +3,13 @@
 **Source**: [`prd.md`](prd.md) → §6 FR-4 (the two columns, the friction prompt line, its acceptance); §7 FR-5 (its run row, rerun on the tree that ships). **Depends on**: 01 (ship calls the `scan` slice 01 wrote and stores the counts its `Report` carries)
 **Created**: 2026-10-14
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+- Built: three `runs` columns (`comment_lines`, `nonblank_lines`, `id_hits`; `COLUMNS` is 32) with `RunRow` fields, both SELECTs and `set_run_leaks`; ship runs `leaks::scan(repo, Base(base))` after `set_run_lines` and stores the figures, or says `ship: no leaks figures stored — {e}` and stores `NULL`; the compare table gains `comment share` (`66.7%`) and `id hits`, `—` when a run has none or no non-blank added lines; the friction prompt line in `assets/retro.md`.
+- Tests: `the_leaks_figures_read_back_from_both_selects` (db); the retro unit test sets figures on two runs and `(0, 0, 0)` on a third (`| — | 0 |`); `a_second_run_of_the_repo_compares_with_the_first` names every slice's `touch`, writes `src/guard.rs` (two comment lines of three, one `FR-2` id) and asserts both runs' stored figures, the header and both rows ending `| 66.7% | 1 |`; with the two cells removed it fails at the row assert (`tests/closeout.rs:753`); `a_filled_leaks_line_is_filed_as_an_idea_in_the_source` new; the stand-in test asserts the new line; `PLACEHOLDER` and the friction unit test hold the two-line section.
+- Inner loop: 2 runs, 1 red (fmt only), about 2 min.
+- Prove (FR-4 transcripts, FR-5 `--all` and doctor) is left for the checkpoint.
+- **Checkpoint 2, FR-4:** the transcripts of task 4's `a_second_run_of_the_repo_compares_with_the_first` and task 5's `a_filled_leaks_line_is_filed_as_an_idea_in_the_source` and `a_placeholder_only_friction_section_files_nothing` (plus the stand-in test), all green; the second run's compare table read from its ship commit (both rows end `| 66.7% | 1 |`); the template's two-line friction section; the idea filed in the `[source]` checkout, read back — `docs/features/006-comment-discipline/evidence/cp-2-fr4-retro-and-idea.txt`.
+- **Checkpoint 2, FR-5:** `factory leaks --all` on the feature tip `daea025` with the lane build: `clean`, exit 0; `factory docs doctor`: `leaks          clean`; checkpoint 2's gate green (1 run, 0 red) — `docs/features/006-comment-discipline/evidence/cp-2-fr5-all-and-doctor.txt`.
 
 **Slice**: After this slice, ship scans the feature's added lines against the default branch and stores two figures on the run: the comment share and the id hits in comments, names and strings. The retro's compare table shows both, for this run and the three earlier ones, with `—` for a run that has none. The retro template's `## Framework friction → skills repo` section gains one prompt line asking for a comment or name the check missed, with `file:line`, and closeout files that section as an idea when the line is filled, as it files any friction today.
 
@@ -91,3 +97,7 @@ Rows from [`prd.md`](prd.md) §9 this slice proves, below the UI:
 - **FR-5**, on the tree this checkpoint covers, once slice 03 is done: "run `factory leaks --all` on the feature branch, which holds the merged cleanup: zero `fix` hits outside the allowlist, and `factory docs doctor` prints `leaks    clean`; the gate is green". Run both with the lane's build, as slice 03's Prove does. Slice 03 owns this row; it is named here so the final checkpoint reruns it on the tree that ships, whichever slice lands last. If slice 03 is not done when this checkpoint runs, Progress says so and slice 03's own checkpoint runs it.
 
 **Acceptance:** after the checkpoint, Progress holds the three test transcripts, the compare table and the idea file, and the `--all` and `doctor` output or the line saying slice 03 runs it.
+
+**Code-review fixes (2026-10-14).**
+
+- `file_friction` filed an idea when the writer kept the template's placeholder paragraphs and only deleted one. It now files nothing when every paragraph left is one of the template's; `a_friction_section_of_kept_placeholders_is_not_filed` covers it.

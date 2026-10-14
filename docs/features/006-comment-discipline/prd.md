@@ -219,6 +219,8 @@ reads as if the plan never existed.
 - `factory docs doctor` and `factory run`'s preflight on that branch print the `leaks` line with the count; on the feature branch, which holds the cleanup (merged before slicing), they print `clean`.
 - A read-only `--all` run over the whole of cody-agent (`~/Projects/CODESM/cody-agent`) and arca-api (`~/Projects/Prokey/arca-api`), and over the feature branch, reports no false hit: the builder writes every hit and its verdict into the slice's log entry, and a reader agrees each one is a real leak.
 
+**Changed 2026-10-14, at the owner's review.** The run tuned "used to" as purpose, "previously" as an adjective and "for now and" out of the `history` row (AD-4). The owner reversed it: they are hits again, about 60 false ones over cody and arca, taken over a history comment in those shapes passing. The no-false-hit line above holds for every other row.
+
 ## 6. FR-4 — The retro tracks the numbers and feeds missed classes back
 
 **Today.** The retro's numbers table (`src/retro.rs:162`, between `<!-- factory:numbers -->` markers) has tokens, slices and tokens per slice, but no comment figures. The retro template has a `## Framework friction → skills repo` section (`assets/retro.md:33-35`), and closeout files that section as an idea in the `[source]` checkout when it differs from the template (`src/closeout.rs:356-373`, PRD-004 FR-7).
@@ -270,6 +272,8 @@ reads as if the plan never existed.
 **Acceptance.** As § QA plan says. The owner's sample read of 20 kept comments, 20 deleted ones and the renames happens before the merge, and the merge of `chore/comment-cleanup` into `main` is the verdict: anything missed becomes a dated line in this section. The merge comes before `/slice`, so the feature branch holds the cleanup and the run's proof is `factory leaks --all` there: zero `fix` hits outside the allowlist, `factory docs doctor` printing `leaks    clean`, the gate green (it is, on the branch). *Corrected 2026-10-14: an earlier draft had the run prove this on `main` after a merge that only the owner can do, which put the owner mid-build.*
 
 **Merged 2026-10-14** as `9e79a87`, on the owner's word and before the sample read; the gate is green on `main` (570 tests). The read now runs on the merge's diff, `git diff 9e79a87^1 9e79a87`, and a miss becomes a dated line here.
+
+**Sample read 2026-10-14.** The owner's read: 20 kept comments pass, 7 renames pass; of 20 deleted, 3 lost a why: `src/cli/review.rs:1-2` (the exit contract), `src/closeout.rs:694` on `block_conflict` (only the owner moves the tip; the block keeps the commit), `tests/closeout.rs:818` on `stood_in_run` (which String is which). All three are restored in the commit that adds this line. Borderline, left as is: the `tests/merge.rs` pointer kept in `tests/commits.rs`, and the deleted "this repo's copy" on `PR_BODY` in `src/pack.rs`. The class, a long why squeezed to one line that drops its contract, has no grep, so it gets no FR-3 row.
 
 ## 8. Decisions log
 

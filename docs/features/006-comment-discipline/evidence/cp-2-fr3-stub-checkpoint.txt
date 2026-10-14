@@ -1,0 +1,51 @@
+# FR-3 stub row: the checkpoint pack's # Leaks, the worker's Fixed, the final tip clean
+
+$ FACTORY_KEEP_FIXTURE=1 cargo test --test checkpoints the_checkpoint_worker_reads_the_leaks_and_its_fixes_land_with_the_checkpoint -- --exact --nocapture
+
+running 1 test
+fixture cp-leaks kept at /tmp/factory-cp-leaks-VWVaFr
+test the_checkpoint_worker_reads_the_leaks_and_its_fixes_land_with_the_checkpoint ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 1.92s
+
+
+## # Leaks section of /tmp/factory-cp-leaks-VWVaFr/data/runs/001-20261014-d9b0/packs/checkpoint-1-3.md
+# Leaks
+
+<!-- factory leaks --base main -->
+
+```
+id-comment: a plan id in a comment
+  fix: Delete the id. Keep the fact as one short line only if the code cannot show it.
+  src/guard.rs:1  // FR-3: guard the lane before the merge
+  src/guard.rs:2  // until slice 4 this runs twice
+
+id-name: a plan id in a name or path
+  fix: Rename after the behavior and update every reference.
+  tests/guard.rs:2  fn fr_12_guards_the_lane() {}
+  tests/fixture/prd-9/case.jsonl
+
+history: history in a comment
+  fix: Delete it. A comment says what the code is; git log says what it was.
+  src/guard.rs:2  // until slice 4 this runs twice
+
+comment share: 44.4% (4 of 9 added lines)
+5 fix hits
+```
+
+## factory docs log show 001 — checkpoint entries' Fixed lines
+### CP-1 — after slice-02 · 2026-10-14
+**Fixed:** leaks: src/guard.rs:1, leaks: src/guard.rs:2, leaks: tests/guard.rs:2, leaks: tests/fixture/prd-9/case.jsonl
+### CP-2 — after slice-03 · 2026-10-14
+**Fixed:** none
+
+## git show --name-status e32c66c (docs(001): checkpoint 1)
+M	docs/features/001-fixture/log.jsonl
+M	src/guard.rs
+D	tests/fixture/prd-9/case.jsonl
+M	tests/guard.rs
+
+## final tip 5fdebbe (after polish): factory leaks --base main
+comment share: 40.0% (2 of 5 added lines)
+clean
+exit 0

@@ -31,6 +31,8 @@ enum Command {
     Report(cli::report::ReportArgs),
     /// Write a run's numbers into its feature's retro.md
     Retro(cli::retro::RetroArgs),
+    /// Find plan ids and history in added code and comments
+    Leaks(cli::leaks::LeaksArgs),
     /// Ask a reviewer from another vendor
     Review {
         #[command(subcommand)]
@@ -77,6 +79,7 @@ fn main() -> ExitCode {
         Command::Answer(a) => cli::answer::answer(&a, &mut stdout()),
         Command::Report(a) => cli::report::report(&a, &mut stdout()),
         Command::Retro(a) => cli::retro::retro(&a, &mut stdout()),
+        Command::Leaks(a) => cli::leaks::leaks(&a, &mut stdout(), &mut stderr()),
         Command::Wait(a) => cli::wait::wait(&a, &mut stdout(), &mut stderr()),
         Command::Status(a) => cli::status::status(&a, &mut stdout(), &mut stderr()),
         Command::Review { verb } => cli::review::review(&verb, &mut stdout(), &mut stderr()),

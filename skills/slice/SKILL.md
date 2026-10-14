@@ -80,8 +80,8 @@ This is what lets an agent execute the slice without reading the whole PRD.
 - **Where**: the exact file(s).
 - **Source**: the PRD words this task builds, quoted with their section: an FR's text, its acceptance, a decision. A prerequisite quotes the FR it unblocks.
 - **What and how**: the approach, the pattern to follow, the decision already made. Include the table/schema/signature if the PRD has one.
-- **The trap**, when there is one: a fact of today's code, cited `file:line`, that makes the obvious approach wrong. *"`markFailed()` never clears the failure keys (`{file}:{line}`), so clear them on a fresh attempt or a retry looks failed forever."* Never a what-if that needs new machinery. That is an extra the PRD did not ask for.
-- **`**Acceptance:**`** — a test that could fail. Name what it asserts, not "it works".
+- **The trap**, when there is one: a fact of today's code, cited `file:line`, that makes the obvious approach wrong. *"`markFailed()` never clears the failure keys (`{file}:{line}`), so clear them on a fresh attempt or a retry looks failed forever."* Never a what-if that needs new machinery. That is an extra the PRD did not ask for. The trap is for the builder, not the code: an invariant the slice must keep becomes a test that pins it, a type or a name, never a comment the slice asks for.
+- **`**Acceptance:**`** — a test that could fail. Name what it asserts, not "it works", and name the test by that behavior, never by an FR or slice id.
 
 **Every task traces to the PRD.** A task you cannot quote a source for is not written. This is where a slice quietly adds requirements that every later stage then treats as the spec: a figure nobody asked for, a guard for a case the PRD never names, a mechanism the PRD orders for one path copied to another path where its reason does not apply. Verify, Prove and the harness slice's task cite § QA plan. Ask the owner about an unsourced task with "Leave it out" as the recommended option; one they keep goes into the PRD as a decision first, so the slice has something to quote.
 
