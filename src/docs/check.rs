@@ -1,8 +1,4 @@
-//! `factory docs check` (PRD-002 FR-15): a port of `docs.mjs:802 check` onto
-//! the v3 layout. Every rule reads its own file and records a finding instead
-//! of failing, so one bad `state.toml` never hides what the rest of the board
-//! says. The index-table and counter codes, `--fix` and `--strict` are gone
-//! (prd §5): v3 stores nothing derivable.
+//! A rule records a finding instead of failing, so one bad file never hides the rest of the board.
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::Write;
@@ -18,7 +14,6 @@ use super::state::{self, SliceState, State};
 use crate::Result;
 use crate::error::io;
 
-/// `SECOND_BOARD_NAMES` (`docs.mjs:35`).
 const SECOND_BOARD_NAMES: [&str; 6] = [
     "ROADMAP.md",
     "TASKS.md",
@@ -27,16 +22,14 @@ const SECOND_BOARD_NAMES: [&str; 6] = [
     "BACKLOG.md",
     "TODO.md",
 ];
-/// `LEGACY_DOC_DIRS` (`docs.mjs:39`): planning conventions the framework replaces.
 const LEGACY_DOC_DIRS: [&str; 4] = [".vibe", "plans", "ai_docs", "docs/prd"];
-/// The v3 PRD frontmatter (prd §3). Other keys pass, `from_idea` (FR-20)
-/// among them.
+/// Required; other keys such as `from_idea` pass.
 const PRD_KEYS: [&str; 7] = [
     "number", "slug", "title", "type", "created", "author", "summary",
 ];
 const PRD_TYPES: [&str; 4] = ["feature", "bugfix", "enhancement", "refactor"];
 
-/// `Report` (`docs.mjs:782`): `(code, message)` pairs.
+/// `(code, message)` pairs.
 #[derive(Debug, Default)]
 pub struct Report {
     pub errors: Vec<(String, String)>,
@@ -56,7 +49,6 @@ impl Report {
         self.errors.is_empty() && self.warnings.is_empty()
     }
 
-    /// `N errors, M warnings`.
     pub fn counts(&self) -> String {
         let plural = |n: usize, w: &str| format!("{n} {w}{}", if n == 1 { "" } else { "s" });
         format!(
@@ -66,21 +58,18 @@ impl Report {
         )
     }
 
-    /// `  ✗ CODE  msg` for each error, then `  ! CODE  msg` for each warning.
     pub fn lines(&self) -> Vec<String> {
         let e = self.errors.iter().map(|(c, m)| format!("  ✗ {c}  {m}"));
         let w = self.warnings.iter().map(|(c, m)| format!("  ! {c}  {m}"));
         e.chain(w).collect()
     }
 
-    /// `Report.print` (`docs.mjs:791`): the findings, a blank line, the counts.
     pub fn print(&self, w: &mut dyn Write) -> Result<()> {
         let mut text = self.lines().join("\n");
         text.push_str(&format!("\n\n{}\n", self.counts()));
         w.write_all(text.as_bytes()).map_err(io("write report"))
     }
 
-    /// Every code, errors first: what the tests compare.
     pub fn codes(&self) -> Vec<&str> {
         self.errors
             .iter()
@@ -90,7 +79,6 @@ impl Report {
     }
 }
 
-/// Check the repo at `root`.
 pub fn run(root: &Path) -> Report {
     let mut r = Report::default();
     let rel = |p: &Path| p.strip_prefix(root).unwrap_or(p).display().to_string();
@@ -190,8 +178,7 @@ pub fn run(root: &Path) -> Report {
     r
 }
 
-/// Every file in `docs/ideas/` through `ideas::read`, the reader `idea list`
-/// uses, and the v2 inbox an old skill may still write to (FR-20).
+/// `ideas::read` is the reader `idea list` uses, so what passes here lists.
 fn ideas(root: &Path, r: &mut Report) {
     for (rel, path) in ideas::files(root) {
         match ideas::read(&path) {
@@ -209,8 +196,7 @@ fn ideas(root: &Path, r: &mut Report) {
     }
 }
 
-/// `docs/project.toml`: `None` when it does not parse (an error is recorded),
-/// else `[docs]` as `project::load` reads it, after a type check of each key.
+/// Outer `None`: the file does not parse (recorded); inner: nothing for `project::load` to read.
 fn read_project(root: &Path, r: &mut Report) -> Option<Option<Project>> {
     let p = project::path(root);
     let Ok(text) = fs::read_to_string(&p) else {
@@ -260,7 +246,6 @@ fn kind_of(key: &str) -> &'static str {
     }
 }
 
-/// Every rule over one live feature.
 fn feature(root: &Path, limits: &Project, f: &Feature, r: &mut Report) {
     let dir = format!("docs/features/{}", f.dir_name);
     let nnn = format!("{:03}", f.number);
@@ -363,7 +348,6 @@ fn feature(root: &Path, limits: &Project, f: &Feature, r: &mut Report) {
     log_rules(&dir, &nnn, f, st, r);
 }
 
-/// The seven keys, their types, and the folder they must agree with.
 fn prd_keys(f: &Feature, prd: &str, r: &mut Report) {
     let Some((fm, _)) = &f.prd else { return };
     let missing: Vec<&str> = PRD_KEYS
@@ -434,8 +418,6 @@ fn invalid(r: &mut Report, prd: &str, key: &str, why: String) {
     r.err("E-FM-INVALID", format!("{prd}: {key} {why}"));
 }
 
-/// `state.toml` against the vocabulary, the slice files and itself, then the
-/// lifecycle warnings that need no log.
 fn state_rules(dir: &str, state_rel: &str, nnn: &str, f: &Feature, s: &State, r: &mut Report) {
     if !state::STATUSES.contains(&s.status.as_str()) {
         r.err(
@@ -504,7 +486,6 @@ fn state_rules(dir: &str, state_rel: &str, nnn: &str, f: &Feature, s: &State, r:
         );
     }
 
-    // Feature status against slice statuses (`docs.mjs:964-980`).
     let st = s.status.as_str();
     let open: Vec<String> = s
         .slices
@@ -530,7 +511,6 @@ fn state_rules(dir: &str, state_rel: &str, nnn: &str, f: &Feature, s: &State, r:
             ),
         );
     }
-    // These two chain rather than fire together: polish comes before shipping.
     if !s.slices.is_empty() && open.is_empty() && matches!(st, "draft" | "ready" | "in-progress") {
         match &s.reviewed {
             None => r.warn(
@@ -549,7 +529,6 @@ fn state_rules(dir: &str, state_rel: &str, nnn: &str, f: &Feature, s: &State, r:
     }
 }
 
-/// `findCycle` (`docs.mjs:1106`): the first cycle, as the numbers walked.
 fn find_cycle(slices: &BTreeMap<u32, SliceState>) -> Option<Vec<u32>> {
     fn visit(
         n: u32,
@@ -586,9 +565,7 @@ fn find_cycle(slices: &BTreeMap<u32, SliceState>) -> Option<Vec<u32>> {
         .find_map(|n| visit(*n, &mut Vec::new(), slices, &mut marks))
 }
 
-/// The bytes from a `**Progress**:` line up to the next `**Slice**:` line
-/// (`docs.mjs:211`): record, not spec, so the size ceiling skips them. A done
-/// slice that trips W-SIZE on its own evidence cannot be split.
+/// Progress is record, not spec: a done slice that trips W-SIZE on its evidence cannot be split.
 fn progress_len(text: &str) -> usize {
     let start = if text.starts_with("**Progress**:") {
         Some(0)
@@ -600,13 +577,11 @@ fn progress_len(text: &str) -> usize {
         .map_or(0, |j| j + 1)
 }
 
-/// `n` of `AD-n`, with its prefix.
 fn id_number(id: &str) -> Option<(&str, u32)> {
     let (prefix, n) = id.rsplit_once('-')?;
     Some((prefix, n.parse().ok()?))
 }
 
-/// FR-14's log rules, then the lifecycle warnings that read the log.
 fn log_rules(dir: &str, nnn: &str, f: &Feature, st: Option<&State>, r: &mut Report) {
     let log_rel = format!("{dir}/{}", log::FILE);
     let (entries, skipped) = match log::entries(&f.dir) {
@@ -715,9 +690,7 @@ fn git(root: &Path, args: &[&str]) -> Option<String> {
         .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// The frozen archive (`docs.mjs:1040-1054`): the working tree, not only the
-/// index. Moving a folder in (`R`, `A`, `??`) is how archiving works, so only
-/// a content change is an error, including `RM`.
+/// A move in (`R`, `A`, `??`) is how archiving works; only an `M` in either column is an error.
 fn archive_frozen(root: &Path, r: &mut Report) {
     if git(root, &["rev-parse", "--is-inside-work-tree"])
         .as_deref()
@@ -745,7 +718,6 @@ fn archive_frozen(root: &Path, r: &mut Report) {
     }
 }
 
-/// Every `.md` under `dir`, depth first.
 fn walk_md(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(rd) = fs::read_dir(dir) else { return };
     let mut paths: Vec<PathBuf> = rd.filter_map(|e| e.ok()).map(|e| e.path()).collect();
@@ -759,8 +731,7 @@ fn walk_md(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Links resolve (`docs.mjs:1056-1068`), everywhere under `docs/` but the
-/// archive: a link that went stale when a folder moved in is the rule working.
+/// The archive is skipped: a link that went stale when a folder moved in is the rule working.
 fn links(root: &Path, r: &mut Report) {
     let docs = root.join("docs");
     let archive = docs.join("archive");
@@ -810,7 +781,6 @@ fn hrefs(text: &str) -> Vec<&str> {
     out
 }
 
-/// A link starting at the `[` at `i`: its href and the byte after its `)`.
 fn link_at(text: &str, i: usize) -> Option<(&str, usize)> {
     let close = i + text[i..].find(']')?;
     let rest = text[close + 1..].strip_prefix('(')?;
@@ -833,7 +803,7 @@ fn link_at(text: &str, i: usize) -> Option<(&str, usize)> {
     Some((href, text.len() - tail.len()))
 }
 
-/// `path.resolve`'s lexical `..` handling, so `a/missing/../b` is `a/b`.
+/// Lexical, so `a/missing/../b` is `a/b` without touching the filesystem.
 fn normalize(p: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for c in p.components() {
@@ -869,8 +839,6 @@ mod tests {
         );
     }
 
-    /// `Fixture::v3`'s shape, built in-process: three slices, c waits for b,
-    /// the feature at `ready`.
     fn tree() -> tempfile::TempDir {
         let d = tempfile::tempdir().unwrap();
         let root = d.path();
@@ -1011,7 +979,6 @@ mod tests {
         let text = text.replacen("**Progress**: ", &format!("**Progress**: {filler} "), 1);
         fs::write(&p, &text).unwrap();
         assert_eq!(codes(d.path()), Vec::<String>::new());
-        // The same bytes in the spec trip it.
         fs::write(&p, text.replace("**Slice**:", "**Spec**:")).unwrap();
         assert_eq!(codes(d.path()), ["W-SIZE"]);
     }
@@ -1165,7 +1132,6 @@ mod tests {
         .unwrap();
         assert_eq!(codes(root), ["W-BLOCKED-NO-ENTRY"]);
 
-        // A phase-only block names no slice: no W-BLOCK-STALE.
         state::set(&dir, &[("slices.2.status", "pending")]).unwrap();
         let polish = r#"{"id":"BLOCK-1","kind":"block","ts":"2026-10-13T00:00:00Z","phase":"polish","title":"x"}"#;
         log(root, &[polish]);

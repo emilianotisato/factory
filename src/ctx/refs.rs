@@ -1,9 +1,4 @@
-//! `factory ctx refs` (PRD §14 FR-12): a word-boundary search over the walk,
-//! collapsed per file and capped, so a symbol with three hundred callers
-//! answers in ten lines and a trailer. Test files are left out unless
-//! `--tests`: they are the noisiest callers in the transcripts. Each file
-//! with hits is parsed once and a hit line is dropped when every match on
-//! it lies inside a comment or a string, before the caps.
+//! Test files are left out by default: they are the noisiest callers.
 use std::path::Path;
 
 use super::def::{dedent, escape, indent, words};
@@ -12,15 +7,11 @@ use super::walk::{self, Lang, WalkOpts};
 use super::{Searched, matcher, matching_lines, rel, whole_word};
 use crate::Result;
 
-/// One reference shown.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ref {
     pub path: String,
     pub line: u64,
-    /// The hit line, trimmed.
     pub text: String,
-    /// The line after it, dedented by the hit's indentation; none when that
-    /// line is blank or the file ends.
     pub next: Option<String>,
 }
 
@@ -31,7 +22,6 @@ pub struct Caps {
     pub tests: bool,
 }
 
-/// What `refs` found: the hits shown, then what the caps cut.
 #[derive(Debug, Default)]
 pub struct Found {
     pub shown: Vec<Ref>,
@@ -39,16 +29,12 @@ pub struct Found {
     pub files: usize,
     pub more_hits: usize,
     pub more_files: usize,
-    /// Hits in test files, left out without `--tests`.
     pub test_hits: usize,
-    /// Hit lines inside comments or strings, dropped before the caps.
     pub dropped: usize,
-    /// Files whose tree holds a syntax error: their hits kept unfiltered.
     pub unparsed: usize,
     pub searched: Searched,
 }
 
-/// One file's share of [`Found`].
 struct InFile {
     test: bool,
     hits: usize,
@@ -57,7 +43,6 @@ struct InFile {
     first: Vec<Ref>,
 }
 
-/// The references to `name` under `root`, with paths relative to `base`.
 pub fn find(base: &Path, root: &Path, name: &str, caps: Caps, opts: &WalkOpts) -> Result<Found> {
     let m = matcher(&whole_word(&escape(name)))?;
     let walked = walk::walk(root, opts);
@@ -136,10 +121,7 @@ pub fn find(base: &Path, root: &Path, name: &str, caps: Caps, opts: &WalkOpts) -
     Ok(found)
 }
 
-/// The hit lines holding a whole-word `name` outside every comment and
-/// string, and whether the file's tree holds a syntax error (then every
-/// line is kept: a broken tree misplaces strings). A Vue hit outside its
-/// `<script>` blocks is kept.
+/// A broken tree misplaces strings, so every line is kept; a Vue hit outside `<script>` is kept too.
 fn code_lines(
     path: &Path,
     lang: Lang,
@@ -173,10 +155,6 @@ fn code_lines(
     (kept, false)
 }
 
-/// A test path, relative to the search root (AD-1106): a directory named
-/// `test`, `tests`, `spec`, `specs` or `__tests__` at any depth, or a file
-/// name holding `_test.go`, `.test.` or `.spec.` (slice 11 task 3's
-/// pattern, matched by path segment: AD-40003).
 pub fn is_test(path: &str) -> bool {
     let mut parts = path.split(['/', '\\']).filter(|p| !p.is_empty());
     let file = parts.next_back().unwrap_or("");
@@ -191,7 +169,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_paths_match_the_slice_pattern() {
+    fn test_dirs_match_by_segment_and_test_files_by_name() {
         for p in [
             "tests/Feature/UserTest.php",
             "src/test/a.ts",

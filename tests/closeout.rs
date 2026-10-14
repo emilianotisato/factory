@@ -1,10 +1,4 @@
-//! Slice 09 of PRD-001: the closeout (PRD §8 FR-6). When every slice is
-//! done and the last checkpoint is in, the driver spawns the polish worker
-//! on `/polish`, commits its fixes, ships the feature (`docs ship`, the
-//! retro's numbers from the store), pushes, opens the draft PR with the
-//! body the worker wrote, and watches CI: a fix worker per red check (three
-//! rounds), one rerun for a flaky one, a block otherwise. Every `gh` here is
-//! the stub in `tests/stubs/`; `origin` is the fixture's bare repo.
+//! Every `gh` here is the stub in `tests/stubs/`; `origin` is the fixture's bare repo.
 #[path = "harness/mod.rs"]
 mod harness;
 
@@ -26,7 +20,7 @@ const RETRO: &str = "docs/features/001-fixture/retro.md";
 const PR_URL: &str = "https://example.invalid/pr/1";
 const RUN_FIELDS: &str = "databaseId,name,workflowName,conclusion,headSha,status,attempt";
 const CI_FIX: &str = "Fix the red CI check `test` on the PR of PRD-001 as the appended system prompt says. Return the STATUS block.";
-/// The run row's twelve numbers the `retros` row copies at ship (FR-19).
+/// The run row's twelve numbers the `retros` row copies at ship.
 const RETRO_NUMBERS: [&str; 12] = [
     "gate_runs",
     "gate_red",
@@ -94,7 +88,6 @@ fn of_kind(dir: &Path, kind: &str) -> Vec<Value> {
         .collect()
 }
 
-/// The kinds from the first `from` on.
 fn kinds_from(dir: &Path, from: &str) -> Vec<String> {
     let all = kinds(dir);
     let i = all
@@ -136,7 +129,6 @@ fn wait_phase(fx: &Fixture, dir: &Path, phase: &str, secs: u64) {
     });
 }
 
-/// The first `closeout_blocked` event, once it is there.
 fn wait_block(fx: &Fixture, dir: &Path, secs: u64) -> Value {
     wait_until(fx, dir, "closeout_blocked", secs, || {
         !of_kind(dir, "closeout_blocked").is_empty()
@@ -156,7 +148,6 @@ fn stop(fx: &Fixture, dir: &Path) {
     wait_phase(fx, dir, "finished", 60);
 }
 
-/// Subjects, oldest first.
 fn subjects(fx: &Fixture) -> Vec<String> {
     fx.git(&["log", "--reverse", "--format=%s"])
         .lines()
@@ -171,7 +162,6 @@ fn sha_of(fx: &Fixture, subject: &str) -> String {
     shas[0].to_string()
 }
 
-/// The files a commit touches, sorted.
 fn files_of(fx: &Fixture, sha: &str) -> Vec<String> {
     let mut v: Vec<String> = fx
         .git(&["show", "--format=", "--name-only", sha])
@@ -191,7 +181,6 @@ fn step(outcome: &str) -> Value {
     json!({"outcome": outcome})
 }
 
-/// The five steps every fixture run takes before the closeout.
 fn built() -> Vec<Value> {
     vec![
         done(),
@@ -215,7 +204,6 @@ fn prompts(fx: &Fixture) -> Vec<String> {
         .collect()
 }
 
-/// The pack file a call was given, and its text.
 fn pack_of(call: &Value) -> (String, String) {
     let argv: Vec<&str> = call["argv"]
         .as_array()
@@ -241,7 +229,6 @@ fn roles(fx: &Fixture, dir: &Path) -> Vec<String> {
         .collect()
 }
 
-/// The `gh` calls whose argv starts with `verb` (`pr create`, `run rerun`).
 fn gh_calls(fx: &Fixture, verb: &str) -> Vec<String> {
     fx.gh_log()
         .into_iter()
@@ -249,8 +236,6 @@ fn gh_calls(fx: &Fixture, verb: &str) -> Vec<String> {
         .collect()
 }
 
-/// The frontmatter of a fixture file as `(key, value)` pairs.
-/// `factory report <run> --json`, parsed.
 fn report_json(fx: &Fixture, dir: &Path) -> Value {
     let out = factory(fx, &["report", &run_id(dir), "--json"]);
     serde_json::from_str(&stdout(&out)).expect("one JSON object")
@@ -279,8 +264,6 @@ fn head(fx: &Fixture) -> String {
     fx.git(&["rev-parse", "HEAD"]).trim().to_string()
 }
 
-/// The `block` entry `id` of the feature's log: its `phase` is `phase` and
-/// no `answer` refers to it yet (open).
 fn block_entry(fx: &Fixture, id: &str, phase: &str) -> Value {
     let all = fx.log_entries();
     let entry = all
@@ -296,7 +279,6 @@ fn block_entry(fx: &Fixture, id: &str, phase: &str) -> Value {
     entry
 }
 
-/// The body of the `block` entry `id`.
 fn block_body(fx: &Fixture, id: &str) -> String {
     fx.log_of("block")
         .into_iter()
@@ -307,7 +289,6 @@ fn block_body(fx: &Fixture, id: &str) -> String {
         .to_string()
 }
 
-/// An `answer` entry refers to `id`: the block is resolved.
 fn answered_in_log(fx: &Fixture, id: &str) -> bool {
     fx.log_of("answer").iter().any(|e| e["ref"] == id)
 }
@@ -322,7 +303,6 @@ fn gh_fail(fx: &Fixture, prefixes: &[&str]) {
 /// One poll a second: a pending check costs a second, not a minute.
 const FAST: [(&str, &str); 1] = [("FACTORY_CI_INTERVAL", "1")];
 
-/// `factory run 001` with the driver's environment extended by `env`.
 fn start_with(fx: &Fixture, env: &[(&str, &str)]) -> PathBuf {
     let out = fx
         .command(BIN)
@@ -339,7 +319,6 @@ fn answer(fx: &Fixture, id: &str, text: &str) {
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
 }
 
-/// The `closeout_blocked` event of `id`, once it is there.
 fn wait_block_id(fx: &Fixture, dir: &Path, id: &str, secs: u64) -> Value {
     wait_until(fx, dir, id, secs, || {
         of_kind(dir, "closeout_blocked")
@@ -352,7 +331,6 @@ fn wait_block_id(fx: &Fixture, dir: &Path, id: &str, secs: u64) -> Value {
         .unwrap()
 }
 
-/// Parked: `n` `run_waiting` events so far.
 fn wait_parked(fx: &Fixture, dir: &Path, n: usize, secs: u64) {
     wait_until(fx, dir, &format!("run_waiting #{n}"), secs, || {
         of_kind(dir, "run_waiting").len() >= n
@@ -363,7 +341,6 @@ fn short(sha: &str) -> &str {
     &sha[..7]
 }
 
-/// The canonical worktree of lane `n`, as `pwd -P` prints it.
 fn lane_path(fx: &Fixture, n: u32) -> PathBuf {
     let lanes = data_dir(fx).canonicalize().unwrap().join("lanes");
     fx.git(&["worktree", "list", "--porcelain"])
@@ -373,7 +350,6 @@ fn lane_path(fx: &Fixture, n: u32) -> PathBuf {
         .unwrap_or_else(|| panic!("no lane-{n} worktree"))
 }
 
-/// The cwd a stub call ran in.
 fn cwd_of(call: &Value) -> PathBuf {
     PathBuf::from(
         call["cwd"]
@@ -382,7 +358,6 @@ fn cwd_of(call: &Value) -> PathBuf {
     )
 }
 
-/// How many commits are titled `subject`.
 fn count_subject(fx: &Fixture, subject: &str) -> usize {
     subjects(fx).iter().filter(|s| *s == subject).count()
 }
@@ -395,7 +370,6 @@ fn a_finished_board_polishes_ships_pushes_and_opens_the_draft_pr() {
     let dir = start(&fx);
     wait_phase(&fx, &dir, "finished", 90);
 
-    // One polish worker after the last checkpoint, prompted with `/polish`.
     let p = prompts(&fx);
     assert_eq!(p.len(), 6, "{p:?}");
     assert_eq!(p[5], "/polish");
@@ -418,11 +392,9 @@ fn a_finished_board_polishes_ships_pushes_and_opens_the_draft_pr() {
     let w = &state(&dir)["workers"][5];
     assert_eq!(w["role"], "polish");
     assert_eq!(w["outcome"], "done");
-    // PRD-005 FR-5: the polish worker ran in lane 1, not the main tree.
     assert_eq!(cwd_of(&fx.calls()[5]), lane_path(&fx, 1));
     assert_ne!(cwd_of(&fx.calls()[5]), fx.path().canonicalize().unwrap());
 
-    // The pack: branch, retro template, PR body shape, contract, autonomy.
     let (name, pack) = pack_of(&fx.calls()[5]);
     assert_eq!(name, "polish-6.md");
     assert!(
@@ -458,12 +430,10 @@ fn a_finished_board_polishes_ships_pushes_and_opens_the_draft_pr() {
     assert!(!pack.contains("# Gate transcript"), "{pack}");
     assert!(!pack.contains("\nscore:"), "{pack}");
     harness::assert_v3_contract(&pack);
-    // FR-18: the slice and checkpoint packs of the same run call the tool too.
     for i in [0, 1, 2, 3, 4] {
         harness::assert_v3_contract(&pack_of(&fx.calls()[i]).1);
     }
-    // The `# Log` section is `log show 001`, byte for byte: the polish worker
-    // writes no entry, so the log at the end is the log it was handed.
+    // Byte for byte against the log after the run: the polish worker writes no entry.
     let from = pack
         .find("# Log\n\n<!-- factory docs log show 001 -->\n\n")
         .expect("# Log");
@@ -475,7 +445,6 @@ fn a_finished_board_polishes_ships_pushes_and_opens_the_draft_pr() {
         shown.trim_end()
     );
 
-    // Its commit, then the ship commit: HEAD is `docs: ship PRD-001`.
     assert_eq!(
         subjects(&fx)[2..],
         [
@@ -502,8 +471,6 @@ fn a_finished_board_polishes_ships_pushes_and_opens_the_draft_pr() {
         ]
     );
     assert!(fx.read("src/lib.txt").contains("polished by spawn 6\n"));
-    // The ship commit stages the feature dir: the shipped state and the
-    // filled retro; no index render, no agent log.
     let ship_files = files_of(&fx, &sha_of(&fx, "docs(001): ship PRD-001"));
     for f in [STATE, RETRO] {
         assert!(
@@ -519,7 +486,6 @@ fn a_finished_board_polishes_ships_pushes_and_opens_the_draft_pr() {
     }
     assert_eq!(fx.git(&["status", "--porcelain"]).trim(), "", "tree dirty");
 
-    // The PRD is shipped and reviewed; the retro has its twelve numbers.
     let board = fx.state();
     assert_eq!(board.status, "shipped");
     assert!(
@@ -538,7 +504,6 @@ fn a_finished_board_polishes_ships_pushes_and_opens_the_draft_pr() {
         "reviewed: {:?}",
         board.reviewed
     );
-    // FR-19: the numbers are the store's `retros` row, not frontmatter.
     assert!(!fx.read(RETRO).starts_with("---"), "{}", fx.read(RETRO));
     let id = run_id(&dir);
     let repo = db(&fx).run_row(&id).unwrap().unwrap().repo;
@@ -587,8 +552,6 @@ fn a_finished_board_polishes_ships_pushes_and_opens_the_draft_pr() {
         fx.read(RETRO).contains("## Cost vs catch"),
         "the worker's prose"
     );
-    // PRD-003 FR-25: the changed lines at ship, and the `## Numbers` section
-    // after the prose, its weighted figures `--per-worker`'s summed per role.
     let ship_sha = sha_of(&fx, "docs(001): ship PRD-001");
     let stat = fx.git(&["diff", "--shortstat", &format!("main..{ship_sha}^")]);
     let row = db(&fx).run_row(&run_id(&dir)).unwrap().unwrap();
@@ -638,7 +601,6 @@ fn a_finished_board_polishes_ships_pushes_and_opens_the_draft_pr() {
     let body = fs::read_to_string(dir.join("pr-body.md")).unwrap();
     assert!(body.starts_with("## PRD-001 — Fixture\n"), "{body}");
 
-    // Pushed to the fixture's origin, then exactly one draft PR, then green CI.
     assert_eq!(origin_head(&fx, "feat/fixture"), Some(head(&fx)));
     assert_eq!(
         gh_calls(&fx, "pr create"),
@@ -671,7 +633,6 @@ fn a_finished_board_polishes_ships_pushes_and_opens_the_draft_pr() {
         Some(PR_URL)
     );
 
-    // The events: closeout from the polish spawn to the end of the run.
     assert_eq!(
         kinds_from(&dir, "polish_spawned"),
         [
@@ -709,7 +670,6 @@ fn a_finished_board_polishes_ships_pushes_and_opens_the_draft_pr() {
 
     assert_eq!(fx.git(&["status", "--porcelain"]).trim(), "", "tree dirty");
 
-    // No `retro.md`: `factory retro` refuses, naming the path.
     fs::remove_file(fx.path().join(RETRO)).unwrap();
     let out = factory(&fx, &["retro", &run_id(&dir)]);
     assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
@@ -720,10 +680,7 @@ fn a_finished_board_polishes_ships_pushes_and_opens_the_draft_pr() {
     );
 }
 
-/// PRD-003 FR-25: two runs of feature 001 in one repo, the board reset
-/// from `main` between them. The second run's section compares with the
-/// first, per slice and per changed line; the first's, regenerated, still
-/// has no earlier run, since its cohort is fixed by its `started_at`.
+/// A run's cohort is fixed by its `started_at`: regenerated, the first still has no earlier run.
 #[test]
 fn a_second_run_of_the_repo_compares_with_the_first() {
     let fx = Fixture::new("retro-compare");
@@ -734,7 +691,6 @@ fn a_second_run_of_the_repo_compares_with_the_first() {
     wait_phase(&fx, &first_dir, "finished", 90);
     let first = run_id(&first_dir);
 
-    // The board as `main` has it: PRD ready, slices pending, no checkpoints.
     fx.git(&["rm", "-r", "-q", "docs"]);
     fx.git(&["checkout", "main", "--", "docs"]);
     fx.git(&["commit", "-q", "-m", "chore: reset the board"]);
@@ -799,7 +755,6 @@ fn a_second_run_of_the_repo_compares_with_the_first() {
     assert!(!numbers.contains(&second), "{numbers}");
 }
 
-/// The text between the `## Numbers` markers.
 fn section(retro: &str) -> &str {
     let open = "<!-- factory:numbers -->\n";
     let from = retro.find(open).expect("no numbers marker") + open.len();
@@ -809,7 +764,7 @@ fn section(retro: &str) -> &str {
     &retro[from..to]
 }
 
-/// The section's role rows: role → weighted (the fifth column).
+/// Weighted is the fifth column; `cells[0]` is the empty span before the row's leading `|`.
 fn role_weighted(numbers: &str) -> BTreeMap<String, u64> {
     numbers
         .lines()
@@ -821,8 +776,6 @@ fn role_weighted(numbers: &str) -> BTreeMap<String, u64> {
         .collect()
 }
 
-/// `factory report <id> --json --per-worker`: `weighted_own + weighted_sub`
-/// summed per role.
 fn per_worker_weighted(fx: &Fixture, id: &str) -> BTreeMap<String, u64> {
     let out = factory(fx, &["report", id, "--json", "--per-worker"]);
     let r: Value = serde_json::from_slice(&out.stdout).unwrap();
@@ -836,11 +789,6 @@ fn per_worker_weighted(fx: &Fixture, id: &str) -> BTreeMap<String, u64> {
     by_role
 }
 
-/// AD-904: a polish worker that leaves out `skip` (`retro`, `body` or both)
-/// still gets its run shipped and its PR opened, from templates — and each
-/// stand-in is flagged: one `template_stand_in` event naming the file, which
-/// `factory wait` relays, and one first line in the PR body. Returns the run
-/// dir, the PR body and the cockpit's replayed lines.
 fn stood_in_run(name: &str, skip: &[&str]) -> (Fixture, PathBuf, String, String) {
     let fx = Fixture::new(name);
     fx.chain();
@@ -875,7 +823,6 @@ fn stand_in_relay(file: &str) -> String {
 #[test]
 fn a_retro_the_polish_worker_left_out_is_a_flagged_stand_in() {
     let (fx, dir, body, relayed) = stood_in_run("closeout-stand-in-retro", &["retro"]);
-    // The retro is the template, committed with the polish and filled at ship.
     let polish_sha = sha_of(&fx, "fix(001): polish review fixes");
     assert!(files_of(&fx, &polish_sha).contains(&RETRO.to_string()));
     assert!(!fx.read(RETRO).contains("Stub retro"), "{}", fx.read(RETRO));
@@ -884,7 +831,6 @@ fn a_retro_the_polish_worker_left_out_is_a_flagged_stand_in() {
         "{}",
         fx.read(RETRO)
     );
-    // One event, naming the retro; the body is the worker's, flagged first.
     let stood = of_kind(&dir, "template_stand_in");
     assert_eq!(stood.len(), 1, "{stood:?}");
     assert_eq!(stood[0]["what"], "retro");
@@ -955,8 +901,6 @@ fn a_polish_worker_that_wrote_neither_gets_both_flagged() {
     }
 }
 
-/// PRD-005 FR-3, FR-5: a file the polish worker made with a command, which
-/// no tool call names, lands with its commit: the lane is committed whole.
 #[test]
 fn a_file_the_polish_worker_made_with_a_command_lands_with_its_commit() {
     let fx = Fixture::new("closeout-polish-sh");
@@ -990,8 +934,7 @@ fn a_file_the_polish_worker_made_with_a_command_lands_with_its_commit() {
 fn a_slice_not_done_at_ship_blocks_the_closeout_in_phase_polish() {
     let fx = Fixture::new("closeout-ship-refused");
     fx.chain();
-    // The stub polish worker flips slice 02 back to `building` before it
-    // returns: the polish commit lands, `docs ship` refuses.
+    // The stub flips slice 02 back to `building` before it returns, so `docs ship` refuses.
     fx.write_plan(&plan_with(&[
         json!({"outcome": "polish", "slices": {"02": "building"}}),
     ]));
@@ -1004,7 +947,6 @@ fn a_slice_not_done_at_ship_blocks_the_closeout_in_phase_polish() {
         q.starts_with("docs ship PRD-001 refused: refusing: 1 slice(s) not done"),
         "{q}"
     );
-    // One `block` entry in phase polish, its body quoting the refusal.
     let blocks = fx.log_of("block");
     assert_eq!(blocks.len(), 1, "{blocks:#?}");
     let entry = block_entry(&fx, "BLOCK-1", "polish");
@@ -1046,7 +988,6 @@ fn a_red_check_gets_one_fix_round_then_green() {
     let dir = start(&fx);
     wait_phase(&fx, &dir, "finished", 120);
 
-    // One fix worker, role `fix` with no checkpoint, on the CI pack.
     let p = prompts(&fx);
     assert_eq!(p.len(), 7, "{p:?}");
     assert_eq!(p[6], CI_FIX);
@@ -1057,7 +998,6 @@ fn a_red_check_gets_one_fix_round_then_green() {
     assert_eq!(fixer.outcome.as_deref(), Some("done"));
     let (name, pack) = pack_of(&fx.calls()[6]);
     assert_eq!(name, "ci-fix-1-7.md");
-    // PRD-005 FR-5: the CI fix worker ran in lane 1.
     assert_eq!(cwd_of(&fx.calls()[6]), lane_path(&fx, 1));
     for want in [
         "<!-- factory-pack files: -->\n\n# CI failure",
@@ -1078,7 +1018,6 @@ fn a_red_check_gets_one_fix_round_then_green() {
     }
     harness::assert_v3_contract(&pack);
 
-    // Its commit is `fix(001): CI test`, pushed; the report counts the cycle.
     assert_eq!(
         subjects(&fx)[7..],
         [
@@ -1090,7 +1029,6 @@ fn a_red_check_gets_one_fix_round_then_green() {
     let fix_sha = sha_of(&fx, "fix(001): CI test");
     assert_eq!(files_of(&fx, &fix_sha), ["src/lib.txt".to_string()]);
     assert!(fx.read("src/lib.txt").contains("fixed by spawn 7\n"));
-    // FR-19: the CI round leaves the retro as ship wrote it.
     let ship_sha = sha_of(&fx, "docs(001): ship PRD-001");
     assert_eq!(
         fx.git(&["show", &format!("{ship_sha}:{RETRO}")]),
@@ -1098,7 +1036,6 @@ fn a_red_check_gets_one_fix_round_then_green() {
     );
     assert_eq!(fx.state().status, "shipped");
     assert_eq!(origin_head(&fx, "feat/fixture"), Some(head(&fx)));
-    // FR-24: one red round, no rerun, one fix cycle.
     let out = factory(&fx, &["report", &run_id(&dir), "--json"]);
     let r: Value = serde_json::from_str(&stdout(&out)).expect("one JSON object");
     assert_eq!(
@@ -1107,7 +1044,6 @@ fn a_red_check_gets_one_fix_round_then_green() {
         "{r}"
     );
 
-    // Two `pr checks`, one run list, one log read, no rerun, one PR.
     assert_eq!(gh_calls(&fx, "pr checks").len(), 2, "{:?}", fx.gh_log());
     assert_eq!(gh_calls(&fx, "pr create").len(), 1);
     assert_eq!(
@@ -1220,8 +1156,6 @@ fn a_flaky_check_red_after_its_rerun_blocks_and_the_answer_resumes_at_the_pr() {
         ]
     );
 
-    // The answer resumes at the PR: the body is refreshed, no second PR, and
-    // the checks (now green) finish the run.
     let out = factory(&fx, &["answer", "BLOCK-1", "rerun it once more"]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     wait_phase(&fx, &dir, "finished", 60);
@@ -1244,7 +1178,6 @@ fn a_flaky_check_red_after_its_rerun_blocks_and_the_answer_resumes_at_the_pr() {
             "run_finished"
         ]
     );
-    // The block entry stands as written; an `answer` entry resolves it.
     let blocks = fx.log_of("block");
     assert_eq!(blocks.len(), 1, "{blocks:#?}");
     assert_eq!(blocks[0]["id"], "BLOCK-1");
@@ -1331,8 +1264,7 @@ fn a_red_check_beside_another_workflows_green_is_not_flaky() {
     let dir = start(&fx);
     wait_phase(&fx, &dir, "finished", 120);
 
-    // `Lint` green at the head says nothing of `test`: only another run of
-    // `CI` passing there would make it flaky. A fix round, no rerun.
+    // Only another run of `CI` passing at the head makes `test` flaky; `Lint` green says nothing.
     assert!(gh_calls(&fx, "run rerun").is_empty(), "{:?}", fx.gh_log());
     assert_eq!(roles(&fx, &dir)[5..], ["polish", "fix"]);
     assert_eq!(
@@ -1364,8 +1296,7 @@ fn two_red_workflows_get_one_fix_round_with_both_runs_logs() {
     let dir = start(&fx);
     wait_phase(&fx, &dir, "finished", 120);
 
-    // Both checks in one round; each run comes from its check's job link —
-    // `CI`'s 1000 and `Lint`'s 1100 — and both logs reach the worker.
+    // Each run id comes from its check's job link: `CI` 1000, `Lint` 1100.
     assert_eq!(roles(&fx, &dir)[5..], ["polish", "fix"]);
     assert_eq!(of_kind(&dir, "ci_red")[0]["check"], "test, lint");
     assert_eq!(
@@ -1504,7 +1435,6 @@ fn after_a_fix_push_the_watch_waits_for_the_pr_to_reach_the_pushed_head() {
     let dir = start_with(&fx, &FAST);
     wait_phase(&fx, &dir, "finished", 120);
 
-    // One fix round: the old red the PR still showed was not a second one.
     assert_eq!(roles(&fx, &dir)[5..], ["polish", "fix"]);
     assert_eq!(of_kind(&dir, "ci_red").len(), 1);
     assert_eq!(
@@ -1740,7 +1670,6 @@ fn an_answer_to_the_cap_block_gives_three_fresh_fix_rounds() {
     answer(&fx, "BLOCK-1", "fixed the fixture by hand");
     wait_phase(&fx, &dir, "finished", 120);
 
-    // The cap counts the rounds since the answer: a fourth round runs.
     let rounds: Vec<u64> = of_kind(&dir, "ci_fix_spawned")
         .iter()
         .map(|e| e["round"].as_u64().unwrap())
@@ -1777,7 +1706,6 @@ fn the_push_refuses_a_head_off_the_feature_branch_and_the_pr_names_its_head() {
     assert_eq!(first["phase"], "pr");
     wait_parked(&fx, &dir, 1, 30);
 
-    // HEAD moves off the feature branch while the run is parked.
     fx.git(&["switch", "-c", "stray"]);
     answer(&fx, "BLOCK-1", "gh is fixed");
     let second = wait_block_id(&fx, &dir, "BLOCK-2", 60);
@@ -1820,8 +1748,7 @@ fn a_head_off_the_feature_branch_blocks_the_polish_before_a_worker_runs() {
     assert_eq!(first["question"], "Two polish workers died");
     wait_parked(&fx, &dir, 1, 30);
 
-    // The owner answers from another branch: the closeout, not the
-    // driver's tick, owns the check and asks with a block (AD-50001).
+    // The closeout, not the driver's tick, owns the branch check and asks with a block.
     let branched = head(&fx);
     fx.git(&["switch", "-c", "stray"]);
     answer(&fx, "BLOCK-1", "login fixed");
@@ -1862,8 +1789,7 @@ fn a_shipped_board_without_its_ship_commit_ships_again() {
     assert_eq!(blocked["question"], "Two polish workers died");
     wait_parked(&fx, &dir, 1, 30);
 
-    // `docs ship` ran and its commit did not: what a driver killed between
-    // the two leaves behind.
+    // What a driver killed between `docs ship` and its commit leaves behind.
     fx.docs(&["ship", "001"]);
     assert_eq!(fx.state().status, "shipped");
     assert_ne!(
@@ -1951,7 +1877,6 @@ fn two_dead_polish_workers_block_and_the_answer_spawns_a_third() {
             "run_waiting",
         ]
     );
-    // Each death is a `note` entry (the old `## Traps` line).
     let notes = fx.log_of("note");
     assert_eq!(
         notes
@@ -1977,12 +1902,7 @@ fn two_dead_polish_workers_block_and_the_answer_spawns_a_third() {
     assert_eq!(events(&dir).pop().unwrap()["kind"], "run_finished");
 }
 
-/// What in `text` (one source file) asks GitHub to merge a PR or mark one
-/// ready, or `None`. Every way the driver could: the `gh` subcommand as one
-/// string, as an args array (read with whitespace removed, so rustfmt's
-/// one-arg-per-line split reads as one), the REST merge endpoint, the
-/// GraphQL mutations, and a `pr create` args array without `--draft`, which
-/// opens the PR ready (K3).
+/// Args arrays are read with whitespace removed, so rustfmt's one-arg-per-line split reads as one.
 fn merges_or_readies(text: &str) -> Option<&'static str> {
     let spaced = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let packed: String = text.split_whitespace().collect();
@@ -2013,8 +1933,6 @@ fn merges_or_readies(text: &str) -> Option<&'static str> {
 
 #[test]
 fn the_driver_never_merges_or_readies_a_pr() {
-    // The scan catches each form, and passes the one `pr create` the
-    // driver runs (`ci::pr_create`, one arg per line).
     for (text, form) in [
         ("gh(repo, &[\"pr\", \"merge\", pr])", "\"pr\",\"merge\""),
         (
@@ -2031,6 +1949,7 @@ fn the_driver_never_merges_or_readies_a_pr() {
     ] {
         assert_eq!(merges_or_readies(text), Some(form), "{text}");
     }
+    // The shape of the one `pr create` the driver runs (`ci::pr_create`).
     let draft = "&[\n \"pr\",\n \"create\",\n \"--draft\",\n \"--base\",\n base,\n]";
     assert_eq!(merges_or_readies(draft), None);
 
@@ -2043,8 +1962,7 @@ fn the_driver_never_merges_or_readies_a_pr() {
             if p.is_dir() {
                 stack.push(p);
             } else if p.extension().is_some_and(|x| x == "rs") {
-                // No exception: the worker deny rules cover any `gh`, so no
-                // source names a merge, not even to forbid it.
+                // No exception: the worker deny rules cover any `gh`, so no source names a merge.
                 if let Some(form) = merges_or_readies(&fs::read_to_string(&p).unwrap()) {
                     hits.push((p, form));
                 }
@@ -2057,10 +1975,7 @@ fn the_driver_never_merges_or_readies_a_pr() {
     );
 }
 
-/// PRD-002 FR-18: every `{factory} docs …` line the slice contract names
-/// runs as written on the fixture, in the contract's order, and the log
-/// then holds what the worker wrote through it. The stub `claude` reads no
-/// contract, so only this catches a flag the tool does not take.
+/// The stub `claude` reads no contract, so only this catches a flag the tool does not take.
 #[test]
 fn the_slice_contracts_commands_run_on_the_fixture() {
     let fx = Fixture::new("closeout-contract-commands");
@@ -2111,14 +2026,12 @@ fn the_slice_contracts_commands_run_on_the_fixture() {
     assert_eq!(fx.state().slices[&1].status, "blocked");
 }
 
-// ── PRD-004 FR-7: the retro's friction section, filed as an idea ────────────
+// ── the retro's friction section, filed as an idea ──────────────────────────
 
 const FRICTION: &str = "- /polish § Fix: the stub step one\n- /slice § Tasks: the stub step two";
 const PLACEHOLDER: &str =
     "A step, rule or template in the framework itself. Name the skill and the section.";
 
-/// A second v3 repo beside the fixture's, named as `[source] path` in the
-/// fixture's user config.
 fn source_repo(fx: &Fixture) -> PathBuf {
     let src = fx.path().parent().unwrap().join("skills");
     fs::create_dir_all(&src).unwrap();
@@ -2145,7 +2058,6 @@ fn source_repo(fx: &Fixture) -> PathBuf {
     src
 }
 
-/// The files under `<root>/docs/ideas/` besides the README.
 fn ideas_in(root: &Path) -> Vec<String> {
     let mut v: Vec<String> = fs::read_dir(root.join("docs/ideas"))
         .unwrap()
@@ -2202,7 +2114,6 @@ fn a_friction_section_is_filed_as_an_untracked_idea_in_the_source() {
         )),
         "{log}"
     );
-    // The checkpoint's evidence (prd §12 FR-7 row), shown with --nocapture.
     println!("--- {id}.md\n{idea}--- git status --porcelain\n{porcelain}");
 }
 
@@ -2280,7 +2191,6 @@ fn a_polish_orphan_adopted_by_a_resumed_driver_files_its_friction() {
     let log = driver_log(&dir);
     assert!(log.contains("of an earlier driver returned"), "{log}");
     friction_id(&src, &before, &log);
-    // PRD-005 FR-3: the orphan's lane landed once, and no second polish ran.
     assert_eq!(count_subject(&fx, "fix(001): polish review fixes"), 1);
     let polish_sha = sha_of(&fx, "fix(001): polish review fixes");
     assert!(files_of(&fx, &polish_sha).contains(&"src/lib.txt".to_string()));
@@ -2290,8 +2200,6 @@ fn a_polish_orphan_adopted_by_a_resumed_driver_files_its_friction() {
     );
 }
 
-/// PRD-005 FR-3: a CI fix worker that outlives its driver lands its lane
-/// when a resumed driver finds it returned, once.
 #[test]
 fn a_ci_fix_orphan_adopted_by_a_resumed_driver_lands_once() {
     let fx = Fixture::new("closeout-ci-fix-orphan");
@@ -2331,8 +2239,7 @@ fn today() -> String {
     factory::clock::now_rfc3339()[..10].to_string()
 }
 
-/// The one friction idea in `src`, dated the day the run started or the day
-/// it ended: a run across midnight UTC files under either.
+/// A run across midnight UTC files under either day.
 fn friction_id(src: &Path, before: &str, context: &str) -> String {
     let ideas = ideas_in(src);
     [before.to_string(), today()]

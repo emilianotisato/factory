@@ -1,6 +1,3 @@
-//! `factory docs ship NNN` and `archive NNN` (PRD-002 FR-15), ported from
-//! `docs.mjs:1789-1865`. Both write `state.toml` only: v3 has no index row
-//! to move and nothing to render.
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -11,9 +8,7 @@ use super::{scaffold, state};
 use crate::error::io;
 use crate::{Error, Result};
 
-/// The live feature `reference` names; an archived one is refused. A
-/// `state.toml` that does not parse is named here: read past, the board
-/// falls back to slice frontmatter and reports every slice "not done".
+/// A `state.toml` that does not parse is refused here: read past, every slice reads "not done".
 fn live(root: &Path, reference: &str) -> Result<Feature> {
     let b = board::scan(root)?;
     let f = b.resolve(reference)?;
@@ -29,7 +24,6 @@ fn live(root: &Path, reference: &str) -> Result<Feature> {
     Ok(f.clone())
 }
 
-/// `refusing: …` while any slice is not `done` (`docs.mjs:1797-1800`).
 fn all_done(f: &Feature, why: &str) -> Result<()> {
     let open: Vec<String> = f
         .board_slices()
@@ -47,7 +41,6 @@ fn all_done(f: &Feature, why: &str) -> Result<()> {
     )))
 }
 
-/// `git <args>` in `root`; false outside git or on failure.
 fn git(root: &Path, args: &[&str]) -> bool {
     Command::new("git")
         .args(args)
@@ -67,8 +60,7 @@ fn say(out: &mut dyn Write, text: &str) -> Result<()> {
     out.write_all(text.as_bytes()).map_err(io("write stdout"))
 }
 
-/// `ship NNN`: `status = "shipped"` and `shipped = <today>`, staged. A
-/// shipped feature is a no-op the closeout relies on (`closeout.rs:115`).
+/// On a shipped feature a no-op; the closeout's rerun relies on it.
 pub fn ship(root: &Path, reference: &str, out: &mut dyn Write) -> Result<()> {
     let f = live(root, reference)?;
     let nnn = format!("{:03}", f.number);
@@ -79,7 +71,7 @@ pub fn ship(root: &Path, reference: &str, out: &mut dyn Write) -> Result<()> {
         &f,
         "Set them done first, or this claims work that did not land.",
     )?;
-    // The closeout forwards stdout lines that start with ⚠ (closeout.rs:587).
+    // The closeout forwards stdout lines that start with ⚠.
     if f.state().and_then(|s| s.reviewed.as_deref()).is_none() {
         say(
             out,
@@ -96,8 +88,6 @@ pub fn ship(root: &Path, reference: &str, out: &mut dyn Write) -> Result<()> {
     say(out, &format!("PRD-{nnn} → shipped, staged.\n"))
 }
 
-/// `archive NNN`: the folder moves to `docs/archive/`, its `state.toml`
-/// with it, set `archived` and staged.
 pub fn archive(root: &Path, reference: &str, out: &mut dyn Write) -> Result<()> {
     let f = live(root, reference)?;
     let nnn = format!("{:03}", f.number);

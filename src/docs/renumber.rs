@@ -1,6 +1,4 @@
-//! `factory docs renumber NNN MMM` (PRD-002 FR-15), ported from
-//! `docs.mjs:1870-1916` with one change: the sweep skips `docs/archive/`,
-//! which is frozen, and names the archive files it left alone.
+//! The sweep never edits `docs/archive/`, which is frozen; it names what it left alone.
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -21,7 +19,6 @@ fn git(root: &Path, args: &[&str]) -> bool {
         .is_ok_and(|s| s.success())
 }
 
-/// Every `*.md` under `dir`, sorted.
 fn walk_md(dir: &Path, into: &mut Vec<PathBuf>) {
     let Ok(rd) = fs::read_dir(dir) else { return };
     let mut entries: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
@@ -35,8 +32,6 @@ fn walk_md(dir: &Path, into: &mut Vec<PathBuf>) {
     }
 }
 
-/// The frontmatter's `number:` line set to `n`, keeping its quoting; every
-/// other line stays as it is.
 fn set_number(text: &str, n: &str) -> String {
     let Some(rest) = text.strip_prefix("---\n") else {
         return text.to_string();
@@ -117,8 +112,7 @@ pub fn run(root: &Path, from: &str, to: &str, out: &mut dyn Write) -> Result<()>
             touched.push(rel(&file));
         }
     }
-    // Stage what moved and what changed, not the whole of docs/: a sibling's
-    // unstaged work there is not this command's to claim.
+    // Stage only what moved and changed: a sibling's unstaged work in docs/ is not this command's.
     let mut add = vec!["add".to_string(), "--".into(), rel(&dest)];
     add.extend(touched.iter().cloned());
     git(root, &add.iter().map(String::as_str).collect::<Vec<_>>());

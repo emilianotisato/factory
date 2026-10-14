@@ -1,11 +1,3 @@
-//! Slice 06 of PRD-001: checkpoints (PRD §6 FR-4, §3 FR-1 bullet 3, §10
-//! FR-8). When the board says a checkpoint is due the driver drains the
-//! lanes, runs the gate itself (one `gates` row per run, cached on the code
-//! tree), spawns a fix worker on every red and commits its files, blocks
-//! after three reds, hands the green transcript to a checkpoint worker that
-//! logs `CP-n` in `log.jsonl`, and commits the checkpoint. A run
-//! killed mid-checkpoint resumes at the checkpoint; the end of a run is its
-//! last checkpoint.
 #[path = "harness/mod.rs"]
 mod harness;
 
@@ -22,8 +14,6 @@ use serde_json::{Value, json};
 
 const BIN: &str = env!("CARGO_BIN_EXE_factory");
 const FEATURE_DIR: &str = "docs/features/001-fixture";
-/// The feature's append-only log (PRD-002 FR-14): blocks, answers, notes,
-/// decisions and the `CP-n` entries, one JSON line each.
 const LOG: &str = "docs/features/001-fixture/log.jsonl";
 const BUILD: &str =
     "Build slice {NN} of PRD-001 as the appended system prompt says. Return the STATUS block.";
@@ -93,7 +83,6 @@ fn of_kind(dir: &Path, kind: &str) -> Vec<Value> {
         .collect()
 }
 
-/// The kinds from the first `from` on.
 fn kinds_from(dir: &Path, from: &str) -> Vec<String> {
     let k = kinds(dir);
     let i = k
@@ -103,7 +92,6 @@ fn kinds_from(dir: &Path, from: &str) -> Vec<String> {
     k[i..].to_vec()
 }
 
-/// The kinds after the first `after`.
 fn kinds_after(dir: &Path, after: &str) -> Vec<String> {
     kinds_from(dir, after)[1..].to_vec()
 }
@@ -112,8 +100,7 @@ fn db(fx: &Fixture) -> Db {
     Db::open(&data_dir(fx).join("factory.db")).unwrap()
 }
 
-/// The driver's gate rows. Since slice 08 a worker's own inner-loop run is
-/// a `gates` row too (source `worker`, FR-8); this file is about the driver's.
+/// A worker's own inner-loop run is a `gates` row too (source `worker`); this file is about the driver's.
 fn gates(fx: &Fixture, dir: &Path) -> Vec<GateRow> {
     db(fx)
         .gates(&run_id(dir))
@@ -127,8 +114,7 @@ fn driver_log(dir: &Path) -> String {
     fs::read_to_string(dir.join("driver.log")).unwrap_or_default()
 }
 
-/// Polls `ok`; on timeout, dumps the run so a failure in the detached
-/// driver can be read from the test output.
+/// On timeout, dumps the run so a failure in the detached driver can be read from the test output.
 fn wait_until(fx: &Fixture, dir: &Path, what: &str, secs: u64, mut ok: impl FnMut() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(secs);
     while !ok() {
@@ -169,7 +155,6 @@ fn start(fx: &Fixture) -> PathBuf {
     only_run_dir(fx)
 }
 
-/// Subjects, oldest first.
 fn subjects(fx: &Fixture) -> Vec<String> {
     fx.git(&["log", "--reverse", "--format=%s"])
         .lines()
@@ -184,7 +169,6 @@ fn sha_of(fx: &Fixture, subject: &str) -> String {
     shas[0].to_string()
 }
 
-/// The files a commit touches, sorted.
 fn files_of(fx: &Fixture, sha: &str) -> Vec<String> {
     let mut v: Vec<String> = fx
         .git(&["show", "--format=", "--name-only", sha])
@@ -196,7 +180,6 @@ fn files_of(fx: &Fixture, sha: &str) -> Vec<String> {
     v
 }
 
-/// The raw lines of the feature's `log.jsonl`; none when it has no file yet.
 fn log_lines(fx: &Fixture) -> Vec<String> {
     fs::read_to_string(fx.path().join(LOG))
         .unwrap_or_default()
@@ -205,8 +188,7 @@ fn log_lines(fx: &Fixture) -> Vec<String> {
         .collect()
 }
 
-/// The log's entries of `kind`, read from the file itself: a poll that
-/// lands on a line still being written skips it.
+/// Read from the file itself: a poll that lands on a line still being written skips it.
 fn logged(fx: &Fixture, kind: &str) -> Vec<Value> {
     log_lines(fx)
         .iter()
@@ -215,7 +197,6 @@ fn logged(fx: &Fixture, kind: &str) -> Vec<Value> {
         .collect()
 }
 
-/// The one raw line of the entry `id`.
 fn raw_line(fx: &Fixture, id: &str) -> String {
     let needle = format!("\"id\":\"{id}\"");
     let hits: Vec<String> = log_lines(fx)
@@ -226,7 +207,6 @@ fn raw_line(fx: &Fixture, id: &str) -> String {
     hits[0].clone()
 }
 
-/// The `answer` entries whose `ref` is `id`.
 fn answers_to(fx: &Fixture, id: &str) -> Vec<Value> {
     fx.log_of("answer")
         .into_iter()
@@ -234,7 +214,6 @@ fn answers_to(fx: &Fixture, id: &str) -> Vec<Value> {
         .collect()
 }
 
-/// The one `block` entry `id`, from `log show --json`.
 fn block(fx: &Fixture, id: &str) -> Value {
     let hits: Vec<Value> = fx
         .log_of("block")
@@ -249,7 +228,6 @@ fn body(e: &Value) -> &str {
     e["body"].as_str().unwrap_or_else(|| panic!("no body: {e}"))
 }
 
-/// The `note` bodies with `title`.
 fn notes(fx: &Fixture, title: &str) -> Vec<String> {
     fx.log_of("note")
         .iter()
@@ -258,7 +236,6 @@ fn notes(fx: &Fixture, title: &str) -> Vec<String> {
         .collect()
 }
 
-/// `(id, slice)` of every `decision` entry, in log order.
 fn decisions(fx: &Fixture) -> Vec<(String, u64)> {
     fx.log_of("decision")
         .iter()
@@ -271,8 +248,6 @@ fn decisions(fx: &Fixture) -> Vec<(String, u64)> {
         .collect()
 }
 
-/// No v2 log file is left in the feature folder: no `agent-log.md`, no
-/// `log-slice-*.md` fragment.
 fn assert_no_v2_logs(fx: &Fixture) {
     let left: Vec<String> = fs::read_dir(fx.path().join(FEATURE_DIR))
         .unwrap()
@@ -309,12 +284,10 @@ fn checkpoint(n: u32) -> String {
     CHECKPOINT.replace("{n}", &n.to_string())
 }
 
-/// The polish worker's prompt: the slash command, nothing else (slice 09).
 fn polish() -> String {
     "/polish".into()
 }
 
-/// The pack file a call was given, and its text.
 fn pack_of(call: &Value) -> (String, String) {
     let argv: Vec<&str> = call["argv"]
         .as_array()
@@ -350,7 +323,6 @@ fn lane_paths(fx: &Fixture) -> Vec<PathBuf> {
         .collect()
 }
 
-/// The canonical worktree of lane `n`.
 fn lane_path(fx: &Fixture, n: u32) -> PathBuf {
     lane_paths(fx)
         .into_iter()
@@ -358,7 +330,6 @@ fn lane_path(fx: &Fixture, n: u32) -> PathBuf {
         .unwrap_or_else(|| panic!("no lane-{n} worktree"))
 }
 
-/// The cwd a stub call ran in.
 fn cwd_of(call: &Value) -> PathBuf {
     PathBuf::from(
         call["cwd"]
@@ -367,8 +338,6 @@ fn cwd_of(call: &Value) -> PathBuf {
     )
 }
 
-/// Lane files for lanes 1 and 2 whose setup appends `setup N` to
-/// `scenario/lane-setup.log`, committed.
 fn lanes_with_setup(fx: &Fixture) {
     let lanes = fx.path().join("docs/reference/lanes");
     fs::create_dir_all(&lanes).unwrap();
@@ -385,8 +354,6 @@ fn lanes_with_setup(fx: &Fixture) {
     fx.git(&["commit", "-q", "-m", "chore: lane files"]);
 }
 
-/// `(red, cached, attempt)` of the rows for checkpoint `n`, in id order; every
-/// row is the driver's checkpoint row with the fixture's gate command.
 fn gate_shape(rows: &[GateRow], n: u32) -> Vec<(bool, bool, u32)> {
     rows.iter()
         .filter(|g| g.checkpoint == Some(n))
@@ -405,8 +372,6 @@ fn gate_shape(rows: &[GateRow], n: u32) -> Vec<(bool, bool, u32)> {
         .collect()
 }
 
-/// `CP-n` is one `checkpoint` entry with `slice` = the last covered slice and
-/// `covers` = every one of them.
 fn assert_cp(fx: &Fixture, n: u32, after: u8, covers: &str, numbers: &[u32]) {
     let id = format!("CP-{n}");
     let cps: Vec<Value> = fx
@@ -436,7 +401,6 @@ fn assert_cp(fx: &Fixture, n: u32, after: u8, covers: &str, numbers: &[u32]) {
     assert!(entry.contains("**Fixed:** none"), "{entry}");
 }
 
-/// What every finished fixture run with two checkpoints has in common.
 fn assert_two_checkpoints(fx: &Fixture, dir: &Path) {
     for n in 1..=3 {
         assert_eq!(fx.slice_status(n), "done", "slice {n:02}");
@@ -472,7 +436,6 @@ fn assert_two_checkpoints(fx: &Fixture, dir: &Path) {
             files.iter().all(|f| f.starts_with("docs/")),
             "CP-{n} commit holds code: {files:?}"
         );
-        // The commit carries the CP entry itself.
         let committed = fx.git(&["show", &format!("{sha}:{LOG}")]);
         assert!(
             committed.contains(&format!("\"id\":\"CP-{n}\"")),
@@ -506,8 +469,7 @@ fn assert_two_checkpoints(fx: &Fixture, dir: &Path) {
     assert_eq!(state(dir)["phase"], "finished");
     assert_eq!(kinds(dir).last().map(String::as_str), Some("run_finished"));
     let text = driver_log(dir);
-    // Checkpoint 1 reads "started" on a straight run and "resumed" after a
-    // kill; the callers check which.
+    // Checkpoint 1 reads "started" or, after a kill, "resumed"; the callers check which.
     assert!(text.contains("checkpoint 1 (covers 01, 02) — "), "{text}");
     assert!(
         text.contains("checkpoint 2 (covers 03) — started"),
@@ -516,7 +478,7 @@ fn assert_two_checkpoints(fx: &Fixture, dir: &Path) {
     assert!(text.contains("finished (every slice done)"), "{text}");
 }
 
-// ── tasks 1 and 4: the gate runs before slice 03, CP-1 and CP-2 land ────────
+// ── the gate runs before slice 03, CP-1 and CP-2 land ───────────────────────
 
 #[test]
 fn the_driver_runs_the_gate_at_each_checkpoint_and_commits_the_cp_entries() {
@@ -532,7 +494,6 @@ fn the_driver_runs_the_gate_at_each_checkpoint_and_commits_the_cp_entries() {
     let dir = start(&fx);
     wait_phase(&fx, &dir, "finished", 60);
 
-    // Spawn order: the checkpoint sits between slice 02 and slice 03.
     assert_eq!(
         prompts(&fx),
         [
@@ -570,7 +531,6 @@ fn the_driver_runs_the_gate_at_each_checkpoint_and_commits_the_cp_entries() {
         ]
     );
 
-    // One gate run per checkpoint, each a `gates` row with a transcript.
     let rows = gates(&fx, &dir);
     assert_eq!(rows.len(), 2, "{rows:?}");
     assert_eq!(gate_shape(&rows, 1), [(false, false, 1)]);
@@ -578,8 +538,6 @@ fn the_driver_runs_the_gate_at_each_checkpoint_and_commits_the_cp_entries() {
     let log = fx.gate_log();
     assert_eq!(log.len(), 2, "gate.log");
     assert!(log.iter().all(|g| g.kind == "gate" && g.exit == 0));
-    // Each ran in a lane at the feature tip: the last slice commit before
-    // its checkpoint (PRD-005 FR-5).
     let lanes = lane_paths(&fx);
     for (g, tip) in log
         .iter()
@@ -599,7 +557,6 @@ fn the_driver_runs_the_gate_at_each_checkpoint_and_commits_the_cp_entries() {
     assert_eq!(runs[0]["log"], "gates/1-1.log");
     assert_eq!(runs[1]["log"], "gates/2-1.log");
 
-    // The checkpoint worker: its argv, its pack, its rows.
     let calls = fx.calls();
     let (name, pack) = pack_of(&calls[2]);
     assert_eq!(name, "checkpoint-1-3.md");
@@ -692,14 +649,13 @@ fn the_driver_runs_the_gate_at_each_checkpoint_and_commits_the_cp_entries() {
     );
 }
 
-// ── task 2: the cache on the code tree ──────────────────────────────────────
+// ── the cache on the code tree ──────────────────────────────────────────────
 
 #[test]
 fn an_unchanged_code_tree_reuses_the_cached_gate_result() {
     let fx = Fixture::new("cp-cache");
     fx.chain();
-    // Slice 03 touches docs only: the tree the gate tests is the one that was
-    // green at checkpoint 1.
+    // Slice 03 touches docs only: the tree the gate tests is still checkpoint 1's green one.
     fx.write_plan(&[
         done(),
         done(),
@@ -739,7 +695,7 @@ fn an_unchanged_code_tree_reuses_the_cached_gate_result() {
     assert_two_checkpoints(&fx, &dir);
 }
 
-// ── task 3: red, red, green ─────────────────────────────────────────────────
+// ── red, red, green ─────────────────────────────────────────────────────────
 
 #[test]
 fn red_red_green_runs_two_fix_workers_and_three_gates_before_the_cp() {
@@ -784,8 +740,7 @@ fn red_red_green_runs_two_fix_workers_and_three_gates_before_the_cp() {
             "polish"
         ]
     );
-    // Three gate runs at checkpoint 1, one at checkpoint 2 (slice 03 touched
-    // code); every one a row, none cached — each fix changed the tree.
+    // None cached: each fix changed the tree, and slice 03 touched code.
     let rows = gates(&fx, &dir);
     assert_eq!(rows.len(), 4, "{rows:?}");
     assert_eq!(
@@ -801,14 +756,12 @@ fn red_red_green_runs_two_fix_workers_and_three_gates_before_the_cp() {
     );
     let first = fs::read_to_string(dir.join("gates/1-1.log")).unwrap();
     assert!(first.contains(FAIL_LINE), "{first}");
-    // Both fix workers ran in a lane (PRD-005 FR-5).
     let lanes = lane_paths(&fx);
     for call in &fx.calls()[2..4] {
         assert!(lanes.contains(&cwd_of(call)), "{call}");
     }
     assert_eq!(fs::read_to_string(dir.join("gates/1-3.log")).unwrap(), "");
 
-    // Two fix commits, each only the file the fix worker named.
     assert_eq!(
         subjects(&fx),
         [
@@ -858,12 +811,10 @@ fn red_red_green_runs_two_fix_workers_and_three_gates_before_the_cp() {
         assert_eq!(w.outcome.as_deref(), Some("done"));
         assert_eq!(w.commit_sha.as_deref(), Some(fixes[i].as_str()));
     }
-    // FR-24: the two fix commits are the report's `fix_commits`.
     let out = factory(&fx, &["report", &run_id(&dir), "--json"]);
     let r: Value = serde_json::from_str(&stdout(&out)).expect("one JSON object");
     assert_eq!(r["fix_commits"], 2, "{r}");
 
-    // The fix pack: the failing tail, both commands, the fix contract.
     let calls = fx.calls();
     let (name, pack) = pack_of(&calls[2]);
     assert_eq!(name, "fix-1-3.md");
@@ -930,7 +881,7 @@ fn red_red_green_runs_two_fix_workers_and_three_gates_before_the_cp() {
     assert_two_checkpoints(&fx, &dir);
 }
 
-// ── task 3: three reds block; the answer reruns the gate ────────────────────
+// ── three reds block; the answer reruns the gate ────────────────────────────
 
 #[test]
 fn three_reds_block_the_run_and_the_answer_reruns_the_gate() {
@@ -949,7 +900,6 @@ fn three_reds_block_the_run_and_the_answer_reruns_the_gate() {
     let dir = start(&fx);
     wait_phase(&fx, &dir, "waiting-owner", 90);
 
-    // Two fix workers ran (the third red blocks instead), three rows, no CP.
     assert_eq!(prompts(&fx), [build(1), build(2), fix(1), fix(1)]);
     let rows = gates(&fx, &dir);
     assert_eq!(
@@ -966,12 +916,9 @@ fn three_reds_block_the_run_and_the_answer_reruns_the_gate() {
             "fix(001): gate red at checkpoint 1",
         ]
     );
-    // Nothing of the checkpoint lands before green: the slices' decisions
-    // are in the log, no `CP-1`.
     assert_eq!(decisions(&fx), [("AD-1".into(), 1), ("AD-2".into(), 2)]);
     assert!(fx.log_of("checkpoint").is_empty(), "{:?}", fx.log_entries());
     assert_no_v2_logs(&fx);
-    // Slice 09 task 3: exactly one `block` line, phase `checkpoint`, open.
     let title = format!("gate red three times at checkpoint 1: {FAIL_LINE}");
     let blocks = fx.log_of("block");
     assert_eq!(blocks.len(), 1, "{blocks:?}");
@@ -1025,14 +972,11 @@ fn three_reds_block_the_run_and_the_answer_reruns_the_gate() {
     assert_eq!(open[0]["n"], 1);
     assert_eq!(open[0]["phase"], "checkpoint");
 
-    // The owner answers without touching the tree: the gate runs again all
-    // the same (a cached red is not trusted past an answer), green now.
+    // The tree is unchanged, yet the gate runs again: a cached red is not trusted past an answer.
     let out = factory(&fx, &["answer", "BLOCK-1", "fixed the runner by hand"]);
     let text = stdout(&out);
     assert_eq!(out.status.code(), Some(0), "{text}");
     assert!(text.starts_with("BLOCK-1 resolved ("), "{text}");
-    // Slice 09 task 3: one `answer` line with `ref: BLOCK-1`, the block line
-    // byte-identical, no open checkpoint block left.
     let answers = answers_to(&fx, "BLOCK-1");
     assert_eq!(answers.len(), 1, "{answers:?}");
     assert_eq!(body(&answers[0]), "fixed the runner by hand");
@@ -1102,7 +1046,6 @@ fn three_reds_block_the_run_and_the_answer_reruns_the_gate() {
             polish()
         ]
     );
-    // Resolved by its one answer; the run wrote no other block or answer.
     assert_eq!(fx.log_of("block").len(), 1);
     assert_eq!(raw_line(&fx, "BLOCK-1"), block_line);
     assert_eq!(answers_to(&fx, "BLOCK-1").len(), 1);
@@ -1110,7 +1053,7 @@ fn three_reds_block_the_run_and_the_answer_reruns_the_gate() {
     assert_two_checkpoints(&fx, &dir);
 }
 
-// ── task 5: a run killed under the checkpoint worker resumes there ──────────
+// ── a run killed under the checkpoint worker resumes there ──────────────────
 
 #[test]
 fn a_run_killed_during_the_checkpoint_worker_resumes_at_the_checkpoint() {
@@ -1174,8 +1117,6 @@ fn a_run_killed_during_the_checkpoint_worker_resumes_at_the_checkpoint() {
     assert_eq!(state(&dir)["workers"][2]["outcome"], Value::Null);
     assert!(logged(&fx, "checkpoint").is_empty());
 
-    // Resume: the orphan is settled, the gate is a cache hit, a fresh
-    // checkpoint worker writes CP-1, and the run goes on to the end.
     let out = factory(&fx, &["run", "001"]);
     let text = stdout(&out);
     assert_eq!(out.status.code(), Some(0), "{text}");
@@ -1261,7 +1202,7 @@ fn a_run_killed_during_the_checkpoint_worker_resumes_at_the_checkpoint() {
     assert_two_checkpoints(&fx, &dir);
 }
 
-// ── task 4: two dead checkpoint workers block; the answer spawns a third ────
+// ── two dead checkpoint workers block; the answer spawns a third ────────────
 
 #[test]
 fn two_dead_checkpoint_workers_block_the_run_and_the_answer_spawns_a_third() {
@@ -1325,8 +1266,6 @@ fn two_dead_checkpoint_workers_block_the_run_and_the_answer_spawns_a_third() {
         Some("feat(001): slice-02 B")
     );
 
-    // The answer: the two deaths before it no longer count, a third worker
-    // reads the same (cached) transcript and writes CP-1.
     let out = factory(&fx, &["answer", "BLOCK-1", "logged in again"]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     wait_phase(&fx, &dir, "finished", 60);
@@ -1380,7 +1319,7 @@ fn two_dead_checkpoint_workers_block_the_run_and_the_answer_spawns_a_third() {
     assert_two_checkpoints(&fx, &dir);
 }
 
-// ── finding Xd4 / AD-20007: a fix worker's changes, however it ended ────────
+// ── a fix worker's changes, however it ended ────────────────────────────────
 
 #[test]
 fn a_dead_fix_workers_changes_are_committed_before_the_gate_runs_again() {
@@ -1397,8 +1336,7 @@ fn a_dead_fix_workers_changes_are_committed_before_the_gate_runs_again() {
     ]);
     let dir = start(&fx);
     wait_until(&fx, &dir, "the fix worker", 40, || fx.calls().len() >= 3);
-    // What the fix worker changed in its lane before it died, through a tool
-    // call the stream never flushed.
+    // The fix worker's change in its lane before it died, through a tool call the stream never flushed.
     let lane = cwd_of(&fx.calls()[2]);
     fs::write(lane.join("src/lib.txt"), "fixed before the death\n").unwrap();
     wait_phase(&fx, &dir, "finished", 60);
@@ -1411,7 +1349,6 @@ fn a_dead_fix_workers_changes_are_committed_before_the_gate_runs_again() {
     assert_eq!(committed[0]["attempt"], 1);
     assert_eq!(committed[0]["sha"], sha);
     assert_eq!(of_kind(&dir, "worker_dead").len(), 1);
-    // The commit lands before the gate's second run, which sees the fix.
     assert!(
         seq_first(&dir, "fix_committed") < of_kind(&dir, "gate_run")[1]["seq"].as_u64().unwrap()
     );
@@ -1428,11 +1365,7 @@ fn a_dead_fix_workers_changes_are_committed_before_the_gate_runs_again() {
 fn a_dirty_main_tree_does_not_pin_the_cache() {
     let fx = Fixture::new("cp-dirty-green");
     fx.chain();
-    // The owner's untracked notes.txt, written once the run is past its
-    // clean-tree preflight. The gate runs in a lane reset to HEAD, so the
-    // main tree's state is not what it tests (PRD-005 FR-5). Checkpoint 1's
-    // worker dies twice and the answer reuses its green. Slice 03 touches no
-    // code, so checkpoint 2 sees the same tree: cached green.
+    // Slice 03 touches nothing, so checkpoint 2 sees checkpoint 1's tree.
     fx.write_plan(&[
         done(),
         done(),
@@ -1443,6 +1376,7 @@ fn a_dirty_main_tree_does_not_pin_the_cache() {
         step("checkpoint"),
     ]);
     let dir = start(&fx);
+    // Written after the clean-tree preflight; the gate runs in a lane reset to HEAD and never sees it.
     fs::write(fx.path().join("notes.txt"), "owner's notes\n").unwrap();
     wait_phase(&fx, &dir, "waiting-owner", 60);
     let out = factory(&fx, &["answer", "BLOCK-1", "logged in again"]);
@@ -1458,14 +1392,13 @@ fn a_dirty_main_tree_does_not_pin_the_cache() {
     assert_eq!(cache.len(), 1, "{cache:?}");
 }
 
-// ── PRD-005 FR-5: the checkpoint runs in the lowest free lane ───────────────
+// ── the checkpoint runs in the lowest free lane ─────────────────────────────
 
 #[test]
 fn a_checkpoint_due_while_a_blocked_slice_holds_lane_1_runs_in_lane_2() {
     let fx = Fixture::new("cp-lane-2");
     lanes_with_setup(&fx);
-    // Slices 01 and 02 start at once; 01 blocks on lane 1, 02 and then 03
-    // land through lane 2, and checkpoint 1 is due while lane 1 is held.
+    // 01 blocks holding lane 1; 02 and 03 land through lane 2, and checkpoint 1 is due meanwhile.
     fx.write_plan(&[step("blocked"), done(), done(), step("checkpoint")]);
     let dir = start(&fx);
     wait_until(&fx, &dir, "the park after checkpoint 1", 60, || {
@@ -1506,9 +1439,7 @@ fn a_file_only_the_main_tree_holds_does_not_turn_the_gate_green() {
     fx.chain();
     fx.write_plan(&[done(), done(), step("fix"), step("fix")]);
     let dir = start(&fx);
-    // Untracked in the main tree only, written once the run is past its
-    // clean-tree preflight and long before the first gate: the lane reset
-    // to HEAD has none, so the gate is red every time.
+    // Written after the clean-tree preflight and before the first gate; the lane reset to HEAD has no copy.
     fs::write(fx.path().join("needed.txt"), "the owner's\n").unwrap();
     wait_phase(&fx, &dir, "waiting-owner", 90);
 
@@ -1558,7 +1489,7 @@ fn a_fix_workers_file_no_tool_call_named_lands_in_its_commit() {
     assert_eq!(fx.git(&["status", "--porcelain"]), "");
 }
 
-// ── finding Xc4: a checkpoint worker that outlives its driver ───────────────
+// ── a checkpoint worker that outlives its driver ────────────────────────────
 
 #[test]
 fn a_checkpoint_worker_that_outlives_its_driver_gets_its_checkpoint_committed() {
@@ -1633,8 +1564,7 @@ fn a_checkpoint_worker_that_outlives_its_driver_gets_its_checkpoint_committed() 
 
 #[test]
 fn a_due_checkpoint_runs_before_a_dead_slice_respawns() {
-    // A checkpoint every slice; 01 and 02 build at once. 01 is done (the
-    // checkpoint is due) while 02's worker is still running, then dies.
+    // 01 is done, its checkpoint due, while 02's worker still runs; then 02 dies.
     let fx = Fixture::with_index("cp-before-respawn", &[("checkpoint_every", "1")]);
     fx.write_plan(&[
         done(),
@@ -1679,7 +1609,6 @@ fn a_resumed_checkpoint_counts_the_reds_its_dead_driver_saw() {
     ]);
     let dir = start(&fx);
     let driver = state(&dir)["pid"].as_u64().unwrap() as u32;
-    // Two reds, the second fix worker running: the driver dies there.
     wait_until(&fx, &dir, "the second fix worker", 60, || {
         count(&kinds(&dir), "fix_spawned") == 2
     });
@@ -1692,8 +1621,6 @@ fn a_resumed_checkpoint_counts_the_reds_its_dead_driver_saw() {
         !pid_alive(fixer)
     });
 
-    // The resume's gate run is the third red in a row: the checkpoint
-    // blocks, no third fix worker.
     let out = factory(&fx, &["run", "001"]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     wait_phase(&fx, &dir, "waiting-owner", 60);

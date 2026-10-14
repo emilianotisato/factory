@@ -1,22 +1,4 @@
-//! The checkpoint (PRD §6 FR-4), run by the driver once the board says
-//! `checkpoint_due` and the lanes are drained, in the lowest lane no slice
-//! holds (PRD-005 FR-5), reset to the feature tip before each gate run and
-//! each spawn. The gate is the driver's: the declared command through
-//! `sh -c` in the lane with the lane's env, stdout and stderr to
-//! `runs/<id>/gates/<n>-<attempt>.log`, a `gates` row per run (source
-//! `driver`) or per cache hit (`cached = 1`, `minutes = 0`). Red spawns a
-//! fix worker in the lane with the failing output, lands the lane as
-//! `fix(NNN): gate red at checkpoint n` (PRD-005 FR-3) and reruns; three reds
-//! in a row block the run on a `block` entry in the feature's `log.jsonl`
-//! (phase `checkpoint`). Green spawns a checkpoint worker there that reads
-//! the transcript, drives the covered Prove rows and writes `CP-n` through
-//! `factory docs log add`; the driver lands `docs(NNN): checkpoint n`. A
-//! worker that dies gets one more spawn, then the block; a worker that
-//! blocks parks the run.
-//!
-//! Every step is re-entrant from the board and the run dir alone: a resume
-//! (FR-1 "an unverified checkpoint runs first") lands here before any spawn,
-//! emits `checkpoint_resumed` and reuses the gate cache.
+//! Every step is re-entrant from the board and the run dir alone: a resume lands here before any spawn.
 use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::Write;
@@ -41,32 +23,25 @@ use crate::stream::Summary;
 use crate::worker::{Exit, Job, Worker};
 use crate::{Result, clock, lanes, metrics, paths};
 
-/// Consecutive red gates at one checkpoint before the run blocks.
 pub const RED_CAP: u32 = 3;
-/// `runs/<id>/gates`.
 pub const GATES_DIR: &str = "gates";
 
-/// How the checkpoint left the run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
-    /// `CP-n` is on the board and committed: the loop reads the board again.
     Done,
-    /// The run waits for the owner on `id` in the feature's log. `fresh` is a
-    /// block written just now (park anew); otherwise the block was already
-    /// open when the checkpoint was entered and the park stands.
+    /// `fresh`: the block was written just now; else it was open on entry and the park stands.
     Parked {
         id: String,
         what: String,
         fresh: bool,
     },
-    /// `factory stop` arrived between steps.
     Stopped,
-    /// FR-9: the weighted tokens passed the budget between steps; the
-    /// scheduler parks the run and the checkpoint runs again on resume.
-    Budget { weighted: u64, budget: u64 },
+    Budget {
+        weighted: u64,
+        budget: u64,
+    },
 }
 
-/// Run the checkpoint the board says is due, in `lane`.
 pub fn run(
     run: &mut Run,
     docs: &Docs,
@@ -79,7 +54,6 @@ pub fn run(
     let repo = run.state().repo.clone();
     let feature_dir = repo.join(&board.dir);
 
-    // A checkpoint block the owner has not answered: the park stands.
     if let Some(open) = open_checkpoint_blocks(&feature_dir)?.into_iter().next() {
         return Ok(Outcome::Parked {
             what: park_line(&open.0, &open.1),
@@ -122,11 +96,7 @@ pub fn run(
         ),
     )?;
 
-    // The gate, until green or three reds. A cached red is reused only
-    // between fix workers of this entry: an owner's answer or a resume runs
-    // the gate again whatever the tree says (the fix may be outside it).
-    // The reds count from the events, so a resumed driver goes on from the
-    // reds its predecessor saw.
+    // A cached red counts only between fix workers: an answer or a resume reruns the gate.
     let gate = docs.gate()?.trim().to_string();
     let mut ran_red = false;
     let green_log: PathBuf;
@@ -135,8 +105,7 @@ pub fn run(
         if run.state().stop_requested {
             return Ok(Outcome::Stopped);
         }
-        // Reset before every run, the one after a fix lands too: the cache
-        // key counts untracked files, so it is HEAD's tree only on a clean lane.
+        // Reset before every run: the cache key counts untracked files, so only a clean lane keys on HEAD's tree.
         let (lane_dir, lane_def) = scheduler::prepare_lane(run, lane, true, out)?;
         let result = gate_once(run, &lane_dir, &lane_def.env(), &gate, n, ran_red, out)?;
         if !result.red {
@@ -188,9 +157,6 @@ pub fn run(
                 fresh: true,
             });
         }
-        // quota: rate_limited is not a red (FR-9). A limited fix worker
-        // pauses the run; the same gate attempt gets a fresh fix worker once
-        // the pause lifts, and `reds` does not move.
         loop {
             if let Some(o) = await_quota(run, out)? {
                 return Ok(o);
@@ -213,7 +179,6 @@ pub fn run(
         }
     }
 
-    // The checkpoint worker: once more after a death, then the block.
     loop {
         if let Some(o) = await_quota(run, out)? {
             return Ok(o);
@@ -371,7 +336,6 @@ pub fn run(
                 fresh: true,
             });
         }
-        // FR-9: a limit is not a death — pause, then a fresh worker.
         if let Some(limit) = Limit::from(&exit.summary) {
             settle(
                 run,
@@ -395,9 +359,6 @@ pub fn run(
     }
 }
 
-/// FR-9 between the checkpoint's steps: wait out a pause (phase `paused`,
-/// then back to `checkpoint`), hand a spent budget up to the scheduler, or
-/// go on (`None`).
 fn await_quota(run: &mut Run, out: &mut dyn Write) -> Result<Option<Outcome>> {
     loop {
         run.reload()?;
@@ -424,21 +385,13 @@ fn await_quota(run: &mut Run, out: &mut dyn Write) -> Result<Option<Outcome>> {
     }
 }
 
-/// One gate decision.
 struct GateResult {
     red: bool,
     cached: bool,
     attempt: u32,
-    /// The transcript, absolute.
     log: PathBuf,
 }
 
-/// The cache, or `sh -c <gate>`; either way a `gates` row and an event. A
-/// cached red counts only with `trust_red` (a fix worker just ran on it).
-/// The gate's reds in a row at checkpoint `n`, and the fix workers that
-/// ran between them (a rate-limited one did not), read from the events:
-/// since the gate was last green there, or since the owner answered one of
-/// this checkpoint's blocks.
 fn reds_in_a_row(run: &Run, n: u32) -> Result<(u32, u32)> {
     let limited: HashSet<String> = run
         .state()
@@ -475,8 +428,6 @@ fn reds_in_a_row(run: &Run, n: u32) -> Result<(u32, u32)> {
     Ok((reds, fixes))
 }
 
-/// `lane` is the lane's worktree, reset to the feature tip: the cache key is
-/// its tree, and the gate runs there with the lane's `env`.
 fn gate_once(
     run: &mut Run,
     lane: &Path,
@@ -608,22 +559,14 @@ fn gate_once(
     })
 }
 
-/// How a fix worker left its gate attempt.
 enum Fixed {
-    /// Its lane landed, or it changed nothing: the gate runs again.
     Gate,
-    /// A usage limit (FR-9): the run is paused and this attempt gets another
-    /// fix worker, no gate run between.
+    /// A usage limit: this attempt gets another fix worker, no gate run between.
     Again,
-    /// The run stops or parks: a stop during a landing's wait, a conflict.
     End(Outcome),
 }
 
-/// A fix worker in `lane` on the red transcript; its lane lands however it
-/// ended — done, dead or on a usage limit — and before its outcome is saved,
-/// so a driver killed in between leaves it to the resume. A dead worker is
-/// settled and counted by the gate that follows (a tree it did not change is
-/// a cache hit, red again).
+/// The lane lands before the outcome is saved: a driver killed between leaves the landing to the resume.
 #[allow(clippy::too_many_arguments)]
 fn fix_once(
     run: &mut Run,
@@ -726,20 +669,13 @@ fn fix_once(
     Ok(Fixed::Gate)
 }
 
-/// What landing a checkpoint worker's lane came to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Landed {
-    /// On the feature tip; `None`, nothing to commit.
     Done(Option<String>),
-    /// The owner's uncommitted work holds the pick: the park line.
     Waiting(String),
-    /// The pick conflicts with the feature tip, which only the owner moved
-    /// while nothing else was live; `name` holds the lane's commit.
     Conflict { paths: Vec<String>, name: String },
 }
 
-/// `refs/factory/<NNN>/checkpoint-n-<role>`: a fix or checkpoint worker's
-/// lane commit until it lands.
 pub fn worker_ref(board: &Status, n: u32, role: &str) -> String {
     format!("refs/factory/{:03}/checkpoint-{n}-{role}", board.number)
 }
@@ -752,8 +688,7 @@ fn worker_subject(board: &Status, n: u32, role: &str) -> String {
     }
 }
 
-/// A ref an earlier worker of this role left unlanded (a conflict the owner
-/// answered) would land in place of the next worker's lane.
+/// An unlanded ref from an earlier worker would land in place of the next worker's lane.
 fn drop_ref(run: &Run, board: &Status, n: u32, role: &str) -> Result<()> {
     let repo = run.state().repo.clone();
     let name = worker_ref(board, n, role);
@@ -763,18 +698,7 @@ fn drop_ref(run: &Run, board: &Status, n: u32, role: &str) -> Result<()> {
     Ok(())
 }
 
-/// PRD-005 FR-3 for a fix or checkpoint worker (`role`) in `lane`: the lane
-/// committed whole under [`worker_ref`] on the lane's base, less the board
-/// and protected files, then picked onto the feature tip with the main
-/// tree's board files. Safe to call again for the same worker, which is how
-/// a resumed driver finishes it, in the slices' order: a row with a commit
-/// has landed; a commit with its subject on the tip since the lane's base is
-/// the landing; a ref that resolves is picked; else the lane is committed
-/// first. A checkpoint worker that proves without fixing changes no file in
-/// its lane while its `CP-n` sits in the main tree's log: then the board
-/// files are committed by pathspec. `lane` `None` is a worker of a driver
-/// from before lanes, which wrote the main tree: only the board files are
-/// the driver's to commit.
+/// Idempotent: a resumed driver calls it again for the same worker and goes on from the step it reached.
 #[allow(clippy::too_many_arguments)]
 pub fn land_worker(
     run: &mut Run,
@@ -867,11 +791,6 @@ pub fn land_worker(
     }
 }
 
-/// [`land_worker`] for a worker this driver waited on. A dirty main tree
-/// parks the run (said once, `waiting-owner`) and the landing is retried
-/// each tick, nothing else being live, until it goes through (phase
-/// `checkpoint` again) or the run is stopped; a conflict blocks. `Ok`: the
-/// landed sha, `None` for nothing to commit; `Err`: the run stops or parks.
 #[allow(clippy::too_many_arguments)]
 fn land_here(
     run: &mut Run,
@@ -914,9 +833,7 @@ fn land_here(
     }
 }
 
-/// The main tree's board files as the worker's commit, for a lane that
-/// changed nothing: a checkpoint worker's `CP-n` entry lives there. A fix
-/// worker's board writes wait for the next commit.
+/// A fix worker's board writes wait for the next commit; a checkpoint worker's `CP-n` lives in the main tree.
 fn commit_board(
     run: &mut Run,
     board: &Status,
@@ -940,7 +857,6 @@ fn commit_board(
     }
 }
 
-/// A landed commit on the worker's row, in a line, and for a fix its event.
 fn record(
     run: &mut Run,
     n: u32,
@@ -991,9 +907,6 @@ fn record(
     Ok(())
 }
 
-/// A worker's lane commit conflicts with the feature tip: a checkpoint block
-/// naming the paths and the ref, which keeps the commit. A checkpoint
-/// worker's `CP-n` is committed first, so the board's record of it is too.
 #[allow(clippy::too_many_arguments)]
 pub fn block_conflict(
     run: &mut Run,
@@ -1012,8 +925,7 @@ pub fn block_conflict(
         "checkpoint {n}: the {role} worker's commit conflicts with the feature tip in {}",
         paths.join(", ")
     ));
-    // A checkpoint worker's `CP-n` is on the board by now: the answer lets
-    // the run go on past the checkpoint, not back into it.
+    // A checkpoint worker's `CP-n` is on the board by now: the answer goes past the checkpoint, not back into it.
     let next = if role == "checkpoint" {
         "the run goes on past the recorded checkpoint"
     } else {
@@ -1045,9 +957,7 @@ pub fn block_conflict(
     })
 }
 
-/// What a refused v2 `docs log merge` said, on one line: every `✗` refusal
-/// joined with `; `, else the first non-empty line. Only the cockpit uses it
-/// now, to show a `MergeRefused` event from a run that predates `log.jsonl`.
+/// `MergeRefused` events of old runs carry v2 `docs log merge` output; only the cockpit shows it.
 pub fn refusal_summary(detail: &str) -> String {
     let refusals: Vec<&str> = detail
         .lines()
@@ -1066,8 +976,6 @@ pub fn refusal_summary(detail: &str) -> String {
     }
 }
 
-/// A checkpoint worker gone without `CP-n` or a block: a `note` entry in the
-/// feature's log; the caller respawns or blocks on the count.
 fn settle_dead(
     run: &mut Run,
     feature_dir: &Path,
@@ -1124,8 +1032,6 @@ fn settle(
     run.set_worker_outcome(session_id, outcome.as_str())
 }
 
-/// `(id, title)` of every unanswered block with phase `checkpoint` in the
-/// feature's log, in file order.
 pub fn open_checkpoint_blocks(feature_dir: &Path) -> Result<Vec<(String, String)>> {
     Ok(answers::entries(feature_dir)?
         .into_iter()
@@ -1134,11 +1040,7 @@ pub fn open_checkpoint_blocks(feature_dir: &Path) -> Result<Vec<(String, String)
         .collect())
 }
 
-/// The index into `events` just past the latest `block_answered` for one of
-/// checkpoint `n`'s own blocks (its `checkpoint_blocked` ids); 0 when the
-/// owner answered none. The death cap and the red count start there: an
-/// answer to another block naming no slice (a closeout block, another
-/// checkpoint's) resets neither.
+/// The death cap and the red count restart at the owner's latest answer to one of this checkpoint's blocks.
 fn since_answer(events: &[Event], n: u32) -> usize {
     let mut mine: HashSet<&str> = HashSet::new();
     let mut from = 0;
@@ -1156,10 +1058,7 @@ fn since_answer(events: &[Event], n: u32) -> usize {
     from
 }
 
-/// The sessions of checkpoint `n`'s workers (fix and checkpoint) spawned
-/// before the owner's latest answer to one of its blocks: spent, they count
-/// toward no cap. A worker with no spawn event (a kill inside the spawn) is
-/// not among them, so it counts.
+/// A worker with no spawn event (killed inside the spawn) is not among them, so it counts.
 fn spawned_before_answer(events: &[Event], n: u32) -> HashSet<String> {
     events[..since_answer(events, n)]
         .iter()
@@ -1228,8 +1127,6 @@ mod tests {
             }),
             answered("BLOCK-1"),
         ];
-        // A refused merge's answer names no slice, but it is not this
-        // checkpoint's block: worker `a` still counts.
         assert_eq!(since_answer(&events, 1), 0);
         assert!(spawned_before_answer(&events, 1).is_empty());
 
@@ -1240,7 +1137,6 @@ mod tests {
             HashSet::from(["a".to_string()])
         );
 
-        // Checkpoint 2's block, answered, spends none of checkpoint 1's.
         events.extend([spawned(1, "b"), blocked(2, "BLOCK-3"), answered("BLOCK-3")]);
         assert_eq!(since_answer(&events, 1), 5);
         assert_eq!(

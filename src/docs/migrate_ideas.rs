@@ -1,9 +1,3 @@
-//! `docs/ideas.md` into one file per open idea (PRD-002 FR-20, slice 08), as
-//! part of `factory docs migrate`. [`parse`] places each bullet by its
-//! heading; [`fields`] reads `added`, `origin` and `retrigger` from its
-//! phrases; [`plan`] names every id before anything is written. A placement
-//! the rules can only guess is migrated as `open` and its row goes first, so
-//! the owner reads the risky rows before the rest.
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -15,11 +9,9 @@ use crate::{Error, Result};
 
 pub const FILE: &str = "docs/ideas.md";
 
-/// Where a bullet goes.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Place {
-    /// Migrated as `open` (`owed` when the heading says so); `guess` names
-    /// the rule when the placement is not certain.
+    /// `guess` names the rule when the placement is not certain.
     Open {
         owed: bool,
         high: bool,
@@ -29,15 +21,13 @@ pub enum Place {
     Dropped(&'static str),
 }
 
-/// One `- ` bullet with its continuation lines, or one stray line under a
-/// heading (then `Dropped`).
+/// A `- ` bullet with its continuation lines, or a stray line under a heading (then `Dropped`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Bullet {
     /// 1-based, the bullet's first line.
     pub line: usize,
     pub title: String,
-    /// The text after the title and its separator, continuation lines as
-    /// written, ending in one `\n`; empty when there is none.
+    /// Continuation lines as written, ending in one `\n`, or empty.
     pub body: String,
     pub h2: Option<String>,
     pub h3: Option<String>,
@@ -58,15 +48,12 @@ fn is_fence(line: &str) -> bool {
     t.starts_with("```") || t.starts_with("~~~")
 }
 
-/// `^#{1,6} text` → its level and text.
 fn heading(line: &str) -> Option<(usize, &str)> {
     let h = line.len() - line.trim_start_matches('#').len();
     let text = line[h..].strip_prefix(' ')?;
     (1..=6).contains(&h).then_some((h, text.trim()))
 }
 
-/// `^\*\*(.+?)\*\*(.*)$` on the text after `- `: the title with one trailing
-/// `.` stripped, and the rest minus one separator.
 fn bold(text: &str) -> Option<(String, &str)> {
     let inner = text.strip_prefix("**")?;
     let (end, _) = inner.match_indices("**").find(|(i, _)| *i > 0)?;
@@ -149,10 +136,7 @@ fn bullet(line: usize, first: &str, cont: &[&str], h2: Option<&str>, h3: Option<
     }
 }
 
-/// Every bullet of an `ideas.md`, in file order. A bullet runs from `^- `
-/// to the line before the next `^- `, blank line or heading; a blank line
-/// ends a bullet, never a section. A line that is no bullet is dropped
-/// silently before the first `##` (the preamble) and listed after it.
+/// A blank line ends a bullet, not a section; stray lines before the first `##` drop silently.
 pub fn parse(text: &str) -> Vec<Bullet> {
     struct Open<'a> {
         line: usize,
@@ -169,8 +153,6 @@ pub fn parse(text: &str) -> Vec<Bullet> {
             out.push(bullet(o.line, o.first, &o.cont, h2, h3));
         }
     }
-    // A fenced line under no bullet: dropped, and listed after the first `##`
-    // like any other line that is no bullet (FR-20).
     let stray =
         |out: &mut Vec<Bullet>, i: usize, line: &str, h2: Option<&str>, h3: Option<&str>| {
             if h2.is_some() && !line.trim().is_empty() {
@@ -186,8 +168,7 @@ pub fn parse(text: &str) -> Vec<Bullet> {
         };
     for (i, line) in text.lines().enumerate() {
         if is_fence(line) {
-            // An indented fence belongs to the bullet above it; one at the
-            // margin ends it (AD-802), and it and its lines are dropped.
+            // An indented fence belongs to the bullet above; one at the margin ends it.
             match cur.as_mut() {
                 Some(o) if line.starts_with(char::is_whitespace) => o.cont.push(line),
                 _ => {
@@ -241,8 +222,7 @@ pub fn parse(text: &str) -> Vec<Bullet> {
     out
 }
 
-/// `Parked from (.+?) \((\d{4}-\d{2}-\d{2})\)`, within one line: the origin
-/// with a leading `the ` stripped, and the date.
+/// `Parked from (.+?) \((\d{4}-\d{2}-\d{2})\)`, within one line.
 fn parked(text: &str) -> Option<(String, String)> {
     text.match_indices("Parked from ").find_map(|(i, p)| {
         let rest = &text[i + p.len()..];
@@ -258,7 +238,6 @@ fn parked(text: &str) -> Option<(String, String)> {
     })
 }
 
-/// `Added (\d{4}-\d{2}-\d{2})`.
 fn added(text: &str) -> Option<String> {
     text.match_indices("Added ").find_map(|(i, p)| {
         text.get(i + p.len()..i + p.len() + 10)
@@ -267,8 +246,6 @@ fn added(text: &str) -> Option<String> {
     })
 }
 
-/// The text after `Re-trigger:` on its line, trimmed, up to and including
-/// the first `. `, `? ` or `! `.
 fn retrigger(text: &str) -> Option<String> {
     let i = text.find("Re-trigger:")?;
     let rest = &text[i + "Re-trigger:".len()..];
@@ -280,10 +257,7 @@ fn retrigger(text: &str) -> Option<String> {
     (!s.is_empty()).then(|| s.to_string())
 }
 
-/// `added`, `origin` and `retrigger` from the bullet's text (title and
-/// body) first, then its `### Parked` heading; `blame` is the date of the
-/// bullet's first line, the last resort for `added`. The body keeps every
-/// phrase a field was read from.
+/// `blame` dates the bullet's first line; the body keeps every phrase a field was read from.
 pub fn fields(b: &Bullet, blame: &str) -> Fields {
     let text = format!("{}\n{}", b.title, b.body);
     let own = parked(&text);
@@ -305,7 +279,6 @@ pub fn fields(b: &Bullet, blame: &str) -> Fields {
     }
 }
 
-/// A row's short form of a line: at most 60 characters.
 fn clip(s: &str) -> String {
     match s.char_indices().nth(60) {
         Some((i, _)) => format!("{}…", &s[..i]),
@@ -319,11 +292,7 @@ fn refuse<T>(line: usize, title: &str, why: impl std::fmt::Display) -> Result<T>
     )))
 }
 
-/// Adds `docs/ideas.md`'s part to the plan: one `docs/ideas/<id>.md` per
-/// migrated bullet, the folder's README when absent, then the deletion.
-/// Guess rows go first in the whole plan; the other rows follow in file
-/// order. Ids clash against the folder and the ids planned before, so a
-/// re-run names the same ones.
+/// Guess rows go to the front of the whole plan, so the owner reads the risky rows first.
 pub fn plan(root: &Path, plan: &mut Plan) -> Result<()> {
     let path = root.join(FILE);
     let text = std::fs::read_to_string(&path)
@@ -488,7 +457,6 @@ mod tests {
         assert_eq!(b.len(), 6, "{b:?}");
         assert_eq!(b[1].body, "b\n  b2\n");
         assert_eq!(b[2].place, Place::Dropped("not a bullet"));
-        // A fence at the margin: its lines are dropped and listed, never lost.
         assert_eq!(
             b[3..]
                 .iter()
@@ -501,7 +469,6 @@ mod tests {
                 .iter()
                 .all(|x| x.place == Place::Dropped("in a fence under no bullet"))
         );
-        // Under a bullet, then ended by a fence at the margin.
         let b = parse("## Open\n- **A.** a\n```\nx\n\n```\n");
         assert_eq!(b.len(), 4, "{b:?}");
         assert_eq!(b[0].body, "a\n");
@@ -528,10 +495,6 @@ mod tests {
         );
     }
 
-    /// The inbox shapes: a `**Rules**` list before any `##` heading, bullets
-    /// `- **Title.** body` with no dash, a blank line splitting one section's
-    /// bullets, a bold title opening on a code span that holds `|` and `:`,
-    /// and a placeholder under Graduated.
     #[test]
     fn an_inbox_parses_bullet_by_bullet() {
         let text = "# Ideas Inbox\n\nLoose one-liners.\n\n**Rules**\n- One line per idea.\n- No design here.\n\n## Open\n\n- **First idea.** Plain body, no dash.\n- **Second idea.** Another.\n\n- **`tool pull | list | drop`: errors as a list.** After the blank line.\n\n## Graduated → became a feature\n\n- _(move lines here with their `{NNN}`)_\n";
@@ -575,7 +538,6 @@ mod tests {
         );
         assert_eq!(all.len(), open.len() + drops.len(), "{all:#?}");
 
-        // The code-span title survives the idea file's frontmatter.
         let tmp = tree(text, &[]);
         let mut p = empty();
         plan(tmp.path(), &mut p).unwrap();

@@ -1,8 +1,4 @@
-//! `factory upgrade` (PRD-004 FR-8, slice 06): a binary with no receipt, or a
-//! receipt for another install dir, prints the line that rebuilds it; one
-//! with a receipt for its own dir asks the release server, here a stub on a
-//! local socket. The install path itself is not driven: it would replace the
-//! test binary (the owner's qa-guide row).
+//! The install path is never driven: it would replace the test binary.
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -15,7 +11,6 @@ const BIN: &str = env!("CARGO_BIN_EXE_factory");
 const V: &str = env!("CARGO_PKG_VERSION");
 const LATEST: &str = "/api/v3/repos/emilianotisato/factory/releases/latest";
 
-/// A config dir and a receipt dir, both empty, under one temp dir.
 struct Env {
     dir: tempfile::TempDir,
 }
@@ -72,8 +67,7 @@ fn stdout(o: &Output) -> String {
     String::from_utf8_lossy(&o.stdout).into_owned()
 }
 
-/// The canonical dir the test binary runs from: what a receipt for this
-/// binary names as its `install_prefix`.
+/// Canonical, as a receipt's `install_prefix` for this binary would be.
 fn bin_dir() -> PathBuf {
     fs::canonicalize(BIN)
         .unwrap()
@@ -82,8 +76,6 @@ fn bin_dir() -> PathBuf {
         .to_path_buf()
 }
 
-/// Serves `tag` as the latest release until the test ends; any other path is
-/// a 404. Returns the base URL.
 fn release_server(tag: &str) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());

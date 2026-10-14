@@ -1,6 +1,3 @@
-//! The v3 lifecycle verbs against `Fixture::new` (PRD-002 slice 04): `gate`,
-//! `preflight`, `ship`, `archive`, `lanes`, `renumber`, and the FR-15
-//! equivalence with the v2 fixture test (`tests/docs.rs`).
 #[path = "harness/mod.rs"]
 mod harness;
 
@@ -23,13 +20,11 @@ fn exit(o: &Output) -> i32 {
     o.status.code().unwrap_or(-1)
 }
 
-/// Commit whatever the test changed, so preflight sees a clean tree.
 fn commit(fx: &Fixture) {
     fx.git(&["add", "-A"]);
     fx.git(&["commit", "-q", "-m", "test: change"]);
 }
 
-/// Replace `[docs]` line `from` with `to` (empty removes it), committed.
 fn edit_project(fx: &Fixture, from: &str, to: &str) {
     let p = fx.path().join("docs/project.toml");
     let text = fs::read_to_string(&p).unwrap();
@@ -50,7 +45,7 @@ fn preflight(fx: &Fixture, feature: &str) -> (Preflight, i32) {
     (pf, exit(&o))
 }
 
-// ── FR-15 equivalence ────────────────────────────────────────────────────────
+// ── v2 equivalence ───────────────────────────────────────────────────────────
 
 #[test]
 fn the_v3_board_and_preflight_match_the_v2_fixture() {
@@ -341,7 +336,7 @@ fn lanes_set_writes_missing_files_only() {
     ]);
     for n in 1..=3 {
         let text = fs::read_to_string(factory::lanes::file(fx.path(), n)).unwrap();
-        // PRD-005 FR-9: a lane is its own worktree; no shared-tree prose.
+        // A lane is its own worktree: the lane file never describes a shared tree.
         assert!(!text.contains("does not isolate"), "{text}");
     }
     let lane = factory::lanes::load(fx.path(), 2).unwrap();

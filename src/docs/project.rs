@@ -1,7 +1,4 @@
-//! `docs/project.toml` `[docs]` (PRD-002 FR-13): the knobs `docs/index.md`
-//! frontmatter held in v2. The file is shared with the driver's `[run]` and
-//! `[workers.<role>]` tables (`config.rs`); this reader looks at `[docs]`, and
-//! `seed` at `[lanes] seed` (PRD-005 FR-1).
+//! The `[docs]` and `[lanes]` tables of `docs/project.toml`, which the driver's `[run]` and `[workers.*]` tables share.
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -10,7 +7,6 @@ use crate::error::io;
 use crate::scheduler::write_atomic;
 use crate::{Error, Result};
 
-/// The keys `[docs]` may hold.
 pub const KEYS: [&str; 8] = [
     "framework",
     "gate",
@@ -22,7 +18,6 @@ pub const KEYS: [&str; 8] = [
     "slice_max_kb",
 ];
 
-/// `[docs]`, with v2's defaults (`docs.mjs:295-325 loadProject`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Project {
     pub framework: u32,
@@ -40,7 +35,6 @@ pub fn path(root: &Path) -> PathBuf {
     root.join(PROJECT_FILE)
 }
 
-/// `[docs]` of `docs/project.toml`; `None` when the file or the table is absent.
 pub fn load(root: &Path) -> Result<Option<Project>> {
     let p = path(root);
     let text = match fs::read_to_string(&p) {
@@ -83,10 +77,7 @@ pub fn load(root: &Path) -> Result<Option<Project>> {
     }))
 }
 
-/// `[lanes] seed` (PRD-005 FR-1): the repo-relative paths of ignored state
-/// each lane gets. `None` when the file, the table or the key is absent;
-/// `seed = []` is a declaration, `Some` of nothing. Non-string items are
-/// dropped.
+/// `seed = []` is a declaration, so `Some` of nothing; an absent key is `None`.
 pub fn seed(root: &Path) -> Result<Option<Vec<String>>> {
     let p = path(root);
     let text = match fs::read_to_string(&p) {
@@ -109,14 +100,11 @@ pub fn seed(root: &Path) -> Result<Option<Vec<String>>> {
     ))
 }
 
-/// The repo is on v3: `docs/project.toml` parses and `[docs] framework = 3`.
 pub fn is_v3(root: &Path) -> bool {
     matches!(load(root), Ok(Some(p)) if p.framework == 3)
 }
 
-/// Set (`Some`) or remove (`None`) one `[docs]` key by editing the text, so
-/// every other table, comment and blank line stays byte for byte. A missing
-/// `[docs]` table is appended.
+/// Edits the text, so every other table, comment and blank line stays byte for byte.
 pub fn set(root: &Path, key: &str, value: Option<&toml::Value>) -> Result<()> {
     if !KEYS.contains(&key) {
         return Err(Error::Msg(format!(

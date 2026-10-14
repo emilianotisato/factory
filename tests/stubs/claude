@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 'use strict'
-// Stub `claude` for the cargo test harness (PRD-001 FR-10, slice 01).
+// Stub `claude` for the cargo test harness.
 //
 // Order matters, and it is the order a real worker leaves on disk: record the
 // call, pick the scenario step, apply the side effects to the fixture repo
@@ -8,72 +8,58 @@
 // touched code file), then replay a stream cut from a real `claude -p
 // --output-format stream-json` recording. The board moves before a single
 // event is printed, so a driver that reads `docs status` sees the truth even
-// if it never parses the stream. PRD-002 slice 09: the stub never writes a
-// slice file's status, agent-log.md or a log-*.md fragment, and never runs
-// the node docs tool; the binary allocates every id.
+// if it never parses the stream. The stub never writes a slice file's status,
+// agent-log.md or a log-*.md fragment, and never runs the node docs tool; the
+// binary allocates every id.
 //
 // Scenario steps come from $FACTORY_STUB_DIR/plan.jsonl, one JSON object per
 // spawn, read by spawn number (call n takes line n); past the end every spawn
-// is `{"outcome":"done"}`. Slice 01 supports `outcome: "done"`, `touch: [...]`
-// and `delay_ms`; slice 03 adds `outcome: "dead"` (init, `building`, exit 137,
-// no result); slice 04 adds `outcome: "blocked"` (a BLOCK entry in the slice's
-// log, `status: blocked`, exit 0 — and a follow-up spawn whose pack
-// carries a `# Block and answer` section builds to `done`); slice 05 adds
-// `stray: [...]` (files written with no tool call naming them — a heredoc, a
-// generator — that the driver must list, not commit);
-// slice 06 adds the checkpoint's workers, told apart by the pack's first
-// section: a `# Gate failure` pack is a fix worker (`fix`/`done` touches
-// `touch` or src/lib.txt, `dead` exits 137), a `# Gate transcript` pack is a
-// checkpoint worker (`checkpoint`/`done` logs a `checkpoint` entry, `blocked`
-// a `block` entry with `phase: checkpoint`,
-// `dead` exits 137). Slice 07 adds `rate_limited` / `rate_limited_no_reset`
-// for every role: init, one `rate_limit_event` with `status: rejected`
-// (`resetsAt` 120 s ahead on the driver's clock, or none), an error result
-// naming the limit, exit 1, and nothing on the board moves (FR-9). Later
-// slices add the outcomes they consume (PRD §17).
-// Slice 08 adds `inner: "red"`: the stream's one `Bash ./gate.sh --inner`
-// call (every `done` build and fix) returns the gate's failure text, exit 1.
-// Slice 13 adds `ctx: true` on a `done` build: after reading the slice, two
-// `Bash factory ctx …` calls with canned answers (not run) — a `refs` naming
-// src/lib.txt followed by a Read of it, and an `outline` naming
-// src/other.rs that nothing reads — so `followup_reads` is 1 of 2.
-// Polish fix 1 records `env_keys` (every variable's name, never a value) and
-// `gh_config_dir`, so a test can see what the driver scrubs from a worker.
-// AD-10001 records `git_config`: the worker's `GIT_CONFIG_COUNT`,
-// `GIT_CONFIG_KEY_<i>` and `GIT_CONFIG_VALUE_<i>`, values included.
-// The A/B fixes add, on a `done` build, `heredoc: [...]` (files written by a
-// `Bash cat > f <<'EOF'` call the stream carries, which the driver names) and
-// `commit: [...]` (files the worker commits itself before anything else, as
-// an owner committing a listed leftover would).
-// The git-add claim adds `git_add: "<args>"` on a `done` build: after the
-// stray and heredoc files exist, the worker really runs `git add <args>` and
-// the stream carries that Bash call, so the driver can read the claim.
-// PRD-003 FR-21 adds `subagents: 2` on a `polish` step: the stream carries
-// polish-subagents.jsonl (cut from a real polish worker's stream: own lines
-// and subagent lines with `parent_tool_use_id`), and the session's transcript
-// dir under $CLAUDE_CONFIG_DIR gets `subagents/agent-<i>.jsonl` with the
-// usage in subagentFixtures(); `subagents_unreadable: true` then makes that
-// dir mode 000. No other step writes a transcript dir.
-// PRD-003 FR-23: `claude --version` alone prints a fixed string and records
-// no call (the driver asks it once per run, for `runs.knobs`), and every
-// assistant line's `message.model` is `init.model`, so `--model` is what
-// answered (`workers.model_id`).
-// PRD-005 slice 01 adds `sh: "<script>"` on every role that takes `touch`
-// (slice, fix, polish, merge): after the touched files, the script runs as
-// `sh -c` in the stub's cwd with its env, and the stream carries one Bash call
-// whose command is the script and no tool call naming what it changed. A
-// nonzero exit fails the stub with exit 65 and the script's stderr. It also
-// adds the merge worker: a pack whose first section is `# Conflict` (FR-4).
-// `done` runs `touch` (none by default) and `sh`, the resolution, and with
-// neither changes nothing, so the conflict markers stay; `blocked` logs a
-// `block` entry on the pack's slice with no phase; `dead` exits 137. It never
-// sets the slice's status.
-// PRD-005 slice 07: a slice step with no `touch` appends to its own
-// `src/slice-NN.txt`, so two lanes landing from one base never meet in one
-// file by default (fix, polish and checkpoint keep `src/lib.txt`). The call
-// record gains `head`, `git rev-parse HEAD` in cwd (null outside a repo). A
-// `done` slice step takes `linger_ms`: a sleep after `done` is on the board
-// and before the stream, a worker that has written `done` and not exited.
+// is `{"outcome":"done"}`. The role is the pack's first section: `# Gate
+// failure` or `# CI failure` is a fix worker, `# Gate transcript` a checkpoint
+// worker, `# Branch` the polish, `# Conflict` a merge worker (the driver redid
+// a conflicted pick in the slice's lane), anything else a slice worker.
+//
+// Step keys:
+//   outcome: `done` (default); `dead` (init, then exit 137 with no result);
+//     `blocked` (a `block` entry in the log, `status: blocked` on a slice,
+//     exit 0; a later spawn whose pack carries `# Block and answer` builds to
+//     `done`); `fix`, `checkpoint` and `polish` are `done` for that role;
+//     `rate_limited` / `rate_limited_no_reset` on every role (init, one
+//     `rate_limit_event` with `status: rejected`, an error result naming the
+//     limit, exit 1, nothing on the board moves).
+//   touch: [...] the code files written. Default: a slice's own
+//     src/slice-NN.txt, so two lanes landing from one base never meet in one
+//     file; fix and polish keep src/lib.txt; a merge writes none, so with no
+//     `sh` either the conflict markers stay.
+//   question: the block's title. delay_ms: a sleep before anything is printed.
+//   reset_s: how far ahead `resetsAt` is (default 120).
+//   stray: [...] files written with no tool call naming them (slice, fix,
+//     polish). sh: "<script>", run as `sh -c` in cwd after the touched files,
+//     the stream carrying one Bash call and no tool call naming what it
+//     changed; a nonzero exit fails the stub with exit 65 (slice, fix, polish,
+//     merge).
+//   inner: "red" makes the one `Bash ./gate.sh --inner` call (every `done`
+//     slice, fix, polish and merge) return the gate's failure text, exit 1.
+//   On a `done` slice: heredoc: [...] files written by a `Bash cat > f <<'EOF'`
+//     call the stream carries; commit: [...] files the worker commits itself
+//     before anything else; git_add: "<args>", a real `git add` the stream
+//     carries as a Bash call; ctx: true, two `Bash factory ctx …` calls with
+//     canned answers (not run), a `refs` naming src/lib.txt followed by a Read
+//     of it and an `outline` naming src/other.rs that nothing reads;
+//     wait_sh: "<script>", a barrier polled until it exits 0; linger_ms, a
+//     sleep after `done` is on the board and before the stream.
+//   On a polish: slices: {"02": "building"} forces slice statuses first;
+//     skip: ["retro", "body", "findings"] leaves those out; friction: text is
+//     the retro's `## Framework friction → skills repo` section; subagents: n
+//     replays polish-subagents.jsonl and writes `subagents/agent-<i>.jsonl`
+//     under the session's transcript dir in $CLAUDE_CONFIG_DIR, and
+//     subagents_unreadable: true then makes that dir mode 000.
+//
+// The call record ($FACTORY_STUB_DIR/calls/<n>.json) carries argv, cwd, HEAD,
+// the FACTORY_* env, every env variable's name (never a value), GH_CONFIG_DIR,
+// the GIT_CONFIG_* variables with values, prompt, pack, session id, model,
+// effort and settings. `claude --version` alone prints a fixed string and
+// records no call; every assistant line's `message.model` is `init.model`.
 const fs = require('node:fs')
 const path = require('node:path')
 const crypto = require('node:crypto')
@@ -102,12 +88,7 @@ if (flags['--append-system-prompt-file'] !== undefined) {
 }
 const callsDir = path.join(stubDir, 'calls')
 fs.mkdirSync(callsDir, { recursive: true })
-// The call number is the driver's spawn number when the pack name carries it
-// (`slice-NN-<spawn>.md`): two lanes spawn at once, and the plan line a call
-// takes must follow the driver's order, not the race to start. Otherwise the
-// first free number. Either way the file is claimed atomically, empty, and
-// filled through a rename (writeAtomic): a poll sees the claim or the whole
-// call, never a JSON cut off at a page boundary.
+// The pack's spawn number orders racing lanes; claimed empty, filled by rename, so a poll never reads half a call.
 const packName = path.basename(String(flags['--append-system-prompt-file'] ?? ''))
 const spawnNo = packName.match(/^(?:slice-\d{2}|merge-\d{2}|fix-\d+|checkpoint-\d+|polish|ci-fix-\d+)-(\d+)\.md$/)
 let n = spawnNo ? Number(spawnNo[1]) : 1
@@ -152,11 +133,7 @@ if (fs.existsSync(planPath)) {
   if (lines[n - 1]) step = JSON.parse(lines[n - 1])
 }
 if (pack === null) fail(65, 'no pack: pass --append-system-prompt-file <path> or --append-system-prompt <text>')
-// The role is the pack's first section (slice 06): the driver's packs for the
-// checkpoint's workers carry no slice file. Slice 09 adds the closeout's two:
-// `# CI failure` is a fix worker on a red CI check, `# Branch` the polish.
-// PRD-005 slice 01: a first section `# Conflict` is a merge worker; its pack
-// also names the slice file, so it is told apart before the slice fallback.
+// A merge pack also names the slice file, so `# Conflict` is matched before the slice fallback.
 const role = pack.match(/^# .*$/m)?.[0] === '# Conflict'
   ? 'merge'
   : /^# (?:Gate failure|CI failure)$/m.test(pack)
@@ -174,7 +151,7 @@ const allowed = {
   polish: ['polish', 'done', 'dead', 'blocked', ...limited],
   merge: ['done', 'dead', 'blocked', ...limited],
 }
-if (!['done', 'dead', 'blocked', 'fix', 'checkpoint', 'polish', ...limited].includes(step.outcome)) fail(65, `outcome "${step.outcome}" is not built yet — a later slice adds it (PRD-001 §17)`)
+if (!['done', 'dead', 'blocked', 'fix', 'checkpoint', 'polish', ...limited].includes(step.outcome)) fail(65, `outcome "${step.outcome}" is not one the stub knows`)
 if (!allowed[role].includes(step.outcome)) fail(65, `outcome "${step.outcome}" on step ${n} does not fit a ${role} worker — the plan's order and the driver's spawn order disagree`)
 
 const tpl = JSON.parse(fs.readFileSync(path.join(__dirname, 'stream.json'), 'utf8'))
@@ -188,10 +165,7 @@ const tool = (name, input, res) => {
   const text = res?.text ?? (name === 'Edit' ? `The file ${input.file_path} has been updated.` : `File written: ${input.file_path}`)
   emit(user(id, text, res?.error ?? false))
 }
-// FR-8 (slice 08): the worker's own inner-loop run, one `Bash` call whose
-// command is the fixture's inner command. Not executed (scenario/inner and
-// gate.log stay the test's); `inner: "red"` on the step makes its result the
-// gate's failure text with a non-zero exit.
+// The worker's own inner-loop run, as one `Bash` call; not executed, so scenario/inner and gate.log stay the test's.
 const innerRun = (step) =>
   tool(
     'Bash',
@@ -201,7 +175,7 @@ const innerRun = (step) =>
 const readFile = (file) => tool('Read', { file_path: file }, { text: fs.readFileSync(file, 'utf8') })
 const result = (lines) => emit({ ...tpl.result, session_id: sessionId, uuid: crypto.randomUUID(), result: lines.join('\n') })
 
-// ── FR-9 (slice 07): a worker that hit a usage limit ─────────────────────────
+// ── a worker that hit a usage limit ──────────────────────────────────────────
 // The driver may run on a scaled clock (src/clock.rs: FACTORY_CLOCK_SCALE with
 // FACTORY_CLOCK_ANCHOR); `resetsAt` has to be on that same clock.
 const now = () => {
@@ -211,9 +185,6 @@ const now = () => {
   const anchor = Number(process.env.FACTORY_CLOCK_ANCHOR ?? wall)
   return anchor + (wall - anchor) * scale
 }
-// Session opened, one `rate_limit_event` with `status: rejected` (resetsAt
-// `reset_s` ahead, default 120; absent for `rate_limited_no_reset`), then an
-// error result naming the limit, exit 1. Nothing on the board moves.
 const rateLimited = (step) => {
   if (step.delay_ms) sleep(Number(step.delay_ms))
   emit(init)
@@ -233,7 +204,7 @@ const rateLimited = (step) => {
   process.exit(1)
 }
 
-// ── 3a. a fix worker (slice 06) ──────────────────────────────────────────────
+// ── 3a. a fix worker ─────────────────────────────────────────────────────────
 if (role === 'fix') {
   if (limited.includes(step.outcome)) rateLimited(step)
   if (step.delay_ms) sleep(Number(step.delay_ms))
@@ -264,7 +235,7 @@ if (role === 'fix') {
   process.exit(0)
 }
 
-// ── 3b. a checkpoint worker (slice 06) ───────────────────────────────────────
+// ── 3b. a checkpoint worker ──────────────────────────────────────────────────
 if (role === 'checkpoint') {
   const cp = Number((flags['-p'] ?? '').match(/checkpoint (\d+)/)?.[1] ?? 1)
   const covered = [...pack.matchAll(/^## slice-(\d{2})/gm)].map((x) => x[1])
@@ -293,7 +264,6 @@ if (role === 'checkpoint') {
     result(['STATUS: blocked', 'PROVE: 0/0 — evidence: none — unreached: all', 'FIXED: none', `BLOCK: ${block} — ${question}`])
     process.exit(0)
   }
-  // PRD-005 slice 05: `--covers` passes the covered slices as the contract does.
   const last = covered[covered.length - 1] ?? '00'
   const add = ['log', 'add', cpFeature, '--kind', 'checkpoint', '--phase', 'checkpoint', '--slice', String(Number(last)), '--covers', covered.map(Number).join(','), '--title', `after slice-${last} · ${today}`, '--body-file', '-']
   const id = docs(add, [
@@ -309,17 +279,7 @@ if (role === 'checkpoint') {
   process.exit(0)
 }
 
-// ── 3c. a polish worker (slice 09) ───────────────────────────────────────────
-// The pack's header names the run dir (the PR body goes there) and prd.md
-// (the feature dir). `done`/`polish`: touch `step.touch` (default
-// src/lib.txt), write retro.md from the template under `# Retro`, set
-// `reviewed` in state.toml, write the PR body; `step.slices` (`{"02":
-// "building"}`) forces slice statuses first, so a test can make `docs ship`
-// refuse; `step.skip` (`["retro"]`, `["body"]` or both) leaves those files
-// unwritten, a worker that skipped its last turn (AD-904); `step.friction`
-// (a string) is the retro's `## Framework friction → skills repo` section,
-// before `## Score` (PRD-004 FR-7). `blocked`: a
-// `block` entry with `phase: polish`.
+// ── 3c. a polish worker ──────────────────────────────────────────────────────
 if (role === 'polish') {
   const runDir = pack.match(/^<!-- run dir: (.+?) -->$/m)?.[1]
   const dirM = pack.match(/<!-- (docs\/features\/[^/\s]+)\//)
@@ -397,9 +357,8 @@ if (role === 'polish') {
   process.exit(0)
 }
 
-// ── 3d. a merge worker (PRD-005 slice 01) ────────────────────────────────────
-// FR-4: the driver redid a conflicted pick in the slice's lane. The slice's
-// status is the driver's: no outcome here writes it.
+// ── 3d. a merge worker ───────────────────────────────────────────────────────
+// The slice's status is the driver's: no outcome here writes it.
 if (role === 'merge') {
   const { nn, slicePath, feature } = findSlice()
   if (limited.includes(step.outcome)) rateLimited(step)
@@ -452,8 +411,6 @@ setStatus(feature, nn, 'building')
 if (step.delay_ms) sleep(Number(step.delay_ms))
 if (step.wait_sh) waitFor(step.wait_sh)
 if (step.outcome === 'dead') {
-  // FR-1's dead worker (slice 03): the session opened, the slice went
-  // `building`, then the process vanished with no `result` line.
   emit(init)
   process.exit(137)
 }
@@ -461,10 +418,6 @@ if (step.outcome === 'dead') {
 // respawn — not `**Resolution (`, which the agent-log template quotes.
 const answered = /^# Block and answer$/m.test(pack)
 if (step.outcome === 'blocked' && !answered) {
-  // FR-3's blocked worker (slice 04): the slice hit a question only the
-  // owner can answer — a `block` entry with its slice, `status: blocked`, a
-  // clean exit with a result that names the block. A later spawn whose pack
-  // carries the resolution falls through to `done` below.
   const question = step.question ?? 'Which option does the owner want?'
   const add = ['log', 'add', feature, '--kind', 'block', '--slice', String(Number(nn)), '--title', question, '--body-file', '-']
   const block = docs(add, [
@@ -509,8 +462,6 @@ if (step.git_add) {
   require('node:child_process').execFileSync('git', ['add', ...step.git_add.split(' ')], { cwd })
 }
 const sh = runSh(step)
-// `step.stray`: files written with no tool call naming them. The polish and
-// fix workers take it too (AD-50002).
 function writeStray(step) {
   for (const f of (step.stray ?? []).map((f) => path.resolve(cwd, f))) {
     fs.mkdirSync(path.dirname(f), { recursive: true })
@@ -522,7 +473,7 @@ const adAdd = ['log', 'add', feature, '--kind', 'decision', '--slice', String(Nu
 const ad = docs(adAdd, [
   `**Chose:** append one line to ${touchedRel} (spawn ${n})`,
   '**Over:** a shared code file, which two lanes landing from one base would conflict on',
-  '**Because:** FR-10 leaves the touched set to the scenario step; by default each slice owns its src/slice-NN.txt',
+  '**Because:** the scenario step chooses the touched set; by default each slice owns its src/slice-NN.txt',
   '**Undo:** drop the appended line',
   '**Review:** no',
 ].join('\n'))
@@ -581,8 +532,6 @@ function findSlice() {
   return { nn: m[2], slicePath, featureDir, feature: featureOf(path.basename(featureDir)) }
 }
 
-// `step.sh`: one script run as `sh -c` in cwd, its output for the stream's
-// tool_result. Its edits name no file to any other tool call (FR-3).
 function runSh(step) {
   if (typeof step.sh !== 'string') return null
   const r = require('node:child_process').spawnSync('sh', ['-c', step.sh], { cwd, encoding: 'utf8' })
@@ -607,15 +556,7 @@ function parseFlags(args) {
   return out
 }
 
-// Every whole-file write: the text goes to a temp file, then a rename puts it
-// in place. writeFileSync truncates before it writes, and a reader in between
-// — the harness polling `slice_status` once `calls()` shows this spawn, the
-// driver's `docs status` tick — would see an empty slice file. The temp lives
-// in $FACTORY_STUB_DIR, outside the repo: the lanes share one working tree, so
-// a sibling temp could land in the `git status` the driver takes when it
-// settles the other lane's worker, and none can ever be left where `docs
-// check` looks. rename(2) is atomic across directories of one filesystem, and
-// the harness keeps the repo, the run dir and the stub dir in one tempdir.
+// Rename, not a truncating write: a poller never sees a half file, and the temp stays out of git status.
 function writeAtomic(file, text) {
   const tmp = path.join(stubDir, `.write-${process.pid}.tmp`)
   fs.writeFileSync(tmp, text)
@@ -634,9 +575,7 @@ function featureOf(dir) {
   return m[1]
 }
 
-// `$FACTORY_BIN docs …` in the fixture, `input` on stdin; its stdout trimmed
-// (the id `log add` allocated). The harness sets FACTORY_BIN to the binary
-// under test, so the stub writes the board the way a real worker does.
+// The board moves through the binary under test, the way a real worker's does.
 function docs(args, input = '') {
   const bin = process.env.FACTORY_BIN
   if (!bin) fail(64, 'FACTORY_BIN is not set — the harness sets it (tests/harness/mod.rs)')
@@ -647,7 +586,6 @@ function docs(args, input = '') {
   }
 }
 
-// The stream's record of a `docs` call: one Bash tool call, its output.
 function docsCall(args, out) {
   const quoted = args.map((a) => (/^[\w./=,:-]+$/.test(a) ? a : `'${a.replace(/'/g, "'\\''")}'`)).join(' ')
   tool('Bash', { command: `factory docs ${quoted}`, description: 'docs' }, { text: out || 'ok' })
@@ -667,11 +605,8 @@ function progress(file, spawn, rel, ad) {
   writeAtomic(file, out)
 }
 
-// Two messages per subagent, each logged twice with a growing output count,
-// as Claude Code logs a streamed message: only the last usage per id counts.
-// Final sums: input 16, cache_write 3600, cache_read 102000, output 1000.
-// A function, not a top-level const: the polish branch above calls
-// subagentRun before a const this far down would be initialised.
+// Each message is logged twice with a growing output, as Claude Code streams one: the last usage per id counts.
+// A function: the polish branch calls subagentRun before a const this far down would be initialised.
 function subagentFixtures() {
   return [
     [
@@ -685,7 +620,7 @@ function subagentFixtures() {
   ]
 }
 
-// FR-21: the cut stream, then the transcript dir the driver reads after exit.
+// The cut stream, then the transcript dir the driver reads after exit.
 function subagentRun(step) {
   const fixtures = subagentFixtures()
   const count = Number(step.subagents)
@@ -775,8 +710,7 @@ function user(toolUseId, text, isError = false) {
   }
 }
 
-// Claude Code keeps every session's transcript at projects/<cwd slug>/<session>.jsonl
-// (src/measure.rs transcript_path); `report --recount` tells a lost one apart (FR-21).
+// Claude Code keeps every session's transcript at projects/<cwd slug>/<session>.jsonl; `report --recount` reads it.
 function emit(event) {
   process.stdout.write(`${JSON.stringify(event)}\n`)
   const configDir = process.env.CLAUDE_CONFIG_DIR

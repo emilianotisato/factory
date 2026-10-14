@@ -1,7 +1,4 @@
-//! The release machinery (PRD-004 FR-8, slice 06). The workflow cannot run
-//! before the owner's first tag, so this proves its text: `dist init` wrote
-//! four Linux and macOS targets, the shell installer, a tag trigger, and the
-//! README offers the installer before `cargo install`.
+//! The release workflow cannot run before the owner's first tag, so these prove its text.
 use std::fs;
 
 const TARGETS: [&str; 4] = [
@@ -16,8 +13,7 @@ fn read(rel: &str) -> String {
         .unwrap_or_else(|e| panic!("{rel}: {e}"))
 }
 
-/// cargo-dist 0.32 writes its config to `dist-workspace.toml`, not to
-/// `[workspace.metadata.dist]` in `Cargo.toml`.
+/// cargo-dist 0.32 writes its config to `dist-workspace.toml`, not `[workspace.metadata.dist]`.
 fn dist() -> toml::Table {
     let t: toml::Table = toml::from_str(&read("dist-workspace.toml")).unwrap();
     t["dist"].as_table().expect("[dist]").clone()
@@ -47,8 +43,7 @@ fn dist_builds_four_unix_targets_and_the_shell_installer() {
 #[test]
 fn the_release_workflow_runs_on_version_tags_for_the_four_targets() {
     let yml = read(".github/workflows/release.yml");
-    // The template keeps a "windows longpaths" step guarded by the runner's
-    // OS; a Windows build would name a `-pc-windows-` triple.
+    // The template's "windows longpaths" step is OS-guarded; a Windows build would name a triple.
     for text in [&yml, &read("dist-workspace.toml")] {
         assert!(!text.contains("pc-windows"), "a windows build");
     }
@@ -59,8 +54,7 @@ fn the_release_workflow_runs_on_version_tags_for_the_four_targets() {
         pattern == "- 'v*'" || pattern == "- '**[0-9]+.[0-9]+.[0-9]+*'",
         "tag pattern {pattern}"
     );
-    // The build matrix comes from `dist plan` at run time, out of the
-    // config above; the workflow builds and hosts with the pinned dist.
+    // The matrix comes from `dist plan` at run time, so the yml names no target.
     assert!(yml.contains("dist build") && yml.contains("dist host"));
     assert!(read("dist-workspace.toml").contains("cargo-dist-version = \"0.32.0\""));
 }

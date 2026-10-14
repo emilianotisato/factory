@@ -1,8 +1,4 @@
-//! The `factory` CLI surface (slice 01 task 1): the eight subcommands. Each
-//! said "not built yet" until its slice shaped it; `hook`, the last, left
-//! that list in slice 13 and is tested here by piping PreToolUse JSON into
-//! the binary with `FACTORY_PACK` set (slice 13 task 1). PRD-003 FR-25 adds
-//! `retro`, the ninth.
+//! `--help` and the hook driven through the binary, not the library.
 use std::io::Write;
 use std::process::{Command, Stdio};
 
@@ -27,10 +23,7 @@ fn help_lists_every_subcommand() {
     }
 }
 
-/// `factory hook` with `stdin` piped in, `FACTORY_PACK` at `pack` and
-/// `FACTORY_REPO` at `repo` (unset when `None`): (exit code, the decision,
-/// the reason, stderr). The decision is `""` when stdout is empty: that is
-/// how the hook allows, leaving the call to the permission mode (Ln7).
+/// (exit code, decision, reason, stderr); the decision is `""` when the hook made none.
 fn hook_in(
     stdin: &str,
     pack: &std::path::Path,
@@ -103,9 +96,7 @@ fn hook_denies_repo_greps_and_whole_reads_of_held_files() {
         json!({"tool_name": "Read", "tool_input": input, "cwd": cwd})
     };
 
-    // The task's acceptance, one call each. The hint names this binary by
-    // its absolute path, so a worker without `factory` on PATH can run it
-    // (K1).
+    // The hint names this binary by its absolute path: a worker may have no `factory` on PATH.
     let (code, d, why, _) = hook(&bash("grep -rn foo src").to_string(), &pack);
     assert_eq!((code, d.as_str()), (Some(0), "deny"));
     assert_eq!(
@@ -147,12 +138,10 @@ fn hook_denies_repo_greps_and_whole_reads_of_held_files() {
     assert!(err.contains("factory hook: cannot parse stdin"), "{err}");
     assert!(err.contains("allowed (no decision)"), "{err}");
 
-    // C3: only the repo's copy of a held file is held. Another checkout
-    // with the same relative path reads freely.
+    // Only the repo's copy of a held file is held.
     let other = format!("{}/elsewhere/{slice}", tmp.path().display());
     assert_eq!(hook(&read(other, json!({})).to_string(), &pack).1, "");
 
-    // FACTORY_REPO names the repo even when the call runs from a subdir.
     let sub = repo.join("src");
     let from_sub = json!({"tool_name": "Read",
         "tool_input": {"file_path": format!("{cwd}/src/helper.rs")},
@@ -163,16 +152,12 @@ fn hook_denies_repo_greps_and_whole_reads_of_held_files() {
         "the repo is FACTORY_REPO, not the call's cwd"
     );
 
-    // No pack at all: the grep hint still holds, no file is held.
     let none = tmp.path().join("missing.md");
     assert_eq!(hook(&bash("grep -R foo .").to_string(), &none).1, "deny");
     let any = read(format!("{cwd}/{slice}"), json!({}));
     assert_eq!(hook(&any.to_string(), &none).1, "");
 }
 
-/// S1 through the binary: a never-list command is denied with the hint
-/// that says why, and input the hook cannot parse fails closed when it
-/// names `gh` or `push`.
 #[test]
 fn hook_denies_gh_and_git_push_and_fails_closed() {
     let tmp = tempfile::tempdir().unwrap();

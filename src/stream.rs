@@ -1,16 +1,10 @@
-//! `claude -p --output-format stream-json` parsed into a worker row (PRD §4
-//! FR-2: "the stream is the record"). A serde enum over `type` with an
-//! `Unknown` catch-all and `serde_json::Value` for every field the driver does
-//! not read, so a Claude Code upgrade adds lines and fields without a panic.
-//! `peak_context` follows `measure.py:56-67`: per assistant message
-//! `input + cache_creation + cache_read`, peak is the maximum.
+//! Unknown line kinds and fields are kept as `Value`, so a Claude Code upgrade never panics the parser.
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-/// One line of the stream.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamEvent {
@@ -40,7 +34,6 @@ pub enum StreamEvent {
     Unknown,
 }
 
-/// `assistant.message`: the content blocks and the usage of that turn.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct Message {
@@ -50,7 +43,6 @@ pub struct Message {
     pub usage: Option<Usage>,
 }
 
-/// The five usage fields the `workers` row stores (§10 FR-8).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct Usage {
@@ -68,7 +60,6 @@ pub struct OutputDetails {
 }
 
 impl Usage {
-    /// `measure.py:56` — the context the model read for this turn.
     pub fn context(&self) -> u64 {
         self.input_tokens.unwrap_or(0)
             + self.cache_creation_input_tokens.unwrap_or(0)
@@ -82,7 +73,6 @@ impl Usage {
     }
 }
 
-/// The final `result` line.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct ResultEvent {
@@ -106,7 +96,7 @@ pub struct ResultEvent {
     pub rest: Map<String, Value>,
 }
 
-/// The `STATUS:` line at the end of `result` — a hint; the board is the truth.
+/// A hint the row keeps; the driver routes on the board, never on this.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatusHint {
     Done,
@@ -123,7 +113,6 @@ impl StatusHint {
         }
     }
 
-    /// The first `STATUS:` line of a result text.
     pub fn from_result(text: &str) -> Option<StatusHint> {
         let line = text
             .lines()
@@ -142,8 +131,7 @@ impl StatusHint {
     }
 }
 
-/// The polish return's `FINDINGS high=<n> medium=<n> low=<n> fixed=<n>
-/// parked=<n>` line (PRD-003 FR-24): a trend, not an audit.
+/// The polish worker's `FINDINGS` counts: a trend, not an audit.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub struct Findings {
     pub high: u32,
@@ -154,9 +142,6 @@ pub struct Findings {
 }
 
 impl Findings {
-    /// The first `FINDINGS` line of a result text that holds all five
-    /// `key=<digits>` pairs, colon or not, in any order, split by spaces or
-    /// commas; `None` when no line does.
     pub fn from_result(text: &str) -> Option<Findings> {
         text.lines()
             .map(str::trim)
@@ -190,7 +175,6 @@ impl Findings {
         })
     }
 
-    /// `high=1 medium=2 low=3 fixed=4 parked=2`.
     pub fn text(&self) -> String {
         format!(
             "high={} medium={} low={} fixed={} parked={}",
@@ -199,38 +183,25 @@ impl Findings {
     }
 }
 
-/// One `tool_use` block and the size of its result — what slice 05 (the
-/// pathspec) and slice 08 (`tool_calls`) consume.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolUse {
     pub id: String,
     pub name: String,
     pub input: Value,
-    /// Characters of the matching `tool_result` content; `None` when the
-    /// stream ended before it came back.
     pub result_chars: Option<u64>,
-    /// The `timestamp` of the assistant line that issued the call (FR-8).
     pub ts: Option<String>,
-    /// The `timestamp` of the user line that carried the result.
     pub result_ts: Option<String>,
-    /// The `tool_result` block's `is_error`.
     pub result_error: bool,
-    /// The first [`RESULT_HEAD`] characters of the result text, for the
-    /// gate verdict (`metrics::is_red`); `result_chars` counts the whole.
+    /// What the gate verdict (`metrics::is_red`) reads; `result_chars` counts the whole.
     pub result_head: Option<String>,
-    /// Issued by one of the worker's subagents (a line with
-    /// `parent_tool_use_id`), not by the worker itself (PRD-003 FR-21).
     pub in_subagent: bool,
 }
 
-/// How much of a `tool_result` the summary keeps as text.
 pub const RESULT_HEAD: usize = 4096;
 
-/// How much of a `factory ctx` answer it keeps: `label_followup` looks for
-/// the paths the answer named, and a def with bodies runs past 4096.
+/// `label_followup` reads the paths a `factory ctx` answer names, and a def with bodies runs past 4096.
 pub const CTX_RESULT_HEAD: usize = 65536;
 
-/// A `Bash` call whose first command is `factory ctx …`.
 fn is_ctx_call(t: &ToolUse) -> bool {
     if t.name != "Bash" {
         return false;
@@ -240,15 +211,12 @@ fn is_ctx_call(t: &ToolUse) -> bool {
     words.len() > 1 && crate::shell::program(&words[0]) == "factory" && words[1] == "ctx"
 }
 
-/// What one worker's stream amounts to.
 #[derive(Debug, Clone, Default)]
 pub struct Summary {
-    /// `false` when no `result` line was seen: the worker died (FR-1).
     pub has_result: bool,
     pub usage: Option<Usage>,
     pub model_usage: Value,
-    /// Distinct own assistant messages with usage, once the `result` came;
-    /// the `result`'s own `num_turns` mixes in nothing it can split.
+    /// Counted here: the `result`'s own `num_turns` mixes in subagent turns it cannot split.
     pub num_turns: Option<u64>,
     pub duration_ms: Option<u64>,
     pub terminal_reason: Option<String>,
@@ -257,34 +225,19 @@ pub struct Summary {
     pub permission_denials: Vec<Value>,
     pub cost_usd: Option<f64>,
     pub session_id: Option<String>,
-    /// The first `system`/`init` line's `cwd`: where the worker ran, so its
-    /// transcript slug and its Read paths. `None` when the stream had none.
     pub cwd: Option<PathBuf>,
     pub result_text: Option<String>,
     pub status_hint: Option<StatusHint>,
-    /// `peak_context` and `start_context` read the worker's own lines
-    /// only: a subagent's context is its own window (PRD-003 FR-21).
     pub peak_context: Option<u64>,
-    /// The first assistant message's context (`measure.py` start): what the
-    /// worker read before it did anything (FR-8 `start_context`).
     pub start_context: Option<u64>,
-    /// `message.model` of the first own assistant line: the model that
-    /// answered, not the one asked for (PRD-003 FR-23).
+    /// The model that answered, not the one `--model` asked for.
     pub model_id: Option<String>,
     pub tool_uses: Vec<ToolUse>,
-    /// The last `rate_limit_event` seen (FR-9); `None` when the stream had none.
     pub rate_limit: Option<RateLimit>,
-    /// Lines seen, including unknown kinds.
     pub events: usize,
-    /// Lines that were not JSON objects; counted, never fatal.
     pub bad_lines: usize,
 }
 
-/// `rate_limit_event.rate_limit_info` as FR-9 reads it: the `status` literal
-/// (`allowed`, `allowed_warning`, `rejected`, …) and `resetsAt` in epoch
-/// seconds when the stream gave one; `utilization_pct` is the window named by
-/// `rateLimitType` in `unifiedWindows` (else the fullest one), in percent,
-/// for `factory status` (FR-7).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RateLimit {
     pub status: Option<String>,
@@ -317,25 +270,19 @@ fn utilization(info: Option<&Value>) -> Option<u32> {
 }
 
 impl Summary {
-    /// The summary of a worker that produced no stream at all.
     pub fn dead() -> Summary {
         Summary::default()
     }
 
-    /// No `result` line: process gone with nothing to show.
     pub fn is_dead(&self) -> bool {
         !self.has_result
     }
 }
 
-/// Feeds lines as they arrive; `finish` gives the summary. [`parse`] feeds
-/// it a worker's whole stream file once the worker exits (`worker.rs`
-/// writes the stream straight to that file); tests feed it a recording.
 #[derive(Debug, Default)]
 pub struct Collector {
     summary: Summary,
     pending: HashMap<String, usize>,
-    /// Own assistant message ids with usage; a line with no id counts alone.
     own_turns: HashSet<String>,
     anonymous_turns: u64,
 }
@@ -345,8 +292,6 @@ impl Collector {
         Collector::default()
     }
 
-    /// One line of the stream. Blank lines are skipped; a line that is not a
-    /// JSON object is counted in `bad_lines`.
     pub fn push_line(&mut self, line: &str) -> Option<StreamEvent> {
         if line.trim().is_empty() {
             return None;
@@ -368,8 +313,7 @@ impl Collector {
         match ev {
             StreamEvent::Assistant { message, rest } => {
                 let in_subagent = in_subagent(rest);
-                // Claude Code writes `<synthetic>` on a message no model
-                // answered (an API error, an interrupt).
+                // Claude Code writes `<synthetic>` on a message no model answered (an API error, an interrupt).
                 if !in_subagent
                     && self.summary.model_id.is_none()
                     && message.model.as_deref() != Some("<synthetic>")
@@ -480,22 +424,19 @@ impl Collector {
     }
 }
 
-/// A line a subagent wrote: its `parent_tool_use_id` names the `Agent`
-/// call that spawned it; the worker's own lines carry null.
 fn in_subagent(rest: &Map<String, Value>) -> bool {
     rest.get("parent_tool_use_id")
         .and_then(Value::as_str)
         .is_some()
 }
 
-/// A line's `timestamp`, when the stream carries one (`--verbose` does).
+/// Only `--verbose` streams carry a `timestamp`.
 fn timestamp(rest: &Map<String, Value>) -> Option<String> {
     rest.get("timestamp")
         .and_then(Value::as_str)
         .map(str::to_string)
 }
 
-/// The first `head` characters of a `tool_result` content's text.
 fn content_head(content: Option<&Value>, head: usize) -> String {
     let text = match content {
         Some(Value::String(s)) => s.clone(),
@@ -513,7 +454,6 @@ fn content_head(content: Option<&Value>, head: usize) -> String {
     text.chars().take(head).collect()
 }
 
-/// Characters of a `tool_result` content: a string, or text blocks.
 pub fn content_chars(content: Option<&Value>) -> u64 {
     match content {
         Some(Value::String(s)) => s.chars().count() as u64,
@@ -529,7 +469,6 @@ pub fn content_chars(content: Option<&Value>) -> u64 {
     }
 }
 
-/// A whole stream, as a recording or a `.jsonl` left by a dead worker.
 pub fn parse(text: &str) -> (Vec<StreamEvent>, Summary) {
     let mut c = Collector::new();
     let events = text.lines().filter_map(|l| c.push_line(l)).collect();

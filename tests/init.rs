@@ -1,7 +1,3 @@
-//! `factory init` (PRD-004 FR-2, slice 02): the docs layout, the skill family
-//! byte-identical in `.claude/skills/`, the `.agents/skills` links, the
-//! manifest and the convention block, printed with the commit line and
-//! committed by nobody.
 use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::symlink;
@@ -22,7 +18,6 @@ fn factory(dir: &Path, args: &[&str]) -> Output {
         .expect("run factory")
 }
 
-/// `factory init`, asserted to exit 0; its stdout.
 fn init(dir: &Path) -> String {
     let out = factory(dir, &["init"]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
@@ -57,8 +52,6 @@ fn repo() -> tempfile::TempDir {
     dir
 }
 
-/// Every file and link under `root` but `.git`: path → `file:<bytes>`,
-/// `link:<target>` or `dir`.
 fn tree(root: &Path) -> BTreeMap<String, String> {
     fn walk(root: &Path, dir: &Path, into: &mut BTreeMap<String, String>) {
         for entry in fs::read_dir(dir).unwrap() {
@@ -201,8 +194,7 @@ fn init_refuses_a_linked_skills_dir_and_writes_nothing() {
     assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
 }
 
-/// `.agents/skills -> ../.claude/skills`: Codex reads the skills through the
-/// link, so init writes no per-skill links, which would loop.
+/// Codex reads through `.agents/skills -> ../.claude/skills`; per-skill links there would loop.
 #[test]
 fn init_into_a_shared_agents_dir_writes_no_links() {
     let dir = repo();
@@ -259,8 +251,7 @@ fn a_convention_file_linking_outside_or_nowhere_is_skipped() {
     );
 }
 
-/// `CLAUDE.md -> AGENTS.md` before `AGENTS.md` exists dangles on its turn,
-/// then resolves once `AGENTS.md` takes the block: no skip line.
+/// The link dangles on CLAUDE.md's turn and resolves once AGENTS.md takes the block.
 #[test]
 fn a_link_to_a_not_yet_written_agents_md_is_no_skip() {
     let dir = repo();

@@ -1,13 +1,3 @@
-//! Slice 04 of PRD-001: lanes and parking (PRD §5 FR-3, §3 FR-1). Two lanes
-//! build two independent slices at once; a blocked slice parks its lane while
-//! the rest of the plan goes on; with nothing left to spawn the run parks in
-//! `waiting-owner` and the driver stays alive; `factory answer` is the owner's
-//! one command back — `BLOCK-n` respawns the slice with the answer in its
-//! pack, the last `ASK-n` sends a parked run through branch and board.
-//! PRD-005 slice 03 adds lane worktrees: `factory lanes up`, and the run
-//! that refuses without `[lanes] seed` and makes its lanes before it starts.
-//! Slice 07 runs each build worker in its lane: a free lane is reset, a
-//! respawn keeps it, and a dependent waits for its dependency's landing.
 #[path = "harness/mod.rs"]
 mod harness;
 
@@ -22,7 +12,6 @@ use harness::Fixture;
 use serde_json::{Value, json};
 
 const BIN: &str = env!("CARGO_BIN_EXE_factory");
-/// The fixture feature's log: blocks, answers, asks and decisions.
 const LOG: &str = "docs/features/001-fixture/log.jsonl";
 const STATE: &str = "docs/features/001-fixture/state.toml";
 const QUESTION: &str = "Which storage backs the fixture?";
@@ -90,12 +79,10 @@ fn done() -> Value {
     json!({"outcome": "done"})
 }
 
-/// A checkpoint worker's step (slice 06): writes `CP-n` and returns done.
 fn checkpoint() -> Value {
     json!({"outcome": "checkpoint"})
 }
 
-/// The build calls among the stub's: the checkpoint worker has no slice.
 fn builds(calls: &[Value]) -> Vec<&Value> {
     calls
         .iter()
@@ -107,8 +94,6 @@ fn builds(calls: &[Value]) -> Vec<&Value> {
         .collect()
 }
 
-/// Polls `ok`; on timeout, dumps the run so a failure in the detached
-/// driver can be read from the test output.
 fn wait_until(fx: &Fixture, dir: &Path, what: &str, secs: u64, mut ok: impl FnMut() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(secs);
     while !ok() {
@@ -135,7 +120,6 @@ fn driver_log(dir: &Path) -> String {
     fs::read_to_string(dir.join("driver.log")).unwrap_or_default()
 }
 
-/// The slice a stub call built, from its `-p` prompt.
 fn call_slice(call: &Value) -> u32 {
     let p = call["prompt"].as_str().unwrap();
     p.strip_prefix("Build slice ").unwrap()[..2]
@@ -147,12 +131,10 @@ fn lane_env(call: &Value) -> Option<&str> {
     call["env"]["FACTORY_LANE"].as_str()
 }
 
-/// `slices.N.lane` in the feature's `state.toml`.
 fn slice_lane(fx: &Fixture, n: u8) -> Option<u32> {
     fx.slice_lane(n)
 }
 
-/// The raw `log.jsonl` line of the entry `id`.
 fn block_line(log: &str, id: &str) -> String {
     log.lines()
         .find(|l| {
@@ -162,7 +144,6 @@ fn block_line(log: &str, id: &str) -> String {
         .to_string()
 }
 
-/// The `answer` entries of the feature dir's `log.jsonl` whose `ref` is `id`.
 fn answers_to(feature_dir: &Path, id: &str) -> Vec<Value> {
     fs::read_to_string(feature_dir.join("log.jsonl"))
         .unwrap_or_default()
@@ -172,7 +153,6 @@ fn answers_to(feature_dir: &Path, id: &str) -> Vec<Value> {
         .collect()
 }
 
-/// `seq` of the first `kind` event on `slice`.
 fn seq_of(dir: &Path, kind: &str, slice: u64) -> u64 {
     events(dir)
         .iter()
@@ -199,13 +179,11 @@ fn ts_secs(e: &Value) -> i64 {
     h * 3600 + m * 60 + s
 }
 
-// ── task 1: two lanes ────────────────────────────────────────────────────────
+// ── two lanes ────────────────────────────────────────────────────────────────
 
 #[test]
 fn two_lanes_build_two_slices_at_once_and_the_third_waits_for_its_dependency() {
     let fx = Fixture::with_index("lanes-two", &[("checkpoint_every", "10")]);
-    // Lane files as `docs lanes` writes them: an env list and a setup command
-    // the driver runs once per lane per run.
     let lanes = fx.path().join("docs/reference/lanes");
     fs::create_dir_all(&lanes).unwrap();
     for n in 1..=2 {
@@ -232,8 +210,7 @@ fn two_lanes_build_two_slices_at_once_and_the_third_waits_for_its_dependency() {
     let id = run_id(&dir);
     let driver = state(&dir)["pid"].as_u64().unwrap() as u32;
 
-    // Both ready slices get a worker in the same tick, one lane each. The
-    // stubs sleep 1.5 s, so the two are alive together while 03 waits on 02.
+    // The 1.5 s delays keep 01 and 02 alive together while 03 waits on 02.
     wait_until(&fx, &dir, "two workers", 20, || {
         fx.calls().len() == 2
             && state(&dir)["workers"]
@@ -274,9 +251,6 @@ fn two_lanes_build_two_slices_at_once_and_the_third_waits_for_its_dependency() {
         builds.iter().map(|c| call_slice(c)).collect::<Vec<_>>(),
         [1, 2, 3]
     );
-    // Every worker ran in its lane (PRD-005 FR-2): the lane's worktree as
-    // cwd and `FACTORY_REPO`, `FACTORY_LANE` and the lane file's env, and
-    // the main tree as `FACTORY_BOARD`.
     for call in &builds {
         let n = call_slice(call);
         let lane = slice_lane(&fx, n as u8).unwrap();
@@ -298,8 +272,6 @@ fn two_lanes_build_two_slices_at_once_and_the_third_waits_for_its_dependency() {
             "{call}"
         );
     }
-    // Their board writes went to the main tree: each stub's decision is in
-    // its log, and no lane's copy of the board files moved.
     let mut ads: Vec<u64> = fx
         .log_of("decision")
         .iter()
@@ -322,7 +294,6 @@ fn two_lanes_build_two_slices_at_once_and_the_third_waits_for_its_dependency() {
         "{:?}",
         slice_lane(&fx, 3)
     );
-    // `setup:` once per lane per run, with the lane's env.
     let setup = fx.read("scenario/lane-setup.log");
     let mut lines: Vec<&str> = setup.lines().collect();
     lines.sort_unstable();
@@ -367,7 +338,7 @@ fn two_lanes_build_two_slices_at_once_and_the_third_waits_for_its_dependency() {
     );
 }
 
-// ── tasks 2 and 3: a blocked slice, the parked run, `factory answer BLOCK-n` ──
+// ── a blocked slice, the parked run, `factory answer BLOCK-n` ─────────────────
 
 #[test]
 fn a_blocked_slice_parks_its_lane_and_the_answer_respawns_it() {
@@ -386,8 +357,6 @@ fn a_blocked_slice_parks_its_lane_and_the_answer_respawns_it() {
     let id = run_id(&dir);
     let driver = state(&dir)["pid"].as_u64().unwrap() as u32;
 
-    // 01 blocks on lane 1; 02 and then 03 build on lane 2 — the blocked
-    // slice keeps its lane. Nothing left to spawn: the run parks, alive.
     wait_until(&fx, &dir, "the run to park", 60, || {
         state(&dir)["phase"] == "waiting-owner"
     });
@@ -453,9 +422,6 @@ fn a_blocked_slice_parks_its_lane_and_the_answer_respawns_it() {
         "waiting-owner"
     );
 
-    // The owner answers: an `answer` entry points at the block, whose line
-    // stays as written; the slice is `building` again on its lane, the
-    // answer is on disk for the driver.
     let out = factory(&fx, &["answer", "BLOCK-1", ANSWER]);
     let text = stdout(&out);
     assert_eq!(out.status.code(), Some(0), "{text}");
@@ -497,8 +463,6 @@ fn a_blocked_slice_parks_its_lane_and_the_answer_respawns_it() {
     assert_eq!(answered["slice"], 1);
     assert_eq!(answered["text"], ANSWER);
 
-    // Within the slow tick a fresh worker takes slice 01 on lane 1, with the
-    // block and the answer in its pack; the run finishes to the checkpoint.
     wait_until(&fx, &dir, "the answered slice to respawn", 10, || {
         fx.calls().len() == 4
     });
@@ -570,14 +534,12 @@ fn a_blocked_slice_parks_its_lane_and_the_answer_respawns_it() {
     assert_eq!(db(&fx).run_row(&id).unwrap().unwrap().phase, "finished");
     let log = driver_log(&dir);
     assert!(log.contains("lane 1, answered, pack"), "{log}");
-    // The run reached the checkpoint: the done workers' ADs are in the log.
     assert!(
         !fx.log_of("decision").is_empty(),
         "the done worker's AD lands too: {:?}",
         fx.log_entries()
     );
 
-    // Answering a resolved block is refused.
     let out = factory(&fx, &["answer", "BLOCK-1", "again"]);
     assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
     assert!(
@@ -603,7 +565,6 @@ fn a_torn_answer_file_is_said_and_skipped_and_the_run_goes_on() {
     wait_until(&fx, &dir, "the run to park", 60, || {
         state(&dir)["phase"] == "waiting-owner"
     });
-    // A file no `factory answer` finished writing.
     fs::create_dir_all(dir.join("answers")).unwrap();
     fs::write(dir.join("answers/ASK-7.json"), "{\"id\": \"ASK-7\", \"te").unwrap();
 
@@ -631,13 +592,12 @@ fn a_torn_answer_file_is_said_and_skipped_and_the_run_goes_on() {
     assert!(!dir.join("answers/.BLOCK-1.json.tmp").exists());
 }
 
-// ── task 4: `factory answer ASK-n` ───────────────────────────────────────────
+// ── `factory answer ASK-n` ───────────────────────────────────────────────────
 
 #[test]
 fn answering_every_ask_starts_the_parked_run() {
     let fx = Fixture::with_index("lanes-ask", &[("checkpoint_every", "10")]);
-    // No `inner` in `[docs]`: preflight asks about the missing inner loop
-    // before the run starts.
+    // Without `[docs] inner`, preflight asks before the run starts.
     let index = fx.path().join("docs/project.toml");
     let text = fs::read_to_string(&index).unwrap();
     assert!(text.contains("\ninner = "), "{text}");
@@ -673,7 +633,6 @@ fn answering_every_ask_starts_the_parked_run() {
         "main"
     );
 
-    // An unknown ask is refused; every real one takes "proceed".
     let out = factory(&fx, &["answer", "ASK-9", "proceed"]);
     assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
     assert!(
@@ -701,8 +660,6 @@ fn answering_every_ask_starts_the_parked_run() {
             assert!(text.contains("driver pid "), "{text}");
         }
     }
-    // One `ask` entry per ask, phase `preflight`, on the AD sequence ahead
-    // of any build's decision.
     let logged = fx.log_of("ask");
     assert_eq!(logged.len(), asks.len(), "{logged:?}");
     for (i, (ask, e)) in asks.iter().zip(&logged).enumerate() {
@@ -722,7 +679,6 @@ fn answering_every_ask_starts_the_parked_run() {
         );
     }
 
-    // The driver takes the run through branch and board, then builds.
     wait_until(&fx, &dir, "the run to finish", 60, || {
         state(&dir)["phase"] == "finished"
     });
@@ -773,10 +729,8 @@ fn answering_every_ask_starts_the_parked_run() {
     );
 }
 
-// ── polish: which block `factory answer BLOCK-n` resolves ────────────────────
+// ── which block `factory answer BLOCK-n` resolves ────────────────────────────
 
-/// A `block` entry titled "Which store?" on `slice` in the feature dir's
-/// `log.jsonl`, as a blocked worker writes it; its id.
 fn seed_block(feature_dir: &Path, slice: u32) -> String {
     use factory::docs::log::{Entry, Kind, add};
     let mut e = Entry::new(Kind::Block, "Which store?", "**Happened:** x\n");
@@ -784,7 +738,6 @@ fn seed_block(feature_dir: &Path, slice: u32) -> String {
     add(feature_dir, e).unwrap().unwrap()
 }
 
-/// An `answer` entry pointing at `id`, as `factory answer` writes it.
 fn seed_answer(feature_dir: &Path, id: &str, slice: u32) {
     use factory::docs::log::{Entry, Kind, add};
     let mut e = Entry::new(Kind::Answer, "", "use postgres");
@@ -797,7 +750,7 @@ fn log_text(feature_dir: &Path) -> String {
     fs::read_to_string(feature_dir.join("log.jsonl")).unwrap()
 }
 
-/// A run of feature 001 parked in `waiting-owner`, its pid this test's.
+/// Parked in `waiting-owner`; its pid is this test's, so it reads as alive.
 fn parked_run(fx: &Fixture) -> factory::run::Run {
     let mut run = factory::run::Run::create(
         &data_dir(fx),
@@ -815,8 +768,7 @@ fn parked_run(fx: &Fixture) -> factory::run::Run {
 fn answer_takes_the_open_block_and_prefers_the_parked_feature() {
     let fx = Fixture::new("answer-pick");
     let one = fx.path().join(harness::FEATURE_DIR);
-    // A second feature with its own slice 01: block ids restart per feature,
-    // so both can hold a BLOCK-1.
+    // Block ids restart per feature, so both features hold a block numbered one.
     fx.docs(&["new", "other", "--title", "Other"]);
     fx.docs(&["slice", "002", "x"]);
     let two = fx.path().join("docs/features/002-other");
@@ -836,8 +788,6 @@ fn answer_takes_the_open_block_and_prefers_the_parked_feature() {
         }
     };
 
-    // 001's BLOCK-1 is resolved, 002's is open: the open one is answered,
-    // not refused as "already resolved" on the first folder's match.
     reseed(false);
     let one_before = log_text(&one);
     let two_before = log_text(&two);
@@ -863,8 +813,6 @@ fn answer_takes_the_open_block_and_prefers_the_parked_feature() {
     );
     assert_eq!(status_two(), "building");
 
-    // Two open BLOCK-1s and no parked run: refused with both named,
-    // nothing resolved.
     reseed(true);
     let one_before = log_text(&one);
     let two_before = log_text(&two);
@@ -884,7 +832,6 @@ fn answer_takes_the_open_block_and_prefers_the_parked_feature() {
     assert_eq!(log_text(&two), two_before);
     assert!(text.contains("--feature NNN"), "{text}");
 
-    // `--feature` picks one of the two: 002's is answered, 001's untouched.
     let out = factory(&fx, &["answer", "--feature", "2", "BLOCK-1", "use sqlite"]);
     let text = stdout(&out);
     assert_eq!(out.status.code(), Some(0), "{text}");
@@ -895,8 +842,6 @@ fn answer_takes_the_open_block_and_prefers_the_parked_feature() {
     assert_eq!(log_text(&one), one_before);
     reseed(true);
 
-    // 001's run is parked: its block is the one the owner means. The answer's
-    // `ref` lands in 001's log and not in 002's.
     fx.set_slice_status(1, "blocked");
     let run = parked_run(&fx);
     let out = factory(&fx, &["answer", "BLOCK-1", "use sqlite"]);
@@ -920,11 +865,7 @@ fn answer_takes_the_open_block_and_prefers_the_parked_feature() {
 
 #[test]
 fn block_answered_is_logged_before_the_slice_flips() {
-    // The flip is what a live driver acts on; an event logged after it can
-    // land behind the `slice_spawned` it caused. A read-only feature dir
-    // makes the flip fail — `state.toml` lands by a rename from a temp
-    // beside it (DEC-3) — while the `answer` entry is still appended to
-    // `log.jsonl` in place: whatever was logged before the flip shows.
+    // A read-only dir fails `state.toml`'s rename into place, not `log.jsonl`'s in-place append.
     let fx = Fixture::new("answer-order");
     let feature_dir = fx.path().join(harness::FEATURE_DIR);
     assert_eq!(seed_block(&feature_dir, 1), "BLOCK-1");
@@ -957,8 +898,7 @@ fn an_answer_that_stopped_before_the_flip_is_finished_by_a_retry() {
     let block = block_line(&log_text(&feature_dir), "BLOCK-1");
     fx.set_slice_status(1, "blocked");
     let run = parked_run(&fx);
-    // A read-only feature dir fails the flip (`state.toml`'s rename,
-    // DEC-3), not the `answer` entry's in-place append.
+    // A read-only dir fails `state.toml`'s rename into place, not `log.jsonl`'s in-place append.
     let mode = |m: u32| {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&feature_dir, fs::Permissions::from_mode(m)).unwrap();
@@ -970,8 +910,6 @@ fn an_answer_that_stopped_before_the_flip_is_finished_by_a_retry() {
     assert_eq!(answers_to(&feature_dir, "BLOCK-1").len(), 1);
     assert_eq!(fx.slice_status(1), "blocked");
 
-    // The retry finds the block answered and the answer on file: it
-    // finishes the flip instead of refusing an "already resolved" block.
     let out = factory(&fx, &["answer", "BLOCK-1", "use sqlite"]);
     let text = stdout(&out);
     assert_eq!(out.status.code(), Some(0), "{text}");
@@ -986,7 +924,6 @@ fn an_answer_that_stopped_before_the_flip_is_finished_by_a_retry() {
     assert_eq!(block_line(&log_text(&feature_dir), "BLOCK-1"), block);
     assert!(run.dir().join("answers/BLOCK-1.json").is_file());
 
-    // Once delivered, the block is refused as before.
     let out = factory(&fx, &["answer", "BLOCK-1", "use sqlite"]);
     assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
     assert!(
@@ -1000,7 +937,6 @@ fn an_answer_that_stopped_before_the_flip_is_finished_by_a_retry() {
 fn a_block_on_a_missing_slice_file_writes_nothing() {
     let fx = Fixture::new("answer-no-slice");
     let feature_dir = fx.path().join(harness::FEATURE_DIR);
-    // A block naming slice 04, which the fixture has no file for.
     assert_eq!(seed_block(&feature_dir, 4), "BLOCK-1");
     let before = log_text(&feature_dir);
     let run = parked_run(&fx);
@@ -1029,7 +965,7 @@ fn an_answer_flips_only_a_blocked_slice() {
     assert!(run.dir().join("answers/BLOCK-1.json").is_file());
 }
 
-/// A run of `feature` parked on `ASK-1`, its pid this test's.
+/// Parked on an open ask; its pid is this test's, so it reads as alive.
 fn parked_on_ask(fx: &Fixture, feature: &str) -> factory::run::Run {
     let mut run = factory::run::Run::create(&data_dir(fx), fx.path(), feature, None, 1).unwrap();
     run.emit(factory::events::EventKind::AskOpened {
@@ -1077,7 +1013,6 @@ fn an_ask_two_runs_wait_on_is_refused_by_name_and_run_picks_one() {
     assert!(one.dir().join("answers/ASK-1.json").is_file());
     assert!(!two.dir().join("answers/ASK-1.json").exists());
 
-    // One run still waits: no ambiguity left.
     let out = factory(&fx, &["answer", "ASK-1", "proceed"]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     assert!(two.dir().join("answers/ASK-1.json").is_file());
@@ -1087,7 +1022,6 @@ fn an_ask_two_runs_wait_on_is_refused_by_name_and_run_picks_one() {
 fn an_ask_answer_that_failed_on_the_log_is_retried_whole() {
     let fx = Fixture::new("ask-retry");
     let run = parked_on_ask(&fx, "001");
-    // A read-only `log.jsonl` fails the `ask` entry's append.
     let log = fx.path().join(LOG);
     fs::OpenOptions::new()
         .create(true)
@@ -1102,7 +1036,6 @@ fn an_ask_answer_that_failed_on_the_log_is_retried_whole() {
     let out = factory(&fx, &["answer", "ASK-1", "proceed"]);
     mode(0o644);
     assert_ne!(out.status.code(), Some(0), "{}", stdout(&out));
-    // The answer file is the last step: the ask is still open.
     assert!(!run.dir().join("answers/ASK-1.json").exists());
 
     let out = factory(&fx, &["answer", "ASK-1", "proceed"]);
@@ -1119,7 +1052,6 @@ fn an_ask_answer_that_failed_on_the_log_is_retried_whole() {
     assert_eq!(count(&kinds(run.dir()), "ask_answered"), 1);
 }
 
-/// A pid no process holds: a child that already exited.
 fn dead_pid() -> u32 {
     let mut child = std::process::Command::new("true").spawn().unwrap();
     let pid = child.id();
@@ -1135,7 +1067,6 @@ fn an_answer_to_a_run_parked_on_its_budget_says_so_and_starts_no_driver() {
         "BLOCK-1"
     );
     fx.set_slice_status(1, "blocked");
-    // Budget 0 and a worker that spent 10 weighted tokens; no live driver.
     let run = parked_run(&fx);
     run.db()
         .conn()
@@ -1159,8 +1090,6 @@ fn an_answer_to_a_run_parked_on_its_budget_says_so_and_starts_no_driver() {
     assert!(!run.dir().join("driver.log").exists());
 }
 
-/// Lane files for lanes 1 and 2 whose setup appends a line to
-/// `scenario/lane-setup.log`, committed.
 fn lanes_with_setup(fx: &Fixture) {
     let lanes = fx.path().join("docs/reference/lanes");
     fs::create_dir_all(&lanes).unwrap();
@@ -1190,9 +1119,7 @@ fn a_resumed_run_does_not_run_a_lanes_setup_again() {
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     let dir = only_run_dir(&fx);
     let driver = state(&dir)["pid"].as_u64().unwrap() as u32;
-    // The stub logs its call as it starts, before the driver records the
-    // worker in state.json: a kill in between leaves an orphan the resumed
-    // driver cannot see, and it builds slice 01 a second time.
+    // A kill after the stub's call log but before state.json's worker row leaves an unseen orphan.
     wait_until(&fx, &dir, "slice 01's worker", 20, || {
         fx.calls().len() == 1
             && state(&dir)["workers"]
@@ -1205,8 +1132,6 @@ fn a_resumed_run_does_not_run_a_lanes_setup_again() {
     assert_eq!(unsafe { libc::kill(driver as i32, libc::SIGKILL) }, 0);
     wait_until(&fx, &dir, "the driver to die", 5, || !pid_alive(driver));
 
-    // The resumed driver settles 01's orphan and spawns 02 on lane 1 again:
-    // the lane is set up for this run already.
     let out = factory(&fx, &["run", "001"]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     wait_until(&fx, &dir, "slice 02's worker", 30, || {
@@ -1241,8 +1166,6 @@ fn a_failing_driver_kills_and_settles_its_live_worker() {
     let worker = state(&dir)["workers"][0]["pid"].as_u64().unwrap() as u32;
     assert!(pid_alive(worker));
 
-    // The board can no longer be read — `state.toml` no longer parses: the
-    // driver's next tick fails the run.
     fs::write(
         fx.path().join(harness::FEATURE_DIR).join("state.toml"),
         "status = [ not toml\n",
@@ -1252,7 +1175,6 @@ fn a_failing_driver_kills_and_settles_its_live_worker() {
     wait_until(&fx, &dir, "the run to fail", 15, || {
         state(&dir)["phase"] == "failed"
     });
-    // Killed, not left to build on unwatched for the rest of its 20 s.
     wait_until(&fx, &dir, "the worker to die", 5, || !pid_alive(worker));
     assert!(started.elapsed() < Duration::from_secs(15));
     assert_eq!(state(&dir)["workers"][0]["outcome"], "failed");
@@ -1266,9 +1188,6 @@ fn a_failing_driver_kills_and_settles_its_live_worker() {
 
 #[test]
 fn a_rate_limited_slice_goes_back_to_pending_with_no_lane_and_its_file_untouched() {
-    // Slice 09 task 2 of PRD-002: the reset is a `state.toml` write alone —
-    // `status = "pending"`, the `lane` key gone — and the slice file is
-    // never written.
     let fx = Fixture::with_index("lanes-rate-limited", &[("checkpoint_every", "10")]);
     fx.chain();
     let slice_file = fx.slice_path(1);
@@ -1305,11 +1224,9 @@ fn a_rate_limited_slice_goes_back_to_pending_with_no_lane_and_its_file_untouched
     assert_eq!(fx.slice_status(1), "pending");
 }
 
-// ── PRD-005 slice 03: lane worktrees ─────────────────────────────────────────
+// ── lane worktrees ───────────────────────────────────────────────────────────
 
-/// What `lanes up` labels a seed path in this fixture: `clone` when `cp`
-/// can clone a scratch file in the fixture's tempdir, else `copy`. Test
-/// tempdirs are tmpfs here and ext4 on CI, so the probe decides.
+/// `clone` or `copy`, as `lanes up` labels a seed: tmpfs and ext4 tempdirs differ on reflink.
 fn seed_label(fx: &Fixture) -> &'static str {
     let base = data_dir(fx).parent().unwrap().to_path_buf();
     let probe = base.join("probe");
@@ -1330,8 +1247,6 @@ fn seed_label(fx: &Fixture) -> &'static str {
     if cloned { "clone" } else { "copy" }
 }
 
-/// The worktrees under `$FACTORY_DATA_DIR/lanes/`, each with its porcelain
-/// block.
 fn lane_worktrees(fx: &Fixture) -> Vec<(PathBuf, String)> {
     let lanes = data_dir(fx).canonicalize().unwrap().join("lanes");
     fx.git(&["worktree", "list", "--porcelain"])
@@ -1399,7 +1314,6 @@ fn lanes_up_makes_two_detached_seeded_lanes_and_runs_setup_in_each() {
         );
     }
 
-    // Again: nothing re-seeded, setup run in every lane each time.
     fs::remove_file(lanes[0].0.join("setup-pwd")).unwrap();
     let out = factory(&fx, &["lanes", "up"]);
     let text = stdout(&out);
@@ -1450,7 +1364,6 @@ fn a_fresh_run_makes_its_lanes_and_builds_in_them() {
             "{text}"
         );
     }
-    // Every worker runs in its lane, the polish worker too (PRD-005 FR-5).
     let calls = fx.calls();
     assert_eq!(builds(&calls).len(), 3, "{calls:?}");
     for c in &calls {
@@ -1462,7 +1375,6 @@ fn a_fresh_run_makes_its_lanes_and_builds_in_them() {
     assert_eq!(polish["cwd"], lane_path(&fx, 1).to_str().unwrap());
 }
 
-/// The canonical worktree of lane `n`.
 fn lane_path(fx: &Fixture, n: u32) -> PathBuf {
     lane_worktrees(fx)
         .into_iter()
@@ -1471,7 +1383,6 @@ fn lane_path(fx: &Fixture, n: u32) -> PathBuf {
         .unwrap_or_else(|| panic!("no lane-{n} worktree"))
 }
 
-/// `git` in `dir`, with the fixture's env; its stdout.
 fn git_at(fx: &Fixture, dir: &Path, args: &[&str]) -> String {
     let out = fx
         .command("git")
@@ -1487,7 +1398,6 @@ fn git_at(fx: &Fixture, dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-/// The sha of the commit whose subject is `subject`.
 fn commit_of(fx: &Fixture, subject: &str) -> String {
     fx.git(&["log", "--format=%H %s"])
         .lines()
@@ -1501,10 +1411,8 @@ fn commit_of(fx: &Fixture, subject: &str) -> String {
 #[test]
 fn a_slice_taking_a_free_lane_resets_it_and_a_respawn_keeps_it() {
     let fx = Fixture::with_index("lanes-reset", &[("checkpoint_every", "10"), ("lanes", "1")]);
-    // One lane wants a chain: the preflight asks about independent slices.
+    // With one lane, independent slices would make preflight ask.
     fx.chain();
-    // Setup appends the dir it ran in to a log in the main tree, through the
-    // common dir. Unquoted at the end: the lane file trims a trailing quote.
     let lanes = fx.path().join("docs/reference/lanes");
     fs::create_dir_all(&lanes).unwrap();
     fs::write(
@@ -1530,10 +1438,8 @@ fn a_slice_taking_a_free_lane_resets_it_and_a_respawn_keeps_it() {
     let lane = PathBuf::from(fx.calls()[0]["cwd"].as_str().unwrap());
     assert_eq!(lane, lane_path(&fx, 1));
 
-    // A respawn keeps the lane as its worker left it.
     fs::write(lane.join("kept.txt"), "kept\n").unwrap();
-    // The owner's untracked file where slice 01 lands holds its landing,
-    // which leaves a window to drop junk in the lane before slice 02.
+    // An untracked file in 01's way stalls its landing: a window to drop junk before 02.
     fs::write(fx.path().join("src/slice-01.txt"), "owner\n").unwrap();
     let out = factory(&fx, &["answer", "BLOCK-1", ANSWER]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
@@ -1543,8 +1449,6 @@ fn a_slice_taking_a_free_lane_resets_it_and_a_respawn_keeps_it() {
     fs::write(lane.join("junk.txt"), "junk\n").unwrap();
     fs::remove_file(fx.path().join("src/slice-01.txt")).unwrap();
 
-    // A slice taking the free lane resets it to the tip: junk gone, slice
-    // 01's landed commit its HEAD.
     wait_until(&fx, &dir, "the run to finish", 60, || {
         state(&dir)["phase"] == "finished"
     });
@@ -1556,7 +1460,6 @@ fn a_slice_taking_a_free_lane_resets_it_and_a_respawn_keeps_it() {
     assert_eq!(calls[2]["cwd"], lane.to_str().unwrap());
     assert_eq!(calls[2]["head"], slice_01.as_str());
     assert!(!lane.join("junk.txt").exists());
-    // Setup ran once, in the lane.
     assert_eq!(
         fx.read("scenario/lane-setup.log"),
         format!("{}\n", lane.display())
@@ -1565,9 +1468,7 @@ fn a_slice_taking_a_free_lane_resets_it_and_a_respawn_keeps_it() {
 
 #[test]
 fn a_dependent_waits_for_its_dependency_to_land() {
-    // Slice 03 depends on 02. 01 frees lane 1 at once; 02's worker writes
-    // `done` and lingers 3 s before it exits, so 03 is ready on the board
-    // long before 02 lands.
+    // 02 lingers 3 s after writing `done`, so 03 is ready on the board long before 02 lands.
     let fx = Fixture::with_index("lanes-dependent", &[("checkpoint_every", "10")]);
     fx.write_plan(&[
         done(),
@@ -1605,10 +1506,9 @@ fn a_dependent_waits_for_its_dependency_to_land() {
     );
 }
 
-// ── PRD-005 slice 06: `lanes up --prove` and `lanes prune` ───────────────────
+// ── `lanes up --prove` and `lanes prune` ─────────────────────────────────────
 
-/// `docs/project.toml`'s `[docs]` key `key` set to `value` in the working
-/// file, uncommitted: the lane verbs read the main tree's file.
+/// Uncommitted on purpose: the lane verbs read the main tree's working file.
 fn set_docs_key(fx: &Fixture, key: &str, value: &str) {
     let file = fx.path().join("docs/project.toml");
     let text = fs::read_to_string(&file).unwrap();
@@ -1627,7 +1527,6 @@ fn set_docs_key(fx: &Fixture, key: &str, value: &str) {
     fs::write(&file, out.join("\n") + "\n").unwrap();
 }
 
-/// `(start, end)` of each run `prove.sh` recorded for lane `n`.
 fn prove_times(base: &Path, n: u32) -> (f64, f64) {
     let text = fs::read_to_string(base.join(format!("times-{n}"))).unwrap();
     let at = |what: &str| -> f64 {
@@ -1682,7 +1581,6 @@ fn lanes_up_prove_runs_the_inner_loop_in_every_lane_at_once_and_names_a_red_lane
         assert_eq!(pwd.trim(), path.canonicalize().unwrap().to_str().unwrap());
     }
 
-    // Lane 2 red: exit 1, its line says so, the last line names it alone.
     set_docs_key(
         &fx,
         "inner",
@@ -1739,7 +1637,6 @@ fn lanes_prune_removes_the_lanes_above_the_count_and_all_with_all() {
         assert_eq!(fs::read_to_string(p.join("marker")).unwrap(), "kept");
     }
 
-    // Nothing above the count: said, exit 0.
     let out = factory(&fx, &["lanes", "prune"]);
     assert_eq!(out.status.code(), Some(0));
     assert!(stdout(&out).contains("no lane above 2"), "{}", stdout(&out));
@@ -1754,7 +1651,7 @@ fn lanes_prune_removes_the_lanes_above_the_count_and_all_with_all() {
 
 #[test]
 fn lanes_prune_refuses_while_a_run_is_unfinished_and_removes_nothing() {
-    // A run parked on a preflight ask: no driver alive, phase not over.
+    // With one lane and independent slices, the run parks on a preflight ask: no driver, phase open.
     let fx = Fixture::with_index("lanes-prune-open", &[("lanes", "1")]);
     let out = factory(&fx, &["run", "001"]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));

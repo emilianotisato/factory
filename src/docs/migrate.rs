@@ -1,10 +1,4 @@
-//! `factory docs migrate [--dry]` (PRD-002 FR-16): a v2 repo's docs moved to
-//! the v3 layout in one uncommitted diff. [`plan`] only reads, the tree and
-//! `git` read commands; [`run`] writes what the plan holds. The undo is git,
-//! so a re-run after `git checkout -- docs && git clean -fd docs` must write
-//! the same bytes: the plan never reads the clock, and every date in it comes
-//! from the files or from `git blame`. Only a row's `written_at` is the time
-//! [`run`] wrote it.
+//! The plan never reads the clock: a re-run after the git undo must write the same bytes.
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::fs;
@@ -23,9 +17,7 @@ use crate::error::{io, json};
 use crate::scheduler::write_atomic;
 use crate::{Error, Result};
 
-/// One line of the plan: `guess`, `create`, `rewrite`, `delete`, `keep`,
-/// `row`, `unlink`, `relink`, `idea`, `drop`, `fix` or `warn`, then the path
-/// or the key.
+/// `verb`: guess, create, rewrite, delete, keep, row, unlink, relink, idea, drop, fix or warn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlanRow {
     pub verb: &'static str,
@@ -50,8 +42,7 @@ impl fmt::Display for PlanRow {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Plan {
     pub rows: Vec<PlanRow>,
-    /// Repo-relative, in write order; `None` deletes. `docs/project.toml` is
-    /// last, so routing flips to v3 only once everything else is on disk.
+    /// `None` deletes; `project.toml` last so v3 routing flips only once the rest is on disk.
     pub files: Vec<(PathBuf, Option<String>)>,
     pub retros: Vec<RetroRow>,
 }
@@ -85,14 +76,13 @@ const RETRO_INTS: [&str; 9] = [
 
 // ───────────────────────────────────────────────────────────── the v2 log
 
-/// `^###\s+(AD|BLOCK|CP)-(\d+)\s+[—–-]\s+(.+)$` (`docs.mjs:270`).
+/// `^###\s+(AD|BLOCK|CP)-(\d+)\s+[—–-]\s+(.+)$`.
 struct Heading<'a> {
     prefix: &'static str,
     n: u32,
     rest: &'a str,
 }
 
-/// `\s+`, then what follows; `None` unless whitespace leads.
 fn ws1(s: &str) -> Option<&str> {
     let t = s.trim_start();
     (t.len() < s.len()).then_some(t)
@@ -110,7 +100,7 @@ fn heading(line: &str) -> Option<Heading<'_>> {
     (!rest.is_empty()).then_some(Heading { prefix, n, rest })
 }
 
-/// `rest.split(/\s+·\s+/)`.
+/// Split on `\s+·\s+`.
 fn parts(rest: &str) -> Vec<&str> {
     let mut out = Vec::new();
     let mut start = 0;
@@ -136,7 +126,6 @@ fn slice_field(p: &str) -> Option<u32> {
         .flatten()
 }
 
-/// `^[a-z][a-z-]*$`: a phase, or `open`/`resolved`.
 fn is_word(p: &str) -> bool {
     p.starts_with(|c: char| c.is_ascii_lowercase())
         && p.chars().all(|c| c.is_ascii_lowercase() || c == '-')
@@ -156,16 +145,13 @@ fn is_fence(line: &str) -> bool {
     line.trim_start().starts_with("```")
 }
 
-/// `^#{1,2}\s`, or a `---` rule: either ends the entry above it.
 fn ends_entry(line: &str) -> bool {
     let h = line.len() - line.trim_start_matches('#').len();
     let heading = (h == 1 || h == 2) && line[h..].starts_with(char::is_whitespace);
     heading || line.trim_end() == "---"
 }
 
-/// `^\*\*Review:?\*\*:?\s*(decide|fyi|yes|no)\b`, case-insensitive
-/// (`docs.mjs:289-290`): `Some((None, _))` is a `no`; the `bool` says text
-/// follows the flag word (`decide — because …`).
+/// `(?i)^\*\*Review:?\*\*:?\s*(decide|fyi|yes|no)\b`; `None` is `no`, `true`: text after the word.
 fn review_flag(line: &str) -> Option<(Option<Flag>, bool)> {
     let lower = line.trim().to_ascii_lowercase();
     let r = lower.strip_prefix("**review")?;
@@ -203,8 +189,6 @@ fn is_marker(line: &str) -> bool {
         || review_flag(line).is_some()
 }
 
-/// An Owner line's verdict: the first word without trailing punctuation,
-/// and the rest after `, `, ` — ` or `: `.
 fn verdict(text: &str) -> Option<(Verdict, String)> {
     let first = &text[..text.find(char::is_whitespace).unwrap_or(text.len())];
     let word = first.trim_end_matches(|c: char| c.is_ascii_punctuation() || c == '—' || c == '–');
@@ -225,7 +209,6 @@ fn ts(date: &str) -> String {
     format!("{date}T00:00:00Z")
 }
 
-/// Lines `a..b` with the blank ones at either end trimmed, joined.
 fn trimmed(lines: &[&str]) -> String {
     let blank = |l: &&str| l.trim().is_empty();
     let a = lines.iter().position(|l| !blank(l)).unwrap_or(lines.len());
@@ -233,23 +216,18 @@ fn trimmed(lines: &[&str]) -> String {
     lines[a..b.max(a)].join("\n")
 }
 
-/// One v2 log read: the entries in v3 order and what the plan says about it.
 struct Parsed {
     entries: Vec<Entry>,
     rows: Vec<PlanRow>,
 }
 
-/// One `### AD|BLOCK|CP-n` entry in the file: its heading line, and the
-/// line after its last body line.
 struct Span<'a> {
     start: usize,
     end: usize,
     heading: Heading<'a>,
 }
 
-/// `parseAgentLog` (`docs.mjs:263-293`) extended to keep what migration
-/// must not lose: bodies, Owner and Resolution lines, and the text between
-/// entries as notes. `dates[i]` is line `i`'s `git blame` date.
+/// `dates[i]` is line `i`'s `git blame` date.
 pub fn parse_agent_log(text: &str, dates: &[String]) -> Result<Vec<Entry>> {
     read_log(text, dates).map(|p| p.entries)
 }
@@ -369,9 +347,6 @@ fn read_log(text: &str, dates: &[String]) -> Result<Parsed> {
         let phase = place
             .filter(|p| slice_field(p).is_none() && !matches!(**p, "open" | "resolved"))
             .map(|p| p.to_string());
-        // A middle part that is no field (a ` · ` inside the title) stays in
-        // the title: the place, the date `heading_date` reads and a BLOCK's
-        // state are the fields.
         let date_at_part = tail.iter().rposition(|p| day(p).is_some());
         let state_at = (h.prefix == "BLOCK")
             .then(|| tail.len().checked_sub(1))
@@ -416,7 +391,6 @@ fn read_log(text: &str, dates: &[String]) -> Result<Parsed> {
             ),
         };
 
-        // The body, minus the lines that become fields or entries of their own.
         let body = &lines[s.start + 1..s.end];
         let mut kept: Vec<&str> = Vec::new();
         let mut flag: Option<Flag> = None;
@@ -436,9 +410,7 @@ fn read_log(text: &str, dates: &[String]) -> Result<Parsed> {
             if h.prefix == "AD"
                 && let Some((f, tail)) = review_flag(line)
             {
-                // The last Review line wins, as in v2. A `no`, and a line
-                // with text after its flag word, stay in the body verbatim:
-                // `flag` holds the word, the body the reason.
+                // The last Review line wins, as in v2; a reason after the word stays in the body.
                 flag = f;
                 if f.is_none() || tail {
                     kept.push(line);
@@ -607,8 +579,7 @@ pub fn blame_dates(root: &Path, path: &Path) -> Result<Vec<String>> {
         .collect())
 }
 
-/// [`blame_dates`], and whether each line is committed: git dates a line
-/// that is not with the current time.
+/// `false`: uncommitted, which git blames with the zero sha and the current time.
 pub(crate) fn blame_lines(root: &Path, path: &Path) -> Result<Vec<(String, bool)>> {
     let rel = path.strip_prefix(root).unwrap_or(path).to_string_lossy();
     match git_out(root, &["blame", "--porcelain", "--", &rel]) {
@@ -673,7 +644,7 @@ fn has_docs_table(root: &Path) -> Result<bool> {
     Ok(table.contains_key("docs"))
 }
 
-/// `Math.max(1, Number(v ?? d) || d)` (`docs.mjs:309-315`), as an integer.
+/// v2's `Math.max(1, Number(v ?? d) || d)`: `0` and `NaN` fall to `d`.
 fn floor1(v: Option<String>, d: u32) -> u32 {
     match v.and_then(|s| s.trim().parse::<f64>().ok()) {
         Some(n) if n.is_finite() && n != 0.0 => n.max(1.0) as u32,
@@ -689,8 +660,6 @@ fn number(n: f64) -> String {
     }
 }
 
-/// The index frontmatter as `[docs]`, appended to an existing
-/// `docs/project.toml` so its `[run]` and `[workers]` tables keep their bytes.
 fn project_toml(root: &Path, fm: &Frontmatter) -> Result<(String, Vec<PlanRow>)> {
     if has_docs_table(root)? {
         return refuse(format!(
@@ -765,8 +734,6 @@ fn project_toml(root: &Path, fm: &Frontmatter) -> Result<(String, Vec<PlanRow>)>
     Ok((text, rows))
 }
 
-/// The frontmatter block and the newline after it, gone; `None` when the
-/// text has none.
 fn strip_frontmatter(text: &str) -> Option<&str> {
     let rest = text.strip_prefix("---\n")?;
     if let Some(r) = rest.strip_prefix("---\n") {
@@ -776,8 +743,6 @@ fn strip_frontmatter(text: &str) -> Option<&str> {
     Some(&rest[end + 5..])
 }
 
-/// Lines with `None` for a removed one, joined: a blank line a removal
-/// leaves next to another blank one goes too.
 fn collapse(lines: Vec<Option<String>>) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut removed = false;
@@ -815,13 +780,10 @@ fn join_lines(lines: &[String], nl: bool) -> String {
     out
 }
 
-/// `^##\s` and not deeper.
 fn is_h2(line: &str) -> bool {
     line.starts_with("##") && !line.starts_with("###") && line[2..].starts_with(char::is_whitespace)
 }
 
-/// The line range under the first `## ` heading whose text holds `name`
-/// (`parseTable`, `docs.mjs:337-356`): heading, first line after it, end.
 fn section(lines: &[&str], name: &str) -> Option<(usize, usize)> {
     let h = lines
         .iter()
@@ -833,8 +795,7 @@ fn section(lines: &[&str], name: &str) -> Option<(usize, usize)> {
     Some((h, end))
 }
 
-/// The line with `{label}\s*{prefix}\d+` cut out, with the `**` around it
-/// and a trailing `.`; `None` when the line does not hold it.
+/// The line with `{label}\s*{prefix}\d+` cut, plus the `**` around it and a trailing `.`.
 fn cut_counter(line: &str, label: &str, prefix: &str) -> Option<String> {
     let lower = line.to_ascii_lowercase();
     let pos = lower.find(label)?;
@@ -875,7 +836,6 @@ fn cut_counter(line: &str, label: &str, prefix: &str) -> Option<String> {
     })
 }
 
-/// `PRD-001 … PRD-003`, or one number alone.
 fn fr_paragraph(numbers: &[u32]) -> String {
     let range = match (numbers.iter().min(), numbers.iter().max()) {
         (Some(a), Some(b)) if a == b => format!(" (PRD-{a:03})"),
@@ -887,10 +847,7 @@ fn fr_paragraph(numbers: &[u32]) -> String {
     )
 }
 
-/// `docs/index.md` without its frontmatter, the Live-features and Archived
-/// table rows and the two counters, with the FR-numbers paragraph after
-/// Build order. Every heading stays: in v2 the counters, Build order and the
-/// retired line are paragraphs inside `## Live features`.
+/// Every heading stays: v2 kept the counters and Build order as text under `## Live features`.
 fn index_md(text: &str, numbers: &[u32]) -> (String, Vec<PlanRow>) {
     let body = strip_frontmatter(text).unwrap_or(text);
     let (lines, nl) = split_lines(body);
@@ -956,15 +913,12 @@ fn index_md(text: &str, numbers: &[u32]) -> (String, Vec<PlanRow>) {
     (join_lines(&out, nl || body.is_empty()), rows)
 }
 
-/// `\|`-aware cells of a `| a | b |` row. A `|` inside a code span (a run
-/// of backticks up to the next run of the same length) is literal, so a
-/// Notes cell holding `` `log add | show` `` stays whole.
+/// A `|` after `\` or inside a code span (backtick runs of equal length) is literal.
 fn cells(row: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();
     let chars: Vec<char> = row.trim().chars().collect();
     let run_at = |i: usize| chars[i..].iter().take_while(|&&c| c == '`').count();
-    // The length of the open code span's backtick run, if one is open.
     let mut code: Option<usize> = None;
     let mut i = 0;
     while i < chars.len() {
@@ -1007,7 +961,6 @@ fn cells(row: &str) -> Vec<String> {
         }
     }
     out.push(cur);
-    // The pieces before the first and after the last `|`.
     if out.first().is_some_and(|c| c.trim().is_empty()) {
         out.remove(0);
     }
@@ -1017,7 +970,6 @@ fn cells(row: &str) -> Vec<String> {
     out.into_iter().map(|c| c.trim().to_string()).collect()
 }
 
-/// The index Notes cell per feature number (`cellNumber`, `docs.mjs:358`).
 fn notes_cells(index: &str) -> HashMap<u32, String> {
     let (lines, _) = split_lines(index);
     let mut out = HashMap::new();
@@ -1055,12 +1007,7 @@ fn notes_cells(index: &str) -> HashMap<u32, String> {
 
 // ─────────────────────────────────────────────────────── per live feature
 
-/// A frontmatter scalar that both `frontmatter::parse` (which strips one
-/// pair of quotes and has no escapes) and a standard YAML reader read back
-/// as written: plain when nothing in it needs quoting, else double quotes
-/// when it holds no `"` or `\` (YAML's escapes), else single quotes when it
-/// holds no `'` (as the ideas writer does), else a `|-` block scalar, which
-/// both read verbatim.
+/// Quoted so `frontmatter::parse` (strips one quote pair, no escapes) and YAML both give `v` back.
 fn yaml(v: &str) -> String {
     let plain = !v.starts_with(['[', '"', '\'', '{', '|', '>', '&', '*', '!', '%', '@', '`'])
         && !v.contains(": ")
@@ -1077,8 +1024,7 @@ fn yaml(v: &str) -> String {
     }
 }
 
-/// `prd.md` with the FR-13 frontmatter and no prose header block; returns
-/// the text, the plan rows, and the `status` and `reviewed` it held.
+/// v2 prose header → v3 frontmatter; the `State` holds the v2 `status` and `reviewed`.
 fn prd_md(
     rel: &str,
     f: &Feature,
@@ -1261,7 +1207,6 @@ fn prd_md(
     Ok((out, rows, st))
 }
 
-/// One `[slices.N]` from a v2 slice file's frontmatter.
 fn slice_state(rel: &str, n: u32, fm: &Frontmatter, rows: &mut Vec<PlanRow>) -> SliceState {
     let num = |v: &Value| v.as_i64().and_then(|n| u32::try_from(n).ok());
     if let Some(v) = fm.get("slice")
@@ -1293,8 +1238,7 @@ fn slice_state(rel: &str, n: u32, fm: &Frontmatter, rows: &mut Vec<PlanRow>) -> 
 
 // ─────────────────────────────────────────────────────────────── links
 
-/// A link at the `[` at `i`: its text, its href and the byte after its `)`
-/// (`check.rs`'s `link_at`, the reader E-LINK-BROKEN uses).
+/// The text, href and byte after `)` of the link at `i`; the grammar of `check.rs`'s `link_at`.
 fn link_at(text: &str, i: usize) -> Option<(&str, &str, usize)> {
     let close = i + text[i..].find(']')?;
     let label = &text[i + 1..close];
@@ -1334,8 +1278,6 @@ fn normalize(p: &Path) -> PathBuf {
     out
 }
 
-/// Every link in `text` (the file at `dir`) whose target is one of `gone`
-/// replaced by its text alone; the `(line, link)` of each.
 fn unlink(text: &str, dir: &Path, gone: &[PathBuf]) -> (String, Vec<(usize, String)>) {
     let (out, hits) = edit_links(text, dir, |label, _, p| {
         gone.iter().any(|g| g == p).then(|| label.to_string())
@@ -1343,9 +1285,7 @@ fn unlink(text: &str, dir: &Path, gone: &[PathBuf]) -> (String, Vec<(usize, Stri
     (out, hits.into_iter().map(|(l, old, _)| (l, old)).collect())
 }
 
-/// Every link in `text` to `ideas` (`docs/ideas.md`) pointed at
-/// `ideas/README.md` instead, anchor dropped: the README holds the rules
-/// those links meant (FR-20). The `(line, old link, new link)` of each.
+/// Anchor dropped: the README holds the rules those links meant.
 fn relink(text: &str, dir: &Path, ideas: &Path) -> (String, Vec<(usize, String, String)>) {
     edit_links(text, dir, |label, target, p| {
         let base = target.strip_suffix("ideas.md")?;
@@ -1353,9 +1293,7 @@ fn relink(text: &str, dir: &Path, ideas: &Path) -> (String, Vec<(usize, String, 
     })
 }
 
-/// Every link in `text` (the file at `dir`, so a relative target resolves)
-/// that `edit` gives a replacement for, given its text, its target without
-/// the anchor and the resolved path. Images and external links are left.
+/// `edit` sees the text, the target sans anchor and its resolved path; hits are `(line, old, new)`.
 fn edit_links(
     text: &str,
     dir: &Path,
@@ -1409,7 +1347,6 @@ fn walk_md(dir: &Path, skip: &Path, out: &mut Vec<PathBuf>) {
 
 // ─────────────────────────────────────────────────────────────── retros
 
-/// One `retros` row per `retro.md` with frontmatter, live and archived.
 fn retro_rows(root: &Path, repo: &str) -> Result<(Vec<RetroRow>, Vec<PlanRow>)> {
     let mut rows = Vec::new();
     let mut plan = Vec::new();
@@ -1556,8 +1493,7 @@ fn rel_of(root: &Path, p: &Path) -> PathBuf {
     p.strip_prefix(root).unwrap_or(p).to_path_buf()
 }
 
-/// What `migrate` would write. Reads only; refuses (exit 2) on anything the
-/// migration cannot carry over whole.
+/// Reads only; refuses anything the migration cannot carry over whole.
 pub fn plan(root: &Path) -> Result<Plan> {
     let index = match fs::read_to_string(root.join(INDEX)) {
         Ok(t) => t,
@@ -1617,15 +1553,12 @@ pub fn plan(root: &Path) -> Result<Plan> {
     let mut rows = Vec::new();
     let mut files: Vec<(PathBuf, Option<String>)> = Vec::new();
 
-    // Links first, on the files as they are, so a row names the line a
-    // reader finds in the v2 file.
+    // Links first, on the unedited files, so a row's line number matches the v2 file.
     let gone: Vec<PathBuf> = live
         .iter()
         .map(|f| f.dir.join(AGENT_LOG))
         .filter(|p| p.is_file())
         .collect();
-    // `docs/ideas.md` goes too, but its links are pointed at the folder's
-    // README rather than cut (slice 08).
     let ideas_md = root.join(migrate_ideas::FILE);
     let ideas_go = ideas_md.is_file();
     let mut texts: BTreeMap<PathBuf, String> = BTreeMap::new();
@@ -1696,7 +1629,7 @@ pub fn plan(root: &Path) -> Result<Plan> {
         )?;
         rows.push(PlanRow::new(
             "rewrite",
-            format!("{d}/prd.md (FR-13 frontmatter, prose header dropped)"),
+            format!("{d}/prd.md (frontmatter rewritten, prose header dropped)"),
         ));
         rows.extend(prd_rows);
         files.push((prd_rel, Some(prd)));
@@ -1818,7 +1751,7 @@ pub fn plan(root: &Path) -> Result<Plan> {
         .to_string_lossy()
         .into_owned();
     let (retros, retro_plan) = retro_rows(root, &repo)?;
-    // A retro whose links were rewritten above is not kept as it is.
+    // A "keep" row would lie about a retro the link pass rewrote.
     rows.extend(retro_plan.into_iter().filter(|r| {
         r.verb != "keep" || !files.iter().any(|(p, _)| p.as_os_str() == r.what.as_str())
     }));
@@ -1837,8 +1770,6 @@ pub fn plan(root: &Path) -> Result<Plan> {
     Ok(plan)
 }
 
-/// Refuses unless `git status --porcelain -- docs/` is empty, so the whole
-/// migration is one diff the git undo restores.
 pub fn clean(root: &Path) -> Result<()> {
     let out = git_out(root, &["status", "--porcelain", "--", "docs/"])
         .or_else(|e| refuse(format!("git status: {e}")))?;
@@ -1851,9 +1782,7 @@ pub fn clean(root: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Writes the plan: every file but `project.toml`, the deletions, the
-/// `retros` rows, then `project.toml`. State goes through `write_atomic`
-/// directly, never `state::set`: its `docs.lock` would survive the undo.
+/// `write_atomic`, never `state::set`: its `docs.lock` would survive the git undo.
 pub fn run(root: &Path, plan: &Plan, db: &Db) -> Result<()> {
     let project = Path::new(PROJECT);
     for (rel, text) in plan.files.iter().filter(|(p, _)| p != project) {
@@ -1994,8 +1923,6 @@ mod tests {
 
     #[test]
     fn the_v2_template_log_gives_notes_only() {
-        // The template docs.mjs writes into a new feature; 002's own log held
-        // only this at slicing, and real entries since checkpoint 1.
         let t = include_str!("../../tests/fixture/v2/.docs/templates/agent-log.md");
         let es = parse_agent_log(t, &[]).unwrap();
         assert!(!es.is_empty());
@@ -2099,10 +2026,6 @@ mod tests {
             .unwrap()
     }
 
-    /// The v2 prose header shapes: a title with a colon, a `**Type**:` word
-    /// followed by prose, `**Status**:` and `**Owns FR range**:` lines that
-    /// go, a `**Split from / Related**:` line that stays, and `reviewed:`
-    /// dashed or compact.
     #[test]
     fn prds_get_the_seven_keys() {
         let index = "## Live features\n\n| # | Feature | Notes |\n|---|---|---|\n| 001 | a | the one |\n| 002 | b | ports `log add | show`, then more |\n| 003 | c | the three |\n";
@@ -2258,7 +2181,6 @@ mod tests {
         v2_tree_with(&[])
     }
 
-    /// The small v2 tree, plus `extra` `(path, text)` files in its commit.
     fn v2_tree_with(extra: &[(&str, &str)]) -> tempfile::TempDir {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
@@ -2361,9 +2283,6 @@ mod tests {
         assert!(e.contains("reviewed \"soon\" is not a date"), "{e}");
     }
 
-    /// A retro's row comes from its frontmatter alone: an empty `score:`
-    /// is NULL, a whole `gate_minutes` is a float, and the `## Numbers`
-    /// table in the body is not read.
     #[test]
     fn retros_rows_read_the_frontmatter_only() {
         let tmp = tempfile::tempdir().unwrap();

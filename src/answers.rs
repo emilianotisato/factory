@@ -1,7 +1,3 @@
-//! The owner's half of a parked run (PRD §5 FR-3, §3 FR-1): `block` entries
-//! of the feature's `log.jsonl`, their resolution as an `answer` entry
-//! (PRD-002 FR-14), and `runs/<id>/answers/<id>.json`,
-//! the file the driver's slow tick watches for both `BLOCK-n` and `ASK-n`.
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -15,30 +11,26 @@ use crate::{Error, Result};
 
 pub const DIR: &str = "answers";
 
-/// `runs/<id>/answers/<id>.json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Answer {
     /// `BLOCK-n` or `ASK-n`.
     pub id: String,
-    /// The slice the block named; `None` for an ask or a phase block.
+    /// `None` for an ask or a phase block.
     #[serde(default)]
     pub slice: Option<u32>,
     pub text: String,
     pub at: String,
 }
 
-/// `runs/<id>/answers`.
 pub fn dir(run_dir: &Path) -> PathBuf {
     run_dir.join(DIR)
 }
 
-/// `runs/<id>/answers/<id>.json`.
 pub fn path(run_dir: &Path, id: &str) -> PathBuf {
     dir(run_dir).join(format!("{id}.json"))
 }
 
-/// Through a temporary file and a rename: the driver's slow tick reads this
-/// directory while `factory answer` writes it, and must never see half a file.
+/// Temp file then rename: the driver's slow tick reads this dir mid-write and must never see half a file.
 pub fn write(run_dir: &Path, answer: &Answer) -> Result<()> {
     let d = dir(run_dir);
     fs::create_dir_all(&d).map_err(io(format!("mkdir {}", d.display())))?;
@@ -49,8 +41,7 @@ pub fn write(run_dir: &Path, answer: &Answer) -> Result<()> {
     fs::rename(&tmp, &p).map_err(io(format!("rename {} to {}", tmp.display(), p.display())))
 }
 
-/// The answer to `id`. A file that does not parse is no answer: an ask stays
-/// open, and `factory answer ASK-n` writes it again.
+/// A file that does not parse is no answer: the ask stays open and `factory answer` writes it again.
 pub fn read(run_dir: &Path, id: &str) -> Result<Option<Answer>> {
     let p = path(run_dir, id);
     match fs::read_to_string(&p) {
@@ -60,16 +51,13 @@ pub fn read(run_dir: &Path, id: &str) -> Result<Option<Answer>> {
     }
 }
 
-/// Every answer on disk, by id.
 pub fn all(run_dir: &Path) -> Result<Vec<Answer>> {
     Ok(scan(run_dir)?.0)
 }
 
-/// An answer file that does not parse: `(file name, error)`.
+/// `(file name, error)`.
 pub type Unreadable = (String, String);
 
-/// Every answer on disk, by id, and each `.json` file that does not parse:
-/// skipped, for the driver to say so, never a reason to fail the run.
 pub fn scan(run_dir: &Path) -> Result<(Vec<Answer>, Vec<Unreadable>)> {
     let d = dir(run_dir);
     let entries = match fs::read_dir(&d) {
@@ -99,8 +87,6 @@ pub fn scan(run_dir: &Path) -> Result<(Vec<Answer>, Vec<Unreadable>)> {
     Ok((out, bad))
 }
 
-/// The latest block answer naming `slice`, if any: what tells the driver a
-/// `building` slice with nothing alive on it was answered, not abandoned.
 pub fn block_answer_for_slice(run_dir: &Path, slice: u32) -> Result<Option<Answer>> {
     let mut hits: Vec<Answer> = all(run_dir)?
         .into_iter()
@@ -110,8 +96,6 @@ pub fn block_answer_for_slice(run_dir: &Path, slice: u32) -> Result<Option<Answe
     Ok(hits.pop())
 }
 
-/// The `ASK-n` items of a run (its `ask_opened` events) that have no answer
-/// file yet, as `(id, text)`.
 pub fn asks_pending(run: &Run) -> Result<Vec<(String, String)>> {
     let mut out = Vec::new();
     for ev in run.events()? {
@@ -126,8 +110,6 @@ pub fn asks_pending(run: &Run) -> Result<Vec<(String, String)>> {
 
 // ── BLOCK entries in the feature's log ──────────────────────────────────────
 
-/// A `block` entry of the feature's `log.jsonl` (PRD-002 FR-14) and the
-/// `answer` entries that point at it: resolved once one does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockEntry {
     pub id: String,
@@ -145,13 +127,9 @@ pub struct BlockEntry {
     pub line: usize,
 }
 
-/// The longest title [`block_title`] keeps, in chars.
 pub const TITLE_MAX: usize = 160;
 
-/// `raw` as a block title: one line, no `·` (the separator `log show`
-/// renders the heading with), at most [`TITLE_MAX`] chars. Every title the
-/// driver builds from tool output — a red gate's last line, a refused ship —
-/// goes through here.
+/// No `·`: `log show` renders the heading with it as the separator.
 pub fn block_title(raw: &str) -> String {
     let one = raw
         .split_whitespace()
@@ -167,8 +145,7 @@ pub fn block_title(raw: &str) -> String {
     cut
 }
 
-/// Every block in the feature's log, in file order, with its answers. A line
-/// that does not parse is skipped: `check` reports it.
+/// A line that does not parse is skipped: `check` reports it.
 pub fn entries(feature_dir: &Path) -> Result<Vec<BlockEntry>> {
     let path = log::path(feature_dir);
     let text = match fs::read_to_string(&path) {
@@ -212,21 +189,17 @@ pub fn entries(feature_dir: &Path) -> Result<Vec<BlockEntry>> {
     Ok(out)
 }
 
-/// The block `id` (`BLOCK-n`) in the feature's log.
 pub fn find(feature_dir: &Path, id: &str) -> Result<Option<BlockEntry>> {
     Ok(entries(feature_dir)?.into_iter().find(|e| e.id == id))
 }
 
-/// The open block of `slice`: the last unanswered block naming it. What
-/// `slice_blocked` reports.
 pub fn open_block_of_slice(feature_dir: &Path, slice: u32) -> Result<Option<BlockEntry>> {
     Ok(entries(feature_dir)?
         .into_iter()
         .rfind(|e| !e.resolved && e.slice == Some(slice)))
 }
 
-/// The entry as `log show` renders a block: the heading, the body and each
-/// answer as a `**Resolution (date):**` line.
+/// Must match how `log show` renders a block.
 pub fn entry_text(entry: &BlockEntry) -> String {
     let mut place = String::new();
     if let Some(s) = entry.slice {
@@ -247,7 +220,6 @@ pub fn entry_text(entry: &BlockEntry) -> String {
     text
 }
 
-/// A `block` entry with its phase and slice, written by the tool; its id.
 pub fn add_block(
     feature_dir: &Path,
     slice: Option<u32>,
@@ -261,15 +233,12 @@ pub fn add_block(
     log::add(feature_dir, e)?.ok_or_else(|| Error::Msg("log add returned no block id".into()))
 }
 
-/// A `note` entry (a trap, a leftover list) with its slice.
 pub fn add_note(feature_dir: &Path, slice: Option<u32>, title: &str, body: &str) -> Result<()> {
     let mut e = log::Entry::new(log::Kind::Note, title, body);
     e.slice = slice;
     log::add(feature_dir, e).map(|_| ())
 }
 
-/// `autonomy.md` § Resuming step 1, on the log: an `answer` entry with
-/// `ref` = the block's id. The block line is left as written.
 pub fn resolve(feature_dir: &Path, entry: &BlockEntry, text: &str) -> Result<()> {
     let mut e = log::Entry::new(log::Kind::Answer, "", text);
     e.slice = entry.slice;
@@ -361,8 +330,7 @@ mod tests {
             at: "2026-10-10T00:00:00Z".into(),
         };
         write(dir.path(), &a).unwrap();
-        // What a reader saw mid-write before writes were atomic: a
-        // truncated file, and an empty one.
+        // A truncated file and an empty one: what a reader sees mid-write.
         fs::write(path(dir.path(), "ASK-1"), "{\"id\": \"ASK-1\", \"te").unwrap();
         fs::write(path(dir.path(), "BLOCK-102"), "").unwrap();
         let (good, bad) = scan(dir.path()).unwrap();
@@ -374,7 +342,6 @@ mod tests {
         assert_eq!(all(dir.path()).unwrap(), vec![a.clone()]);
         assert_eq!(block_answer_for_slice(dir.path(), 1).unwrap(), Some(a));
         assert_eq!(read(dir.path(), "ASK-1").unwrap(), None);
-        // `write` leaves no temporary file behind.
         let names: Vec<String> = fs::read_dir(super::dir(dir.path()))
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())

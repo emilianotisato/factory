@@ -1,14 +1,4 @@
-//! The feature-docs library (PRD-002 FR-18): `factory docs` is built on it
-//! and the driver calls it in process through [`Docs`]. The board
-//! (`status --json`) and preflight (`preflight --json`) are the contract every
-//! caller reads. No routing logic is derived from the board here: the docs
-//! decide, the driver reads.
-//!
-//! Every optional key carries `#[serde(default)]` so JSON written by an older
-//! or newer build still parses (PRD-001 slice 02).
-//!
-//! The model lives in the submodules: free functions over a repo root, and
-//! the board structs below are their output contract.
+//! The board and preflight are the contract: the docs decide, the driver reads. Every key defaults so older JSON parses.
 pub mod board;
 pub mod check;
 pub mod doctor;
@@ -35,17 +25,15 @@ use serde_json::Value;
 
 use crate::{Error, Result};
 
-/// The text `Docs::open` refuses a v2 repo with (FR-18): the driver reads v3
-/// only, so `factory run` stops before preflight.
+/// The refusal for a v2 repo; `factory run` stops on it before preflight.
 pub const V2_HINT: &str = "docs are v2: run `factory docs migrate --dry`";
 
-/// A v3 repo the driver reads and writes in process (PRD-002 FR-18).
+/// A v3 repo the driver reads and writes in process.
 pub struct Docs {
     root: PathBuf,
 }
 
-/// What `ship` did: shipped (with its output, whose `⚠` lines the closeout
-/// forwards), or refused with the reason.
+/// Ship's output, whose `⚠` lines the closeout forwards, or the refusal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ship {
     Done(String),
@@ -53,9 +41,6 @@ pub enum Ship {
 }
 
 impl Docs {
-    /// The repo when it is on v3. A v2 repo (a `docs/index.md`, no
-    /// `[docs] framework = 3`) is refused with [`V2_HINT`]; a repo off the
-    /// framework with its own text. Both are `Error::NotV3`.
     pub fn open(repo_root: &Path) -> Result<Docs> {
         if project::is_v3(repo_root) {
             return Ok(Docs {
@@ -75,18 +60,15 @@ impl Docs {
         &self.root
     }
 
-    /// The feature's folder, live or archived.
     pub fn dir(&self, feature: &str) -> Result<PathBuf> {
         Ok(board::scan(&self.root)?.resolve(feature)?.dir.clone())
     }
 
-    /// The board of one feature (`factory docs status NNN --json`).
     pub fn status(&self, feature: &str) -> Result<Status> {
         board::status(&self.root, feature)
     }
 
-    /// The preflight verdict with its exit code: 0 pass, 1 refused, 2 asks
-    /// pending.
+    /// The exit code is 0 pass, 1 refused, 2 asks pending.
     pub fn preflight(&self, feature: &str) -> Result<(Preflight, i32)> {
         preflight::run(&self.root, feature)
     }
@@ -96,14 +78,12 @@ impl Docs {
             .ok_or_else(|| Error::NotV3("docs/project.toml has no [docs] table".into()))
     }
 
-    /// The declared gate command; an error when none is declared.
     pub fn gate(&self) -> Result<String> {
         self.project()?
             .gate
             .ok_or_else(|| Error::Msg("no gate declared: `factory docs gate set \"<cmd>\"`".into()))
     }
 
-    /// The declared inner-loop command, else the full gate (as `gate --inner`).
     pub fn gate_inner(&self) -> Result<String> {
         let p = self.project()?;
         p.inner
@@ -111,8 +91,7 @@ impl Docs {
             .ok_or_else(|| Error::Msg("no gate declared: `factory docs gate set \"<cmd>\"`".into()))
     }
 
-    /// `ship NNN`. A refusal (a slice not done) is a verdict the caller
-    /// routes, so it comes back as `Ship::Refused` rather than an error.
+    /// A refusal is a verdict the caller routes, so it is `Ship::Refused`, not an error.
     pub fn ship(&self, feature: &str) -> Result<Ship> {
         let mut out = Vec::new();
         match ship::ship(&self.root, feature, &mut out) {
@@ -122,7 +101,6 @@ impl Docs {
         }
     }
 
-    /// `state::set` on the feature's `state.toml` (FR-13): the one write path.
     pub fn set(&self, feature: &str, pairs: &[(&str, &str)]) -> Result<()> {
         state::set(&self.dir(feature)?, pairs).map(|_| ())
     }
@@ -139,14 +117,11 @@ impl Docs {
         self.set(feature, &[("reviewed", date)])
     }
 
-    /// Append one log entry (FR-14); the id the tool allocated, `None` for an
-    /// `answer`, `review` or `note`.
     pub fn log_add(&self, feature: &str, entry: log::Entry) -> Result<Option<String>> {
         log::add(&self.dir(feature)?, entry)
     }
 
-    /// Every entry of the feature's `log.jsonl`, in file order. A torn line
-    /// is skipped here; `check` reports it.
+    /// A torn line is dropped here; `check` reports it.
     pub fn log_entries(&self, feature: &str) -> Result<Vec<log::Entry>> {
         Ok(log::entries(&self.dir(feature)?)?.0)
     }
@@ -154,7 +129,7 @@ impl Docs {
 
 // ── status --json ────────────────────────────────────────────────────────────
 
-/// `docs status NNN --json` (PRD §20).
+/// `docs status NNN --json`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Status {
@@ -206,12 +181,12 @@ pub struct Harness {
     pub detail: Option<String>,
 }
 
-/// One slice as the board lists it; `depends_on` is the one snake_case key.
+/// `depends_on` is the contract's one snake_case key.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Slice {
     pub number: u32,
-    /// Empty when a `[slices.N]` entry has no file; printed as `null`.
+    /// Empty when a `[slices.N]` entry has no file.
     #[serde(with = "nullable")]
     pub file: String,
     pub title: Option<String>,
@@ -220,7 +195,6 @@ pub struct Slice {
     pub depends_on: Vec<u32>,
 }
 
-/// `next` and `ready[]` entries.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct SliceRef {
@@ -244,9 +218,7 @@ pub struct Building {
 pub struct Checkpoint {
     pub n: u32,
     pub after: Option<u32>,
-    /// The slices the entry says it covered; empty on an entry written
-    /// before PRD-005 FR-7, which covers every slice up to `after`. Left out
-    /// of the JSON when empty, so an old log's board reads as it did.
+    /// Empty means every slice up to `after`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub covers: Vec<u32>,
 }
@@ -269,7 +241,6 @@ pub struct LogSummary {
     pub blocks: u32,
 }
 
-/// A string that is `null` in JSON when empty, either way round.
 mod nullable {
     use serde::{Deserialize, Deserializer, Serializer};
 
@@ -288,7 +259,7 @@ mod nullable {
 
 // ── preflight --json ─────────────────────────────────────────────────────────
 
-/// `docs preflight NNN --json` (PRD §20).
+/// `docs preflight NNN --json`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Preflight {
@@ -309,8 +280,7 @@ pub struct FeatureRef {
     pub status: Option<String>,
 }
 
-/// Where the repo is and where the feature lives. `feature` is already the
-/// branch to use: the tool swaps in `alt` when that is the one that exists.
+/// `feature` is already the branch to use: `alt` is swapped in when that one exists.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Branch {

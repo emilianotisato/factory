@@ -1,4 +1,3 @@
-//! `factory docs check` and `factory docs doctor` (PRD-002 slice 03, FR-15).
 #[path = "harness/mod.rs"]
 mod harness;
 
@@ -8,7 +7,6 @@ use std::process::{Command, Output};
 
 use harness::{FEATURE_DIR, Fixture, fixture_src};
 
-/// `factory docs <args>` in `dir`, outside any fixture: no global git config.
 fn docs_in(dir: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_factory"))
         .arg("docs")
@@ -45,7 +43,6 @@ fn stderr(o: &Output) -> String {
     String::from_utf8_lossy(&o.stderr).into_owned()
 }
 
-/// `doctor` in `dir`: exit 0, the first line, and a tree it left as it was.
 fn doctor_in(dir: &Path) -> String {
     let before = git_in(dir, &["status", "--porcelain", "--untracked-files=all"]);
     let out = docs_in(dir, &["doctor"]);
@@ -160,8 +157,6 @@ fn a_v2_check_goes_to_docs_mjs_while_doctor_stays_native() {
     );
 }
 
-/// FR-18, slice 09 task 8: the v2 shim in `src/cli/docs.rs` is the one
-/// `node` call site left in `src/` — one line, one file.
 #[test]
 fn node_is_spawned_in_one_place() {
     fn walk(dir: &Path, hits: &mut Vec<String>) {

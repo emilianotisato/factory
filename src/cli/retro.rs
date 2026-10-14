@@ -1,8 +1,4 @@
-//! `factory retro <run>` (PRD-003 FR-25): write the `## Numbers` section of
-//! a stored run into its feature's `retro.md`, between the markers the
-//! driver owns, after a `--recount` or a schema fix. The ship step writes
-//! the same section; a second call on the same store changes nothing. It
-//! prints the feature's score from its `retros` row when one exists.
+//! Rewrites the `## Numbers` section the ship step wrote, e.g. after `--recount`; idempotent.
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -48,8 +44,7 @@ pub fn retro(args: &RetroArgs, out: &mut dyn Write) -> Result<i32> {
         if changed { "updated" } else { "unchanged" }
     )
     .map_err(io("stdout"))?;
-    // PRD-002 FR-19: the owner's score sits on the feature's `retros` row,
-    // which exists once the feature shipped.
+    // The `retros` row exists once the feature shipped.
     let feature = row.feature.parse::<u32>().ok();
     if let Some(r) = feature
         .map(|n| db.retro(&row.repo, n))

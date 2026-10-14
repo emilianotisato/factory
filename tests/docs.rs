@@ -1,6 +1,3 @@
-//! `crate::docs::Docs`, the driver's in-process docs library, against the v3
-//! fixture (PRD-002 FR-18, slice 09 task 1). It replaced the `docs.mjs`
-//! subprocess wrapper PRD-001 slice 02 tested here.
 #[path = "harness/mod.rs"]
 mod harness;
 
@@ -31,7 +28,6 @@ fn status_and_preflight_come_from_the_fixture() {
     assert!(!s.checkpoint_due && !s.all_done && s.sliced && s.qa_plan);
     assert_eq!(s.branch.as_deref(), Some("main"));
     assert_eq!(s.log.decisions, 0);
-    // In process and through the binary, one board.
     assert_eq!(serde_json::to_value(&s).unwrap(), fx.docs_json("status"));
 
     let (p, code) = docs.preflight("001").unwrap();
@@ -45,7 +41,6 @@ fn status_and_preflight_come_from_the_fixture() {
     assert_eq!(docs.gate().unwrap(), "./gate.sh");
     assert_eq!(docs.gate_inner().unwrap(), "./gate.sh --inner");
 
-    // An uncommitted file: exit 1 and a refuse line, still parsed.
     fs::write(fx.path().join("dirty.txt"), "x\n").unwrap();
     let (p, code) = docs.preflight("001").unwrap();
     assert_eq!(code, 1);

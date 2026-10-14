@@ -1,13 +1,13 @@
 #!/usr/bin/env sh
-# The fixture's gate (PRD-001 FR-10). Its outcome is scripted by the test, not by
-# the stub agent: without --inner it consumes the first line of scenario/gate,
-# with --inner the first line of scenario/inner. `red` exits 1 with a fixed
-# failure text; anything else, an empty file or no file is green. Every run
-# appends `<epoch> <inner|gate> <exit> <pwd> <head>` to scenario/gate.log: the
+# The fixture's gate. Its outcome is scripted by the test, not by the stub
+# agent: without --inner it consumes the first line of scenario/gate, with
+# --inner the first line of scenario/inner. `red` exits 1 with a fixed failure
+# text; anything else, an empty file or no file is green. Every run appends
+# `<epoch> <inner|gate> <exit> <pwd> <head>` to scenario/gate.log: the
 # directory it ran in (`pwd -P`) and the HEAD it saw (`-` when unborn).
 # scenario/ is gitignored, so a lane worktree has none: it is found next to the
-# git common dir, the main tree's from every lane (PRD-005 slice 01), and next
-# to this script when git finds no repo.
+# git common dir, the main tree's from every lane, and next to this script when
+# git finds no repo.
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 if common=$(git -C "$here" rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then

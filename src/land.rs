@@ -1,12 +1,4 @@
-//! A lane's work, landed on the feature tip as one commit (PRD-005 §5 FR-3).
-//!
-//! [`commit_lane`] commits the lane whole: `git add -A`, because nobody but
-//! its worker writes there, minus the board files and the role's protected
-//! files, squashed onto the lane's base and kept reachable under
-//! `refs/factory/` until it lands. [`land`] cherry-picks that commit onto the
-//! main tree's HEAD with the main tree's board files in the same commit, and
-//! commits by pathspec, so the owner's staged work stays staged and out: the
-//! main tree keeps [`commit::commit`]'s rule, never `git add -A` there.
+//! A lane commits whole (`git add -A`: only its worker writes there); the main tree commits by pathspec.
 use std::collections::HashSet;
 use std::path::Path;
 use std::process::{Command, Output};
@@ -14,35 +6,28 @@ use std::process::{Command, Output};
 use crate::commit;
 use crate::{Error, Result};
 
-/// What [`commit_lane`] committed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaneCommit {
     pub sha: String,
     /// Every path the commit touches; a rename is its two paths.
     pub files: Vec<String>,
-    /// The protected paths the worker had changed, left out of the commit.
     pub dropped: Vec<String>,
 }
 
-/// What [`land`] did with a lane commit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Landing {
-    /// The new HEAD of the main tree.
-    Landed { sha: String },
-    /// The pick conflicts with the feature tip; nothing was written.
-    Conflict { paths: Vec<String> },
-    /// The owner has uncommitted work in a path the pick touches; nothing
-    /// was written.
-    Dirty { paths: Vec<String> },
+    /// The main tree's new HEAD.
+    Landed {
+        sha: String,
+    },
+    Conflict {
+        paths: Vec<String>,
+    },
+    Dirty {
+        paths: Vec<String>,
+    },
 }
 
-/// Commit everything in `lane` as one commit on `base` with `message`, and
-/// point `ref_name` at it. A commit the worker made itself is folded in
-/// first (`reset --soft`), so it is squashed rather than lost. `board` and
-/// `protected` are unstaged and stay in the lane's tree as the worker left
-/// them; the protected ones the worker changed come back in
-/// [`LaneCommit::dropped`] for the caller to report, the board files go
-/// silently. `None` when nothing is left to commit.
 pub fn commit_lane(
     lane: &Path,
     base: &str,
@@ -51,16 +36,11 @@ pub fn commit_lane(
     message: &str,
     ref_name: &str,
 ) -> Result<Option<LaneCommit>> {
-    // Before `add -A`: against a HEAD that already holds the worker's own
-    // commit, its files would stage as unchanged and miss the squash.
-    // A merge worker's lane can still hold unmerged entries from the pick
-    // it resolved without `git add`, and `reset --soft` refuses those.
+    // `reset --soft` refuses unmerged entries, which a merge worker's lane can hold.
     if !git(lane, &["ls-files", "-u"])?.trim().is_empty() {
         git(lane, &["add", "-A"])?;
     }
-    // A worker that switched to a branch in its lane would see `reset
-    // --soft` move that branch, which every worktree shares: detach first,
-    // touching neither the index nor the tree.
+    // Detach first: `reset --soft` would move a branch the worker switched to.
     let head = git(lane, &["rev-parse", "HEAD"])?.trim().to_string();
     git(lane, &["update-ref", "--no-deref", "HEAD", &head])?;
     git(lane, &["reset", "-q", "--soft", base])?;
@@ -114,15 +94,7 @@ pub fn commit_lane(
     }))
 }
 
-/// Cherry-pick the lane commit `sha` onto `main`'s HEAD and commit it with
-/// the main tree's `board` files and the lane commit's message. Refuses,
-/// before reading anything, while a held main tree is off its branch
-/// ([`commit::hold_branch`]). [`Landing::Dirty`] when a path the pick
-/// touches is dirty, untracked or ignored in the main tree (board files
-/// aside, which workers write there by design); [`Landing::Conflict`] when
-/// the pick does not apply cleanly. Either leaves the main tree, its index
-/// and the `refs/factory/` ref as they were, and so does an error after the
-/// pick: the picked paths go back to HEAD. Once landed, the ref is deleted.
+/// Board files may be dirty in the main tree: workers write them there by design.
 pub fn land(main: &Path, sha: &str, board: &[String]) -> Result<Landing> {
     if let Some((branch, default)) = commit::held(main)
         && let Some(why) = commit::branch_refusal(main, &branch, default.as_deref())?
@@ -133,8 +105,7 @@ pub fn land(main: &Path, sha: &str, board: &[String]) -> Result<Landing> {
     if code(main, &["diff", "--quiet", &parent, sha])? == 0 {
         return Err(Error::Msg(format!("lane commit {sha} changes nothing")));
     }
-    // `merge-tree` answers on objects alone: the tree and the index are not
-    // touched, so a conflict leaves nothing to abort.
+    // `merge-tree` works on objects alone: a conflict leaves nothing to abort.
     let merge = run_git(
         main,
         &[
@@ -161,8 +132,7 @@ pub fn land(main: &Path, sha: &str, board: &[String]) -> Result<Landing> {
         }
         _ => return Err(failed("merge-tree", &merge)),
     }
-    // The paths the pick writes in the main tree, read off the merged tree:
-    // a file the tip renamed takes the lane's change under its new name.
+    // Read off the merged tree: a file the tip renamed takes the change under its new name.
     let picked = nul_list(&git(
         main,
         &["diff", "--name-only", "--no-renames", "-z", "HEAD", &tree],
@@ -179,8 +149,7 @@ pub fn land(main: &Path, sha: &str, board: &[String]) -> Result<Landing> {
     if !dirty.is_empty() {
         return Ok(Landing::Dirty { paths: dirty });
     }
-    // `--no-commit` lets the index differ from HEAD: an owner's staged file
-    // elsewhere does not stop the pick.
+    // `--no-commit` lets the index differ from HEAD: an owner's staged file elsewhere does not stop the pick.
     git(main, &["cherry-pick", "--no-commit", sha])?;
     let known = known(main, board)?;
     let boards: Vec<String> = board
@@ -209,8 +178,6 @@ pub fn land(main: &Path, sha: &str, board: &[String]) -> Result<Landing> {
     Ok(Landing::Landed { sha: head })
 }
 
-/// The picked `paths` and the `boards` committed by pathspec, never a bare
-/// commit: whatever else is staged stays staged.
 fn commit_pick(main: &Path, sha: &str, picked: &[String], boards: &[String]) -> Result<()> {
     if !boards.is_empty() {
         let mut add = vec!["add", "--"];
@@ -229,10 +196,7 @@ fn commit_pick(main: &Path, sha: &str, picked: &[String], boards: &[String]) -> 
     Ok(())
 }
 
-/// A pick whose commit failed (a hook, a signing key), undone: the picked
-/// paths back to HEAD in the index and the tree, the board files unstaged
-/// and left as the workers wrote them. Best effort: the error that brought
-/// us here is the one to report.
+/// Best effort: the error that brought us here is the one to report.
 fn undo_pick(main: &Path, picked: &[String], boards: &[String]) {
     let mut restore = vec!["restore", "--source=HEAD", "--staged", "--worktree", "--"];
     restore.extend(picked.iter().map(String::as_str));
@@ -244,8 +208,6 @@ fn undo_pick(main: &Path, picked: &[String], boards: &[String]) {
     }
 }
 
-/// The `paths` that differ from HEAD in the index or the tree, or are
-/// untracked, ignored ones included: the pick would overwrite those.
 fn dirty(repo: &Path, paths: &[String]) -> Result<Vec<String>> {
     let mut status = vec![
         "status",
@@ -272,7 +234,6 @@ fn dirty(repo: &Path, paths: &[String]) -> Result<Vec<String>> {
     Ok(dirty)
 }
 
-/// The `paths` git can stage: tracked, or untracked and not ignored.
 fn known(repo: &Path, paths: &[String]) -> Result<HashSet<String>> {
     if paths.is_empty() {
         return Ok(HashSet::new());
@@ -296,7 +257,6 @@ fn nul_list(out: &str) -> Vec<String> {
         .collect()
 }
 
-/// `git <args>` in `repo`; a non-zero exit is an error quoting stderr.
 fn git(repo: &Path, args: &[&str]) -> Result<String> {
     let out = run_git(repo, args)?;
     if !out.status.success() {
@@ -320,8 +280,7 @@ fn failed(args: &str, out: &Output) -> Error {
     }
 }
 
-/// Every path this module hands git is a file name, never a pattern: a
-/// `*` or `[` a worker put in one must not match its neighbours.
+/// Paths are file names, never patterns: a worker's `[a].txt` must not match `a.txt`.
 fn run_git(repo: &Path, args: &[&str]) -> Result<Output> {
     Command::new("git")
         .args(args)
@@ -359,8 +318,6 @@ mod tests {
         paths.iter().map(|p| p.to_string()).collect()
     }
 
-    /// A main tree on `feat/x` with the board, protected files and two code
-    /// files committed, and a temp dir to put lanes in.
     struct Repo {
         main: tempfile::TempDir,
         lanes: tempfile::TempDir,
@@ -397,7 +354,6 @@ mod tests {
             self.main.path()
         }
 
-        /// A detached linked worktree at the main tree's HEAD, and its base.
         fn lane(&self, name: &str) -> (PathBuf, String) {
             let lane = self.lanes.path().join(name);
             ok(
@@ -492,7 +448,6 @@ mod tests {
         let c = commit(&lane, &base, "feat(005): slice-01 a", "slice-01").unwrap();
         assert_eq!(c.files, ["a.txt"]);
         assert_eq!(c.dropped, [PRD, INDEX]);
-        // The worker's bytes stay in the lane, unstaged.
         assert_eq!(fs::read_to_string(lane.join(PRD)).unwrap(), "worker\n");
     }
 

@@ -1,14 +1,5 @@
-//! The Vue shim (PRD §14 FR-12): Vue has no `tags.scm`, so each `<script>`
-//! block is cut out and parsed with the TypeScript grammar, and every range
-//! is moved back by the block's offset in the file. The `<template>` is
-//! never parsed.
+//! Vue has no `tags.scm`: each `<script>` block, whatever its `lang`, parses as TypeScript (a superset here) at its offset.
 
-/// Every `<script>` block's inner text and its byte offset in `src`, in
-/// file order: a component with both `<script>` and `<script setup>` has
-/// two (AD-40002, superseding AD-1208's first-block rule). A block that
-/// never closes ends the list. `setup`, `lang="ts"` or no `lang` all parse
-/// as TypeScript, a superset for this purpose. A `>` inside a quoted
-/// attribute (`generic="T extends Map<K, V>"`) does not close the tag.
 pub fn script_blocks(src: &str) -> Vec<(usize, &str)> {
     let mut blocks = Vec::new();
     let mut from = 0;
@@ -19,7 +10,6 @@ pub fn script_blocks(src: &str) -> Vec<(usize, &str)> {
     blocks
 }
 
-/// The inner byte range of the first complete block at or after `from`.
 fn next_block(src: &str, mut from: usize) -> Option<(usize, usize)> {
     let open = loop {
         let at = from + src.get(from..)?.find("<script")?;

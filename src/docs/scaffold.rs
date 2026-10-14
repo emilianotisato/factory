@@ -1,5 +1,3 @@
-//! `init`, `new` and `slice` on v3 (PRD-002 FR-15): the folders, the PRD and
-//! slice scaffolds from `assets/docs/`, and the `state.toml` entries.
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -17,18 +15,13 @@ use crate::{Error, Result, clock};
 pub const INDEX: &str = include_str!("../../assets/docs/index.md");
 pub const PRD: &str = include_str!("../../assets/docs/prd.scaffold.md");
 pub const SLICE: &str = include_str!("../../assets/docs/slice.scaffold.md");
-/// `docs/ideas/README.md`: the inbox rules for one file per idea (FR-20).
 pub const IDEAS_README: &str = include_str!("../../assets/docs/ideas-README.md");
-/// The block `init` appends to `CLAUDE.md` and `AGENTS.md` (PRD-004 FR-2).
-/// No backtick span in it may hold the word "verify": `docs gate` scans these
-/// two files for gate hints that way.
+/// No backtick span in it may hold "verify": `docs gate` reads those as gate hints.
 pub const CONVENTION: &str = include_str!("../../assets/docs/convention.md");
 
-/// `docs/.gitignore`: the feature locks never show in `git status`, so
-/// preflight's clean-tree check and the driver's folder commits ignore them.
+/// Keeps `docs.lock` out of `git status`, so the clean-tree check and folder commits ignore it.
 const GITIGNORE_LINE: &str = "docs.lock";
 
-/// The UTC day, as `docs.mjs` `today()` prints it.
 pub fn today() -> String {
     clock::now_rfc3339()[..10].to_string()
 }
@@ -48,14 +41,8 @@ fn write_new(path: &Path, text: &str) -> Result<()> {
     fs::write(path, text).map_err(io(format!("write {}", path.display())))
 }
 
-/// `factory init` and its alias `docs init`: whatever of the v3 layout is
-/// missing, never overwriting; the skill family when no manifest records one;
-/// the convention block where its heading is absent. Commits nothing: it
-/// prints the line that would.
 pub fn init(root: &Path, out: &mut dyn Write) -> Result<()> {
-    // With a manifest the skills are `factory skills update`'s; a source
-    // checkout reads `skills/` live (PRD-004 FR-2). First, so a layout
-    // `render` refuses leaves the repo untouched.
+    // Rendered first, so a refusal leaves the repo untouched; a manifest or source checkout already has its skills.
     let rendered = if root.join(skills::MANIFEST).exists() || skills::source_checkout(root) {
         None
     } else {
@@ -146,13 +133,7 @@ pub fn init(root: &Path, out: &mut dyn Write) -> Result<()> {
 /// A convention file left alone, and why.
 type Skipped = (&'static str, &'static str);
 
-/// Appends [`CONVENTION`] to `CLAUDE.md` and `AGENTS.md`, each created when
-/// absent and skipped when it already holds the heading. Each file is re-read
-/// just before its turn, so when `CLAUDE.md` is a link to `AGENTS.md` the
-/// append through the first name shows up in the second and the block lands
-/// once. Returns the repo-relative files written, a link's target in place of
-/// the link so `git add` picks the changed file, and the names skipped with
-/// why: a link resolving outside the repo, or nowhere, is never appended to.
+/// Each file is re-read on its turn, so a `CLAUDE.md` linked to `AGENTS.md` gets the block once.
 fn convention(root: &Path) -> Result<(Vec<String>, Vec<Skipped>)> {
     let heading = CONVENTION.lines().next().unwrap_or_default();
     let canon_root = fs::canonicalize(root).map_err(io(format!("resolve {}", root.display())))?;
@@ -206,8 +187,7 @@ fn convention(root: &Path) -> Result<(Vec<String>, Vec<Skipped>)> {
             written.push(shown);
         }
     }
-    // `CLAUDE.md -> AGENTS.md` with no `AGENTS.md` dangles on its turn and
-    // resolves once `AGENTS.md` is written: the block reached it, no skip.
+    // A `CLAUDE.md` link that dangled until `AGENTS.md` was written got the block: no skip.
     skipped.retain(|(name, _)| {
         !fs::canonicalize(root.join(name)).is_ok_and(|p| {
             p.starts_with(&canon_root) && fs::read_to_string(&p).is_ok_and(|t| has_heading(&t))
@@ -216,9 +196,7 @@ fn convention(root: &Path) -> Result<(Vec<String>, Vec<Skipped>)> {
     Ok((written, skipped))
 }
 
-/// `allocateNumber` (`docs.mjs:1251`): the scan of `features/` and
-/// `archive/`, raised to the reservation in `<git-common-dir>/docs-next-number`,
-/// which it bumps, so two worktrees of one repo never claim the same number.
+/// The reservation in `<git-common-dir>/docs-next-number` keeps two worktrees from claiming one number.
 fn allocate(root: &Path, board: &board::Board) -> Result<(u32, bool)> {
     let computed = board.all().map(|f| f.number).max().unwrap_or(0) + 1;
     let common = Command::new("git")
@@ -246,7 +224,6 @@ fn allocate(root: &Path, board: &board::Board) -> Result<(u32, bool)> {
     Ok((number, true))
 }
 
-/// `my-slug` → `My Slug`, as `docs.mjs` titles a missing `--title`.
 fn title_case(s: &str) -> String {
     let mut out = String::new();
     let mut prev_word = false;
@@ -273,15 +250,12 @@ fn name_ok(what: &str, s: &str) -> Result<()> {
     Ok(())
 }
 
-/// `docs new <slug> [--title T]`: `prd.md` from the v3 scaffold and
-/// `state.toml` with `status = "draft"`. No log: the first append makes it.
+/// No `log.jsonl`: the first append makes it.
 pub fn new(root: &Path, slug: &str, title: Option<&str>, out: &mut dyn Write) -> Result<()> {
     new_from(root, slug, title, None, out)
 }
 
-/// `new` with `--from-idea ID`: the PRD carries `from_idea` and the idea's
-/// body, and the idea file goes. Nothing is committed, so the PRD's first
-/// commit carries the deletion too.
+/// The idea file is deleted but not committed, so the PRD's first commit carries the deletion.
 pub fn new_from(
     root: &Path,
     slug: &str,
@@ -353,9 +327,6 @@ pub fn new_from(
     )
 }
 
-/// The scaffold with `from_idea` as its last frontmatter key and the idea's
-/// body under `## From idea <id>` right after the H1, for the author to fold
-/// in at the interview.
 fn with_idea(prd: &str, id: &str, body: &str) -> String {
     let mut out = String::with_capacity(prd.len() + body.len() + 64);
     let mut fences = 0;
@@ -379,8 +350,6 @@ fn with_idea(prd: &str, id: &str, body: &str) -> String {
     out
 }
 
-/// `docs slice NNN <subject> [--depends a,b] [--title T]`: the next slice
-/// file, and its `[slices.N]` entry through `state::set`, under the lock.
 pub fn slice(
     root: &Path,
     feature: &str,

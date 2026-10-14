@@ -1,6 +1,4 @@
-//! Smoke test for the harness itself (PRD-001 FR-10): the fixture builds fast,
-//! the stubs win on PATH, the board reads as slice 01 promises, preflight has
-//! nothing to ask, and the gate obeys its scenario file.
+//! Smoke test for the harness itself.
 #[path = "harness/mod.rs"]
 mod harness;
 
@@ -16,7 +14,6 @@ fn fixture_is_a_runnable_board_with_stubs_on_path() {
     let built = t0.elapsed();
     assert!(built.as_secs_f64() < 3.0, "Fixture::new took {built:?}");
 
-    // The stubs shadow any real claude or gh.
     let out = fx
         .command("sh")
         .args(["-c", "command -v claude; command -v gh"])
@@ -33,12 +30,10 @@ fn fixture_is_a_runnable_board_with_stubs_on_path() {
         );
     }
 
-    // Task 2: the vendored tool works from inside the fixture.
     fx.docs(&["doctor"]);
     assert_eq!(fx.docs(&["gate"]).trim(), "./gate.sh");
     assert_eq!(fx.docs(&["gate", "--inner"]).trim(), "./gate.sh --inner");
 
-    // Task 3: the board.
     let s = fx.docs_json("status");
     assert_eq!(s["slices"].as_array().unwrap().len(), 3, "{s}");
     assert_eq!(s["ready"].as_array().unwrap().len(), 2, "{s}");
@@ -50,7 +45,6 @@ fn fixture_is_a_runnable_board_with_stubs_on_path() {
     assert_eq!(p["pass"], true, "{p}");
     assert_eq!(p["ask"], serde_json::json!([]), "{p}");
 
-    // Task 4: the gate is the scenario's, not the stub's.
     fx.script_gate(&["red", "red", "green"]);
     let first = fx.run_gate_output(false);
     assert_eq!(first.status.code(), Some(1));
@@ -64,7 +58,6 @@ fn fixture_is_a_runnable_board_with_stubs_on_path() {
     assert_eq!(log.iter().map(|r| r.exit).collect::<Vec<_>>(), [1, 1, 0, 0]);
     assert!(log.iter().all(|r| r.kind == "gate"), "{log:?}");
 
-    // --inner consumes scenario/inner and leaves scenario/gate alone.
     fx.script_gate(&["red"]);
     fx.script_inner(&["red", "green"]);
     assert_eq!(
@@ -94,7 +87,6 @@ fn gate_sh_reads_the_main_trees_scenario_from_a_worktree() {
     fx.git(&["worktree", "add", "--detach", wt.to_str().unwrap(), "HEAD"]);
     let head = fx.git(&["rev-parse", "HEAD"]).trim().to_string();
 
-    // A red scripted in the main tree stays red in a worktree that has no scenario/.
     fx.script_gate(&["red"]);
     let out = fx
         .command(wt.join("gate.sh"))

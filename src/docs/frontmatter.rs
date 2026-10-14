@@ -1,10 +1,5 @@
-//! The frontmatter reader: a port of `docs.mjs:62-88 parseFrontmatter`
-//! (`key: value`, flow arrays, integers, quoted strings, full-line comments),
-//! plus the one YAML form v3 adds, a `key: |` block scalar for the PRD's
-//! `summary` (FR-13). It reads v2 files exactly as `docs.mjs` does: a v2 file
-//! never holds a `|` value, so the extension changes nothing for them.
+//! The YAML subset the docs use: `key: value`, flow arrays, quoted strings and `key: |` block scalars, which no v2 file holds.
 
-/// One scalar, as `parseScalar` types it.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Null,
@@ -36,7 +31,6 @@ impl Value {
         }
     }
 
-    /// A string or a number as text; `None` for null and lists.
     pub fn text(&self) -> Option<String> {
         match self {
             Value::Str(s) => Some(s.clone()),
@@ -46,8 +40,7 @@ impl Value {
     }
 }
 
-/// `data` is `None` when there is no frontmatter or it does not parse; then
-/// `body` is the whole text and `error` says why when it was a parse failure.
+/// With no frontmatter, or one that does not parse, `data` is `None` and `body` is the whole text.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Frontmatter {
     pub data: Option<Vec<(String, Value)>>,
@@ -78,7 +71,7 @@ pub fn parse(text: &str) -> Frontmatter {
     if !text.starts_with("---\n") {
         return whole();
     }
-    // `text.indexOf('\n---', 3)`: the first fence after the opening one.
+    // From offset 3, so an empty block (`---\n---`) still closes.
     let Some(end) = text[3..].find("\n---").map(|i| i + 3) else {
         return whole();
     };
@@ -135,7 +128,6 @@ fn key_line(line: &str) -> Option<(&str, &str)> {
     ok.then_some((key, rest))
 }
 
-/// `parseScalar`.
 fn scalar(raw: &str) -> Value {
     if raw.is_empty() {
         return Value::Null;
@@ -161,8 +153,6 @@ fn scalar(raw: &str) -> Value {
     Value::Str(raw.to_string())
 }
 
-/// The indented lines under `key: |`, dedented by the first line's indent.
-/// `|` keeps one final newline, `|-` none, `|+` every trailing blank line.
 fn block_scalar(lines: &[&str], style: &str) -> Value {
     let indent = lines
         .iter()
@@ -213,7 +203,7 @@ mod tests {
         assert_eq!(fm.get("retired_fr"), Some(&Value::List(vec![])));
         assert_eq!(fm.get("reviewed"), Some(&Value::Null));
         assert_eq!(fm.str("title"), Some("A: b"));
-        // `docs.mjs` drops one newline after the closing `---`, not the blank line.
+        // One newline after the closing `---` is dropped, not the blank line.
         assert_eq!(fm.body, "\n# PRD\n");
 
         let bad = parse("---\nnot a key line\n---\nbody");

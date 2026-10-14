@@ -1,23 +1,4 @@
-//! FR-8 (PRD §10): every tool call of every worker as a `tool_calls` row,
-//! and the worker's own inner-loop gate runs as `gates` rows with source
-//! `worker`. Both come from the stream slice 03 already pairs
-//! (`stream::Summary::tool_uses`) and are written once, when the worker's
-//! row is closed, inside one transaction. The report (`cli::report`) is a
-//! `SELECT` over what this module wrote, never a re-parse.
-//!
-//! Kinds follow §10 "by first command": `Read` → `read`; `Edit`, `Write`,
-//! `NotebookEdit` → `edit`; `Grep`, `Glob` → `grep`; `Bash` by the first
-//! word of `command` after `cd … &&` and `VAR=value` prefixes: `grep`, `rg` →
-//! `bash-grep`, `sed` → `bash-sed`, `cat`, `head`, `tail` → `bash-cat`, a
-//! command containing the feature's gate or inner command → `run-gate`,
-//! else `run`. Any other tool is `other`.
-//!
-//! Slice 13 (§14 FR-12 decision 4) adds `ctx-def`, `ctx-refs` and
-//! `ctx-outline` for `factory ctx <verb>`, ahead of the rest; the two labels
-//! (`label_followup`: a file the ctx answer named is read within the next two
-//! calls; `label_expanded`: the same target read with a wider `limit`, or
-//! `refs` re-run with a larger `--max`, within five); and `pack_doc`, a read
-//! of a file the worker's pack held (`pack_doc_read_chars`, §4).
+//! Written once, when a worker's row closes; the report is a `SELECT` over these rows, never a re-parse.
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -35,7 +16,6 @@ use crate::run::{GateCmds, Run};
 use crate::shell;
 use crate::stream::{Summary, ToolUse};
 
-/// What a tool call did, for the `kind` column and the report's lookup set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Read,
@@ -70,8 +50,6 @@ impl Kind {
         }
     }
 
-    /// A lookup: context the worker pulled in to read (`lookup_chars`,
-    /// `ctx_share`, `repeat_rate`).
     pub fn is_lookup(self) -> bool {
         matches!(
             self,
@@ -91,7 +69,6 @@ impl Kind {
     }
 }
 
-/// The lookup kinds as the report's SQL names them.
 pub const LOOKUP_KINDS: [&str; 8] = [
     "read",
     "grep",
@@ -103,10 +80,8 @@ pub const LOOKUP_KINDS: [&str; 8] = [
     "ctx-outline",
 ];
 
-/// The `ctx-*` kinds (slice 13).
 pub const CTX_KINDS: [&str; 3] = ["ctx-def", "ctx-refs", "ctx-outline"];
 
-/// `factory ctx def|refs|outline …` as the first command, by its verb.
 pub fn ctx_kind(command: &str) -> Option<Kind> {
     let (words, _) = shell::first_command(command);
     if words.len() < 3 || shell::program(&words[0]) != "factory" || words[1] != "ctx" {
@@ -120,8 +95,6 @@ pub fn ctx_kind(command: &str) -> Option<Kind> {
     }
 }
 
-/// The kind of one call. `gate` is the feature's gate pair when the driver
-/// knows it; without it no `Bash` call is a gate run.
 pub fn classify(t: &ToolUse, gate: Option<&GateCmds>) -> Kind {
     match t.name.as_str() {
         "Read" => Kind::Read,
@@ -132,8 +105,6 @@ pub fn classify(t: &ToolUse, gate: Option<&GateCmds>) -> Kind {
     }
 }
 
-/// A `Bash` call's kind from its command, in §10's order: the lookup words
-/// first, then the gate strings, else `run`.
 pub fn bash_kind(command: &str, gate: Option<&GateCmds>) -> Kind {
     if let Some(k) = ctx_kind(command) {
         return k;
@@ -154,10 +125,6 @@ pub fn bash_kind(command: &str, gate: Option<&GateCmds>) -> Kind {
     Kind::Run
 }
 
-/// The first command word after leading `cd … &&` (or `;`) segments, `env`,
-/// `time` and `VAR=value` prefixes, with any directory prefix dropped: the
-/// shell reading `ctx_kind` and the hook use, so a quoted prefix such as
-/// `FOO="a b" grep …` still finds `grep` (AD-40006).
 pub fn first_word(command: &str) -> Option<String> {
     let (words, _) = shell::first_command(command);
     words.first().map(|w| shell::program(w).to_string())
@@ -175,9 +142,6 @@ fn field<'a>(t: &'a ToolUse, key: &str) -> &'a str {
     t.input.get(key).and_then(Value::as_str).unwrap_or("")
 }
 
-/// The normalised target (§10 `target_hash`): the file path, the pattern
-/// plus path, the command with whitespace collapsed; for other tools the
-/// tool name plus its input.
 pub fn target(t: &ToolUse) -> String {
     match t.name.as_str() {
         "Read" | "Edit" | "Write" => field(t, "file_path").to_string(),
@@ -188,7 +152,6 @@ pub fn target(t: &ToolUse) -> String {
     }
 }
 
-/// sha256 of [`target`], lowercase hex.
 pub fn target_hash(t: &ToolUse) -> String {
     sha256_hex(target(t).as_bytes())
 }
@@ -202,9 +165,7 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     out
 }
 
-/// A gate run's verdict from its result: the block's `is_error`, a line
-/// starting with `FAIL` (the fixture gate), or an `Exit code <n>` marker
-/// with n ≠ 0 (a real gate under the agent's `Bash`).
+/// `Exit code <n>` is how Claude Code's `Bash` result reports a nonzero exit; `FAIL` is the fixture gate's.
 pub fn is_red(t: &ToolUse) -> bool {
     if t.result_error {
         return true;
@@ -222,8 +183,7 @@ pub fn is_red(t: &ToolUse) -> bool {
     })
 }
 
-/// Minutes a call took: from its timestamp to its result's, else to the
-/// next call's, else 0 (the column is `NOT NULL`; AD-803).
+/// 0 with no timestamps: the column is `NOT NULL`.
 pub fn minutes(t: &ToolUse, next: Option<&ToolUse>) -> f64 {
     let Some(start) = t.ts.as_deref().and_then(epoch_secs) else {
         return 0.0;
@@ -239,8 +199,6 @@ pub fn minutes(t: &ToolUse, next: Option<&ToolUse>) -> f64 {
     }
 }
 
-/// One worker's calls as rows, flags computed against `seen_run` (the
-/// run's earlier targets, which this call extends).
 #[derive(Debug, Clone, PartialEq)]
 pub struct CallRow {
     pub seq: u32,
@@ -253,8 +211,7 @@ pub struct CallRow {
     pub ts: Option<String>,
     pub label_followup: Option<bool>,
     pub label_expanded: Option<bool>,
-    /// A subagent's call: kept in `seq` and the repeat sets, so the windows
-    /// above count it; only the report's lookup figures leave it out.
+    /// Kept in `seq` and the repeat sets; only the report's lookup figures leave it out.
     pub in_subagent: bool,
 }
 
@@ -292,15 +249,9 @@ pub fn call_rows(
         .collect()
 }
 
-/// How many calls after a `ctx` answer a read of a file it named counts
-/// as a follow-up (`followup_read_within_2`, §14).
 pub const FOLLOWUP_WITHIN: usize = 2;
-/// How many calls after a lookup a wider one on the same target counts as
-/// an expansion (`expanded_within_5`, §14).
 pub const EXPANDED_WITHIN: usize = 5;
 
-/// `(label_followup, label_expanded)` per call: the first on every `ctx-*`
-/// call, the second on every `read` and `ctx-refs` call, `None` elsewhere.
 pub fn labels(tool_uses: &[ToolUse], kinds: &[Kind]) -> Vec<(Option<bool>, Option<bool>)> {
     (0..tool_uses.len())
         .map(|i| {
@@ -342,8 +293,6 @@ pub fn labels(tool_uses: &[ToolUse], kinds: &[Kind]) -> Vec<(Option<bool>, Optio
         .collect()
 }
 
-/// The files a `ctx` answer names: `path:line  kind  …` hit lines and
-/// `== path ==` outline headers, as printed (relative to where it ran).
 pub fn ctx_paths(text: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for line in text.lines() {
@@ -371,8 +320,7 @@ pub fn ctx_paths(text: &str) -> Vec<String> {
     out
 }
 
-/// The paths a read-like call names: `Read`'s `file_path`, a `Bash` call's
-/// first-command operands (a `sed` script among them matches nothing).
+/// A `sed` script lands among a `Bash` call's operands; it matches no path, so it is not filtered.
 pub fn read_paths(t: &ToolUse) -> Vec<String> {
     match t.name.as_str() {
         "Read" => vec![field(t, "file_path").to_string()],
@@ -388,13 +336,11 @@ pub fn read_paths(t: &ToolUse) -> Vec<String> {
     }
 }
 
-/// `path` (absolute, or relative to the repo) names the repo-relative `rel`.
 pub fn names(path: &str, rel: &str) -> bool {
     let rel = rel.trim_start_matches("./");
     !rel.is_empty() && (path.trim_start_matches("./") == rel || path.ends_with(&format!("/{rel}")))
 }
 
-/// A `Read`'s file and `limit` (`None`: the whole file).
 fn read_window(t: &ToolUse) -> (&str, Option<u64>) {
     (
         field(t, "file_path"),
@@ -402,7 +348,6 @@ fn read_window(t: &ToolUse) -> (&str, Option<u64>) {
     )
 }
 
-/// A `ctx refs` call's target (symbol and `--in`) and `--max` (default 10).
 fn refs_window(command: &str) -> (String, usize) {
     let (words, _) = shell::first_command(command);
     let mut symbol = String::new();
@@ -435,8 +380,6 @@ fn refs_window(command: &str) -> (String, usize) {
     (format!("{symbol}\n{dir}"), max)
 }
 
-/// A `read` or `bash-cat` of a file the worker's pack held (`held`,
-/// repo-relative): `pack_doc_read_chars` (§4) counts its chars.
 pub fn pack_doc(t: &ToolUse, kind: Kind, held: &[String], repo: &Path) -> bool {
     if !matches!(kind, Kind::Read | Kind::BashCat) || held.is_empty() {
         return false;
@@ -454,8 +397,6 @@ pub fn pack_doc(t: &ToolUse, kind: Kind, held: &[String], repo: &Path) -> bool {
     })
 }
 
-/// The `workers` subagent columns of what `measure::subagents` read:
-/// `(sub_input, sub_cache_write, sub_cache_read, sub_output, subagents)`.
 pub fn sub_columns(usage: &measure::Measure, count: usize) -> (i64, i64, i64, i64, i64) {
     let n = |v: u64| v as i64;
     (
@@ -467,13 +408,9 @@ pub fn sub_columns(usage: &measure::Measure, count: usize) -> (i64, i64, i64, i6
     )
 }
 
-/// Why a session has no subagent columns: nulls on the row, never zeros.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubagentsUnread {
-    /// No `<session>.jsonl` where Claude Code keeps it: the path rule no
-    /// longer matches its layout, or the transcript was cleaned up.
     TranscriptMissing,
-    /// The `subagents/` dir, or a file in it, could not be read.
     Unreadable(String),
 }
 
@@ -486,10 +423,7 @@ impl std::fmt::Display for SubagentsUnread {
     }
 }
 
-/// The `workers` subagent columns for the session whose transcript is
-/// `transcript`, as `record_subagents` and `report --recount` store them.
-/// No `subagents/` dir is zeros; a missing transcript is told apart, so the
-/// recount can say its sum is own tokens only.
+/// A missing transcript is told apart from no `subagents/` dir: the recount reports own tokens only.
 pub fn read_subagents(
     transcript: &Path,
 ) -> std::result::Result<(i64, i64, i64, i64, i64), SubagentsUnread> {
@@ -503,26 +437,15 @@ pub fn read_subagents(
     }
 }
 
-/// The dir a worker ran in: its stream's `init` cwd (a lane, PRD-005 FR-2),
-/// else the run's repo, for a stream with no `init` line. Its transcript
-/// slug and its Read paths both hang off it.
 pub fn worker_dir<'a>(cwd: Option<&'a Path>, repo: &'a Path) -> &'a Path {
     cwd.unwrap_or(repo)
 }
 
-/// A worker's transcript, slugged by the dir it ran in ([`worker_dir`]).
 pub fn transcript_of(config: &Path, cwd: Option<&Path>, repo: &Path, session: &str) -> PathBuf {
     measure::transcript_path(config, worker_dir(cwd, repo), session)
 }
 
-/// PRD-003 FR-21: what the worker's subagents used, read from Claude
-/// Code's transcript dir once the worker exited, onto its row. No dir is
-/// zeros, and so is no transcript: a worker killed before its first turn
-/// leaves none. A dir that cannot be read is nulls and one
-/// `subagents_unread` event. The stream's own subagent lines are never a
-/// fallback: their output count is an early snapshot. `Err` only when that
-/// event could not be written; the callers drop it, so an exit always
-/// settles.
+/// No transcript is zeros: a worker killed before its first turn leaves none; the stream's subagent counts are early snapshots.
 pub fn record_subagents(
     run: &mut Run,
     worker_id: i64,
@@ -556,10 +479,6 @@ pub fn record_subagents(
     Ok(())
 }
 
-/// One worker's `tool_calls` rows, written as one transaction, flags
-/// against `seen_run` (the run's earlier targets, which this extends).
-/// `record_exit` and `report --recount` (PRD-003 FR-21) both write through
-/// it; the rows come back for the gate rows.
 pub fn insert_calls(
     db: &Db,
     run_id: &str,
@@ -595,9 +514,6 @@ pub fn insert_calls(
     Ok(rows)
 }
 
-/// Write a settled worker's `tool_calls` rows (one transaction) and its
-/// inner-loop runs as `gates` rows. Called from both `settle`s
-/// (`scheduler`, `checkpoint`) once the `workers` row is closed.
 pub fn record_exit(run: &Run, worker_id: i64, summary: &Summary) -> Result<()> {
     if summary.tool_uses.is_empty() {
         return Ok(());
@@ -682,7 +598,7 @@ mod tests {
         assert_eq!(k("cd /r && ./gate.sh 2>&1 | tee out"), Kind::RunGate);
         assert_eq!(k("cat ./gate.sh"), Kind::BashCat);
         assert_eq!(k("cargo build"), Kind::Run);
-        // A quoted prefix, a glued operator, a time prefix (AD-40006).
+        // A quoted prefix, a glued operator, a time prefix.
         assert_eq!(k("FOO=\"a b\" grep x ."), Kind::BashGrep);
         assert_eq!(k("cd /r&&sed -n 1p f"), Kind::BashSed);
         assert_eq!(k("time head -5 f"), Kind::BashCat);
@@ -917,8 +833,7 @@ mod tests {
             "sed is not counted"
         );
         assert!(!r(&read("/repo/docs/features/002-y/prd.md", None)));
-        // Anchored at the repo root: the same tail under another directory,
-        // or another checkout, is not the held file.
+        // Anchored at the repo root: the same tail elsewhere is not the held file.
         assert!(!r(&read("/repo/vendor/docs/features/001-x/prd.md", None)));
         assert!(!r(&read("/other/docs/features/001-x/prd.md", None)));
         assert!(!r(&bash("cat sub/docs/features/001-x/prd.md")));
@@ -946,7 +861,7 @@ mod tests {
         t.result_head = Some("FAIL tests/fake.rs: expected 2 got 3\n".to_string());
         assert!(is_red(&t));
         t.result_head = Some("warning: FAILURE is a word\nExit code 0".to_string());
-        assert!(!is_red(&t)); // only a line starting with FAIL is the marker
+        assert!(!is_red(&t));
         t.result_head = Some("compiling\nExit code 101".to_string());
         assert!(is_red(&t));
         t.result_head = Some("all good\nExit code 0".to_string());

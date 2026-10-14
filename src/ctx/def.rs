@@ -1,13 +1,4 @@
-//! `factory ctx def` (PRD §14 FR-12): one definition regex per language run
-//! through `grep-searcher` and `grep-regex` over the walk finds the
-//! candidates; each candidate file is then tagged with tree-sitter
-//! (`lang.rs`) and a hit is kept only when a definition's name sits on its
-//! line. The regexes take modifiers in any order and a member whose
-//! parameters run onto the next line, so every shape `outline` lists is a
-//! candidate (AD-40001). The body is the definition node's exact range, the
-//! kind the tag's in the `--kind` vocabulary. A file whose tree holds a
-//! syntax error keeps its textual hits with slice 11's heuristic body, so a
-//! broken file never hides a definition.
+//! A file whose tree holds a syntax error keeps its textual hits, so a broken file never hides a definition.
 use std::path::Path;
 
 use super::lang::{Definition, Parsed, Unit, definitions, kind_matches, line_of, line_starts};
@@ -15,28 +6,19 @@ use super::walk::{self, Lang, WalkOpts};
 use super::{Searched, matcher, matching_lines, rel};
 use crate::Result;
 
-/// The most lines a heuristic body takes, the match line included: the
-/// median body the research measured (`ctx-research.md` §2). Only a file
-/// that does not parse cleanly gets a heuristic body.
+/// The median body length measured; only a file that does not parse cleanly gets a heuristic body.
 pub const BODY_LINES: usize = 25;
 
-/// One definition found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Def {
     pub path: String,
     pub line: u64,
     pub kind: &'static str,
-    /// The signature line, trimmed: the line of the definition's name, or
-    /// the match line in a file that does not parse cleanly.
     pub signature: String,
-    /// The lines after the signature line, dedented by its indentation;
-    /// the node's whole range when it opens above the name (AD-9003).
     pub body: Vec<String>,
-    /// A heuristic body stopped at [`BODY_LINES`] before it ended.
     pub cut: bool,
 }
 
-/// The four regex tables: Vue files use TypeScript's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Table {
     Php,
@@ -57,12 +39,7 @@ impl Table {
         }
     }
 
-    /// The definition regexes, `NAME` already escaped, each anchored at the
-    /// line start after whitespace and modifiers in any order (slice 11 §
-    /// Current code, widened by AD-40001). A TypeScript member whose
-    /// parameters run onto the next line matches on its name's line; a Go
-    /// type inside a `type ( … )` group matches as a name, then a type,
-    /// which a struct field does too, and the tree tells them apart.
+    /// The widest shapes match on purpose (a Go struct field, a member whose parameters wrap); the tree confirms.
     fn patterns(self, name: &str) -> Vec<String> {
         let p = match self {
             Table::Php => vec![
@@ -90,8 +67,7 @@ impl Table {
             .collect()
     }
 
-    /// The keywords a match can carry, and the kind of a match with none
-    /// (TypeScript's class member, a Go type in a `type ( … )` group).
+    /// The second is the kind of a match with no keyword: a TypeScript member, a grouped Go type.
     fn keywords(self) -> (&'static [&'static str], &'static str) {
         match self {
             Table::Php => (
@@ -131,22 +107,16 @@ impl Table {
     }
 }
 
-/// What `def` found, in path then line order, and what it left out.
 #[derive(Debug, Default)]
 pub struct Found {
     pub hits: Vec<Def>,
     pub searched: Searched,
-    /// Textual matches inside a comment or a string (a docblock mention).
     pub in_comments: usize,
-    /// Textual matches on no definition's name (a call that reads like one).
     pub not_defs: usize,
-    /// Definitions of a kind `--kind` left out.
     pub other_kind: usize,
-    /// Files whose tree holds a syntax error: their textual matches kept.
     pub unparsed: usize,
 }
 
-/// One file's share of [`Found`].
 #[derive(Debug, Default)]
 struct InFile {
     hits: Vec<Def>,
@@ -156,8 +126,6 @@ struct InFile {
     unparsed: bool,
 }
 
-/// Every definition of `name` under `base`, of kind `want` when given
-/// (`fn` takes methods too).
 pub fn find(base: &Path, name: &str, want: Option<&str>, opts: &WalkOpts) -> Result<Found> {
     let escaped = escape(name);
     let matchers = Table::ALL
@@ -211,7 +179,6 @@ pub fn find(base: &Path, name: &str, want: Option<&str>, opts: &WalkOpts) -> Res
     Ok(found)
 }
 
-/// One candidate file: its text and the lines the regexes matched.
 struct File<'a> {
     shown: String,
     text: &'a str,
@@ -221,10 +188,7 @@ struct File<'a> {
 }
 
 impl File<'_> {
-    /// The hits the file's definition tags confirm; none when its tree holds
-    /// a syntax error or tagging fails. An `impl` block names a type it does
-    /// not define, so it confirms nothing. A Vue file is tagged block by
-    /// block; one without a `<script>` block has no definitions.
+    /// An `impl` block names a type it does not define, so it confirms nothing.
     fn confirmed(&self, path: &Path, lang: Lang) -> Option<InFile> {
         let text = self.text;
         let units = Unit::all(path, lang, text);
@@ -273,12 +237,7 @@ impl File<'_> {
         Some(f)
     }
 
-    /// A confirmed definition: the location and signature are the name's
-    /// line, as `outline` prints them; the body is the node's other lines,
-    /// the last one cut where the node ends. A node that opens above its
-    /// name (PHP attributes, a TypeScript class decorator) prints its whole
-    /// range as the body, the signature line included, so the attributes
-    /// stay in place (AD-9003).
+    /// A node that opens above its name (PHP attributes, a decorator) keeps its whole range as the body.
     fn node_def(&self, starts: &[usize], d: &Definition) -> Def {
         let text = self.text;
         let first = line_of(starts, d.range.start);
@@ -311,10 +270,7 @@ impl File<'_> {
         }
     }
 
-    /// Slice 11's output for a file that does not parse cleanly: every
-    /// textual hit, the heuristic body, the keyword's kind. `--kind` still
-    /// filters, but `fn` and `method` pass for each other: the keyword
-    /// cannot tell them apart.
+    /// `fn` and `method` pass for each other: a keyword cannot tell them apart.
     fn textual(&self, table: Table) -> InFile {
         let lines: Vec<&str> = self.text.lines().collect();
         let mut f = InFile {
@@ -353,7 +309,6 @@ impl File<'_> {
     }
 }
 
-/// A regex keyword in the `--kind` vocabulary, as close as a keyword gets.
 fn vocabulary(table: Table, keyword: &'static str) -> &'static str {
     match keyword {
         "class" | "interface" | "trait" | "enum" | "struct" | "union" => "class",
@@ -365,7 +320,6 @@ fn vocabulary(table: Table, keyword: &'static str) -> &'static str {
     }
 }
 
-/// Escapes the regex metacharacters in a symbol name.
 pub fn escape(name: &str) -> String {
     let mut s = String::with_capacity(name.len());
     for c in name.chars() {
@@ -377,7 +331,6 @@ pub fn escape(name: &str) -> String {
     s
 }
 
-/// The last keyword of the table before `name` on a matched line.
 fn kind_of(table: Table, line: &str, name: &str) -> &'static str {
     let (keywords, none) = table.keywords();
     let before = &line[..word_at(line, name).unwrap_or(line.len())];
@@ -389,12 +342,10 @@ fn kind_of(table: Table, line: &str, name: &str) -> &'static str {
         .unwrap_or(none)
 }
 
-/// The byte offset of the first whole-word `name` in `line`.
 fn word_at(line: &str, name: &str) -> Option<usize> {
     words(line, name).next()
 }
 
-/// The byte offsets of every whole-word `name` in `line`.
 pub(crate) fn words<'a>(line: &'a str, name: &'a str) -> impl Iterator<Item = usize> + 'a {
     let is_word = |c: char| c.is_alphanumeric() || c == '_';
     line.match_indices(name).map(|(i, _)| i).filter(move |&i| {
@@ -404,12 +355,7 @@ pub(crate) fn words<'a>(line: &'a str, name: &'a str) -> impl Iterator<Item = us
     })
 }
 
-/// Where the heuristic body of the definition on line `at` ends (exclusive)
-/// and whether [`BODY_LINES`] cut it. It goes on while a bracket the
-/// definition opened is still open, or the next non-blank line is indented
-/// deeper than the match, or that line opens with `{` (a brace on its own
-/// line). So it stops at the first line whose indentation returns to the
-/// match's, keeping the closing brace and a signature spread over lines.
+/// Stops where indentation returns to the match's, keeping a closing brace and a signature spread over lines.
 pub fn body_end(lines: &[&str], at: usize) -> (usize, bool) {
     let base = indent(lines[at]);
     let mut depth = 0i64;
@@ -449,7 +395,6 @@ pub(crate) fn indent(line: &str) -> usize {
     line.chars().take_while(|c| *c == ' ' || *c == '\t').count()
 }
 
-/// `line` without up to `n` leading spaces or tabs.
 pub(crate) fn dedent(line: &str, n: usize) -> String {
     let strip = indent(line).min(n);
     line[strip..].trim_end().to_string()

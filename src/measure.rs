@@ -1,16 +1,3 @@
-//! The cockpit's own cost (PRD §10 FR-8 "cockpit_tokens from the cockpit
-//! session's transcript, the same way `measure.py` does"): a port of the old
-//! skills repo's `measure.py:42-67` (per assistant message `ctx = input +
-//! cache_creation + cache_read`, out, cache reads, start and peak context,
-//! messages deduped by `message.id` because streaming logs one message more
-//! than once) and `:87-150` (subagent transcripts under
-//! `<session>/subagents/*.jsonl` summed in, several sessions combined).
-//! The build and polish minute markers stay out: the driver has its own
-//! clock for those (AD-805).
-//!
-//! PRD-003 FR-21 reads a worker's subagents the same way, apart from its
-//! own usage: [`transcript_path`] finds the session file under Claude
-//! Code's projects dir, [`subagents`] sums what sits beside it.
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -20,27 +7,21 @@ use serde_json::Value;
 use crate::error::io;
 use crate::{Result, clock, quota};
 
-/// What one or more cockpit transcripts amount to.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Measure {
     pub sessions: usize,
     pub subagents: usize,
-    /// Assistant messages counted, after dedupe.
+    /// Assistant messages, deduped by id.
     pub calls: u64,
     pub input_tokens: u64,
     pub out_tokens: u64,
     pub cache_write_tokens: u64,
     pub cache_read_tokens: u64,
-    /// The first message's context at or after the `skills/deliver` or
-    /// `skills/deliver` prompt (`measure.py:148`), else the first
-    /// message's; 0 with no messages.
     pub start_context: u64,
     pub peak_context: u64,
 }
 
 impl Measure {
-    /// The cockpit's weighted tokens, with slice 07's weights so it compares
-    /// with the run's `weighted_tokens` (§13 FR-11).
     pub fn weighted(&self) -> u64 {
         quota::weigh(
             self.input_tokens,
@@ -52,7 +33,6 @@ impl Measure {
     }
 }
 
-/// One assistant message's usage, `measure.py:42-53`.
 #[derive(Debug, Clone, PartialEq)]
 struct Msg {
     ts: f64,
@@ -68,8 +48,6 @@ impl Msg {
     }
 }
 
-/// `measure.py` `ts()`: a transcript timestamp as epoch seconds, with the
-/// fraction; `None` for anything that is not `YYYY-MM-DDTHH:MM:SS[.fff]Z`.
 pub fn epoch_secs(ts: &str) -> Option<f64> {
     let body = ts.strip_suffix('Z')?;
     let (whole, frac) = match body.split_once('.') {
@@ -97,17 +75,13 @@ fn num(u: &Value, key: &str) -> u64 {
     u.get(key).and_then(Value::as_u64).unwrap_or(0)
 }
 
-/// `assistant_msgs`: assistant rows with usage and a timestamp, deduped by
-/// `message.id` (the last occurrence wins, as a dict assignment does),
-/// sorted by timestamp.
 fn assistant_msgs(rows: &[Value]) -> Vec<Msg> {
     let mut msgs: Vec<Msg> = assistant_by_id(rows).into_values().collect();
     msgs.sort_by(|a, b| a.ts.total_cmp(&b.ts));
     msgs
 }
 
-/// The assistant rows of `assistant_msgs`, keyed by `message.id` (else the
-/// row's `uuid`, else "").
+/// A streamed message is logged more than once with growing usage; the last line per `message.id` wins.
 fn assistant_by_id(rows: &[Value]) -> HashMap<String, Msg> {
     let mut by_id: HashMap<String, Msg> = HashMap::new();
     for r in rows {
@@ -145,15 +119,12 @@ fn assistant_by_id(rows: &[Value]) -> HashMap<String, Msg> {
     by_id
 }
 
-/// The prompt that starts a delivery: `measure.py`'s `skills/deliver`, or
-/// this repo's cockpit skill, `skills/deliver`.
 fn is_deliver_prompt(text: &str) -> bool {
     ["skills/deliver", "skills/factory-deliver"]
         .iter()
         .any(|s| text.contains(s))
 }
 
-/// A user row's text, string or text blocks.
 fn user_text(r: &Value) -> String {
     match r.get("message").and_then(|m| m.get("content")) {
         Some(Value::String(s)) => s.clone(),
@@ -176,7 +147,6 @@ fn add_totals(m: &mut Measure, msgs: &[Msg]) {
     }
 }
 
-/// One session: the main transcript plus `<path minus .jsonl>/subagents/*.jsonl`.
 pub fn measure(path: &Path) -> Result<Measure> {
     let rows = load(path)?;
     let main = assistant_msgs(&rows);
@@ -200,7 +170,6 @@ pub fn measure(path: &Path) -> Result<Measure> {
         .and_then(|at| main.iter().find(|x| x.ts >= at))
         .map_or(0, Msg::ctx);
 
-    // The cockpit has always skipped a dir it cannot read.
     if let Subagents::Read { usage, count } = subagents(path) {
         m.subagents += count;
         m.calls += usage.calls;
@@ -213,20 +182,17 @@ pub fn measure(path: &Path) -> Result<Measure> {
     Ok(m)
 }
 
-/// What a session's subagents used, apart from its own messages.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Subagents {
-    /// No `<session>/subagents/` dir: Claude Code writes one only when the
-    /// session spawned a subagent.
+    /// Claude Code makes the `subagents/` dir only once the session spawns one.
     None,
-    /// Final usage per message summed over every `*.jsonl` there; `count`
-    /// is the files that had an assistant message.
-    Read { usage: Measure, count: usize },
-    /// The dir exists but it, or a file in it, could not be read.
+    Read {
+        usage: Measure,
+        count: usize,
+    },
     Unreadable(String),
 }
 
-/// The subagents beside `transcript`: `<transcript minus .jsonl>/subagents`.
 pub fn subagents(transcript: &Path) -> Subagents {
     let Some(dir) = transcript
         .to_str()
@@ -248,9 +214,7 @@ pub fn subagents(transcript: &Path) -> Subagents {
         .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
         .collect();
     files.sort();
-    // A forked subagent's file opens with copies of the parent's messages,
-    // and sibling forks repeat each other's: a message id counts once per
-    // session, and the parent's own are already in its `result.usage`.
+    // A fork's file opens with copies of the parent's and its siblings' messages: an id counts once per session.
     let mut seen: HashSet<String> = load(transcript)
         .map(|rows| assistant_by_id(&rows).into_keys().collect())
         .unwrap_or_default();
@@ -275,10 +239,7 @@ pub fn subagents(transcript: &Path) -> Subagents {
     Subagents::Read { usage, count }
 }
 
-/// Where Claude Code keeps a session's transcript: `<config
-/// dir>/projects/<cwd with every character but an ASCII letter or digit as
-/// "-">/<session>.jsonl`. The cwd is the worker's, the run's repo. Not only
-/// "/" and ".": `ICG/apk_fiscal_arca` is `-ICG-apk-fiscal-arca` on disk.
+/// Claude Code's slug, not only `/` and `.`: `ICG/apk_fiscal_arca` is `-ICG-apk-fiscal-arca` on disk.
 pub fn transcript_path(config_dir: &Path, repo: &Path, session_id: &str) -> PathBuf {
     let slug: String = repo
         .to_string_lossy()
@@ -291,8 +252,6 @@ pub fn transcript_path(config_dir: &Path, repo: &Path, session_id: &str) -> Path
         .join(format!("{session_id}.jsonl"))
 }
 
-/// `combine`: several sessions of one run. Tokens and calls add; the start
-/// context is the first session's, the peak the max.
 pub fn combine(paths: &[PathBuf]) -> Result<Measure> {
     let mut all = Measure::default();
     for (i, p) in paths.iter().enumerate() {
@@ -320,14 +279,7 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixture/cockpit-session.jsonl")
     }
 
-    /// Pinned on 2026-10-10 with
-    /// `python3 ~/Dropbox/dev/claude-code-skills/deliver/bin/measure.py tests/fixture/cockpit-session.jsonl --retro`
-    /// (the slice's `~/.claude/skills/feature-docs/bin/measure.py` path does
-    /// not exist; the script lives in the old skills repo):
-    /// `out_tokens: 2524`, `cache_read_tokens: 181841`,
-    /// `start_context: 45507`, `peak_context: 58351` (build and polish
-    /// minutes empty). The input and cache-write sums (98, 32926) come from
-    /// the same deduped messages and give the weighted figure.
+    /// The numbers are what the old skills repo's `measure.py --retro` printed for the fixture on 2026-10-10.
     #[test]
     fn the_fixture_transcript_matches_measure_py() {
         let m = measure(&fixture()).unwrap();
@@ -465,14 +417,11 @@ mod tests {
             ),
             (4, 20, 200, 80)
         );
-        // The cockpit's single figure keeps adding them in.
         let m = measure(&path).unwrap();
         assert_eq!((m.out_tokens, m.subagents), (87, 2));
     }
 
-    /// A fork's file opens with copies of the parent's messages and of its
-    /// siblings': each message id counts once, and a file holding only
-    /// copies is not a subagent.
+    /// A file holding only copies is not a subagent.
     #[test]
     fn a_forks_copied_messages_count_once() {
         let dir = tempfile::tempdir().unwrap();

@@ -1,10 +1,3 @@
-//! What a worker process gets from the driver, seen from the stub `claude`:
-//! no GitHub credential and no session `CLAUDE_*` variable, but the account
-//! and the provider (S1, L17); absolute paths on its command line however
-//! the data dir is spelled (Ln6); files only its owner reads (S-n2); a
-//! stream that is a file of its own, so the worker finishes its record even
-//! when the driver dies first (L9); and a git env that pushes nowhere
-//! (AD-10001).
 #[path = "harness/mod.rs"]
 mod harness;
 
@@ -65,9 +58,7 @@ fn wait_until(what: &str, secs: u64, mut ok: impl FnMut() -> bool) {
 fn a_worker_gets_no_github_and_no_session_but_keeps_the_account() {
     let fx = Fixture::with_index("worker-env", &[("checkpoint_every", "10")]);
     fx.write_plan(&[json!({"outcome": "done"})]);
-    // The driver runs from a subdirectory with a data dir relative to it: a
-    // relative path on the worker's command line would resolve against the
-    // repo, where the worker runs, and miss (Ln6).
+    // A relative data dir from a subdirectory: the worker, run in the repo, must still get absolute paths.
     let account = fx.path().parent().unwrap().join("claude-config");
     let out = fx
         .command(BIN)
@@ -137,7 +128,7 @@ fn a_worker_gets_no_github_and_no_session_but_keeps_the_account() {
         assert_eq!(real(&gh), real(&dir.join("gh-config")));
         assert_eq!(mode(&gh), 0o700);
         assert_eq!(fs::read_dir(&gh).unwrap().count(), 0);
-        // git pushes nowhere (AD-10001); nothing inherited, so ours start at 0.
+        // Nothing inherited, so the push-off entries start at 0.
         let git = &call["git_config"];
         assert_eq!(git["GIT_CONFIG_COUNT"], "5", "{git}");
         assert_eq!(
@@ -153,8 +144,6 @@ fn a_worker_gets_no_github_and_no_session_but_keeps_the_account() {
         assert!(settings.is_absolute() && settings.is_file(), "{settings:?}");
         assert!(real(pack).starts_with(real(&dir)), "{pack:?}");
         assert_eq!(call["env"]["FACTORY_PACK"], pack.to_str().unwrap());
-        // PRD-005 FR-2: the repo is the worker's cwd, its lane for a build
-        // worker; the board is always the main tree's.
         assert_eq!(call["env"]["FACTORY_REPO"], call["cwd"]);
         assert_eq!(call["env"]["FACTORY_BOARD"], fx.path().to_str().unwrap());
 
@@ -169,7 +158,6 @@ fn a_worker_gets_no_github_and_no_session_but_keeps_the_account() {
     }
 }
 
-/// Run `git args` in `repo` with the fixture's git env and `extra` on top.
 fn git_in(
     fx: &Fixture,
     repo: &Path,
@@ -185,12 +173,7 @@ fn git_in(
         .unwrap()
 }
 
-/// AD-10001: a worker's push URLs go to a transport git has no helper for.
-/// The driver inherits one env-config entry of the owner's; the worker keeps
-/// it and gets the five `pushInsteadOf` entries after it. Then, with the env
-/// the stub saw, a push to an https, an http, a git:// or an scp-style ssh
-/// origin fails at the helper lookup, before any connection, and fetch URLs
-/// are untouched.
+/// The push URL's scheme is one git has no helper for, so a push fails before any connection.
 #[test]
 fn a_worker_pushes_nowhere_through_the_git_push_off_env() {
     let fx = Fixture::with_index("worker-push-off", &[("checkpoint_every", "10")]);

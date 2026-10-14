@@ -1,19 +1,7 @@
-//! UTC timestamps without a date crate. `events.jsonl` lines carry RFC 3339
-//! seconds and run ids carry the day; nothing in the driver needs a calendar
-//! beyond that, so the civil-date arithmetic is the twelve-line public-domain
-//! algorithm rather than a dependency (AD-201).
-//!
-//! The clock can run fast for tests (FR-9, slice 07): a quota pause waits
-//! for a reset hours away, so `FACTORY_CLOCK_SCALE=S` with
-//! `FACTORY_CLOCK_ANCHOR=<epoch>` makes [`unix_now`] report
-//! `anchor + (wall - anchor) × S`. Every process in a test — the driver, a
-//! resumed driver, the stub worker — reads the same two variables, so the
-//! stub's `resetsAt` and the driver's `paused_until` are on one clock. Unset,
-//! the clock is the wall clock (AD-704).
+//! `FACTORY_CLOCK_SCALE` and `FACTORY_CLOCK_ANCHOR` speed tests up; every process reads both, so stub and driver share one clock.
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Seconds since the Unix epoch on the wall clock.
 pub fn wall_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -21,7 +9,6 @@ pub fn wall_now() -> u64 {
         .unwrap_or(0)
 }
 
-/// Seconds since the Unix epoch, scaled when `FACTORY_CLOCK_SCALE` is set.
 pub fn unix_now() -> u64 {
     let wall = wall_now();
     match scale() {
@@ -32,7 +19,6 @@ pub fn unix_now() -> u64 {
     }
 }
 
-/// `(anchor, scale)` from the environment, read once; `None` at scale 1.
 fn scale() -> Option<(u64, u64)> {
     static SCALE: OnceLock<Option<(u64, u64)>> = OnceLock::new();
     *SCALE.get_or_init(|| {
@@ -50,12 +36,10 @@ fn scale() -> Option<(u64, u64)> {
     })
 }
 
-/// `2026-10-09T23:12:01Z`.
 pub fn now_rfc3339() -> String {
     rfc3339(unix_now())
 }
 
-/// `20261009`, the day part of a run id.
 pub fn today() -> String {
     yyyymmdd(unix_now())
 }
@@ -76,8 +60,6 @@ pub fn yyyymmdd(secs: u64) -> String {
     format!("{y:04}{m:02}{d:02}")
 }
 
-/// The inverse of [`rfc3339`]: `2026-10-09T23:12:01Z` to seconds; `None`
-/// for anything else (the events file is this crate's own output).
 pub fn from_rfc3339(text: &str) -> Option<u64> {
     let t = text.strip_suffix('Z')?;
     let (date, time) = t.split_once('T')?;
@@ -100,7 +82,6 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
-/// Days since 1970-01-01 to a proleptic Gregorian (year, month, day).
 /// Howard Hinnant's `civil_from_days`, public domain.
 fn civil(days: i64) -> (i64, u32, u32) {
     let z = days + 719_468;

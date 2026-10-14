@@ -1,26 +1,4 @@
-//! `factory report <run>` (PRD §10 FR-8): the twelve retro keys the old
-//! framework's `retro.md` expects, then the eight run keys FR-11 compares,
-//! one `key: value` line each, or one JSON object with `--json`. Every
-//! number is a `SELECT` over what the driver wrote as it ran; nothing is
-//! re-parsed from a transcript. `--cockpit <session.jsonl>...` adds the
-//! cockpit's own cost from its transcript (`measure`). `score` is the
-//! owner's and prints empty (§13).
-//!
-//! Slice 13 (§14 FR-12 decision 4) appends `followup_reads` and
-//! `pack_doc_read_chars`, turns `ctx_share` into the share of lookups that
-//! were `ctx` calls (the byte share slice 08 printed stays as
-//! `lookup_share_chars`), prints the three lines the reversal rule reads
-//! after the keys, and `--per-worker` adds `ctx_share` and `repeat_rate` for
-//! each worker.
-//!
-//! `followup_reads_by_role` splits `followup_reads` by worker role: the
-//! icg-cloud A/B mixed a polish worker's follow-ups with the builders', and
-//! the reversal rule is read on the builders' share (retro FR-11, 2026-10-12).
-//!
-//! PRD-003 FR-24 appends the quality counts, no composite score: fix
-//! commits, CI red rounds and reruns from the events, the polish `FINDINGS`
-//! and the agent log's counts from the `runs` row, and prints them again on
-//! one `quality:` line beside `gate_red` and `worker_gate_red`.
+//! Every number is a `SELECT` over what the driver wrote as it ran; nothing is re-parsed from a transcript.
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::Write;
@@ -60,7 +38,7 @@ pub struct ReportArgs {
     pub recount: bool,
 }
 
-/// The retro keys (`retro.md:2-14`), in order, then the run keys (§10).
+/// The retro keys `retro.md` expects first, in its order, then the run keys.
 pub const KEYS: [&str; 23] = [
     "score",
     "gate_runs",
@@ -87,10 +65,6 @@ pub const KEYS: [&str; 23] = [
     "pack_doc_read_chars",
 ];
 
-/// The keys after [`KEYS`]: what the slices' task texts name beyond §10's
-/// list (AD-802; `lookup_share_chars`, slice 13). The three `cockpit_*`
-/// figures after `cockpit_peak_context` let the FR-8 cross-check compare all
-/// four of the QA guide's figures with `measure.py`, not just the peak.
 pub const EXTRA_KEYS: [&str; 19] = [
     "worker_gate_runs",
     "worker_gate_red",
@@ -113,20 +87,15 @@ pub const EXTRA_KEYS: [&str; 19] = [
     "pack_by_role",
 ];
 
-// The reversal rule's constants, PRD §14 FR-12 decision 4: "`followup_reads`
-// above 30% of `ctx` calls after slice 3 means the answers are too thin";
-// "If, after slice 3, `ctx_share` stays under 10% of worker lookups or
-// `repeat_rate` does not fall from 26.7%, `ctx` shrinks to `outline` only".
-// The report prints the comparison; the reversal is the owner's call.
+// The report prints the comparison; acting on it is the owner's call.
 /// `followup_reads` share above which the `ctx` answers are too thin.
 pub const FOLLOWUP_THRESHOLD: f64 = 0.30;
 /// `ctx_share` under which `ctx` is not taken up.
 pub const CTX_SHARE_THRESHOLD: f64 = 0.10;
-/// The `repeat_rate` baseline from the owner's transcripts (§20).
+/// The `repeat_rate` baseline measured on the owner's transcripts.
 pub const REPEAT_RATE_BASELINE: f64 = 0.267;
 
-/// `followup_reads`: the `ctx` calls a read of a file they named followed
-/// within two calls (`label_followup`), of all `ctx` calls.
+/// The `ctx` calls a read of a file they named followed within two calls, of all `ctx` calls.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Followups {
     pub count: u64,
@@ -135,7 +104,6 @@ pub struct Followups {
 }
 
 impl Followups {
-    /// The `ctx` calls among `calls` and how many a read followed.
     fn of<'a>(calls: impl Iterator<Item = &'a ToolCallRow>) -> Self {
         let (mut count, mut ctx_calls) = (0, 0);
         for c in calls.filter(|c| CTX_KINDS.contains(&c.kind.as_str())) {
@@ -149,7 +117,6 @@ impl Followups {
         }
     }
 
-    /// `1 of 2 ctx calls (50%)`.
     fn text(&self) -> String {
         format!(
             "{} of {} ctx calls ({}%)",
@@ -160,16 +127,11 @@ impl Followups {
     }
 }
 
-/// The three lines the reversal rule reads (§14 FR-12 decision 4). A share
-/// with nothing under it reads `n/a`, not a pass: no ctx call for the
-/// follow-up share, no lookup for `ctx_share` and `repeat_rate`.
+/// A share with nothing under it reads `n/a`, not a pass.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Thresholds {
-    /// `ok`, `over` or `n/a`.
     pub followup: &'static str,
-    /// `ok`, `under` or `n/a`.
     pub ctx_share: &'static str,
-    /// `lower`, `not lower` or `n/a`.
     pub repeat_rate: &'static str,
 }
 
@@ -179,7 +141,6 @@ impl Default for Thresholds {
     }
 }
 
-/// What a threshold line says with no data under it.
 const NO_DATA: &str = "n/a";
 
 impl Thresholds {
@@ -212,7 +173,6 @@ impl Thresholds {
     }
 }
 
-/// One worker's lookups, for `--per-worker`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct PerWorker {
     pub id: i64,
@@ -223,23 +183,17 @@ pub struct PerWorker {
     pub ctx_calls: u64,
     pub ctx_share: f64,
     pub repeat_rate: f64,
-    /// The worker's own usage, weighted (PRD-003 FR-21).
     pub weighted_own: u64,
-    /// Its subagents', weighted; `None` when they were not read.
     pub weighted_sub: Option<u64>,
     pub subagents: Option<i64>,
-    /// The model that answered (PRD-003 FR-23); `None` on an older row.
     pub model_id: Option<String>,
 }
 
-/// `—` for a figure that was not read.
 fn or_dash<T: std::fmt::Display>(v: Option<T>) -> String {
     v.map_or_else(|| "—".to_string(), |n| n.to_string())
 }
 
 impl PerWorker {
-    /// `worker 3 build slice 02 (1a2b3c4d): lookups 6, ctx_share 0.333,
-    /// repeat_rate 0.167, own 812000 sub 0 subagents 0, model_id claude-opus-5-5`.
     fn text(&self) -> String {
         let slice = self
             .slice
@@ -262,8 +216,6 @@ impl PerWorker {
     }
 }
 
-/// The row's subagent columns were never read (an unreadable dir, a lost
-/// transcript, a row from before PRD-003).
 fn sub_unread(w: &WorkerRow) -> bool {
     [
         w.sub_input,
@@ -275,7 +227,6 @@ fn sub_unread(w: &WorkerRow) -> bool {
     .all(Option::is_none)
 }
 
-/// `(lookups, ctx calls, repeats)` among `calls`.
 fn lookup_counts<'a>(calls: impl Iterator<Item = &'a ToolCallRow>) -> (u64, u64, u64) {
     let mut out = (0, 0, 0);
     for c in calls.filter(|c| LOOKUP_KINDS.contains(&c.kind.as_str())) {
@@ -286,7 +237,6 @@ fn lookup_counts<'a>(calls: impl Iterator<Item = &'a ToolCallRow>) -> (u64, u64,
     out
 }
 
-/// `ctx_share` and `repeat_rate` of each worker, in spawn order.
 pub fn per_worker(workers: &[WorkerRow], calls: &[ToolCallRow]) -> Vec<PerWorker> {
     workers
         .iter()
@@ -311,7 +261,6 @@ pub fn per_worker(workers: &[WorkerRow], calls: &[ToolCallRow]) -> Vec<PerWorker
         .collect()
 }
 
-/// `followup_reads` of each role that made a `ctx` call.
 pub fn followups_by_role(
     workers: &[WorkerRow],
     calls: &[ToolCallRow],
@@ -332,7 +281,6 @@ pub fn followups_by_role(
         .collect()
 }
 
-/// `build 1 of 2 (50%), polish 5 of 14 (36%)`, roles in [`ROLE_ORDER`].
 fn by_role_text(by_role: &BTreeMap<String, Followups>) -> String {
     let known = ROLE_ORDER.iter().filter_map(|r| by_role.get_key_value(*r));
     let other = by_role
@@ -356,15 +304,12 @@ fn by_role_text(by_role: &BTreeMap<String, Followups>) -> String {
     }
 }
 
-/// A role's weighted tokens: the workers' own, and their subagents'
-/// (PRD-003 FR-21).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct OwnSub {
     pub own: u64,
     pub sub: u64,
 }
 
-/// Weighted tokens per role, own and subagents apart.
 pub fn weighted_by_role(workers: &[WorkerRow]) -> BTreeMap<String, OwnSub> {
     let mut sums: BTreeMap<String, (f64, f64)> = BTreeMap::new();
     for w in workers {
@@ -385,7 +330,6 @@ pub fn weighted_by_role(workers: &[WorkerRow]) -> BTreeMap<String, OwnSub> {
         .collect()
 }
 
-/// `build 9950000+0 · polish 1582003+1859987`, roles in [`ROLE_ORDER`].
 fn weighted_by_role_text(by_role: &BTreeMap<String, OwnSub>) -> String {
     let known = ROLE_ORDER.iter().filter_map(|r| by_role.get_key_value(*r));
     let other = by_role
@@ -402,10 +346,7 @@ fn weighted_by_role_text(by_role: &BTreeMap<String, OwnSub>) -> String {
     }
 }
 
-/// One role's packs (PRD-003 FR-22), means over its rows that recorded
-/// `pack_parts`: each section's chars in the order the packs wrote them (a
-/// row without the section counts 0, so the sections add up to the total),
-/// the pack total, and `start_context` beside it, of which the pack is a share.
+/// Means over the role's rows with `pack_parts`; a row without a section counts 0, so sections sum to the total.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct PackShare {
     #[serde(serialize_with = "in_order")]
@@ -414,7 +355,7 @@ pub struct PackShare {
     pub start_context: Option<u64>,
 }
 
-/// The sections as a JSON object, keys in pack order.
+/// A JSON object, not an array of pairs, keys in pack order.
 fn in_order<S: serde::Serializer>(
     sections: &[(String, u64)],
     s: S,
@@ -422,11 +363,8 @@ fn in_order<S: serde::Serializer>(
     s.collect_map(sections.iter().map(|(k, n)| (k, n)))
 }
 
-/// One worker's pack sections and its `start_context`.
 type PackRow = (Vec<Part>, Option<i64>);
 
-/// [`PackShare`] per role; `None` for a role with no `pack_parts` row (a run
-/// from before FR-22).
 pub fn pack_by_role(workers: &[WorkerRow]) -> BTreeMap<String, Option<PackShare>> {
     let mut rows: BTreeMap<String, Vec<PackRow>> = BTreeMap::new();
     for w in workers {
@@ -467,8 +405,6 @@ pub fn pack_by_role(workers: &[WorkerRow]) -> BTreeMap<String, Option<PackShare>
         .collect()
 }
 
-/// `build slice 9120 outline 7800 … total 28400 start_context 45000 ·
-/// polish —`, roles in [`ROLE_ORDER`].
 fn pack_by_role_text(by_role: &BTreeMap<String, Option<PackShare>>) -> String {
     let known = ROLE_ORDER.iter().filter_map(|r| by_role.get_key_value(*r));
     let other = by_role
@@ -497,8 +433,6 @@ fn pack_by_role_text(by_role: &BTreeMap<String, Option<PackShare>>) -> String {
     }
 }
 
-/// The worker's own calls: the lookup figures leave its subagents' out
-/// (PRD-003 FR-21), though the table keeps them.
 fn own_calls(db: &Db, run_id: &str) -> Result<Vec<ToolCallRow>> {
     Ok(db
         .tool_calls(run_id)?
@@ -507,7 +441,6 @@ fn own_calls(db: &Db, run_id: &str) -> Result<Vec<ToolCallRow>> {
         .collect())
 }
 
-/// Worker rows by role.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Workers {
     pub total: u64,
@@ -518,7 +451,6 @@ pub struct Workers {
 pub const ROLE_ORDER: [&str; 5] = ["build", "merge", "fix", "checkpoint", "polish"];
 
 impl Workers {
-    /// `5 (build 3, fix 1, checkpoint 1)`.
     fn text(&self) -> String {
         let mut parts: Vec<String> = ROLE_ORDER
             .iter()
@@ -544,7 +476,6 @@ pub struct Report {
     pub gate_runs: u64,
     pub gate_red: u64,
     pub gate_minutes: f64,
-    /// CI fix rounds that landed a `fix: CI <check>` commit (FR-6).
     pub ci_cycles: u64,
     pub slices: u64,
     pub checkpoints: u64,
@@ -557,15 +488,12 @@ pub struct Report {
     pub input_tokens: u64,
     pub cache_write_tokens: u64,
     pub weighted_tokens: u64,
-    /// `None` without `--cockpit`.
     pub cockpit_tokens: Option<u64>,
     pub workers: Workers,
     pub lookup_chars: u64,
-    /// `ctx-*` rows among lookup rows (§14 decision 4).
     pub ctx_share: f64,
     pub repeat_rate: f64,
     pub followup_reads: Followups,
-    /// `result_chars` of `read`/`bash-cat` rows on a file the pack held (§4).
     pub pack_doc_read_chars: u64,
     pub worker_gate_runs: u64,
     pub worker_gate_red: u64,
@@ -573,31 +501,21 @@ pub struct Report {
     pub cockpit_out_tokens: Option<u64>,
     pub cockpit_cache_read_tokens: Option<u64>,
     pub cockpit_start_context: Option<u64>,
-    /// Lookup bytes among all result bytes: slice 08's `ctx_share`.
     pub lookup_share_chars: f64,
-    /// Roles with no `ctx` call are left out.
     pub followup_reads_by_role: BTreeMap<String, Followups>,
-    /// Weighted tokens per role, own and subagents apart.
     pub weighted_by_role: BTreeMap<String, OwnSub>,
-    /// `fix_committed` events: checkpoint fix workers that landed a commit.
     pub fix_commits: u64,
     pub ci_red_rounds: u64,
     pub ci_reruns: u64,
-    /// The polish `FINDINGS` line; `None` when it had none.
     pub findings: Option<Findings>,
     /// Stored at ship; `None` before it.
     pub decisions: Option<u32>,
     pub decide: Option<u32>,
     pub blocks: Option<u32>,
-    /// What the run resolved at its start (PRD-003 FR-23), the stored
-    /// object; `None` on a run from before it.
     pub knobs: Option<Value>,
     pub hypothesis: Option<String>,
-    /// Per role, what its packs were made of (PRD-003 FR-22); `None` for a
-    /// role none of whose rows recorded `pack_parts`.
     pub pack_by_role: BTreeMap<String, Option<PackShare>>,
     pub thresholds: Thresholds,
-    /// With `--per-worker` only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub per_worker: Option<Vec<PerWorker>>,
 }
@@ -615,7 +533,6 @@ fn ratio(num: u64, den: u64) -> f64 {
     }
 }
 
-/// The report of `run_id` from the tables, plus the cockpit measure when given.
 pub fn compute(db: &Db, run_id: &str, cockpit: Option<&Measure>) -> Result<Report> {
     let workers = db.workers(run_id)?;
     let gates = db.gates(run_id)?;
@@ -727,7 +644,6 @@ pub fn compute(db: &Db, run_id: &str, cockpit: Option<&Measure>) -> Result<Repor
 }
 
 impl Report {
-    /// The `key: value` lines, [`KEYS`] then [`EXTRA_KEYS`].
     pub fn lines(&self) -> Vec<String> {
         let absent = "0 (no --cockpit)".to_string();
         let opt = |v: Option<u64>| v.map_or_else(|| absent.clone(), |n| n.to_string());
@@ -786,7 +702,6 @@ impl Report {
         ]
     }
 
-    /// FR-24's quality block on one line; a null count prints `—`.
     pub fn quality_line(&self) -> String {
         let findings = match self.findings {
             Some(f) => format!("findings {}", f.text()),
@@ -814,9 +729,6 @@ fn findings_text(f: Option<Findings>) -> String {
     f.map_or_else(|| "—".to_string(), |f| f.text())
 }
 
-/// `build opus/high default · … · polish sonnet/high project · budget
-/// 30000000 user · lanes 1 · factory 0.1.0 · claude 2.1.296`. A role whose
-/// effort came from another scope reads `project/user`; `—` for no knobs.
 pub fn knobs_text(k: Option<&Value>) -> String {
     let Some(k) = k else {
         return "—".to_string();
@@ -855,11 +767,7 @@ pub fn knobs_text(k: Option<&Value>) -> String {
     parts.join(" · ")
 }
 
-/// `--recount` (PRD-003 FR-21): rewrite the run's token, context and
-/// `tool_calls` rows from the streams under `runs/<id>/workers/` and the
-/// transcript dirs, one `recount:` line per worker. `events`, `gates` and
-/// the run's docs stay as they are. A run still going is refused: the
-/// budget and the quota pause read these rows live.
+/// A live run is refused: the budget and the quota pause read these rows as it goes.
 pub fn recount(run: &Run, out: &mut dyn Write) -> Result<()> {
     let phase = run.state().phase;
     if !phase.is_over() {
@@ -872,12 +780,9 @@ pub fn recount(run: &Run, out: &mut dyn Write) -> Result<()> {
     let run_id = run.id().as_str();
     let repo = run.state().repo.clone();
     let mut workers = db.workers(run_id)?;
-    // `repeat_in_run` depends on which worker came first: the live record
-    // flags at each exit, so the recount goes in exit order too.
+    // `repeat_in_run` depends on who came first: the live record flags at exit, so the recount goes in exit order.
     workers.sort_by(|a, b| (&a.ended_at, a.id).cmp(&(&b.ended_at, b.id)));
-    // Every stream is read before a row is written: one gone leaves the
-    // store as it was. The lines print once every row is written, so a
-    // closed stdout cannot stop the rewrite halfway.
+    // Every stream is read before any row is written, and lines print after: a failure leaves the store whole.
     let mut lines = Vec::new();
     let mut ended = Vec::new();
     for w in &workers {
@@ -1152,7 +1057,7 @@ mod tests {
     }
 
     #[test]
-    fn the_threshold_lines_compare_with_the_section_14_constants() {
+    fn threshold_lines_compare_against_the_ctx_reversal_limits() {
         assert_eq!(
             Thresholds::of(Some(0.5), Some(0.05), Some(0.267)).lines(),
             vec![
@@ -1169,7 +1074,6 @@ mod tests {
                 "repeat_rate vs 26.7%: lower",
             ]
         );
-        // No ctx call, no lookup: nothing to compare, not a pass.
         assert_eq!(
             Thresholds::default().lines(),
             vec![

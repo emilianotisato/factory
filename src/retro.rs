@@ -1,9 +1,4 @@
-//! PRD-003 FR-25: the `## Numbers` section of a feature's `retro.md`,
-//! between markers the driver owns. [`numbers`] builds it from the store
-//! (the per-role table, the knobs, the quality line, the builders' pack and
-//! the same repo's earlier runs); [`write`] puts it in the file and touches
-//! nothing outside the markers, so a rerun on the same store is a no-op.
-//! The driver writes it at ship; `factory retro <run>` regenerates it.
+//! The `## Numbers` section of a feature's `retro.md`, between markers the driver owns.
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -17,13 +12,10 @@ use crate::{Error, Result, ci, quota};
 
 pub const OPEN: &str = "<!-- factory:numbers -->";
 pub const CLOSE: &str = "<!-- /factory:numbers -->";
-/// What the comparison says when the repo has no earlier finished run.
 pub const NO_EARLIER: &str = "No earlier finished run in this repo.";
-/// How many earlier runs the comparison names.
 const COHORT: u32 = 3;
 
-/// `(insertions, deletions)` of a `git diff --shortstat` line: either part
-/// may be absent, and an empty diff prints nothing.
+/// `(insertions, deletions)` of a `git diff --shortstat` line; either part may be absent.
 pub fn shortstat(text: &str) -> (u64, u64) {
     let mut out = (0, 0);
     for part in text.trim().split(',') {
@@ -41,8 +33,7 @@ pub fn shortstat(text: &str) -> (u64, u64) {
     out
 }
 
-/// `git diff --shortstat <base>...HEAD` in `repo`: what the branch changed
-/// since it left the base, so commits the base gained meanwhile do not count.
+/// Three dots: commits the base gained since the branch left it do not count.
 pub fn changed_lines(repo: &Path, base: &str) -> Result<(u64, u64)> {
     let out = ci::git(repo, &["diff", "--shortstat", &format!("{base}...HEAD")])?;
     if !out.ok() {
@@ -54,7 +45,6 @@ pub fn changed_lines(repo: &Path, base: &str) -> Result<(u64, u64)> {
     Ok(shortstat(&out.stdout))
 }
 
-/// One role's row of the table, summed over its workers.
 #[derive(Default)]
 struct RoleRow {
     workers: u64,
@@ -102,8 +92,6 @@ fn dash<T: std::fmt::Display>(v: Option<T>) -> String {
     v.map_or_else(|| "—".to_string(), |n| n.to_string())
 }
 
-/// The per-role rows from `--per-worker`'s figures, so a role's `weighted`
-/// is exactly the sum of its rows' `weighted_own + weighted_sub`.
 fn role_rows(db: &Db, run_id: &str) -> Result<BTreeMap<String, RoleRow>> {
     let workers = db.workers(run_id)?;
     let per = report::per_worker(&workers, &[]);
@@ -130,7 +118,6 @@ fn slices_of(db: &Db, run_id: &str) -> Result<u64> {
         .count() as u64)
 }
 
-/// One comparison row.
 fn compare_row(db: &Db, run: &RunRow, this: bool) -> Result<String> {
     let weighted = quota::weighted(db, &run.id)?;
     let slices = slices_of(db, &run.id)?;
@@ -156,9 +143,7 @@ fn compare_row(db: &Db, run: &RunRow, this: bool) -> Result<String> {
     ))
 }
 
-/// The section between the markers, ending in a newline. Nothing in it
-/// varies between two calls on the same store: no time, no version but the
-/// run's own.
+/// Deterministic on the same store: no time, no version but the run's own.
 pub fn numbers(db: &Db, run_id: &str) -> Result<String> {
     let run = db
         .run_row(run_id)?
@@ -179,9 +164,7 @@ pub fn numbers(db: &Db, run_id: &str) -> Result<String> {
         s.push('\n');
         total.add(row);
     }
-    // The total is the run's `weighted_tokens`, rounded once over the
-    // unrounded sum as the report and the budget read it; the role rows,
-    // each a sum of rounded workers, can add up to a few tokens more.
+    // Rounded once over the unrounded sum, as the report and the budget read it.
     let workers = db.workers(run_id)?;
     total.own = workers.iter().map(quota::weigh_own).sum::<f64>().round() as u64;
     if total.sub.is_some() {
@@ -232,11 +215,7 @@ pub fn numbers(db: &Db, run_id: &str) -> Result<String> {
     Ok(s)
 }
 
-/// Put `section` between the markers in `retro`, replacing what is there,
-/// or append `## Numbers` and the markers at the end of the file. Every
-/// byte outside the markers stays. `true` when the file changed. Anything
-/// but one marker of each, in order, or none of either, is refused: a stray
-/// marker would make the next write replace the prose up to it.
+/// A stray marker is refused: the next write would replace the prose up to it.
 pub fn write(retro: &Path, section: &str) -> Result<bool> {
     let text = fs::read_to_string(retro).map_err(io(format!("read {}", retro.display())))?;
     let (opens, closes) = (text.matches(OPEN).count(), text.matches(CLOSE).count());
@@ -268,8 +247,6 @@ pub fn write(retro: &Path, section: &str) -> Result<bool> {
     Ok(true)
 }
 
-/// The feature folder of a stored run: `docs status NNN`'s `dir` in the
-/// run's repo, else the one `docs/features/<NNN>-*` folder there.
 pub fn feature_dir(repo: &Path, feature: &str) -> Result<PathBuf> {
     if let Some(dir) = Docs::open(repo)
         .ok()
@@ -352,8 +329,6 @@ mod tests {
         assert!(!write(&p, "fresh\n").unwrap());
     }
 
-    /// A stray, reversed or doubled marker is refused with the file as it
-    /// was: the next write would replace the prose up to it.
     #[test]
     fn write_refuses_markers_that_are_not_one_pair_in_order() {
         let dir = tempfile::tempdir().unwrap();
@@ -425,8 +400,7 @@ mod tests {
             "2026-10-04T00:00:00Z",
             Some("2026-10-04T01:00:00Z"),
         );
-        // Another repo, a run not finished, and one that finished after this
-        // run started: none of them is in the cohort.
+        // Another repo, an unfinished run, one finished after this run started: none in the cohort.
         insert(
             &db,
             "005-20261004-eeee",

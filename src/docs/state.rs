@@ -1,6 +1,4 @@
-//! A feature's `state.toml` (PRD-002 FR-13): its status, its dates and one
-//! `[slices.N]` table per slice. [`set`] is the one write path: under the
-//! feature's `docs.lock`, read, apply, validate, write beside and rename.
+//! A feature's `state.toml`; [`set`] is its one write path, under the feature's `docs.lock`.
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
@@ -14,7 +12,6 @@ use crate::{Error, Result};
 pub const FILE: &str = "state.toml";
 pub const LOCK: &str = "docs.lock";
 
-/// The feature vocabulary, v2's (`docs.mjs:19`).
 pub const STATUSES: [&str; 7] = [
     "idea",
     "draft",
@@ -24,7 +21,6 @@ pub const STATUSES: [&str; 7] = [
     "archived",
     "retired",
 ];
-/// The slice vocabulary (`docs.mjs:22`).
 pub const SLICE_STATUSES: [&str; 4] = ["pending", "building", "blocked", "done"];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -68,7 +64,6 @@ pub fn path(dir: &Path) -> PathBuf {
     dir.join(FILE)
 }
 
-/// `<dir>/state.toml`; `None` when the feature has none (a v2 folder).
 pub fn read(dir: &Path) -> Result<Option<State>> {
     let p = path(dir);
     let text = match fs::read_to_string(&p) {
@@ -98,7 +93,6 @@ pub fn parse(text: &str) -> std::result::Result<State, String> {
     })
 }
 
-/// The file as [`set`] writes it: top keys, then one table per slice.
 pub fn render(s: &State) -> String {
     let q = |v: &str| toml::Value::String(v.to_string()).to_string();
     let mut out = format!("status = {}\n", q(&s.status));
@@ -119,8 +113,7 @@ pub fn render(s: &State) -> String {
     out
 }
 
-/// The feature's advisory lock, held until the `File` drops. `log add`
-/// (slice 02) takes the same one.
+/// The feature's advisory lock, held until the `File` drops.
 pub fn lock(dir: &Path) -> Result<File> {
     let p = dir.join(LOCK);
     let f = OpenOptions::new()
@@ -133,11 +126,6 @@ pub fn lock(dir: &Path) -> Result<File> {
     Ok(f)
 }
 
-/// Apply `key=value` pairs to `<dir>/state.toml` under the lock: all of them
-/// or, on any refusal, none. Keys: `status`, `reviewed`, `shipped`,
-/// `slices.N.status`, `slices.N.lane`, `slices.N.depends_on` (`1,2`). An
-/// empty value removes `reviewed`, `shipped` or `slices.N.lane`. A slice
-/// entry is created only for a slice that has its `slice-NN-*.md` file.
 pub fn set(dir: &Path, pairs: &[(&str, &str)]) -> Result<State> {
     let _lock = lock(dir)?;
     // Read inside the lock: two lanes set their own slice at the same time.
@@ -151,7 +139,6 @@ pub fn set(dir: &Path, pairs: &[(&str, &str)]) -> Result<State> {
     Ok(s)
 }
 
-/// `slice-NN-*.md` numbers in the folder.
 pub fn slice_files(dir: &Path) -> Result<Vec<u32>> {
     let rd = fs::read_dir(dir).map_err(io(format!("read {}", dir.display())))?;
     let mut out: Vec<u32> = rd
@@ -258,7 +245,6 @@ fn validate(s: &State) -> Result<()> {
     Ok(())
 }
 
-/// `YYYY-MM-DD`, digits where digits go.
 pub fn is_date(v: &str) -> bool {
     let b = v.as_bytes();
     b.len() == 10
@@ -344,7 +330,6 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(e.contains("no slice 4"), "{e}");
-        // One bad pair refuses the whole call.
         assert!(set(d.path(), &[("status", "ready"), ("slices.1.lane", "0")]).is_err());
         assert_eq!(text(&d), before);
     }

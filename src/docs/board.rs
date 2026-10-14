@@ -1,9 +1,4 @@
-//! The v3 board (PRD-002 FR-13): computed from the folders, `project.toml`
-//! and each feature's `state.toml`, never from `docs/index.md`. A port of
-//! `docs.mjs:158 scanFolder`, `:1374 featureState` and `:1343 statusCmd`.
-//! The log fields (`checkpoints`, `unverified`, `openBlocks`, `log`) come
-//! from the feature's `log.jsonl` (FR-14); the foundations (`gate`, `harness`,
-//! `rubric`) from `gate.rs`.
+//! Computed from the folders, `project.toml` and each `state.toml`, never from `docs/index.md`.
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -20,7 +15,6 @@ use super::{Building, Checkpoint, LogSummary, OpenBlock, Slice, SliceRef, Status
 use crate::error::io;
 use crate::{Error, Result};
 
-/// Live or archived, as `kind` prints it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Live,
@@ -36,7 +30,6 @@ impl Kind {
     }
 }
 
-/// One `NNN-slug/` folder.
 #[derive(Debug, Clone)]
 pub struct Feature {
     pub kind: Kind,
@@ -44,14 +37,11 @@ pub struct Feature {
     pub slug: String,
     pub dir_name: String,
     pub dir: PathBuf,
-    /// `prd.md`'s frontmatter and text; `None` when there is no `prd.md`.
     pub prd: Option<(Frontmatter, String)>,
-    /// `state.toml`, or why it did not parse.
     pub state: std::result::Result<Option<State>, String>,
     pub slices: Vec<SliceFile>,
 }
 
-/// One `slice-NN-subject.md`.
 #[derive(Debug, Clone)]
 pub struct SliceFile {
     pub number: u32,
@@ -73,9 +63,6 @@ impl Feature {
         self.state.as_ref().ok().and_then(Option::as_ref)
     }
 
-    /// `computedStatus` (`docs.mjs:367`): `state.toml` when there is one,
-    /// else the v2 `prd.md` frontmatter. An archive folder is `retired` or
-    /// `archived`, nothing else.
     pub fn status(&self) -> Option<String> {
         let own = match self.state() {
             Some(s) => Some(s.status.clone()),
@@ -92,9 +79,7 @@ impl Feature {
         }
     }
 
-    /// The board's slices: the `[slices.N]` entries, each with its file when
-    /// there is one. A file with no entry is skipped (`check` reports it).
-    /// A folder with no `state.toml` reads the v2 slice frontmatter.
+    /// A slice file with no `[slices.N]` entry is skipped; `check` reports it.
     pub fn board_slices(&self) -> Vec<Slice> {
         let rel = |f: &SliceFile| format!("{}/{}", self.dir_name, f.file);
         let Some(state) = self.state() else {
@@ -140,7 +125,6 @@ impl Feature {
             .collect()
     }
 
-    /// `summary` from the v3 PRD frontmatter, trimmed.
     pub fn summary(&self) -> Option<String> {
         let (fm, _) = self.prd.as_ref()?;
         let s = fm.str("summary")?.trim();
@@ -148,7 +132,6 @@ impl Feature {
     }
 }
 
-/// Every feature folder under `docs/features/` and `docs/archive/`.
 pub fn scan(root: &Path) -> Result<Board> {
     let docs = root.join("docs");
     Ok(Board {
@@ -159,7 +142,6 @@ pub fn scan(root: &Path) -> Result<Board> {
     })
 }
 
-/// `^(\d{3})-(.+)$` → number and slug.
 pub fn folder_name(name: &str) -> Option<(u32, &str)> {
     let (n, slug) = name.split_at_checked(3)?;
     let slug = slug.strip_prefix('-')?;
@@ -168,8 +150,7 @@ pub fn folder_name(name: &str) -> Option<(u32, &str)> {
         .flatten()
 }
 
-/// One of `features/` or `archive/`; a `state.toml` that does not parse is
-/// kept as its error on the feature, never a reason to fail.
+/// A `state.toml` that does not parse is kept as its error on the feature, never a reason to fail.
 pub fn scan_folder(base: &Path, kind: Kind) -> Result<Vec<Feature>> {
     let Ok(rd) = fs::read_dir(base) else {
         return Ok(Vec::new());
@@ -226,7 +207,6 @@ fn slice_files(dir: &Path) -> Result<Vec<SliceFile>> {
     Ok(out)
 }
 
-/// The first H1 minus `Slice NN — ` (`docs.mjs:207`), else the file name.
 fn slice_title(text: &str, file: &str) -> String {
     let h1 = text
         .lines()
@@ -257,7 +237,6 @@ impl Board {
         self.live.iter().chain(&self.archived)
     }
 
-    /// `resolveFeature`: a number, a slug, a folder name or a path to one.
     pub fn resolve(&self, reference: &str) -> Result<&Feature> {
         let r = reference.trim_end_matches('/');
         let r = r.rsplit('/').next().unwrap_or(r);
@@ -285,7 +264,6 @@ impl Board {
     }
 }
 
-/// One feature's board, `docs status NNN --json`.
 pub fn status(root: &Path, feature: &str) -> Result<Status> {
     let board = scan(root)?;
     let f = board.resolve(feature)?;
@@ -338,8 +316,7 @@ pub fn feature_state(board: &Board, f: &Feature) -> Result<Status> {
             })
         })
         .collect();
-    // PRD-005 FR-7: every done slice no checkpoint covered. An entry with no
-    // `covers` predates the field and keeps the old high-water rule.
+    // A checkpoint with no `covers` predates the field: the high-water rule stands in for it.
     let covered = |n: u32| {
         checkpoints.iter().any(|c| {
             if c.covers.is_empty() {
@@ -364,8 +341,7 @@ pub fn feature_state(board: &Board, f: &Feature) -> Result<Status> {
         })
         .collect();
     let decisions = || of(log::Kind::Decision).filter(|e| e.flag.is_some());
-    // `decide` counts reviewed decisions too, as v2 does (`docs.mjs:1428`):
-    // the ship step stores it on the run row (`closeout.rs:599`).
+    // `decide` counts reviewed decisions too, as v2 did; ship stores it on the run row.
     let summary = LogSummary {
         decisions: (of(log::Kind::Decision).count() + of(log::Kind::Ask).count()) as u32,
         flagged: decisions().filter_map(|e| e.n()).collect(),
@@ -451,7 +427,7 @@ fn branch(root: &Path) -> Option<String> {
         .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-/// `^#{2,3}\s+(?:\d+\.\s*)?QA plan\b`, case-insensitive (`docs.mjs:193`).
+/// `^#{2,3}\s+(?:\d+\.\s*)?QA plan\b`, case-insensitive.
 pub fn has_qa_plan(text: &str) -> bool {
     text.lines().any(|l| {
         let hashes = l.len() - l.trim_start_matches('#').len();
@@ -474,7 +450,6 @@ pub fn has_qa_plan(text: &str) -> bool {
     })
 }
 
-/// `^\*\*Harness\*\*:\s*(.+)$` (`docs.mjs:194`).
 pub fn harness_line(text: &str) -> Option<String> {
     text.lines().find_map(|l| {
         let rest = l.strip_prefix("**Harness**:")?.trim_start();
@@ -482,8 +457,6 @@ pub fn harness_line(text: &str) -> Option<String> {
     })
 }
 
-/// `openOpens` (`docs.mjs:238-254`): decision-log bullets whose OPEN is not
-/// settled, by strike-through or a bold verdict word.
 pub fn open_opens(text: &str) -> Vec<u32> {
     let lines: Vec<&str> = text.lines().collect();
     let mut out: Vec<u32> = Vec::new();
@@ -508,7 +481,6 @@ pub fn open_opens(text: &str) -> Vec<u32> {
     out
 }
 
-/// `^\s*[-*]\s` .
 fn is_bullet(l: &str) -> bool {
     let t = l.trim_start();
     (t.starts_with('-') || t.starts_with('*')) && t[1..].starts_with(char::is_whitespace)
@@ -534,8 +506,7 @@ fn open_bullet(line: &str) -> Option<(bool, u32)> {
     Some((a || b, rest[..digits].parse().ok()?))
 }
 
-/// `after.replace(/^OPEN-\d+[^*]*\*\*/, '**')`: drop the bold question so a
-/// verdict word inside it does not count.
+/// Drops the bold question so a verdict word inside it does not count.
 fn strip_question(after: &str) -> String {
     let Some(rest) = after.strip_prefix("OPEN-") else {
         return after.to_string();
@@ -565,7 +536,7 @@ const VERDICTS: [&str; 11] = [
     "resuelta",
 ];
 
-/// `SETTLED` (`docs.mjs:238`): `\*\*[^*]{0,25}\b(verdict)\b`, case-insensitive.
+/// `\*\*[^*]{0,25}\b(verdict)\b`, case-insensitive.
 fn settled(s: &str) -> bool {
     let chars: Vec<char> = s.chars().collect();
     let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
@@ -594,7 +565,6 @@ fn settled(s: &str) -> bool {
     false
 }
 
-/// `docs status --json` with no feature: `{ framework, live, archived }`.
 pub fn summary_json(board: &Board) -> Value {
     let brief = |f: &Feature| {
         let slices = f.board_slices();
@@ -620,8 +590,6 @@ pub fn summary_json(board: &Board) -> Value {
     })
 }
 
-/// `docs status` with no feature: one line per live feature and its summary
-/// under it, then the archive count and the retired numbers.
 pub fn print_summary(board: &Board, out: &mut dyn Write) -> Result<()> {
     let mut text = String::new();
     if board.live.is_empty() {

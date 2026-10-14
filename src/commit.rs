@@ -1,11 +1,4 @@
-//! The driver's own commits, by pathspec. A worker's work lands through
-//! [`crate::land`] (PRD-005 FR-3): its lane committed whole and picked onto
-//! the feature tip. What is left here is what the driver commits in the main
-//! tree itself, the board files and the ship, staged by name so the owner's
-//! own staged work stays out: never `git add -A` in the main tree. Messages
-//! are Conventional ([`subject`]), no body, no trailers, the repo's own
-//! `user.*`; a repo held to the run's branch ([`hold_branch`]) commits
-//! nowhere else.
+//! The driver's commits in the main tree, by pathspec: never `git add -A` there.
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -14,14 +7,11 @@ use std::sync::Mutex;
 use crate::docs::Status;
 use crate::{Error, Result};
 
-/// The two files no worker may write (`deliver/SKILL.md`): they are the
-/// orchestrator's.
+/// The files no worker may write: they are the orchestrator's.
 pub fn protected_files(board: &Status) -> [String; 2] {
     [format!("{}/prd.md", board.dir), "docs/index.md".to_string()]
 }
 
-/// The feature's `state.toml` and `log.jsonl`, repo-relative: the tool's
-/// writes a slice or checkpoint commit carries (FR-18).
 pub fn tool_files(board: &Status) -> [String; 2] {
     [
         format!("{}/state.toml", board.dir),
@@ -35,7 +25,6 @@ fn push_once(v: &mut Vec<String>, s: String) {
     }
 }
 
-/// What a commit landed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Committed {
     pub sha: String,
@@ -43,16 +32,7 @@ pub struct Committed {
     pub files: Vec<String>,
 }
 
-/// `git add -- <paths>` and `git commit -m <message> -- <paths>` in the
-/// repo root, so nothing else staged rides along: no
-/// author set, no body, hooks on. Paths that are neither in the index nor in
-/// the tree (never written, or written and removed again) and untracked
-/// paths the repo ignores are dropped first — `git add` refuses either. A
-/// tracked path the worker deleted stays and stages the deletion. `None`
-/// when nothing was staged.
-///
-/// A repo held to a branch ([`hold_branch`]) refuses with an error while
-/// HEAD is anywhere else.
+/// Never-written and ignored paths are dropped first: `git add` refuses either.
 pub fn commit(repo: &Path, paths: &[String], message: &str) -> Result<Option<Committed>> {
     if paths.is_empty() {
         return Ok(None);
@@ -84,9 +64,7 @@ pub fn commit(repo: &Path, paths: &[String], message: &str) -> Result<Option<Com
     let mut add = vec!["add", "--"];
     add.extend(files.iter().map(String::as_str));
     git(repo, &add)?;
-    // Check and commit by the same pathspec: whatever else sits in the index
-    // (an owner's `git add`, a sibling lane's stage) is neither counted nor
-    // swept in, and stays staged.
+    // Same pathspec for the check and the commit: whatever else is staged stays out, and staged.
     let mut staged = vec!["diff", "--cached", "--quiet", "--"];
     staged.extend(files.iter().map(String::as_str));
     if git_code(repo, &staged)? == 0 {
@@ -99,16 +77,12 @@ pub fn commit(repo: &Path, paths: &[String], message: &str) -> Result<Option<Com
     Ok(Some(Committed { sha, files }))
 }
 
-/// The branch HEAD is on; `None` when HEAD is detached.
 pub fn head_branch(repo: &Path) -> Result<Option<String>> {
     let out = run_git(repo, &["symbolic-ref", "-q", "--short", "HEAD"])?;
     let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
     Ok((out.status.success() && !name.is_empty()).then_some(name))
 }
 
-/// Why the driver may not commit for a run on `branch`: the branch is the
-/// repo's default branch, or HEAD is on another branch or detached (the
-/// owner switched mid-run). `None` when a commit may land.
 pub fn branch_refusal(repo: &Path, branch: &str, default: Option<&str>) -> Result<Option<String>> {
     if default == Some(branch) {
         return Ok(Some(format!(
@@ -127,14 +101,9 @@ pub fn branch_refusal(repo: &Path, branch: &str, default: Option<&str>) -> Resul
     })
 }
 
-/// The branch each repo's commits are held to in this process.
 static HELD: Mutex<Vec<(PathBuf, String, Option<String>)>> = Mutex::new(Vec::new());
 
-/// Hold every later [`commit`] in `repo` by this process to `branch` (and
-/// refuse them all when `branch` is `default`). The driver calls it once it
-/// knows the run's branch, so a slice, fix, checkpoint, polish, ship or CI
-/// commit errors instead of landing on a branch the owner switched to
-/// between the driver's check and the commit.
+/// Catches the owner switching branches between the driver's check and its commit.
 pub fn hold_branch(repo: &Path, branch: &str, default: Option<&str>) {
     let key = canonical(repo);
     let mut held = HELD.lock().unwrap_or_else(|p| p.into_inner());
@@ -154,9 +123,7 @@ fn canonical(repo: &Path) -> PathBuf {
     repo.canonicalize().unwrap_or_else(|_| repo.to_path_buf())
 }
 
-/// What `git` knows under `paths`: tracked files and untracked files it does
-/// not ignore, each directory expanded to its files, so [`commit`] (which
-/// stages exact names only) can take a folder.
+/// Directories become their files: [`commit`] stages exact names only.
 pub fn expand(repo: &Path, paths: &[String]) -> Result<Vec<String>> {
     if paths.is_empty() {
         return Ok(Vec::new());
@@ -178,14 +145,11 @@ pub fn expand(repo: &Path, paths: &[String]) -> Result<Vec<String>> {
     Ok(out)
 }
 
-/// A commit subject scoped to the feature, as `/deliver`'s builders write
-/// theirs: `feat(018): slice-02 Harness`. The A/B of 2026-10-11 found the
-/// driver's bare `feat: {title}` gave no feature and no slice to search by.
+/// Scoped like the builders' own subjects (`feat(NNN): slice-NN Title`), so a log search by feature finds it.
 pub fn subject(board: &Status, kind: &str, text: &str) -> String {
     format!("{kind}({:03}): {text}", board.number)
 }
 
-/// `git <args>` in the repo root; a non-zero exit is an error quoting stderr.
 fn git(repo: &Path, args: &[&str]) -> Result<String> {
     let out = run_git(repo, args)?;
     if !out.status.success() {
@@ -201,7 +165,6 @@ fn git(repo: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// `git <args>`, the exit code alone (`diff --quiet` answers with it).
 fn git_code(repo: &Path, args: &[&str]) -> Result<i32> {
     Ok(run_git(repo, args)?.status.code().unwrap_or(-1))
 }
@@ -283,7 +246,6 @@ mod tests {
             git(r, &["status", "--porcelain"]).unwrap(),
             "?? stray.txt\n"
         );
-        // Nothing changed: no commit.
         assert_eq!(commit(r, &paths, "feat: again").unwrap(), None);
         assert_eq!(commit(r, &[], "feat: none").unwrap(), None);
     }
@@ -315,7 +277,6 @@ mod tests {
         git(r, &["switch", "-q", "feat/x"]).unwrap();
         assert!(commit(r, &mine, "feat: right").unwrap().is_some());
 
-        // A run whose branch is the default branch commits nothing.
         hold_branch(r, "feat/x", Some("feat/x"));
         fs::write(r.join("kept.txt"), "k3\n").unwrap();
         let err = commit(r, &mine, "feat: default").unwrap_err().to_string();
@@ -328,7 +289,6 @@ mod tests {
         let r = dir.path();
         fs::write(r.join("owner.txt"), "o\n").unwrap();
         git(r, &["add", "--", "owner.txt"]).unwrap();
-        // The worker's path is unchanged, the owner's is staged: no commit.
         let mine = vec!["kept.txt".to_string()];
         assert_eq!(commit(r, &mine, "feat: nothing").unwrap(), None);
         assert_eq!(

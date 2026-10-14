@@ -1,9 +1,4 @@
-//! `factory docs <verb…>` (PRD-002 FR-15, FR-17): routes on the repo's
-//! format before it parses anything. A v3 repo (`docs/project.toml` with
-//! `[docs] framework = 3`) runs the verb natively; a v2 repo (`docs/index.md`)
-//! hands every argument to `docs.mjs` by `exec`, so stdin, stdout, stderr and
-//! the exit code are the tool's own. Later slices add one arm each to
-//! [`Verb`] and [`dispatch`].
+//! A v3 repo runs each verb natively; a v2 repo execs `docs.mjs`, so its streams and exit code are the tool's own.
 use std::io::{Read, Write};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -130,7 +125,7 @@ enum IdeaVerb {
         /// open, or owed when someone outside the repo owes an answer
         #[arg(long, default_value = "open")]
         state: String,
-        /// Where it came from: `owner`, `PRD-016 polish`
+        /// Where it came from: `owner`, `PRD-NNN polish`
         #[arg(long)]
         origin: Option<String>,
         /// The event that should make someone look again
@@ -202,7 +197,6 @@ enum LogVerb {
     },
 }
 
-/// Verbs v2 had and v3 drops, each with where its job went.
 const REMOVED: [(&str, &str); 3] = [
     ("render", "the board is computed, run `factory docs status`"),
     ("log merge", "the log is appended by `factory docs log add`"),
@@ -228,7 +222,6 @@ fn route(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Result<i3
         out.write_all(help.as_bytes()).map_err(io("write stdout"))?;
         return Ok(0);
     }
-    // `migrate` and `doctor` run natively in both formats (slices 03, 07).
     if matches!(verb, Some("migrate" | "doctor")) || project::is_v3(&root) {
         return native(&root, args, out, err);
     }
@@ -240,7 +233,6 @@ fn route(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Result<i3
             tool.display()
         )));
     }
-    // A repo with no board at all has nothing to route on; `init` makes one.
     if verb == Some("init") {
         return native(&root, args, out, err);
     }
@@ -250,11 +242,7 @@ fn route(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Result<i3
     )))
 }
 
-/// PRD-005 FR-2: a lane worker writes the main tree's board. With
-/// `FACTORY_BOARD` naming a tree of the same repo as `root`, the board verbs
-/// (`set`, `log add`, `retro`, `status`) run there; every other verb stays
-/// on cwd. The same-repo check keeps a fixture's `docs set`, run by
-/// `cargo test` inside a live worker, off that worker's board.
+/// The same-repo check keeps a fixture's `docs set`, run by `cargo test` inside a worker, off that worker's board.
 fn board_root(root: &Path, args: &[String]) -> Option<PathBuf> {
     let verb: Vec<&str> = args.iter().take(2).map(String::as_str).collect();
     if !matches!(
@@ -291,8 +279,6 @@ fn native(root: &Path, args: &[String], out: &mut dyn Write, err: &mut dyn Write
             return Ok(0);
         }
     };
-    // The verbs with an exit code of their own: `retro` 1 for no row, `check`
-    // 1 on any error, `gate` 1 with none declared, `preflight` 0/1/2.
     match cli.verb {
         Verb::Retro { feature, set } => retro(root, &feature, set.as_deref(), out, err),
         Verb::Check => {
@@ -322,8 +308,6 @@ fn native(root: &Path, args: &[String], out: &mut dyn Write, err: &mut dyn Write
     }
 }
 
-/// The v2 `docs.mjs`: the repo's vendored `.docs/bin/docs.mjs`, else the
-/// skill's copy under `~/.claude/skills/feature-docs/bin/`.
 fn legacy_tool(root: &Path) -> Result<PathBuf> {
     let vendored = root.join(".docs/bin/docs.mjs");
     let global = paths::home().join(".claude/skills/feature-docs/bin/docs.mjs");
@@ -340,15 +324,13 @@ fn legacy_tool(root: &Path) -> Result<PathBuf> {
     }
 }
 
-/// The shim's one `node` call: exec'd for a v2 verb, captured for doctor.
 fn node(tool: &Path) -> Command {
     let mut c = Command::new("node");
     c.arg(tool);
     c
 }
 
-/// `docs.mjs check` in a v2 or v1 repo, captured. Never `--fix`: doctor
-/// never writes.
+/// Never `--fix`: doctor never writes.
 fn legacy_check(root: &Path) -> Result<ToolOutput> {
     let tool = legacy_tool(root)?;
     let o = node(&tool)
@@ -468,8 +450,7 @@ fn dispatch(root: &Path, verb: Verb, out: &mut dyn Write, err: &mut dyn Write) -
     }
 }
 
-/// `migrate [--dry]` (FR-16). The plan comes first, so "already migrated"
-/// wins over "not clean"; `--dry` never opens the store, which would create it.
+/// Plan first so "already migrated" beats "not clean"; `--dry` never opens the store, which would create it.
 fn migrate(root: &Path, dry: bool, out: &mut dyn Write) -> Result<()> {
     use crate::docs::migrate;
     let plan = migrate::plan(root)?;
@@ -494,7 +475,6 @@ fn migrate(root: &Path, dry: bool, out: &mut dyn Write) -> Result<()> {
     )
 }
 
-/// `--body-file`: a path, or `-` for stdin.
 fn read_body(spec: &str) -> Result<String> {
     if spec == "-" {
         let mut b = String::new();
@@ -563,7 +543,6 @@ fn idea(root: &Path, action: IdeaVerb, out: &mut dyn Write, err: &mut dyn Write)
     }
 }
 
-/// `retro NNN [--set score=N]`: the row, or 1 with no row.
 fn retro(
     root: &Path,
     feature: &str,
@@ -691,7 +670,6 @@ fn status(root: &Path, feature: Option<&str>, as_json: bool, out: &mut dyn Write
     print(out, &lines.join("\n"))
 }
 
-/// A live feature's folder: the archive is frozen.
 fn live_dir(root: &Path, feature: &str) -> Result<PathBuf> {
     let board = board::scan(root)?;
     let f = board.resolve(feature)?;

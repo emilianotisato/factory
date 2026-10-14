@@ -1,7 +1,3 @@
-//! PRD-003 FR-23 through the binary: a fixture's `docs/project.toml` sets the
-//! polish model, the stub records it on the polish call only, the run row's
-//! `knobs` says which scope each knob came from, every worker row says which
-//! model answered, and `--hypothesis` lands on the row once.
 #[path = "harness/mod.rs"]
 mod harness;
 
@@ -41,8 +37,6 @@ fn db(fx: &Fixture) -> Db {
     Db::open(&data_dir(fx).join("factory.db")).unwrap()
 }
 
-/// The chained fixture with a `[workers.polish]` table committed to its
-/// `docs/project.toml`, after the `[docs]` table the fixture already has.
 fn project_fixture(name: &str) -> Fixture {
     let fx = Fixture::with_index(name, &[("checkpoint_every", "10"), ("lanes", "1")]);
     fx.chain();
@@ -82,7 +76,6 @@ fn a_project_file_sets_the_polish_model_and_the_row_says_so() {
     );
     let id = only_run_id(&fx);
 
-    // The stub's call log: sonnet for the polish call, opus for the rest.
     let calls = fx.calls();
     assert_eq!(calls.len(), 5, "three builds, a checkpoint, the polish");
     let is_polish = |c: &Value| c["pack"].as_str().unwrap().contains("\n# Branch\n");
@@ -99,7 +92,6 @@ fn a_project_file_sets_the_polish_model_and_the_row_says_so() {
     assert_eq!(knobs["workers"]["polish"]["source"], "project");
     assert_eq!(knobs["workers"]["build"]["model"], "opus");
     assert_eq!(knobs["workers"]["build"]["source"], "default");
-    // The model came from the project file, the effort from the default.
     assert_eq!(knobs["workers"]["polish"]["effort_source"], "default");
     assert!(knobs["workers"]["build"].get("effort_source").is_none());
     assert_eq!(
@@ -168,8 +160,7 @@ fn a_project_file_sets_the_polish_model_and_the_row_says_so() {
 
 #[test]
 fn a_hypothesis_is_written_once_at_creation() {
-    // Unchained, the run parks on a preflight ask with no driver left: a
-    // resumable run the second `run` picks up again.
+    // Unchained, the run parks on a preflight ask, so a second `run` resumes it.
     let fx = Fixture::with_index("knobs-hypothesis", &[("lanes", "1")]);
     let out = factory(
         &fx,
@@ -194,7 +185,6 @@ fn a_hypothesis_is_written_once_at_creation() {
         json!({"value": 5_000_000, "source": "flag"})
     );
 
-    // The same run again: the new text is refused with one line.
     let out = factory(&fx, &["run", "001", "--hypothesis", "other"]);
     assert_eq!(out.status.code(), Some(0), "{}", text(&out.stdout));
     let err = text(&out.stderr);

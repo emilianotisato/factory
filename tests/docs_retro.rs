@@ -1,5 +1,3 @@
-//! `factory docs retro NNN [--set score=N]` (PRD-002 FR-19, slice 06): the
-//! feature's `retros` row in the store under `FACTORY_DATA_DIR`.
 #[path = "harness/mod.rs"]
 mod harness;
 

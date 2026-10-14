@@ -82,7 +82,6 @@ fn main() -> ExitCode {
         Command::Review { verb } => cli::review::review(&verb, &mut stdout(), &mut stderr()),
         Command::Ctx { verb } => ctx::run(&verb, Path::new("."), &mut stdout(), &mut stderr()),
         Command::Hook => cli::hook::hook(&mut stdin(), &mut stdout(), &mut stderr()),
-        // One code path: `factory init` routes exactly as `factory docs init`.
         Command::Init => cli::docs::docs(&["init".to_string()], &mut stdout(), &mut stderr()),
         Command::Skills { verb } => cli::skills::skills(&verb, &mut stdout()),
         Command::Lanes { verb } => cli::lanes::lanes(&verb, &mut stdout()),

@@ -1,7 +1,4 @@
-//! `events.jsonl` (PRD §3 FR-1, §9 FR-7): append-only, one object per line,
-//! `{seq, ts, kind, ...payload}`. Every event is also a row in the `events`
-//! table, written by the same [`emit`]; nothing writes one without the other.
-//! The cockpit replays the file; the metrics read the table.
+//! Every event lands in both `events.jsonl` and the `events` table: the cockpit replays the file, metrics read the table.
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::Path;
@@ -14,53 +11,41 @@ use crate::{Result, clock};
 
 pub const FILE: &str = "events.jsonl";
 
-/// The event kinds, serialized `snake_case` under `kind` with the payload
-/// flattened beside it. Later slices add theirs (`rate_limit_*`, `pr_*`, …).
-/// No `Eq`: `gate_run` carries the gate's minutes as a float.
+/// No `Eq`: `gate_run` carries a float.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EventKind {
     RunStarted,
     RunResumed,
-    /// A preflight `ask[]` item the run waits on (`ASK-n`); slice 04 answers it.
     AskOpened {
         id: String,
         text: String,
     },
-    /// A preflight `judge[]` line: logged for the cockpit, never waited on
-    /// (FR-1 as corrected by BLOCK-201 — the driver is the judge).
+    /// A preflight `judge[]` line, never waited on: the driver is the judge.
     JudgeNoted {
         text: String,
     },
     StopRequested,
-    /// A worker started on a slice (FR-2); `pid` is the `claude -p` process.
     SliceSpawned {
         slice: u32,
         session_id: String,
         pid: u32,
     },
-    /// PRD-005 FR-4: a merge worker started in the slice's lane, on a
-    /// landing that conflicted; `attempt` counts the slice's merge workers.
+    /// `attempt` counts the slice's merge workers.
     MergeSpawned {
         slice: u32,
         attempt: u32,
         session_id: String,
         pid: u32,
     },
-    /// PRD-005 FR-4: the slice's lane commit conflicts with the feature tip
-    /// in `paths`; the driver redoes the pick in the lane for a merge worker.
     LandingConflicted {
         slice: u32,
         paths: Vec<String>,
     },
-    /// The board read `done` after the worker exited.
     SliceDone {
         slice: u32,
     },
-    /// The board read `blocked` after the worker exited, or the driver blocked
-    /// the slice itself after a second dead worker (FR-1). `block_id` and
-    /// `question` come from the slice's open `block` entry in `log.jsonl`
-    /// (FR-3); absent when the log has none.
+    /// Absent ids: the log held no open block for the slice.
     SliceBlocked {
         slice: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -68,104 +53,79 @@ pub enum EventKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         question: Option<String>,
     },
-    /// Nothing is spawnable, nothing is running and the owner has a question:
-    /// the run parks in `waiting-owner` and keeps watching for an answer (FR-3).
+    /// Nothing spawnable, nothing running, and the owner owes an answer.
     RunWaiting {
         blocked: Vec<u32>,
         asks: Vec<String>,
     },
-    /// `factory answer BLOCK-n`: the resolution is in the log, the slice is
-    /// `building` again, the next worker on it gets both in its pack.
     BlockAnswered {
         id: String,
         slice: Option<u32>,
         text: String,
     },
-    /// `factory answer ASK-n`: a preflight ask cleared; the run starts when
-    /// the last one is.
     AskAnswered {
         id: String,
         text: String,
     },
-    /// Process gone with no `result` line, or with one and the slice neither
-    /// `done` nor `blocked` (FR-1: "a dead worker is treated as today"). A
-    /// fix or checkpoint worker has no slice (FR-4).
+    /// Exited with no `result` line, or with one and the slice neither `done` nor `blocked`.
     WorkerDead {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         slice: Option<u32>,
         session_id: String,
         exit_code: Option<i32>,
     },
-    /// FR-9: a worker hit a usage limit; the driver spawns nothing until
-    /// `resets_at` (epoch seconds; now + 15 min when the stream gave none —
-    /// AD-701). `literal` is the stream's `status`, or what matched in a
-    /// `result` when there was no `rate_limit_event`.
+    /// `resets_at` is epoch seconds (now + 15 min when the stream gave none); `literal` is what the stream said.
     RunPaused {
         literal: String,
         resets_at: u64,
     },
-    /// FR-9: `paused_until` passed; spawning resumes.
     RunResumedFromPause,
-    /// FR-9: the weighted token sum passed the budget; in-flight workers
-    /// finish, nothing new spawns, `factory run NNN --budget <n>` resumes.
     RunParked {
         reason: String,
         weighted: u64,
         budget: u64,
     },
-    /// The slice cites a `§n` that `prd.md` lacks (FR-2: a warning, not a crash).
     PackSectionMissing {
         slice: u32,
         section: u32,
     },
-    /// PRD-003 FR-21: a worker's `subagents/` dir exists but could not be
-    /// read; its `sub_*` columns stay null. Information, never a failure.
+    /// The transcript or its `subagents/` dir could not be read; the `sub_*` columns stay null.
     SubagentsUnread {
         worker_id: i64,
         session_id: String,
         path: String,
         error: String,
     },
-    /// FR-5: the slice's commit — the stream's written paths plus the slice
-    /// file, `state.toml` and `log.jsonl`, by pathspec; `files` is what was
-    /// staged.
+    /// `files` is what was staged, by pathspec.
     SliceCommitted {
         slice: u32,
         sha: String,
         files: Vec<String>,
     },
-    /// The stream names one of the files no worker may write
-    /// ([`crate::commit::protected_files`]: the feature's `prd.md`, and
-    /// `docs/index.md` from v2 runs); left out of the commit.
+    /// Left out of the commit; see [`crate::commit::protected_files`].
     WorkerWroteProtectedFile {
         slice: u32,
         path: String,
     },
-    /// Emitted by runs before PRD-002 (`docs log merge` folded the slice
-    /// logs); kept so old event logs read.
+    /// Nothing emits this; kept so old event logs read.
     LogMerged {
         fragments: Vec<String>,
     },
-    /// Emitted by runs before PRD-002 (`docs log merge` refused); kept so
-    /// old event logs read.
+    /// Nothing emits this; kept so old event logs read.
     MergeRefused {
         block_id: String,
         detail: String,
     },
-    /// FR-4: the board says a checkpoint is due and the lanes are drained.
-    /// `n` is the `CP-n` this checkpoint writes, `covers` the unverified
-    /// slices (`unverified[]` on the board).
+    /// `covers` is the board's `unverified[]`.
     CheckpointStarted {
         n: u32,
         covers: Vec<u32>,
     },
-    /// FR-1 resume: the run died inside checkpoint `n` (or parked on it);
-    /// the checkpoint runs again before any spawn.
     CheckpointResumed {
         n: u32,
         covers: Vec<u32>,
     },
-    /// The driver ran the gate (FR-4): `log` is `runs/<id>/gates/<n>-<attempt>.log`.
+    /// `log` is `runs/<id>/gates/<n>-<attempt>.log`.
     GateRun {
         n: u32,
         attempt: u32,
@@ -173,104 +133,84 @@ pub enum EventKind {
         minutes: f64,
         log: String,
     },
-    /// The gate cache answered for this code tree: no process ran, the
-    /// `gates` row says `cached`; `log` is the earlier run's transcript.
+    /// No process ran; `log` is the earlier run's transcript.
     GateCached {
         n: u32,
         attempt: u32,
         red: bool,
         log: String,
     },
-    /// A fix worker on a red gate (FR-4), with the failing output in its pack.
     FixSpawned {
         n: u32,
         attempt: u32,
         session_id: String,
         pid: u32,
     },
-    /// The fix worker's files, committed by pathspec: `fix(NNN): gate red at checkpoint n`.
     FixCommitted {
         n: u32,
         attempt: u32,
         sha: String,
         files: Vec<String>,
     },
-    /// A checkpoint worker on a green gate: it drives the Prove rows and
-    /// writes `CP-n` (FR-4).
     CheckpointSpawned {
         n: u32,
         attempt: u32,
         session_id: String,
         pid: u32,
     },
-    /// The checkpoint stopped on the owner: three reds in a row, two dead
-    /// checkpoint workers or the worker's own block. `block_id` is the
-    /// `BLOCK-n` in `log.jsonl`.
     CheckpointBlocked {
         n: u32,
         block_id: String,
         question: String,
     },
-    /// `CP-n` is on the board and the checkpoint commit (`docs: checkpoint n`)
-    /// landed; `None` when the render changed nothing to commit.
+    /// `sha` is `None` when the render changed nothing to commit.
     CheckpointDone {
         n: u32,
         sha: Option<String>,
     },
-    /// Closeout (FR-6): the polish worker, once the last checkpoint is done.
     PolishSpawned {
         attempt: u32,
         session_id: String,
         pid: u32,
     },
-    /// The polish worker returned; `sha` is its `fix(NNN): polish review fixes`
-    /// commit, `None` when it changed nothing.
+    /// `sha` is `None` when the worker changed nothing.
     PolishDone {
         sha: Option<String>,
         files: Vec<String>,
     },
-    /// PRD-003 FR-24: the polish return had a `STATUS` but no `FINDINGS`
-    /// line; the run's five `findings_*` stay null. Never a failure.
     PolishFindingsMissing {
         session_id: String,
     },
-    /// A closeout file no worker wrote, filled from a template so the ship
-    /// and the PR go on (AD-904): `what` is `retro` or `pr_body`, `path` the
-    /// file filled. The cockpit relays it and the PR body's first line flags
-    /// it. Both default, so a bare `template_stand_in` still parses.
+    /// `what` is `retro` or `pr_body`; both fields default so a bare line still parses.
     TemplateStandIn {
         #[serde(default)]
         what: String,
         #[serde(default)]
         path: String,
     },
-    /// `docs ship` ran, the retro keys are filled and `docs(NNN): ship PRD-NNN`
-    /// is committed (`sha`, `None` when nothing was left to commit).
+    /// `sha` is `None` when nothing was left to commit.
     Shipped {
         sha: Option<String>,
     },
-    /// The branch is pushed and the draft PR exists.
     PrOpened {
         url: String,
     },
-    /// `gh pr checks` came back green at `head`.
     CiGreen {
         head: String,
     },
-    /// A red check at `head`; `round` is the fix rounds done before it.
+    /// `round` counts the fix rounds done before it.
     CiRed {
         check: String,
         round: u32,
         head: String,
     },
-    /// The one flaky rerun (`gh run rerun <id> --failed`) at `head`.
+    /// The one rerun allowed: `gh run rerun <id> --failed`.
     CiRerun {
         check: String,
         run_id: u64,
         head: String,
     },
-    /// A CI fix worker on `check`, `round` 1-based; `attempt` counts the
-    /// workers of that round (a death or a usage limit respawns).
+    /// `round` is 1-based; `attempt` counts that round's workers.
     CiFixSpawned {
         round: u32,
         attempt: u32,
@@ -282,15 +222,12 @@ pub enum EventKind {
         sha: String,
         files: Vec<String>,
     },
-    /// A `BLOCK-n` written by the closeout, `phase` one of `polish`, `pr`,
-    /// `ci`; the scheduler parks the run (`run_waiting` follows).
     CloseoutBlocked {
         phase: String,
         block_id: String,
         question: String,
     },
-    /// The end of the run (FR-7). Every field has a default so a line from
-    /// before slice 09, a bare `run_finished`, still parses.
+    /// Every field defaults so a bare `run_finished` line still parses.
     RunFinished {
         #[serde(default)]
         pr_url: Option<String>,
@@ -305,10 +242,7 @@ pub enum EventKind {
         #[serde(default)]
         duration_minutes: f64,
     },
-    /// FR-7: the run ended on `factory stop` once its in-flight workers had
-    /// exited — phase `finished`, `stopped: true` in `state.json`; the run is
-    /// over and `factory run NNN` starts a new one from the board. The last line of a stopped
-    /// run, in place of `run_finished` (AD-1002).
+    /// Ends a stopped run in place of `run_finished`, once its in-flight workers exited.
     RunStopped {
         #[serde(default)]
         slices: u64,
@@ -320,15 +254,12 @@ pub enum EventKind {
     RunFailed {
         error: String,
     },
-    /// A kind this binary does not know: a line a newer `factory` wrote
-    /// (DEC-3). It parses, keeps its `seq`, and every consumer passes over
-    /// it. Never written: serializing it is an error, so [`emit`] refuses it.
+    /// A kind a newer `factory` wrote: it parses and every consumer passes over it.
     #[serde(other, skip_serializing)]
     Unknown,
 }
 
 impl EventKind {
-    /// The `kind` string as it appears on the line and in the table.
     pub fn name(&self) -> String {
         match serde_json::to_value(self) {
             Ok(serde_json::Value::Object(o)) => o
@@ -341,7 +272,6 @@ impl EventKind {
     }
 }
 
-/// One line of `events.jsonl`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Event {
     pub seq: u64,
@@ -350,11 +280,7 @@ pub struct Event {
     pub kind: EventKind,
 }
 
-/// Append `kind` to `<run_dir>/events.jsonl` with the next `seq`, and insert
-/// the same event into the `events` table. The driver, `factory stop` and
-/// `factory answer` all emit, so the file is held under `flock` from reading
-/// the last `seq` to the table row (AD-20006), and the line goes out in one
-/// `write`: two emitters never share a `seq` or interleave their bytes.
+/// Locked from reading the last `seq` to the table row, one `write` per line: emitters never interleave.
 pub fn emit(run_dir: &Path, db: &Db, run_id: &str, kind: EventKind) -> Result<Event> {
     let path = run_dir.join(FILE);
     let mut f = OpenOptions::new()
@@ -372,7 +298,6 @@ pub fn emit(run_dir: &Path, db: &Db, run_id: &str, kind: EventKind) -> Result<Ev
     };
     let mut value = serde_json::to_value(&event).map_err(json("serialize event"))?;
     let line = serde_json::to_string(&value).map_err(json("serialize event"))? + "\n";
-    // A torn last line keeps its own line: this one starts on the next.
     let line = if torn { format!("\n{line}") } else { line };
     f.write_all(line.as_bytes())
         .map_err(io(format!("append {}", path.display())))?;
@@ -392,16 +317,10 @@ pub fn emit(run_dir: &Path, db: &Db, run_id: &str, kind: EventKind) -> Result<Ev
     Ok(event)
 }
 
-/// A line of `events.jsonl` that does not parse: `(line number, error)`,
-/// the number 1-based.
+/// `(line number, error)`, the number 1-based.
 pub type Skipped = (usize, String);
 
-/// Every event of `<run_dir>/events.jsonl`, in order, and each line that does
-/// not parse — torn by a crash mid-write, or a known kind with a broken
-/// payload: skipped, for the reader to say so, never a reason to fail the run
-/// (DEC-3). A kind this binary does not know is no skip: it reads as
-/// [`EventKind::Unknown`]. Read as bytes, so a write cut inside a multi-byte
-/// character tears only its own line.
+/// Read as bytes so a write cut inside a multi-byte character tears only its own line.
 pub fn scan(run_dir: &Path) -> Result<(Vec<Event>, Vec<Skipped>)> {
     let path = run_dir.join(FILE);
     let bytes = match fs::read(&path) {
@@ -423,15 +342,10 @@ pub fn scan(run_dir: &Path) -> Result<(Vec<Event>, Vec<Skipped>)> {
     Ok((out, bad))
 }
 
-/// Every event of `<run_dir>/events.jsonl`, in order; empty when none. A line
-/// that does not parse is left out without a word: the driver loop, `status`
-/// and `wait` read through [`scan`] and say so.
 pub fn read_all(run_dir: &Path) -> Result<Vec<Event>> {
     Ok(scan(run_dir)?.0)
 }
 
-/// The one line a reader with no driver log prints for what [`scan`]
-/// skipped; `None` when nothing was.
 pub fn skip_note(run_dir: &Path, skipped: &[Skipped]) -> Option<String> {
     if skipped.is_empty() {
         return None;
@@ -445,8 +359,7 @@ pub fn skip_note(run_dir: &Path, skipped: &[Skipped]) -> Option<String> {
     ))
 }
 
-/// The `seq` of the last line that parses with one — a torn last line falls
-/// back to the line before it (DEC-3) — and whether the file ends mid-line.
+/// The last `seq` that parses, and whether the file ends mid-line.
 fn tail(path: &Path) -> Result<(u64, bool)> {
     let bytes = match fs::read(path) {
         Ok(b) => b,
@@ -471,9 +384,7 @@ mod tests {
     use super::*;
     use crate::run::Run;
 
-    /// Line 2 is a kind from a newer `factory`; line 3 is torn inside a
-    /// multi-byte character; line 4 is a known kind missing its payload;
-    /// line 6 is torn at the end of the file.
+    /// Line 2: a newer kind; 3: torn inside a multi-byte char; 4: payload missing; 6: torn at EOF.
     fn mixed() -> Vec<u8> {
         let mut b = Vec::new();
         b.extend_from_slice(br#"{"seq":1,"ts":"t","kind":"run_started"}"#);
@@ -536,9 +447,7 @@ mod tests {
         assert_eq!(skip_note(run.dir(), &[]), None);
     }
 
-    /// PRD-005 FR-6 deleted the three leftover events; a past run's log that
-    /// holds one still reads, so `factory report` keeps working on it. The
-    /// kinds are put together here so FR-6's grep finds no use of them.
+    /// The names are spliced so no grep finds a use of a deleted kind.
     #[test]
     fn a_deleted_leftover_kind_reads_as_unknown() {
         let (_tmp, run) = run();
@@ -600,8 +509,6 @@ mod tests {
         assert_eq!(EventKind::Unknown.name(), "unknown");
     }
 
-    /// Lines copied from PRD-003's and PRD-001's `events.jsonl`: kinds no
-    /// run emits since PRD-002, still read by `factory report` and the cockpit.
     #[test]
     fn the_legacy_log_merge_events_still_read() {
         let merged = r#"{"fragments":["docs/features/003-observatory/log-slice-01.md","docs/features/003-observatory/log-slice-02.md"],"kind":"log_merged","seq":26,"ts":"2026-10-13T05:42:10Z"}"#;

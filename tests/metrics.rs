@@ -1,9 +1,3 @@
-//! FR-8 (PRD §10) through the binary: after a fixture run every tool call is
-//! a `tool_calls` row with its kind, every worker inner-loop run a `gates`
-//! row with source `worker`, and `factory report <run>` prints the retro
-//! keys then the run keys, with `--json` and `--cockpit`. Slice 13: the
-//! `ctx-*` kinds and their follow-up labels, `pack_doc`, the two new keys,
-//! the three threshold lines and `--per-worker`.
 #[path = "harness/mod.rs"]
 mod harness;
 
@@ -104,7 +98,6 @@ fn cockpit_fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixture/cockpit-session.jsonl")
 }
 
-/// `key` of a `key: value` line.
 fn key(line: &str) -> &str {
     line.split_once(':').map(|(k, _)| k).unwrap_or(line)
 }
@@ -117,8 +110,7 @@ fn value<'a>(lines: &'a [&str], k: &str) -> &'a str {
         .unwrap_or_else(|| panic!("no {k} in {lines:?}"))
 }
 
-/// Three chained slices, the second with a red inner run, one closing
-/// checkpoint; the driver runs in the foreground so the run is over on return.
+/// `--foreground`: the run is over when this returns.
 fn finished_run() -> (Fixture, String) {
     let fx = Fixture::with_index("metrics", &[("checkpoint_every", "10")]);
     fx.chain();
@@ -148,8 +140,7 @@ fn every_tool_call_is_a_row_with_its_kind_and_repeat_flags() {
     let builds: Vec<&WorkerRow> = workers.iter().filter(|w| w.role == "build").collect();
     assert_eq!(builds.len(), 3);
 
-    // Each build: Read prd, Read slice, Write code, Bash `factory docs log
-    // add` (its AD), Bash inner, Bash `factory docs set` (the slice's status).
+    // A build: Read prd, Read slice, Write code, Bash `docs log add`, Bash inner, Bash `docs set`.
     for b in &builds {
         let mine: Vec<&ToolCallRow> = rows.iter().filter(|r| r.worker_id == b.id).collect();
         assert_eq!(
@@ -167,20 +158,15 @@ fn every_tool_call_is_a_row_with_its_kind_and_repeat_flags() {
             assert_eq!(r.target_hash.len(), 64);
             assert!(r.ts.is_some());
         }
-        // No build touches one target twice: the slice file is read once
-        // and never edited (its status goes through `factory docs set`), and
-        // the two `factory docs` calls differ. A repeat inside one worker is
-        // covered by src/metrics.rs `repeat_flags_are_per_worker_and_per_run`.
+        // The slice file is read once and never edited, and the two `docs` calls differ: no repeat.
         assert!(mine.iter().all(|r| !r.repeat_in_worker), "{mine:?}");
     }
-    // The checkpoint worker logs its CP entry (`factory docs log add`): one
-    // row of its own.
+    // The checkpoint worker's one call is its `docs log add`.
     let cp = workers.iter().find(|w| w.role == "checkpoint").unwrap();
     let cp_rows: Vec<&ToolCallRow> = rows.iter().filter(|r| r.worker_id == cp.id).collect();
     assert_eq!(cp_rows.len(), 1);
     assert_eq!(cp_rows[0].kind, "run");
-    // The polish worker (slice 09): Read prd, Write code, Bash inner, Write
-    // retro, Bash `factory docs set 001 reviewed=…`, Write the PR body.
+    // Polish: Read prd, Write code, Bash inner, Write retro, Bash `docs set`, Write the PR body.
     let polish = workers.iter().find(|w| w.role == "polish").unwrap();
     let polish_rows: Vec<&ToolCallRow> = rows.iter().filter(|r| r.worker_id == polish.id).collect();
     assert_eq!(
@@ -192,8 +178,7 @@ fn every_tool_call_is_a_row_with_its_kind_and_repeat_flags() {
     );
     assert_eq!(rows.len(), 3 * 6 + 1 + 6);
 
-    // Every build reads prd.md first: the second and third see it from the
-    // run, none from its own worker. The slice files differ per build.
+    // prd.md is the same file for every build; the slice files differ.
     let prd: Vec<&ToolCallRow> = builds
         .iter()
         .map(|b| {
@@ -220,15 +205,12 @@ fn every_tool_call_is_a_row_with_its_kind_and_repeat_flags() {
         slice_reads.iter().all(|r| !r.repeat_in_run),
         "{slice_reads:?}"
     );
-    // `start_context` landed on every finished worker (the report's min).
     assert!(
         workers.iter().all(|w| w.start_context.is_some()),
         "{workers:?}"
     );
 
-    // Slice 13: every read here is of a file the worker's pack held (the
-    // slice and prd.md for a build, prd.md for the polish worker); no ctx
-    // call, so no follow-up label; a read carries `label_expanded`.
+    // Every read here is of a file the pack held; with no ctx call there is no follow-up label.
     for r in &rows {
         assert_eq!(r.pack_doc, r.kind == "read", "{r:?}");
         assert_eq!(r.label_followup, None, "{r:?}");
@@ -238,7 +220,6 @@ fn every_tool_call_is_a_row_with_its_kind_and_repeat_flags() {
         workers.iter().all(|w| !w.pack_files.is_empty()),
         "{workers:?}"
     );
-    // Every role gets the settings file and FACTORY_PACK (slice 13 task 2).
     for call in fx.calls() {
         let argv: Vec<&str> = call["argv"]
             .as_array()
@@ -261,8 +242,7 @@ fn a_worker_inner_run_is_a_gates_row_with_source_worker() {
     let (fx, id) = finished_run();
     let gates: Vec<GateRow> = db(&fx).gates(&id).unwrap();
     let worker: Vec<&GateRow> = gates.iter().filter(|g| g.source == "worker").collect();
-    // Three builds' inner runs and the polish worker's (slice 09); slice 08
-    // labels every worker's run `slice`, the polish one included.
+    // Three builds' inner runs and the polish worker's; its run is kind `slice` too.
     assert_eq!(worker.len(), 4, "{gates:?}");
     for g in &worker {
         assert_eq!(g.kind, "slice");
@@ -273,12 +253,10 @@ fn a_worker_inner_run_is_a_gates_row_with_source_worker() {
         assert!(g.minutes >= 0.0);
     }
     assert_eq!(worker.iter().filter(|g| g.red).count(), 1);
-    // The driver's checkpoint gate is still its own row, untouched.
     let driver: Vec<&GateRow> = gates.iter().filter(|g| g.source == "driver").collect();
     assert_eq!(driver.len(), 1);
     assert_eq!(driver[0].kind, "checkpoint");
-    // The stub's inner run never executed: the fixture gate log has only the
-    // driver's run.
+    // The stub's inner run never executes gate.sh: the fixture gate log has only the driver's run.
     assert_eq!(fx.gate_log().len(), 1, "{:?}", fx.gate_log());
 }
 
@@ -296,7 +274,6 @@ fn report_prints_the_retro_keys_then_the_run_keys() {
     let lines: Vec<&str> = text.lines().collect();
     let keys: Vec<&str> = lines.iter().map(|l| key(l)).collect();
     assert_eq!(&keys[..23], &KEYS);
-    // FR-24's quality line sits between the keys and the threshold lines.
     let q = keys
         .iter()
         .position(|k| *k == "quality")
@@ -316,7 +293,6 @@ fn report_prints_the_retro_keys_then_the_run_keys() {
     assert_eq!(value(&lines, "cockpit_tokens"), "0 (no --cockpit)");
     assert_eq!(value(&lines, "worker_gate_runs"), "4");
     assert_eq!(value(&lines, "worker_gate_red"), "1");
-    // FR-24: the stub polish's `FINDINGS` line, and the quality block.
     assert_eq!(value(&lines, "findings"), FINDINGS);
     assert_eq!(value(&lines, "fix_commits"), "0");
     let quality = value(&lines, "quality");
@@ -325,12 +301,10 @@ fn report_prints_the_retro_keys_then_the_run_keys() {
             && quality.contains(&format!(" · findings {FINDINGS} · decisions ")),
         "{quality}"
     );
-    // The stub polish worker returns within a second; the figure is its
-    // duration, two decimals.
+    // The stub polish returns within a second.
     let polish_minutes: f64 = value(&lines, "polish_minutes").parse().unwrap();
     assert!((0.0..0.5).contains(&polish_minutes), "{polish_minutes}");
 
-    // Slice 07's formula over the workers table.
     let db = db(&fx);
     let workers = db.workers(&id).unwrap();
     let n = |v: Option<i64>| v.unwrap_or(0) as u64;
@@ -375,8 +349,6 @@ fn report_prints_the_retro_keys_then_the_run_keys() {
         start
     );
 
-    // The lookup set is the two Reads per build; the rest is edits and the
-    // inner run.
     let rows = db.tool_calls(&id).unwrap();
     let chars = |pred: &dyn Fn(&ToolCallRow) -> bool| {
         rows.iter()
@@ -390,8 +362,7 @@ fn report_prints_the_retro_keys_then_the_run_keys() {
         value(&lines, "lookup_chars").parse::<u64>().unwrap(),
         lookup
     );
-    // Slice 08's byte share is `lookup_share_chars` now; `ctx_share` counts
-    // ctx calls among lookups, none in this run.
+    // `ctx_share` counts ctx calls among lookups: none in this run.
     let share: f64 = value(&lines, "lookup_share_chars").parse().unwrap();
     assert!((0.0..=1.0).contains(&share), "{share}");
     assert!(
@@ -402,13 +373,12 @@ fn report_prints_the_retro_keys_then_the_run_keys() {
     assert_eq!(value(&lines, "repeat_rate"), "0.000");
     assert_eq!(value(&lines, "followup_reads"), "0 of 0 ctx calls (0%)");
     assert_eq!(value(&lines, "followup_reads_by_role"), "none");
-    // Every read was of a held file.
+    // Every read is of a held file, so the held chars are the lookup chars.
     assert_eq!(
         value(&lines, "pack_doc_read_chars").parse::<u64>().unwrap(),
         lookup
     );
-    // No ctx call: no follow-up share to compare (n/a, not ok); the lookups
-    // still give ctx_share and repeat_rate.
+    // No ctx call: the follow-up share is n/a, not ok.
     assert_eq!(value(&lines, "followup threshold 30%"), "n/a");
     assert_eq!(value(&lines, "ctx_share threshold 10%"), "under");
     assert_eq!(value(&lines, "repeat_rate vs 26.7%"), "lower");
@@ -439,7 +409,6 @@ fn report_json_round_trips_and_cockpit_measures_the_transcript() {
         v["findings"],
         json!({"high": 1, "medium": 2, "low": 3, "fixed": 4, "parked": 2})
     );
-    // The agent log's counts at ship are what `docs status` prints now.
     let status: Value = serde_json::from_str(&fx.docs(&["status", "001", "--json"])).unwrap();
     assert_eq!(
         v["decisions"], status["log"]["decisions"],
@@ -465,9 +434,7 @@ fn report_json_round_trips_and_cockpit_measures_the_transcript() {
     assert_eq!(v["thresholds"]["followup"], "n/a");
     assert!(v.get("per_worker").is_none(), "only with --per-worker");
 
-    // The fixture transcript, pinned against `measure.py --retro`
-    // (src/measure.rs): out 2524, cache read 181841, start 45507, peak 58351; with input
-    // 98 and cache write 32926 the weighted figure is 63828. Two paths add.
+    // Pinned against `measure.py --retro`; input 98 and cache write 32926 make the weighted 63828.
     let cockpit = cockpit_fixture();
     let cp = cockpit.to_str().unwrap();
     let out = factory(&fx, &["report", &id, "--cockpit", cp]);
@@ -491,7 +458,6 @@ fn report_json_round_trips_and_cockpit_measures_the_transcript() {
     assert_eq!(v["cockpit_out_tokens"], 2524 * 2);
     assert_eq!(v["cockpit_cache_read_tokens"], 181841 * 2);
 
-    // An unknown run or a missing transcript is an error, not a zero report.
     let out = factory(&fx, &["report", "001-nope"]);
     assert_ne!(out.status.code(), Some(0));
     let out = factory(&fx, &["report", &id, "--cockpit", "/nonexistent.jsonl"]);
@@ -499,8 +465,7 @@ fn report_json_round_trips_and_cockpit_measures_the_transcript() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("nonexistent"));
 }
 
-/// Slice 13 tasks 4 and 5: a build whose stream carries two `factory ctx`
-/// calls, one followed by a read of the file it named.
+/// `ctx: true`: two `factory ctx` calls in the build, one followed by a read of the file it named.
 #[test]
 fn ctx_calls_are_labelled_and_the_report_reads_the_reversal_rule() {
     let fx = Fixture::with_index("metrics-ctx", &[("checkpoint_every", "10")]);
@@ -563,13 +528,12 @@ fn ctx_calls_are_labelled_and_the_report_reads_the_reversal_rule() {
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(value(&lines, "followup_reads"), "1 of 2 ctx calls (50%)");
     assert_eq!(value(&lines, "followup threshold 30%"), "over");
-    // Only the builder called ctx; the polish worker's role is left out.
+    // Only the builder called ctx, so the polish role is left out.
     assert_eq!(
         value(&lines, "followup_reads_by_role"),
         "build 1 of 2 (50%)"
     );
-    // Lookups: two reads per build, the extra read and the two ctx calls,
-    // the polish worker's read of prd.md: 2 of 10.
+    // Lookups: six build reads, the extra read, two ctx calls, the polish read of prd.md: 2 of 10.
     assert_eq!(value(&lines, "ctx_share"), "0.200");
     assert_eq!(value(&lines, "ctx_share threshold 10%"), "ok");
     assert_eq!(value(&lines, "repeat_rate vs 26.7%"), "lower");
@@ -583,7 +547,6 @@ fn ctx_calls_are_labelled_and_the_report_reads_the_reversal_rule() {
         value(&lines, "pack_doc_read_chars").parse::<u64>().unwrap(),
         held
     );
-    // One line per worker after the threshold lines, in spawn order.
     let per: Vec<&str> = lines
         .iter()
         .copied()
@@ -597,7 +560,7 @@ fn ctx_calls_are_labelled_and_the_report_reads_the_reversal_rule() {
         .chars()
         .take(8)
         .collect();
-    // Slice 04 appends `model_id` after `subagents`.
+    // `model_id` follows `subagents`, so the head is a prefix.
     let head = format!(
         "worker {} build slice 01 ({sid}): lookups 5, ctx_share 0.400, repeat_rate 0.000, own {} sub 0 subagents 0",
         first.id,
@@ -633,9 +596,6 @@ fn ctx_calls_are_labelled_and_the_report_reads_the_reversal_rule() {
     );
 }
 
-/// PRD-003 FR-21: `finished_run`'s plan with a polish that spawned two
-/// subagents (`tests/stubs/polish-subagents.jsonl` in its stream, two
-/// `subagents/agent-*.jsonl` in its transcript dir).
 fn subagent_run(name: &str, polish: Value) -> (Fixture, String) {
     let fx = Fixture::with_index(name, &[("checkpoint_every", "10")]);
     fx.chain();
@@ -652,8 +612,6 @@ fn subagent_run(name: &str, polish: Value) -> (Fixture, String) {
     (fx, id)
 }
 
-/// FR-24: a polish return without a `FINDINGS` line leaves the five columns
-/// null, emits one `polish_findings_missing` and prints `findings: —`.
 #[test]
 fn a_polish_return_without_findings_is_nulls_and_one_event() {
     let (fx, id) = subagent_run(
@@ -680,7 +638,6 @@ fn a_polish_return_without_findings_is_nulls_and_one_event() {
     assert!(v["findings"].is_null(), "{v}");
 }
 
-/// The cwd the stub call of `session` ran in: a lane since PRD-005 FR-2.
 fn cwd_of(fx: &Fixture, session: &str) -> PathBuf {
     let calls = fx.calls();
     let call = calls
@@ -690,7 +647,6 @@ fn cwd_of(fx: &Fixture, session: &str) -> PathBuf {
     PathBuf::from(call["cwd"].as_str().unwrap())
 }
 
-/// The cwd is a lane worktree under the data dir, not the fixture root.
 fn assert_lane(fx: &Fixture, cwd: &Path) {
     let lanes = data_dir(fx).canonicalize().unwrap().join("lanes");
     assert!(
@@ -701,8 +657,6 @@ fn assert_lane(fx: &Fixture, cwd: &Path) {
     );
 }
 
-/// Where the driver looked for a worker's subagents: under the slug of the
-/// cwd its worker ran in.
 fn subagents_dir(fx: &Fixture, session: &str) -> PathBuf {
     let config = PathBuf::from(&fx.env()["CLAUDE_CONFIG_DIR"]);
     let t = factory::measure::transcript_path(&config, &cwd_of(fx, session), session);
@@ -747,7 +701,7 @@ fn a_polish_with_subagents_counts_them_apart_from_its_own() {
         dir.display(),
         walk(Path::new(&fx.env()["CLAUDE_CONFIG_DIR"]))
     );
-    // The fixtures' final usage per message id (tests/stubs/claude).
+    // The stub's final usage per message id (tests/stubs/claude).
     assert_eq!(
         (
             polish.sub_input,
@@ -775,7 +729,6 @@ fn a_polish_with_subagents_counts_them_apart_from_its_own() {
         );
     }
 
-    // The stream's tool_use ids, in order, against the stored flags.
     let stream = fs::read_to_string(
         data_dir(&fx)
             .join("runs")
@@ -816,7 +769,6 @@ fn a_polish_with_subagents_counts_them_apart_from_its_own() {
         fs::read_to_string(data_dir(&fx).join("runs").join(&id).join("events.jsonl")).unwrap();
     assert!(!events.contains("subagents_unread"), "{events}");
 
-    // The report's totals and the budget count them.
     let out = factory(&fx, &["report", &id, "--json"]);
     assert_eq!(out.status.code(), Some(0));
     let r: Value = serde_json::from_str(&stdout(&out)).unwrap();
@@ -922,8 +874,6 @@ fn weighted_tokens(fx: &Fixture, id: &str) -> u64 {
     v["weighted_tokens"].as_u64().unwrap()
 }
 
-/// PRD-003 FR-21: `--recount` writes back what the driver wrote at exit,
-/// from the stored stream and the transcript dir, and nothing else.
 #[test]
 fn recount_rewrites_the_tokens_and_tool_calls_from_the_streams() {
     let (fx, id) = subagent_run(
@@ -937,7 +887,6 @@ fn recount_rewrites_the_tokens_and_tool_calls_from_the_streams() {
     let weighted_before = weighted_tokens(&fx, &id);
     let events_before = events_text(&fx, &id);
     assert_eq!(before.subagents, Some(2));
-    // PRD-005 FR-2: the polish worker ran in a lane; its subagents were read there.
     assert_lane(&fx, &cwd_of(&fx, before.session_id.as_deref().unwrap()));
 
     db.conn()
@@ -986,7 +935,6 @@ fn recount_rewrites_the_tokens_and_tool_calls_from_the_streams() {
             quota::weigh_own(&before).round() as u64
         )
     );
-    // The report of the rewritten store follows.
     assert!(text.contains("\nweighted_tokens: "), "{text}");
 
     let after = polish_row(&db, &id);
@@ -999,7 +947,6 @@ fn recount_rewrites_the_tokens_and_tool_calls_from_the_streams() {
     assert_eq!(weighted_tokens(&fx, &id), weighted_before);
     assert_eq!(events_text(&fx, &id), events_before);
 
-    // FR-21 per worker: the tokens beside the lookups.
     let out = factory(&fx, &["report", &id, "--json", "--per-worker"]);
     let v: Value = serde_json::from_str(&stdout(&out)).unwrap();
     let per = v["per_worker"].as_array().unwrap();
@@ -1016,8 +963,6 @@ fn recount_rewrites_the_tokens_and_tool_calls_from_the_streams() {
     assert!(build["weighted_own"].as_u64().unwrap() > 0);
 }
 
-/// A transcript Claude Code has since lost: own tokens only, said per
-/// worker; a run still going is refused.
 #[test]
 fn recount_without_the_transcript_keeps_own_tokens_only() {
     let (fx, id) = subagent_run(
@@ -1055,8 +1000,6 @@ fn recount_without_the_transcript_keeps_own_tokens_only() {
     assert_eq!(sub_cols(&after), [None; 5]);
     assert_eq!(after.output, before.output);
     assert_eq!(events_text(&fx, &id), events_before);
-    // The per-worker text prints `—` for the columns not read, and the
-    // three token columns on every row.
     let per: Vec<&str> = text.lines().filter(|l| l.starts_with("worker ")).collect();
     assert_eq!(per.len(), 5, "{text}");
     for l in &per {
@@ -1068,7 +1011,7 @@ fn recount_without_the_transcript_keeps_own_tokens_only() {
     let polish = per.iter().find(|l| l.contains(" polish ")).unwrap();
     assert!(polish.contains(" sub — subagents —"), "{polish}");
 
-    // A live run's budget reads these rows: refused, nothing written.
+    // A live run's budget reads these rows, so a running run is refused.
     let state = data_dir(&fx).join("runs").join(&id).join("state.json");
     let mut s: Value = serde_json::from_str(&fs::read_to_string(&state).unwrap()).unwrap();
     s["phase"] = json!("building");
@@ -1080,9 +1023,7 @@ fn recount_without_the_transcript_keeps_own_tokens_only() {
     assert!(stdout(&out).is_empty());
 }
 
-/// PRD-003 FR-22: every worker row's `pack_parts` sums to the pack the stub
-/// was handed, after its header lines and the blank line; the three roles
-/// show three section lists; `report` means them per role.
+/// The pack's header lines and the blank line after them are not in `pack_parts`.
 #[test]
 fn every_worker_row_records_what_its_pack_was_made_of() {
     let (fx, id) = finished_run();
@@ -1146,16 +1087,12 @@ fn every_worker_row_records_what_its_pack_was_made_of() {
     assert!(line.contains(" · polish branch "), "{line}");
 }
 
-/// PRD-002 FR-19: a store the PRD-003 binary made (version 2, no `retros`)
-/// gains the table on its first open, and `factory report` on an old run
-/// prints what it printed before. "Before" is read from a copy made while the
-/// store was still at version 2, so the compare is not v3 against itself.
+/// "Before" is read from a copy still at version 2, so the compare is not v3 against itself.
 #[test]
 fn a_version_2_store_gains_retros_and_reports_the_same() {
     let (fx, id) = finished_run();
     let data = data_dir(&fx);
     let path = data.join("factory.db");
-    // Back to the shape PRD-003 left: no `retros`, version rows 1 and 2.
     db(&fx)
         .conn()
         .execute_batch(
@@ -1221,8 +1158,6 @@ fn a_version_2_store_gains_retros_and_reports_the_same() {
     assert_eq!(after.1, before.1);
 }
 
-/// PRD-005 FR-2: a worker that ran in a lane has its transcript under the
-/// lane's slug, named by its stream's `init` cwd; `--recount` reads it there.
 #[test]
 fn recount_finds_a_lane_workers_transcript_by_its_init_cwd() {
     let (fx, id) = subagent_run(

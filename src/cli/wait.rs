@@ -1,15 +1,4 @@
-//! `factory wait <run> [--timeout S] [--replay]` (PRD §9 FR-7): block until
-//! the next event the owner must see, print it as one line and exit 0; at
-//! the timeout print `still running: <status line>` and exit 3; a dead
-//! driver exits 4 with the command that resumes it. A new cockpit reattaches
-//! by calling this: everything after `runs/<id>/cockpit.cursor` is replayed,
-//! and `--replay` ignores the cursor. A question still open or a park still
-//! standing is printed again on every call, before anything new, even when
-//! the cursor is past it: the cockpit that was shown it may have died before
-//! the owner saw it (AD-40005). The tail is a 2-second poll of
-//! `events.jsonl` (AD-1001): no watcher crate for a file the driver appends
-//! to a few times an hour. An `events.jsonl` line that does not parse is
-//! skipped, and one line on stderr says which (DEC-3).
+//! A 2-second poll, not a watcher crate: the driver appends to `events.jsonl` a few times an hour.
 use std::io::Write;
 use std::time::{Duration, Instant};
 
@@ -31,10 +20,7 @@ pub struct WaitArgs {
     pub replay: bool,
 }
 
-/// How often the tail re-reads `events.jsonl`.
 pub const POLL: Duration = Duration::from_secs(2);
-/// How long `wait` lets the driver finish a write before it believes a dead
-/// pid or an ended run with no last event, and how many times.
 const SETTLE: Duration = Duration::from_millis(100);
 const SETTLE_REREADS: u32 = 20;
 
@@ -54,10 +40,7 @@ pub fn wait(args: &WaitArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result
     let deadline = args
         .timeout
         .map(|s| Instant::now() + Duration::from_secs(s));
-    // The driver saves `state.json` before it appends the event that says
-    // why, and exits after both: a state read just before a write can be
-    // stale. A dead driver and an ended run without its last event are each
-    // read again before they are believed (AD-1005).
+    // The driver saves `state.json` before the event that says why, so each is read again before it is believed.
     let mut rereads = 0u32;
     let mut noted = false;
     loop {
@@ -78,8 +61,7 @@ pub fn wait(args: &WaitArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result
             return Ok(0);
         }
         if state.phase.is_over() {
-            // Already shown once: say it again so a reattached cockpit knows
-            // where the run stands, and never block on a run that is over.
+            // Said again so a reattached cockpit knows where the run stands; never block on a run that is over.
             let end = events.iter().rev().find(|e| cockpit::is_terminal(&e.kind));
             if end.is_none() && rereads < SETTLE_REREADS {
                 rereads += 1;
@@ -123,7 +105,6 @@ pub fn wait(args: &WaitArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result
     }
 }
 
-/// One line per cockpit event, in the order given.
 fn print<'a>(
     out: &mut dyn Write,
     events: impl Iterator<Item = &'a &'a Event>,

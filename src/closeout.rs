@@ -1,23 +1,4 @@
-//! The closeout (PRD §8 FR-6): when the last checkpoint is done — every
-//! slice `done`, nothing unverified — the run goes polish → ship → push and
-//! draft PR → CI → finished, or parks with a `BLOCK-n` that says why.
-//!
-//! Polish is one worker (`/polish` Unattended) that writes the retro prose
-//! and the PR body in its last turn; the driver commits what it wrote as
-//! `fix(NNN): polish review fixes`. Ship is `docs ship NNN`, the feature's
-//! `retros` row from the store (`factory report`'s numbers, PRD-002 FR-19),
-//! the `## Numbers` section (PRD-003 FR-25, [`crate::retro`]) and
-//! `docs(NNN): ship PRD-NNN`. The PR is `gh pr create --draft --head <branch>`; a
-//! resume after `pr_opened` edits it instead. Ship and push happen only from
-//! the run's feature branch, never the default one. CI is bounded polls of
-//! the PR's checks at the pushed head, three fix rounds and one flaky rerun
-//! as `autonomy.md:77-79` prescribe. Nothing here merges or marks the PR
-//! ready — the owner does.
-//!
-//! Every step is idempotent on re-entry: the events say what landed
-//! (`polish_done`, `shipped`), `state.json` keeps the PR URL, and an open
-//! closeout block (a `block` entry with phase `polish`, `pr` or `ci`) keeps
-//! the park until the owner answers.
+//! Every step is idempotent on re-entry; nothing here merges or marks the PR ready.
 use std::collections::{BTreeSet, HashSet};
 use std::fs;
 use std::io::Write;
@@ -45,14 +26,11 @@ use crate::stream::{Findings, Summary};
 use crate::worker::{self, Exit, Job, Worker};
 use crate::{Result, clock, lanes, metrics, paths, retro};
 
-/// The phases a closeout block names in its heading (autonomy § Blocker
-/// protocol step 2).
+/// The phases a closeout block names in its heading.
 pub const PHASES: [&str; 3] = ["polish", "pr", "ci"];
 
-/// The PR body the polish worker writes, in the run dir.
 pub const PR_BODY_FILE: &str = "pr-body.md";
 
-/// The `what` of a `template_stand_in` (AD-904): the retro or the PR body.
 pub const STAND_IN_RETRO: &str = "retro";
 pub const STAND_IN_BODY: &str = "pr_body";
 /// How the PR body's stand-in line starts, so a later pass replaces it.
@@ -71,8 +49,6 @@ const TIMEOUT: &str = "CI still pending after";
 /// A `proceed` to one of these ends the watch: the checks are the owner's.
 const ENDS_WATCH: [&str; 5] = [CHECKS_UNREADABLE, VIEW_UNREADABLE, FLAKY, INFRA, TIMEOUT];
 
-/// The closeout from wherever it stands. `Done` is CI green (or no CI): the
-/// scheduler finishes the run. `Parked` is a block for the owner.
 pub fn run(
     run: &mut Run,
     docs: &Docs,
@@ -83,7 +59,6 @@ pub fn run(
     let repo = run.state().repo.clone();
     let feature_dir = repo.join(&board.dir);
 
-    // A closeout block the owner has not answered: the park stands.
     if let Some(open) = open_blocks(&feature_dir)?.into_iter().next() {
         return Ok(Outcome::Parked {
             what: park_line(&open.id, &open.title, &open.phase),
@@ -92,11 +67,7 @@ pub fn run(
         });
     }
 
-    // A PRD `shipped` on the board has had its polish: `docs ship` runs only
-    // after it. Its ship is done only once HEAD holds it — a driver killed
-    // between `docs ship` and `docs(NNN): ship PRD-NNN` left it staged, and the
-    // ship runs again (`docs ship` on a shipped PRD is a no-op). A new run on
-    // a delivered feature finds both and resumes at the PR.
+    // A board `shipped` implies polish; the ship counts only once HEAD holds it (`docs ship` reruns as a no-op).
     let board_shipped = board.status.as_deref() == Some("shipped");
     let ship_committed = board_shipped && shipped_at_head(&repo, &board.dir)?;
     let events = run.events()?;
@@ -112,8 +83,7 @@ pub fn run(
         .iter()
         .any(|e| matches!(e.kind, EventKind::Shipped { .. }));
     let shipped = ship_committed || ship_event;
-    // The closeout owns a HEAD off the run's branch (the driver's tick
-    // leaves it here, AD-50001): it blocks before the next step runs.
+    // The driver's tick leaves a HEAD off the run's branch to the closeout: it blocks before the next step.
     let (phase, what) = match (polished, shipped, run.state().pr_url.is_some()) {
         (false, _, _) => ("polish", "polish"),
         (true, false, _) => ("polish", "ship"),
@@ -161,8 +131,6 @@ pub fn run(
 
 // ── polish ──────────────────────────────────────────────────────────────────
 
-/// The polish worker: once more after a death, then the block (phase
-/// `polish`). `None` when its commit landed (or it changed nothing).
 fn polish(
     run: &mut Run,
     docs: &Docs,
@@ -291,7 +259,6 @@ fn polish(
                 fresh: true,
             }));
         }
-        // FR-9: a limit is not a death — pause, then a fresh worker.
         if let Some(limit) = Limit::from(&exit.summary) {
             settle(
                 run,
@@ -315,7 +282,7 @@ fn polish(
             settle_dead(run, &feature_dir, "polish", &session_id, row_id, &exit, out)?;
             continue;
         }
-        // FR-24: only a return block has a `FINDINGS` line to miss.
+        // Only a return block has a `FINDINGS` line to miss.
         if exit.summary.status_hint.is_some() {
             let findings = exit
                 .summary
@@ -329,9 +296,7 @@ fn polish(
                 })?;
             }
         }
-        // Land before settling: a driver killed in between leaves the worker
-        // to the resume, which lands it, in place of a second polish whose
-        // lane reset would discard these edits.
+        // Land before settling: a driver killed between the two leaves the worker to the resume, not to a second polish.
         match land_here(run, board, &Closer::Polish, lane, row_id, out)? {
             Ok(_) => {}
             Err(o) => {
@@ -353,10 +318,7 @@ fn polish(
     }
 }
 
-/// PRD-004 FR-7: the retro's friction section, filed as an idea in the
-/// `[source]` checkout and never committed. Returns nothing on purpose: no
-/// source, a placeholder-only section or a failed write files nothing, and
-/// the closeout goes on.
+/// Never committed, and a failure never stops the closeout: it returns nothing on purpose.
 fn file_friction(run: &Run, board: &Status, cfg: &Config, out: &mut dyn Write) {
     let Some(source) = cfg.source.as_ref().map(|s| &s.path) else {
         return;
@@ -392,8 +354,6 @@ fn file_friction(run: &Run, board: &Status, cfg: &Config, out: &mut dyn Write) {
     }
 }
 
-/// The text under `## Framework friction…` up to the next `## ` heading,
-/// trimmed; empty when the retro has no such section.
 fn friction(retro: &str) -> String {
     retro
         .lines()
@@ -406,17 +366,14 @@ fn friction(retro: &str) -> String {
         .to_string()
 }
 
-// ── landing (PRD-005 FR-3, FR-5) ────────────────────────────────────────────
+// ── landing ─────────────────────────────────────────────────────────────────
 
-/// The closeout worker a lane landing is for.
 enum Closer<'a> {
     Polish,
     CiFix { round: u32, check: &'a str },
 }
 
 impl Closer<'_> {
-    /// `refs/factory/<NNN>/polish` or `…/ci-fix-<round>`: the worker's lane
-    /// commit until it lands.
     fn ref_name(&self, board: &Status) -> String {
         let key = match self {
             Closer::Polish => "polish".to_string(),
@@ -432,8 +389,7 @@ impl Closer<'_> {
         }
     }
 
-    /// What the role may not write. Polish keeps `prd.md`, whose Status prose
-    /// is its; `docs/index.md` stays the ship's.
+    /// Polish may write `prd.md` (its Status prose); `docs/index.md` stays the ship's.
     fn protected(&self, board: &Status) -> Vec<String> {
         match self {
             Closer::Polish => vec!["docs/index.md".to_string()],
@@ -456,14 +412,11 @@ impl Closer<'_> {
     }
 }
 
-/// The lane a closeout worker takes (FR-5): the lowest free one, which is
-/// lane 1, since every slice is done.
 fn closeout_lane(board: &Status) -> u32 {
     board.free_lanes.first().copied().unwrap_or(1)
 }
 
-/// A ref an earlier worker of this role left unlanded (a conflict the owner
-/// answered) would land in place of the next worker's lane.
+/// A ref an earlier worker left unlanded would land in place of the next worker's lane.
 fn drop_ref(run: &Run, board: &Status, who: &Closer) -> Result<()> {
     let repo = run.state().repo.clone();
     let name = who.ref_name(board);
@@ -473,11 +426,7 @@ fn drop_ref(run: &Run, board: &Status, who: &Closer) -> Result<()> {
     Ok(())
 }
 
-/// A missing `retro.md` is created from the template in the polish lane, so
-/// it lands with the commit; a missing PR body from a fallback in the run
-/// dir. The ship and the PR never wait on a worker that skipped its last
-/// turn, but each stand-in is flagged (AD-904): a `template_stand_in` event
-/// the cockpit relays, and a first line in the PR body naming it.
+/// The retro stand-in goes in the lane so it lands with the commit; the body in the run dir.
 fn stand_ins(run: &mut Run, board: &Status, lane_dir: &Path, out: &mut dyn Write) -> Result<()> {
     let feature = run.state().feature.clone();
     let retro_rel = format!("{}/retro.md", board.dir);
@@ -507,16 +456,7 @@ fn stand_ins(run: &mut Run, board: &Status, lane_dir: &Path, out: &mut dyn Write
     flag_body(run, &body)
 }
 
-/// FR-3 for a polish or CI fix worker in `lane`: the lane committed whole
-/// under [`Closer::ref_name`] on the lane's base, less the board files and
-/// the role's protected files, then picked onto the feature tip with the
-/// main tree's board files, as `fix(NNN): polish review fixes` or
-/// `fix(NNN): CI <check>`. Safe to call again for the same worker, which is
-/// how a resumed driver finishes it: a row with a commit has landed; a
-/// commit with its subject on the tip since the lane's base is the landing;
-/// a ref that resolves is picked; else the lane is committed first. A polish
-/// lane that changed nothing still leaves `reviewed` in the main tree's
-/// `state.toml`: then the board files are committed by pathspec.
+/// Safe to call again for the same worker: a resumed driver finishes the landing this way.
 fn land_worker(
     run: &mut Run,
     board: &Status,
@@ -609,11 +549,7 @@ fn land_worker(
     }
 }
 
-/// [`land_worker`] for a worker this driver waited on. A dirty main tree
-/// parks the run (said once, `waiting-owner`) and the landing is retried
-/// each tick, nothing else being live, until it goes through (phase
-/// `closeout` again) or the run is stopped; a conflict blocks. `Ok`: the
-/// landed sha, `None` for nothing to commit; `Err`: the run stops or parks.
+/// `Ok(None)`: nothing to commit; `Err`: the run stopped or parked.
 fn land_here(
     run: &mut Run,
     board: &Status,
@@ -652,8 +588,7 @@ fn land_here(
     }
 }
 
-/// A lane with nothing to commit. Polish commits the main tree's board files
-/// (its `reviewed`) under its subject; a CI fix commits nothing.
+/// Polish still commits the main tree's board files: its `reviewed` lands there.
 fn nothing(
     run: &mut Run,
     board: &Status,
@@ -688,7 +623,6 @@ fn nothing(
     Ok(None)
 }
 
-/// A landed commit on the worker's row, in a line, and its event.
 fn record(run: &mut Run, who: &Closer, row_id: i64, sha: &str, out: &mut dyn Write) -> Result<()> {
     run.db().set_worker_commit(row_id, sha)?;
     let files = landed_files(run, sha)?;
@@ -708,9 +642,7 @@ fn record(run: &mut Run, who: &Closer, row_id: i64, sha: &str, out: &mut dyn Wri
     emit_landed(run, who, sha)
 }
 
-/// `polish_done` or `ci_fix_committed` for `sha`, once. The closeout knows
-/// polish is over only from `polish_done`: a driver killed between the row's
-/// commit and the event would run a second polish over a landed one.
+/// A driver killed between the row's commit and this event would run a second polish over a landed one.
 fn emit_landed(run: &mut Run, who: &Closer, sha: &str) -> Result<()> {
     let logged = run.events()?.iter().any(|e| match (&e.kind, who) {
         (EventKind::PolishDone { sha: Some(s), .. }, Closer::Polish) => s == sha,
@@ -749,9 +681,6 @@ fn landed_files(run: &Run, sha: &str) -> Result<Vec<String>> {
     )?))
 }
 
-/// A closeout worker's lane commit conflicts with the feature tip, which
-/// only the owner moved while it ran: a closeout block naming the paths and
-/// the ref, which keeps the commit.
 fn block_conflict(
     run: &mut Run,
     board: &Status,
@@ -789,8 +718,6 @@ fn block_conflict(
     block(run, &feature_dir, who.phase(), &title, &body, out)
 }
 
-/// Emit `template_stand_in` for `what` (AD-904), once per run: a resume that
-/// finds the file it filled already there does not repeat it.
 fn stood_in(run: &mut Run, what: &str, path: &str) -> Result<()> {
     let seen = run
         .events()?
@@ -805,9 +732,6 @@ fn stood_in(run: &mut Run, what: &str, path: &str) -> Result<()> {
     Ok(())
 }
 
-/// The PR body's first line when a closeout file is a template stand-in
-/// (AD-904), from the run's `template_stand_in` events: the retro, the PR
-/// body, or both. `None` when the workers wrote both.
 pub fn stand_in_line(events: &[crate::events::Event]) -> Option<String> {
     let mut retro: Option<&str> = None;
     let mut body = false;
@@ -843,8 +767,6 @@ pub fn stand_in_line(events: &[crate::events::Event]) -> Option<String> {
     }
 }
 
-/// `body` with `line` first: a stand-in line an earlier pass put there gives
-/// way, so a resume or a second stand-in never stacks them (AD-904).
 pub fn flagged(body: &str, line: &str) -> String {
     let rest = if body.starts_with(STAND_IN_MARK) {
         body.split_once('\n')
@@ -856,8 +778,6 @@ pub fn flagged(body: &str, line: &str) -> String {
     format!("{line}\n\n{rest}")
 }
 
-/// Put the stand-in line first in the PR body file, if the run has one; a
-/// body no stand-in touched is left as the worker wrote it.
 fn flag_body(run: &Run, body: &Path) -> Result<()> {
     let Some(line) = stand_in_line(&run.events()?) else {
         return Ok(());
@@ -870,7 +790,6 @@ fn flag_body(run: &Run, body: &Path) -> Result<()> {
     Ok(())
 }
 
-/// A PR body when the polish worker wrote none: the PRD and the pointers.
 fn fallback_body(board: &Status, feature: &str) -> String {
     format!(
         "## PRD-{feature} — {}\n\n\
@@ -885,9 +804,6 @@ fn fallback_body(board: &Status, feature: &str) -> String {
 
 // ── ship ────────────────────────────────────────────────────────────────────
 
-/// `docs ship`, the `retros` row, `docs(NNN): ship PRD-NNN`. A
-/// refusal (a slice not `done`) blocks with phase `polish` and the tool's
-/// text. `None` when the ship commit landed.
 fn ship(
     run: &mut Run,
     docs: &Docs,
@@ -931,8 +847,7 @@ fn ship(
     for line in shipped.lines().filter(|l| l.starts_with('⚠')) {
         say(out, &format!("ship: {}", line.trim()))?;
     }
-    // FR-24: polish wrote `AD` entries after `board` was read; a fresh
-    // status counts them, the held one stands in if the tool cannot answer.
+    // Polish may have written `AD` entries since `board` was read.
     let log = docs
         .status(&feature)
         .map(|s| s.log)
@@ -943,8 +858,6 @@ fn ship(
         log.decide.len() as u32,
         log.blocks,
     )?;
-    // FR-25: the changed lines against the base; a failed diff stores nulls
-    // and never stops the ship.
     let base = default_branch(run, docs);
     let lines = match retro::changed_lines(&repo, &base) {
         Ok(l) => Some(l),
@@ -967,7 +880,6 @@ fn ship(
         stood_in(run, STAND_IN_RETRO, &retro_rel)?;
     }
     retro_row(run, board, &report)?;
-    // A section the markers refuse is a line in the log, never a stopped ship.
     if let Err(e) = retro::write(&retro, &retro::numbers(run.db(), run.id().as_str())?) {
         say(out, &format!("ship: no ## Numbers written — {e}"))?;
     }
@@ -994,9 +906,7 @@ fn ship(
     Ok(None)
 }
 
-/// The feature's `retros` row (PRD-002 FR-19) from the report: the twelve
-/// numbers, this run's id and today as `shipped_at`. `score` is left null,
-/// so the upsert keeps one the polish worker or the owner already set.
+/// `score` stays null: the upsert keeps one the polish worker or the owner already set.
 fn retro_row(run: &Run, board: &Status, r: &Report) -> Result<()> {
     let n = |v: u64| Some(v as i64);
     run.db().upsert_retro(&RetroRow {
@@ -1024,11 +934,6 @@ fn retro_row(run: &Run, board: &Status, r: &Report) -> Result<()> {
 
 // ── push and PR ─────────────────────────────────────────────────────────────
 
-/// `git push -u origin <branch>`, then `gh pr create --draft --head <branch>`
-/// — or, with a PR already in `state.json`, `gh pr edit` with the body. A
-/// refused push or `gh` blocks with phase `pr`; a `proceed` to the create's
-/// block finishes the run with the owner's PR, to the edit's leaves the body.
-/// `None` when the PR stands.
 fn open_pr(
     run: &mut Run,
     docs: &Docs,
@@ -1068,8 +973,6 @@ fn open_pr(
         stood_in(run, STAND_IN_BODY, &body.display().to_string())?;
     }
     flag_body(run, &body)?;
-    // The PR this run opened, or the one a previous run on this branch did
-    // (`gh pr view`): either way the body is refreshed, no second PR.
     let known = match run.state().pr_url.clone() {
         Some(url) => Some(url),
         None => {
@@ -1148,8 +1051,6 @@ fn open_pr(
     }
 }
 
-/// `git push -u origin <branch>` — from the feature branch only; a refusal
-/// blocks with phase `pr`.
 fn push(
     run: &mut Run,
     docs: &Docs,
@@ -1186,10 +1087,6 @@ fn push(
     }
 }
 
-/// Polish, ship, push and fix CI only from the run's feature branch: never
-/// from the default branch, a detached HEAD or another branch
-/// (`ci::branch_problem`). A problem blocks with `phase`; `None` when HEAD is
-/// where it should be.
 fn branch_guard(
     run: &mut Run,
     docs: &Docs,
@@ -1223,10 +1120,9 @@ fn branch_guard(
     )?))
 }
 
-/// The PRD's h1 without its `PRD-NNN — ` prefix; the slug when it has none.
 pub fn pr_title(prd: &Path, feature: &str, slug: &str) -> String {
     let text = fs::read_to_string(prd).unwrap_or_default();
-    // A v3 frontmatter carries `# ` comment lines; the H1 is below it.
+    // Frontmatter can hold `# ` comment lines; the H1 is below it.
     let body = text
         .strip_prefix("---\n")
         .and_then(|t| t.find("\n---").map(|end| &t[end + 4..]))
@@ -1248,43 +1144,26 @@ pub fn pr_title(prd: &Path, feature: &str, slug: &str) -> String {
 
 // ── CI ──────────────────────────────────────────────────────────────────────
 
-/// What the watch does after one red poll.
 enum Next {
-    /// Not settled (a rerun in flight): wait one interval and poll again.
     Wait(String),
-    /// A rerun is queued: poll again now, the grace starts over.
     Again,
-    /// A fix round on these checks, with their failed logs.
     Fix {
         round: u32,
         check: String,
         log: String,
     },
-    /// Leave the watch (a block).
     Out(Outcome),
 }
 
-/// The watch's view of one PR: where it runs and what it has seen.
 struct Watch {
     repo: PathBuf,
     feature_dir: PathBuf,
-    /// The `closeout_blocked` seq of the last answered `ci` block: the caps
-    /// count the rounds and reruns after it.
+    /// The seq of the last answered `ci` block: the caps count rounds and reruns after it.
     window: u64,
-    /// The job links of the rows the driver just reran: until the new
-    /// attempt registers, they are the old attempt's.
+    /// Job links just reran: their rows are the old attempt's until the new one registers.
     stale: HashSet<String>,
 }
 
-/// Bounded polls of the PR's checks until green: each poll reads the PR's
-/// head (`gh pr view --json headRefOid`) and, when it is this branch's head,
-/// the checks (`gh pr checks --json`). Inside the grace window after the
-/// watch starts, a push or a rerun, an empty table, a missing check or an old
-/// PR head is "not registered yet". A red is one flaky rerun when another run
-/// of the workflow passed at the same head, else a fix round (three since the
-/// last answer, then block), each fix pushed and polled again. A timeout or a
-/// runner that never started blocks at once, and so does a pending table past
-/// the timeout. `None` is green, no checks to watch, or the owner's `proceed`.
 fn watch_ci(
     run: &mut Run,
     docs: &Docs,
@@ -1486,9 +1365,6 @@ fn watch_ci(
     }
 }
 
-/// A red poll: the run behind each failed check (from its job link), then a
-/// foreign head (block), a flaky red (one rerun, then block), the cap
-/// (block) or the next fix round with the failed logs.
 fn on_red(
     run: &mut Run,
     w: &mut Watch,
@@ -1522,8 +1398,6 @@ fn on_red(
             }
         }
     }
-    // A rerun in flight (the owner's, or ours after a restart): its failed
-    // rows are the previous attempt's.
     if let Some(r) = runs.iter().find(|r| r.in_flight()) {
         return Ok(Next::Wait(format!(
             "run {} of `{}` is {} (attempt {})",
@@ -1559,7 +1433,6 @@ fn on_red(
             short(head)
         ),
     )?;
-    // autonomy.md:79 — a red that is not this branch's head is the owner's.
     if let Some(f) = runs
         .iter()
         .find(|r| !r.head_sha.is_empty() && r.head_sha != head)
@@ -1584,8 +1457,6 @@ fn on_red(
             out,
         )?));
     }
-    // autonomy.md:78 — flaky: another run of the same workflow passed at
-    // this head; each failed run is rerun once.
     let mut flaky = !runs.is_empty() && failed.iter().all(|r| ci::run_id(&r.link).is_some());
     if flaky {
         for r in &runs {
@@ -1633,7 +1504,7 @@ fn on_red(
                  **Options:**\n\
                  1. rerun on GitHub until green and answer this block — the watch runs again\n\
                  2. fix the flaky check on a separate branch and answer this block with `proceed` — the run finishes without another watch\n\
-                 **Recommended:** 1 — autonomy.md:78 gives the driver one rerun.\n",
+                 **Recommended:** 1 — the driver gets one rerun.\n",
                 short(head),
                 ids.join(", ")
             );
@@ -1657,7 +1528,7 @@ fn on_red(
                     say(
                         out,
                         &format!(
-                            "ci: `{names}` passed once at this head in another run of `{}` — rerun {}'s failed jobs (flaky, autonomy.md:78)",
+                            "ci: `{names}` passed once at this head in another run of `{}` — rerun {}'s failed jobs (flaky)",
                             r.workflow_name, r.database_id
                         ),
                     )?;
@@ -1701,10 +1572,9 @@ fn on_red(
         }
         return Ok(Next::Again);
     }
-    // autonomy.md:77 — three fix rounds since the owner last answered, then block.
     if rounds_done >= ci::CI_FIX_ROUNDS {
         let body = format!(
-            "**Happened:** `{check}` is still red at `{}` after {rounds_done} fix rounds; the driver's cap is {} (autonomy.md:77). \
+            "**Happened:** `{check}` is still red at `{}` after {rounds_done} fix rounds; the driver's cap is {}. \
              The fix commits are on the branch; the last check table:\n{}\
              **Options:**\n\
              1. fix it by hand, push, and answer this block — the watch runs again, with {} fresh fix rounds if it is still red\n\
@@ -1755,9 +1625,7 @@ fn on_red(
     Ok(Next::Fix { round, check, log })
 }
 
-/// The run behind an infrastructure row is queued or running again (a
-/// rerun the owner started): the reason to wait, else `None`. A run `gh`
-/// will not show is no reason to wait — the block names the rows.
+/// A run `gh` will not show is no reason to wait: the block names the rows.
 fn rerunning(repo: &Path, rows: &[CheckRow]) -> Result<Option<String>> {
     let mut seen = HashSet::new();
     for row in rows {
@@ -1781,8 +1649,6 @@ fn rerunning(repo: &Path, rows: &[CheckRow]) -> Result<Option<String>> {
     Ok(None)
 }
 
-/// autonomy.md:79 — a check that never reached a verdict (timed out, never
-/// started, cancelled) is infrastructure, not a defect: block at once.
 fn infra(
     run: &mut Run,
     feature_dir: &Path,
@@ -1793,7 +1659,7 @@ fn infra(
     let names = ci::check_names(rows);
     let body = format!(
         "**Happened:** at `{}` these checks never reached a verdict on the code:\n{}\
-         A timeout, a runner that never started or a cancelled job is infrastructure (autonomy.md:79), not a defect a fix worker can see.\n\
+         A timeout, a runner that never started or a cancelled job is infrastructure, not a defect a fix worker can see.\n\
          **Options:**\n\
          1. fix the runner, the secret or the workflow, rerun the job on GitHub and answer this block — the watch runs again and waits for the rerun\n\
          2. answer `proceed` to take the checks over — the run finishes without another watch\n\
@@ -1811,7 +1677,6 @@ fn infra(
     )
 }
 
-/// A `gh pr view`/`gh pr checks` the watch cannot read: block with `title`.
 fn unreadable(
     run: &mut Run,
     feature_dir: &Path,
@@ -1837,8 +1702,6 @@ fn unreadable(
     )
 }
 
-/// A `gh run` lookup the red verdict needs, refused: block rather than guess
-/// (a swallowed failure is a wrong fix round or a missed rerun).
 fn gh_refused(
     run: &mut Run,
     feature_dir: &Path,
@@ -1865,7 +1728,6 @@ fn gh_refused(
     )
 }
 
-/// One interval in one-second steps, `Stopped` as soon as a stop is asked.
 fn nap(run: &mut Run, secs: u64) -> Result<Option<Outcome>> {
     for _ in 0..secs.max(1) {
         std::thread::sleep(Duration::from_secs(1));
@@ -1877,7 +1739,6 @@ fn nap(run: &mut Run, secs: u64) -> Result<Option<Outcome>> {
     Ok(None)
 }
 
-/// `45s`, `6 min`: a wait as a block says it.
 fn span(secs: u64) -> String {
     if secs < 120 {
         format!("{secs}s")
@@ -1886,14 +1747,10 @@ fn span(secs: u64) -> String {
     }
 }
 
-/// Each line indented two spaces, for a table quoted in a block.
 fn indent(text: &str) -> String {
     text.lines().map(|l| format!("  {l}\n")).collect()
 }
 
-/// One CI fix round: a fix worker (once more after a death, then block),
-/// its files committed as `fix(NNN): CI <check>`. `None` when the round is
-/// committed (or changed nothing).
 #[allow(clippy::too_many_arguments)]
 fn fix_round(
     run: &mut Run,
@@ -1907,8 +1764,7 @@ fn fix_round(
 ) -> Result<Option<Outcome>> {
     let repo = run.state().repo.clone();
     let feature_dir = repo.join(&board.dir);
-    // The fix commits: a HEAD moved during the watch blocks before a worker
-    // spends the round on another branch.
+    // HEAD may have moved during the watch: guard before a worker spends the round elsewhere.
     if let Some(o) = branch_guard(run, docs, &feature_dir, "ci", "CI fix", out)? {
         return Ok(Some(o));
     }
@@ -2038,8 +1894,7 @@ fn fix_round(
                 fresh: true,
             }));
         }
-        // Land before settling, as polish does: a killed driver leaves the
-        // worker to the resume, which lands it.
+        // Land before settling: a driver killed between the two leaves the worker to the resume, which lands it.
         if let Err(o) = land_here(run, board, &who, lane, row_id, out)? {
             if matches!(o, Outcome::Parked { .. }) {
                 settle(
@@ -2059,13 +1914,7 @@ fn fix_round(
 
 // ── orphans ─────────────────────────────────────────────────────────────────
 
-/// A polish or CI fix worker of a dead driver (FR-1 resume): a returned one
-/// has its lane landed as the live path would, before it is settled; a
-/// limited one pauses the run; anything else is dead, and the closeout runs
-/// again from the events. A worker with no lane is one from a driver before
-/// lanes, whose edits sit in the main tree: settled dead too. `Some`: the
-/// landing waits on the owner's dirty main tree, the park line; the worker
-/// stays unsettled and the landing runs again next tick.
+/// `Some`: the landing waits on the owner's dirty main tree; the worker stays unsettled until the next tick.
 pub fn settle_orphan(
     run: &mut Run,
     board: &Status,
@@ -2145,8 +1994,7 @@ pub fn settle_orphan(
             check: &check,
         }
     };
-    // A landing already under way (its ref made) is retried every tick a
-    // dirty main tree holds it: said once, at first.
+    // Said once: a landing a dirty main tree holds is retried every tick.
     if scheduler::resolve(&run.state().repo, &who.ref_name(board))?.is_none() {
         say(
             out,
@@ -2173,10 +2021,6 @@ pub fn settle_orphan(
     }
     settle(run, w.row_id, &w.session_id, &summary, WorkerOutcome::Done)?;
     if w.role == "polish" {
-        // As the live path, after the landing and its event (AD-1): the next
-        // pass sees polish done and never files. The scheduler hands orphans
-        // no config, so it is read here; an unreadable one files nothing
-        // (AD-30001).
         let repo = run.state().repo.clone();
         if let Ok(loaded) = config::load_with_project(&paths::config_dir(), &repo) {
             file_friction(run, board, &loaded.config, out);
@@ -2187,7 +2031,6 @@ pub fn settle_orphan(
 
 // ── shared ──────────────────────────────────────────────────────────────────
 
-/// An unresolved closeout block as the log files hold it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenBlock {
     pub id: String,
@@ -2195,8 +2038,6 @@ pub struct OpenBlock {
     pub phase: String,
 }
 
-/// Every unanswered block with a closeout phase in the feature's
-/// `log.jsonl`, in file order.
 pub fn open_blocks(feature_dir: &Path) -> Result<Vec<OpenBlock>> {
     Ok(answers::entries(feature_dir)?
         .into_iter()
@@ -2209,8 +2050,6 @@ pub fn open_blocks(feature_dir: &Path) -> Result<Vec<OpenBlock>> {
         .collect())
 }
 
-/// Add a `block` entry with `phase` to the feature's log, emit
-/// `closeout_blocked`, hand back the park.
 fn block(
     run: &mut Run,
     feature_dir: &Path,
@@ -2219,8 +2058,7 @@ fn block(
     body: &str,
     out: &mut dyn Write,
 ) -> Result<Outcome> {
-    // Titles carry tool output (a refusal's first line, a check's name):
-    // one line, capped, as `log show` renders it in a heading.
+    // Titles carry tool output; `log show` renders them in a heading.
     let title = answers::block_title(title);
     let id = answers::add_block(feature_dir, None, Some(phase), &title, body)?;
     run.emit(EventKind::CloseoutBlocked {
@@ -2245,8 +2083,6 @@ fn park_line(id: &str, title: &str, phase: &str) -> String {
     )
 }
 
-/// A closeout block of this run the owner has answered: the seq of its
-/// `closeout_blocked` event and whether the answer is `proceed`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Answered {
     seq: u64,
@@ -2256,9 +2092,6 @@ struct Answered {
     proceed: bool,
 }
 
-/// The run's closeout blocks (its `closeout_blocked` events, in order) that
-/// have an `answer` entry, with the answer read from the entry's rendered
-/// `**Resolution (…):**` line.
 fn answered(run: &Run, feature_dir: &Path) -> Result<Vec<Answered>> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
@@ -2292,7 +2125,6 @@ fn answered(run: &Run, feature_dir: &Path) -> Result<Vec<Answered>> {
     Ok(out)
 }
 
-/// The text of the entry's last `**Resolution (date):** text` line.
 fn resolution(entry: &str) -> Option<String> {
     entry.lines().rev().find_map(|l| {
         let rest = l.trim().strip_prefix("**Resolution (")?;
@@ -2301,8 +2133,6 @@ fn resolution(entry: &str) -> Option<String> {
     })
 }
 
-/// The answer takes a block's `proceed` option: its first word, after an
-/// option number (`2.`, `2)`) and any backticks or punctuation, is `proceed`.
 fn is_proceed(text: &str) -> bool {
     let t = text
         .trim()
@@ -2312,19 +2142,16 @@ fn is_proceed(text: &str) -> bool {
     word.eq_ignore_ascii_case("proceed")
 }
 
-/// HEAD's `state.toml` says `status = "shipped"`: the ship commit is in.
 fn shipped_at_head(repo: &Path, dir: &str) -> Result<bool> {
     let out = ci::git(repo, &["show", &format!("HEAD:{dir}/state.toml")])?;
     Ok(out.ok() && shipped_in(&out.stdout))
 }
 
-/// A `state.toml` text whose `status` is `shipped`; a torn file is not.
 fn shipped_in(state_toml: &str) -> bool {
     crate::docs::state::parse(state_toml).is_ok_and(|s| s.status == "shipped")
 }
 
-/// `at` of the latest answer to a block naming no slice: a checkpoint's or
-/// the closeout's. Deaths before it do not count (the owner reset the cap).
+/// Deaths before the latest answer do not count: the owner reset the cap.
 fn last_answer(run: &Run) -> Result<Option<String>> {
     Ok(answers::all(run.dir())?
         .into_iter()
@@ -2333,8 +2160,6 @@ fn last_answer(run: &Run) -> Result<Option<String>> {
         .max())
 }
 
-/// FR-9 between the closeout's steps: wait out a pause (phase `paused`, then
-/// back to `closeout`), hand a spent budget up, or go on (`None`).
 fn await_quota(run: &mut Run, out: &mut dyn Write) -> Result<Option<Outcome>> {
     loop {
         run.reload()?;
@@ -2361,8 +2186,6 @@ fn await_quota(run: &mut Run, out: &mut dyn Write) -> Result<Option<Outcome>> {
     }
 }
 
-/// A worker gone without a result: a `note` entry in the feature's log; the
-/// caller respawns or blocks on the count.
 fn settle_dead(
     run: &mut Run,
     feature_dir: &Path,
@@ -2409,8 +2232,6 @@ fn settle(
     run.set_worker_outcome(session_id, outcome.as_str())
 }
 
-/// The default branch: the preflight the run was created from, else a fresh
-/// `docs preflight`, else `main`.
 fn default_branch(run: &Run, docs: &Docs) -> String {
     load_preflight(run.dir())
         .ok()
@@ -2424,7 +2245,6 @@ fn default_branch(run: &Run, docs: &Docs) -> String {
         .unwrap_or_else(|| "main".to_string())
 }
 
-/// The run's branch (`state.json`), else the one the repo is on.
 fn feature_branch(run: &Run, repo: &Path) -> Result<String> {
     if let Some(b) = run.state().branch.clone() {
         return Ok(b);
@@ -2433,8 +2253,6 @@ fn feature_branch(run: &Run, repo: &Path) -> Result<String> {
     Ok(out.stdout.trim().to_string())
 }
 
-/// The retro template, this repo's asset (PRD-002 FR-19): the heading and
-/// the prose sections, no frontmatter. `{NNN}` is the feature's number.
 pub fn retro_template() -> String {
     crate::pack::RETRO.to_string()
 }
@@ -2447,7 +2265,6 @@ fn first_line(text: &str) -> String {
         .to_string()
 }
 
-/// The run dir's PR body path.
 pub fn pr_body_path(run_dir: &Path) -> PathBuf {
     run_dir.join(PR_BODY_FILE)
 }

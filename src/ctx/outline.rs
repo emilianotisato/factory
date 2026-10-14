@@ -1,9 +1,4 @@
-//! `factory ctx outline` (PRD §14 FR-12): the definitions a file holds, from
-//! its grammar's `tags.scm`, as the Agentless skeleton: one line each,
-//! `line  kind  signature`, a member indented under its class, trait, `impl`
-//! or module. Bodies, properties, constants, macros, imports and the
-//! definitions local to a function are left out. A directory stands for the
-//! source files directly in it.
+//! Bodies, properties, constants, macros, imports and a function's locals are left out on purpose.
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -11,23 +6,18 @@ use super::lang::{Definition, Unit, definitions, line_of, line_starts};
 use super::walk::{self, Lang, MAX_FILE_BYTES};
 use super::{Searched, rel};
 
-/// The files a call names, in argument order, each directory's sorted.
 #[derive(Debug, Default)]
 pub struct Listing {
     pub files: Vec<(PathBuf, Lang)>,
-    /// Named files of no outlined language.
     pub unknown: usize,
     pub too_large: usize,
 }
 
-/// One outline line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
-    /// 1 at the top level.
     pub depth: usize,
     pub line: u64,
     pub kind: &'static str,
-    /// The name's line, trimmed.
     pub text: String,
 }
 
@@ -35,21 +25,17 @@ pub struct Entry {
 pub struct File {
     pub path: String,
     pub entries: Vec<Entry>,
-    /// The tree holds a syntax error: what was tagged is printed.
     pub broken: bool,
 }
 
 #[derive(Debug, Default)]
 pub struct Found {
     pub files: Vec<File>,
-    /// Definitions deeper than `--depth`.
     pub hidden: usize,
     pub unknown: usize,
     pub searched: Searched,
 }
 
-/// Expands `paths` under `base`; the first one that cannot be read is the
-/// error, with the path as given.
 pub fn list(base: &Path, paths: &[PathBuf]) -> Result<Listing, (PathBuf, io::Error)> {
     let mut listing = Listing::default();
     for p in paths {
@@ -92,8 +78,6 @@ impl Listing {
     }
 }
 
-/// The outline of every listed file, `depth` levels deep, paths relative
-/// to `base`.
 pub fn find(base: &Path, listing: &Listing, depth: usize) -> Found {
     let (per_file, binary) = walk::scan(&listing.files, |path, lang, bytes| {
         let text = String::from_utf8_lossy(bytes);
@@ -115,7 +99,6 @@ pub fn find(base: &Path, listing: &Listing, depth: usize) -> Found {
     found
 }
 
-/// A definition still open while the ones after it are read.
 struct Open {
     end: usize,
     depth: usize,
@@ -123,7 +106,6 @@ struct Open {
     buries: bool,
 }
 
-/// One file's outline and how many definitions `max` hid.
 fn outline(path: String, file: &Path, lang: Lang, text: &str, max: usize) -> (File, usize) {
     let mut out = File {
         path,
@@ -168,8 +150,7 @@ fn outline(path: String, file: &Path, lang: Lang, text: &str, max: usize) -> (Fi
     (out, hidden)
 }
 
-/// Whether a definition is outlined (`Some`) and holds members (`true`).
-/// A module counts only with a body: PHP's `namespace X;` is a header.
+/// `Some` when outlined, `true` when it holds members; PHP's `namespace X;` is a header, not a module.
 fn outlined(text: &str, d: &Definition) -> Option<bool> {
     match d.kind {
         "class" | "impl" => Some(true),

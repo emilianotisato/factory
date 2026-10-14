@@ -1,8 +1,4 @@
-//! `factory ctx` (PRD §14 FR-12): code lookups for workers. `def` and `refs`
-//! run the ripgrep crates over an `ignore` walk, confirm what they found
-//! with tree-sitter and print a compact, capped answer; `outline` prints a
-//! file's definitions from its grammar's `tags.scm`. Every call re-reads
-//! and re-parses: no daemon, no index, no cache.
+//! Every call re-reads and re-parses: no daemon, no index, no cache.
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -79,7 +75,6 @@ pub struct OutlineArgs {
     pub depth: usize,
 }
 
-/// What a search covered, for the trailer.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Searched {
     pub files: usize,
@@ -87,9 +82,7 @@ pub struct Searched {
     pub binary: usize,
 }
 
-/// Runs one verb from `base` (the current directory for the binary); paths
-/// print relative to it. Exit 0 on any search that ran, found or not; 2 on
-/// an unreadable root.
+/// Exit 0 whenever the search ran, found or not; 2 on an unreadable root.
 pub fn run(verb: &Verb, base: &Path, out: &mut dyn Write, err: &mut dyn Write) -> Result<i32> {
     let text = match verb {
         Verb::Def(a) => {
@@ -141,8 +134,7 @@ fn unreadable(base: &Path, root: &Path, err: &mut dyn Write) -> Result<Option<i3
     }
 }
 
-/// A line-oriented matcher: `^` anchors at each line start and no match
-/// spans a newline.
+/// `^` anchors at each line start and no match spans a newline.
 pub(crate) fn matcher(pattern: &str) -> Result<RegexMatcher> {
     RegexMatcherBuilder::new()
         .multi_line(true)
@@ -151,15 +143,11 @@ pub(crate) fn matcher(pattern: &str) -> Result<RegexMatcher> {
         .map_err(|e| Error::Msg(format!("ctx: bad pattern `{pattern}`: {e}")))
 }
 
-/// A whole-word search for the escaped `name`, as `rg -w` builds one: the
-/// name between a line edge or a non-word character on each side. `\b`
-/// would need a word character inside the name's edge, so it never finds
-/// PHP's `$user`.
+/// As `rg -w` builds one: `\b` needs a word character at the name's edge, so it misses PHP's `$user`.
 pub(crate) fn whole_word(escaped: &str) -> String {
     format!(r"(?:^|\W)(?:{escaped})(?:\W|$)")
 }
 
-/// The 1-based numbers of the lines of `bytes` that `m` matches.
 pub(crate) fn matching_lines(m: &RegexMatcher, bytes: &[u8]) -> Vec<u64> {
     let mut lines = Vec::new();
     let mut searcher = SearcherBuilder::new().line_number(true).build();
@@ -174,7 +162,6 @@ pub(crate) fn matching_lines(m: &RegexMatcher, bytes: &[u8]) -> Vec<u64> {
     lines
 }
 
-/// `path` relative to `base` when it lies under it, as printed.
 pub(crate) fn rel(base: &Path, path: &Path) -> String {
     path.strip_prefix(base)
         .unwrap_or(path)

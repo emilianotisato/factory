@@ -1,12 +1,4 @@
-//! FR-9 (slice 07): a worker that hits a usage limit pauses the run until the
-//! stream's `resetsAt` (15 minutes when it gave none), the pause counts
-//! toward no cap, and the weighted token sum parks the run at the budget.
-//!
-//! The pauses are minutes long, so every driver here runs on the scaled
-//! clock `src/clock.rs` reads from `FACTORY_CLOCK_SCALE` and
-//! `FACTORY_CLOCK_ANCHOR`; the stub worker reads the same two variables, so
-//! its `resetsAt` and the driver's `paused_until` agree. Events' `ts` are on
-//! that clock too, which is what the assertions compare against.
+//! Pauses are minutes long, so drivers run on the scaled clock; the stub reads the same variables.
 #[path = "harness/mod.rs"]
 mod harness;
 
@@ -30,8 +22,7 @@ const CHECKPOINT: &str =
 /// The stub's `result` usage: 18 + 6514 + 0.1 × 41674 + 5 × 182 = 11609.4.
 const STUB_WEIGHTED: u64 = 11_609;
 
-/// One scaled clock per test: `scale` virtual seconds per wall second from
-/// the wall second the test started. Scale 1 leaves the wall clock alone.
+/// `scale` virtual seconds per wall second from the test's start; scale 1 is the wall clock.
 struct Clock {
     scale: u64,
     anchor: u64,
@@ -112,7 +103,6 @@ fn of_kind(dir: &Path, kind: &str) -> Vec<Value> {
         .collect()
 }
 
-/// The kinds from the first `from` on.
 fn kinds_from(dir: &Path, from: &str) -> Vec<String> {
     let k = kinds(dir);
     let i = k
@@ -122,7 +112,6 @@ fn kinds_from(dir: &Path, from: &str) -> Vec<String> {
     k[i..].to_vec()
 }
 
-/// An event's `ts`, in the run's (scaled) epoch seconds.
 fn ts(e: &Value) -> u64 {
     clock::from_rfc3339(e["ts"].as_str().unwrap()).unwrap()
 }
@@ -139,8 +128,7 @@ fn driver_log(dir: &Path) -> String {
     fs::read_to_string(dir.join("driver.log")).unwrap_or_default()
 }
 
-/// Polls `ok`; on timeout, dumps the run so a failure in the detached
-/// driver can be read from the test output.
+/// On timeout, dumps the run: the driver is detached, so its failure is otherwise invisible.
 fn wait_until(fx: &Fixture, dir: &Path, what: &str, secs: u64, mut ok: impl FnMut() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(secs);
     while !ok() {
@@ -199,12 +187,10 @@ fn checkpoint(n: u32) -> String {
     CHECKPOINT.replace("{n}", &n.to_string())
 }
 
-/// The polish worker's prompt: the slash command, nothing else (slice 09).
 fn polish() -> String {
     "/polish".into()
 }
 
-/// `(role, outcome)` of every worker row, in id order.
 fn rows(fx: &Fixture, dir: &Path) -> Vec<(String, String)> {
     db(fx)
         .workers(&run_id(dir))
@@ -222,7 +208,6 @@ fn outcomes(fx: &Fixture, dir: &Path, role: &str) -> Vec<String> {
         .collect()
 }
 
-/// `(red, cached, attempt)` of the rows for checkpoint `n`, in id order.
 fn gate_shape(rows: &[GateRow], n: u32) -> Vec<(bool, bool, u32)> {
     rows.iter()
         .filter(|g| g.checkpoint == Some(n))
@@ -230,7 +215,6 @@ fn gate_shape(rows: &[GateRow], n: u32) -> Vec<(bool, bool, u32)> {
         .collect()
 }
 
-/// Slice `n`'s entries of `log.jsonl`, of `kind` (any kind when `None`).
 fn slice_log(fx: &Fixture, n: u8, kind: Option<&str>) -> Vec<Value> {
     fx.log_entries()
         .into_iter()
@@ -239,7 +223,6 @@ fn slice_log(fx: &Fixture, n: u8, kind: Option<&str>) -> Vec<Value> {
         .collect()
 }
 
-/// No `Dead worker` note on slice `n`.
 fn assert_no_dead_note(fx: &Fixture, n: u8) {
     let notes: Vec<Value> = slice_log(fx, n, Some("note"))
         .into_iter()
@@ -254,7 +237,6 @@ fn assert_all_done(fx: &Fixture) {
     }
 }
 
-/// The pause's shape: one `run_paused`, then no spawn until `run_resumed_from_pause`.
 fn assert_one_pause(dir: &Path) -> (Value, Value) {
     let k = kinds_from(dir, "run_paused");
     let resumed = k
@@ -288,14 +270,11 @@ fn a_rate_limited_worker_pauses_the_run_until_the_reset() {
     assert_eq!(paused["literal"], "rejected", "{paused}");
     let resets_at = paused["resets_at"].as_u64().unwrap();
     let at = ts(&paused);
-    // The stub set `resetsAt` 120 s ahead when it started; the driver read
-    // the exit within a poll tick.
+    // The stub set `resetsAt` 120 s ahead at start; the driver read the exit within a poll tick.
     assert!(
         (100..=120).contains(&(resets_at - at)),
         "resets_at {resets_at} vs ts {at}"
     );
-    // While paused: phase `paused`, `paused_until` on disk, the slice back to
-    // `pending` with its lane freed, and the one call that was limited.
     wait_phase(&fx, &dir, "paused", 10);
     assert_eq!(state(&dir)["paused_until"], json!(resets_at));
     assert_eq!(fx.slice_status(1), "pending");
@@ -303,8 +282,7 @@ fn a_rate_limited_worker_pauses_the_run_until_the_reset() {
     assert_eq!(fx.calls().len(), 1);
     assert_eq!(outcomes(&fx, &dir, "build"), ["rate_limited"]);
 
-    // Nothing spawns before the resume; the calls are read before the events
-    // so a spawn racing this poll shows up as a resume, never as a bare call.
+    // Calls are read before events: a spawn racing this poll shows as a resume, never a bare call.
     wait_until(&fx, &dir, "run_resumed_from_pause", 60, || {
         let calls = fx.calls().len();
         if count(&kinds(&dir), "run_resumed_from_pause") == 0 {
@@ -415,7 +393,6 @@ fn two_pauses_on_one_slice_count_toward_no_cap() {
     assert_no_dead_note(&fx, 1);
     let blocks = slice_log(&fx, 1, Some("block"));
     assert!(blocks.is_empty(), "{blocks:?}");
-    // Each re-limited retry announced its own pause, in order.
     let seq: Vec<String> = kinds_from(&dir, "run_paused")
         .into_iter()
         .filter(|x| x.starts_with("run_") || x == "slice_spawned")
@@ -449,8 +426,7 @@ fn a_rate_limited_fix_worker_is_not_a_red() {
     let dir = start(&fx, &clk);
     wait_phase(&fx, &dir, "finished", 120);
 
-    // The limited fix attempt is retried on the same gate attempt, with no
-    // gate run between; the real fix turns the second gate green.
+    // The limited fix is retried on the same gate attempt, with no gate run between.
     assert_eq!(
         prompts(&fx),
         [
@@ -500,9 +476,7 @@ fn a_spent_budget_parks_the_run_and_a_higher_budget_resumes_it() {
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     let dir = only_run_dir(&fx);
 
-    // One worker runs (the budget is checked before each spawn, and the sum
-    // is 0 until a row lands); its usage passes the budget; nothing else
-    // spawns and the driver exits parked.
+    // The budget is checked before each spawn and sums to 0 until a row lands, so one worker runs.
     wait_phase(&fx, &dir, "waiting-owner", 60);
     let pid = state(&dir)["pid"].as_u64().unwrap() as u32;
     wait_until(&fx, &dir, "the parked driver to exit", 10, || {
@@ -519,7 +493,6 @@ fn a_spent_budget_parks_the_run_and_a_higher_budget_resumes_it() {
     assert_eq!(fx.calls().len(), 1);
     assert_eq!(fx.slice_status(1), "done");
     assert_eq!(fx.slice_status(2), "pending");
-    // `weighted` is the hand-computed sum over the workers rows.
     let by_hand: f64 = db(&fx)
         .workers(&run_id(&dir))
         .unwrap()
@@ -534,7 +507,6 @@ fn a_spent_budget_parks_the_run_and_a_higher_budget_resumes_it() {
     assert_eq!(by_hand.round() as u64, STUB_WEIGHTED);
     assert_eq!(state(&dir)["budget_weighted_tokens"], 1);
 
-    // A higher budget resumes the same run and it finishes.
     let out = factory(&fx, &clk, &["run", "001", "--budget", "100000000"]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     assert_eq!(run_dirs(&fx).len(), 1);
@@ -571,7 +543,6 @@ fn a_resumed_driver_holds_on_an_orphans_rate_limit() {
     let w = state(&dir)["workers"][0].clone();
     let worker = w["pid"].as_u64().unwrap() as u32;
     let session = w["session_id"].as_str().unwrap();
-    // Driver and worker gone; the worker's last word was a usage limit.
     assert_eq!(unsafe { libc::kill(driver as i32, libc::SIGKILL) }, 0);
     assert_eq!(unsafe { libc::kill(worker as i32, libc::SIGKILL) }, 0);
     wait_until(&fx, &dir, "both to die", 10, || {
@@ -586,8 +557,6 @@ fn a_resumed_driver_holds_on_an_orphans_rate_limit() {
     ));
     fs::write(&stream, text).unwrap();
 
-    // The resumed driver settles the orphan, which pauses the run: nothing
-    // spawns until the reset.
     let out = factory(&fx, &clk, &["run", "001"]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     wait_phase(&fx, &dir, "paused", 10);

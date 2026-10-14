@@ -1,12 +1,4 @@
-//! `factory` drives unattended feature delivery: it spawns coding-agent
-//! workers with context packs, runs the gate itself and keeps the record.
-//!
-//! Slice 02 of PRD-001 lays the contract every later slice builds on: the
-//! board is read through [`docs`], a run lives in [`run`] (its directory,
-//! `state.json`, `events.jsonl`), every event goes through [`events::emit`]
-//! and lands in the SQLite store in [`db`], and [`config`] reads
-//! `config.toml`. The driver itself lands slice by slice
-//! (`docs/features/001-driver`).
+//! `factory` drives unattended feature delivery: it spawns coding-agent workers, runs the gate and keeps the record.
 pub mod answers;
 pub mod checkpoint;
 pub mod ci;

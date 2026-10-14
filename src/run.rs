@@ -1,14 +1,4 @@
-//! A run's state on disk (PRD §3 FR-1): `<data_dir>/runs/<id>/state.json`
-//! beside its `events.jsonl`, mirrored into the `runs` table. The board stays
-//! the source of truth for what is built; this is only where the run is.
-//!
-//! Three processes write `state.json`: the driver, `factory stop` and the
-//! `factory run` that hands the run to a daemon. Every write is a
-//! read-modify-write of the file under `state.lock` (`flock`), so a writer
-//! changes only the fields it means to and never puts back a stale copy, and
-//! each writer renames its own temp file. The driver that took the run
-//! (`create`, `adopt`) owns it: once `state.json` names another pid, its
-//! writes fail and its loop stops, leaving the run to the new owner.
+//! Every write of `state.json` is a locked read-modify-write; once the file names another pid, this driver's writes fail.
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
@@ -23,10 +13,8 @@ use crate::events::{self, Event, EventKind};
 use crate::{Error, Result, clock, paths};
 
 pub const STATE_FILE: &str = "state.json";
-/// The `flock` every writer of `state.json` holds for its read-modify-write.
 pub const LOCK_FILE: &str = "state.lock";
 
-/// `<NNN>-<yyyymmdd>-<4 hex>`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct RunId(String);
@@ -63,8 +51,7 @@ fn salt() -> u32 {
     nanos ^ std::process::id().rotate_left(7)
 }
 
-/// Where the run is. `waiting-owner` covers parked asks, blocks and the
-/// budget; `paused` is the quota pause (FR-9).
+/// `WaitingOwner` covers asks, blocks and the budget; `Paused` is the usage-limit pause.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Phase {
@@ -92,7 +79,6 @@ impl Phase {
         }
     }
 
-    /// Nothing resumes a finished or failed run; `factory run` starts a new one.
     pub fn is_over(self) -> bool {
         matches!(self, Phase::Finished | Phase::Failed)
     }
@@ -104,7 +90,6 @@ impl fmt::Display for Phase {
     }
 }
 
-/// `state.json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunState {
     pub id: RunId,
@@ -117,84 +102,57 @@ pub struct RunState {
     pub updated_at: String,
     pub budget_weighted_tokens: u64,
     pub stop_requested: bool,
-    /// FR-7: the run ended on `factory stop`, not at its end. Phase is
-    /// `finished`, so nothing resumes it: `factory run NNN` starts a new run
-    /// from the board.
     #[serde(default)]
     pub stopped: bool,
-    /// FR-9: no spawn until this epoch second; `None` when not paused. Kept
-    /// in `state.json` so a resumed driver honours a pause it did not see.
+    /// Epoch second before which nothing spawns; persisted so a resumed driver honours a pause it did not see.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paused_until: Option<u64>,
-    /// FR-9: `paused_until` is the 15-minute retry of a limit that gave no
-    /// `resetsAt`, so a limit that does give one replaces it.
+    /// `paused_until` was guessed (no `resetsAt`); a limit that gives one replaces it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub paused_guessed: bool,
-    /// FR-6: the draft PR once `gh pr create` returned it; a resume edits
-    /// the PR instead of opening a second one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pr_url: Option<String>,
-    /// Every worker this run spawned, in order (slice 03). A resume reads the
-    /// pids to tell a dead worker from a live one; the outcomes carry the
-    /// once-only respawn cap across driver restarts.
     #[serde(default)]
     pub workers: Vec<WorkerRef>,
-    /// FR-3: the lanes whose `setup:` ran for this run, so a resumed driver
-    /// does not run it again.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub lanes_set_up: Vec<u32>,
-    /// PRD-005 FR-3: the sha each lane was last reset to, the base its
-    /// slice's lane commit sits on, kept so a resumed driver can commit it.
+    /// The sha each lane was last reset to: the base a resumed driver commits the slice's lane on.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub lane_bases: BTreeMap<u32, String>,
-    /// The driver's start time ([`start_time`]), so a reused `pid` is not
-    /// taken for the driver. `None` from a `state.json` that predates it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid_start: Option<u64>,
-    /// Each worker's start time by session id, read when it was added: a
-    /// resume tells a dead worker whose pid was reused from a live one.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub worker_starts: BTreeMap<String, u64>,
 }
 
 impl RunState {
-    /// The driver named by `pid` is running: the pid is alive and, when its
-    /// start time is known, is still the same process.
     pub fn driver_alive(&self) -> bool {
         alive(self.pid, self.pid_start)
     }
 
-    /// The same for one of the run's workers.
     pub fn worker_alive(&self, w: &WorkerRef) -> bool {
         alive(w.pid, self.worker_starts.get(&w.session_id).copied())
     }
 }
 
-/// One spawned worker as `state.json` remembers it. A build worker has a
-/// `slice`; a fix or checkpoint worker (FR-4) has the `checkpoint` it served.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkerRef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slice: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint: Option<u32>,
-    /// The lane it runs in; `None` for a worker in the main tree. A slice's
-    /// lane is also on the board, a checkpoint worker's only here.
+    /// A slice's lane is also on the board; a checkpoint worker's lane is only here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lane: Option<u32>,
     pub role: String,
     pub session_id: String,
     pub pid: u32,
-    /// The `workers` table row.
     pub row_id: i64,
     pub spawned_at: String,
-    /// `None` while running or unsettled; else a [`WorkerOutcome`] literal.
     pub outcome: Option<String>,
 }
 
 impl WorkerRef {
-    /// Counts toward a death cap (FR-1, FR-4). Routed through
-    /// [`WorkerOutcome::counts_as_death`] so a new outcome has to decide.
     pub fn died(&self) -> bool {
         self.outcome
             .as_deref()
@@ -203,15 +161,12 @@ impl WorkerRef {
     }
 }
 
-/// How a worker ended, as `state.json` and the `workers` table spell it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkerOutcome {
     Done,
     Blocked,
     Dead,
     Failed,
-    /// FR-9: the worker hit a usage limit; the run pauses, the slice goes
-    /// back to `pending`.
     RateLimited,
 }
 
@@ -237,9 +192,7 @@ impl WorkerOutcome {
         })
     }
 
-    /// FR-9: a pause counts toward no cap. Exhaustive on purpose: a new
-    /// outcome must say whether the once-only respawn (FR-1) and the three
-    /// red gates (FR-4) see it.
+    /// Exhaustive on purpose: a new outcome must say whether the death caps see it.
     pub fn counts_as_death(self) -> bool {
         match self {
             WorkerOutcome::Dead | WorkerOutcome::Failed => true,
@@ -248,21 +201,14 @@ impl WorkerOutcome {
     }
 }
 
-/// An open run: its directory, its state and the store.
 pub struct Run {
     dir: PathBuf,
     state: RunState,
     db: Db,
-    /// The gate and inner commands the feature declares, read once per
-    /// driver process (FR-8: a worker's `Bash` call containing one is an
-    /// inner-loop run). Not persisted: `None` until the scheduler sets it.
     gate_cmds: Option<GateCmds>,
-    /// This process created or adopted the run: its writes require
-    /// `state.json` to still name its pid.
     owner: bool,
 }
 
-/// The feature's `gate` and `inner` command strings, as `docs gate` prints them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GateCmds {
     pub gate: String,
@@ -278,8 +224,6 @@ impl Run {
         data_dir.join("factory.db")
     }
 
-    /// A new run directory with its state file, an empty `events.jsonl` and
-    /// its `runs` row, phase `starting`, `pid` this process.
     pub fn create(
         data_dir: &Path,
         repo: &Path,
@@ -297,8 +241,7 @@ impl Run {
             id = RunId::with_salt(feature, bump);
         }
         let dir = runs.join(id.as_str());
-        // Not recursive: a directory another run made meanwhile is an error,
-        // not a shared one.
+        // Not recursive: a directory another run made meanwhile is an error, not a shared one.
         fs::DirBuilder::new()
             .mode(0o700)
             .create(&dir)
@@ -339,7 +282,6 @@ impl Run {
         })
     }
 
-    /// The run `id` under `data_dir`.
     pub fn open(data_dir: &Path, id: &str) -> Result<Run> {
         let dir = Self::runs_dir(data_dir).join(id);
         if !dir.join(STATE_FILE).is_file() {
@@ -359,7 +301,6 @@ impl Run {
         })
     }
 
-    /// The run for this repo and feature whose process is alive, if any.
     pub fn find_live(data_dir: &Path, repo: &Path, feature: &str) -> Result<Option<Run>> {
         let repo = canonical(repo)?;
         let found = list(data_dir, &repo, feature)?
@@ -370,8 +311,6 @@ impl Run {
             .transpose()
     }
 
-    /// The latest run for this repo and feature that is neither finished nor
-    /// failed: the one `factory run` resumes (AD-203).
     pub fn find_resumable(data_dir: &Path, repo: &Path, feature: &str) -> Result<Option<Run>> {
         let repo = canonical(repo)?;
         let found = list(data_dir, &repo, feature)?
@@ -407,12 +346,10 @@ impl Run {
         self.gate_cmds = Some(cmds);
     }
 
-    /// Append to `events.jsonl` and the `events` table.
     pub fn emit(&mut self, kind: EventKind) -> Result<Event> {
         events::emit(&self.dir, &self.db, self.state.id.as_str(), kind)
     }
 
-    /// Every event so far, from the file.
     pub fn events(&self) -> Result<Vec<Event>> {
         events::read_all(&self.dir)
     }
@@ -437,7 +374,6 @@ impl Run {
         self.update(|s| s.stop_requested = true)
     }
 
-    /// FR-7: the stop honoured — `finished` with `stopped: true`, one save.
     pub fn set_stopped(&mut self) -> Result<()> {
         self.update(|s| {
             s.stopped = true;
@@ -445,7 +381,6 @@ impl Run {
         })
     }
 
-    /// FR-9: set the pause; `guessed` when no `resetsAt` gave `until`.
     pub fn set_pause(&mut self, until: u64, guessed: bool) -> Result<()> {
         self.update(|s| {
             s.paused_until = Some(until);
@@ -453,7 +388,6 @@ impl Run {
         })
     }
 
-    /// FR-9: clear the pause.
     pub fn clear_pause(&mut self) -> Result<()> {
         self.update(|s| {
             s.paused_until = None;
@@ -471,7 +405,6 @@ impl Run {
         })
     }
 
-    /// FR-3: lane `n`'s setup ran for this run.
     pub fn mark_lane_set_up(&mut self, n: u32) -> Result<()> {
         self.update(|s| {
             if !s.lanes_set_up.contains(&n) {
@@ -480,14 +413,12 @@ impl Run {
         })
     }
 
-    /// PRD-005 FR-3: lane `n` was reset to `sha`, its slice's base.
     pub fn set_lane_base(&mut self, n: u32, sha: &str) -> Result<()> {
         self.update(|s| {
             s.lane_bases.insert(n, sha.to_string());
         })
     }
 
-    /// Settle a worker: `done`, `blocked`, `dead` or `failed`.
     pub fn set_worker_outcome(&mut self, session_id: &str, outcome: &str) -> Result<()> {
         self.update(|s| {
             if let Some(w) = s
@@ -501,9 +432,7 @@ impl Run {
         })
     }
 
-    /// This process takes the run over (a resume): `pid` becomes ours. A
-    /// live driver keeps its run — unless it is this process's parent, the
-    /// `factory run` that hands the run to its daemon.
+    /// The parent is the one live driver that may be overridden: the `factory run` handing this run to its daemon.
     pub fn adopt(&mut self) -> Result<()> {
         let me = std::process::id();
         let parent = std::os::unix::process::parent_id();
@@ -521,19 +450,15 @@ impl Run {
         self.write(disk)
     }
 
-    /// Reload `state.json` after another process (`factory stop`) wrote it.
     pub fn reload(&mut self) -> Result<()> {
         self.state = load_state(&self.dir)?;
         Ok(())
     }
 
-    /// The pid that took this process's run over, from the last read of
-    /// `state.json`; `None` while this process owns it or never did.
     pub fn taken_over(&self) -> Option<u32> {
         (self.owner && self.state.pid != std::process::id()).then_some(self.state.pid)
     }
 
-    /// [`taken_over`](Self::taken_over), read from disk now.
     pub fn lost_to(&self) -> Option<u32> {
         if !self.owner {
             return None;
@@ -544,8 +469,6 @@ impl Run {
             .filter(|pid| *pid != std::process::id())
     }
 
-    /// Change `state.json` under the lock: `f` runs on what is on disk now,
-    /// not on this process's copy. An owner that lost the run writes nothing.
     fn update(&mut self, f: impl FnOnce(&mut RunState)) -> Result<()> {
         let _lock = lock_state(&self.dir)?;
         let mut disk = load_state(&self.dir)?;
@@ -561,7 +484,6 @@ impl Run {
         self.write(disk)
     }
 
-    /// Write `state` (the lock held) and make it this process's copy.
     fn write(&mut self, mut state: RunState) -> Result<()> {
         state.updated_at = clock::now_rfc3339();
         write_state(&self.dir, &state)?;
@@ -570,8 +492,6 @@ impl Run {
     }
 }
 
-/// Take `runs/<id>/state.lock`, blocking until no other writer holds it;
-/// released when the file is dropped.
 fn lock_state(run_dir: &Path) -> Result<File> {
     let path = run_dir.join(LOCK_FILE);
     let file = OpenOptions::new()
@@ -585,15 +505,13 @@ fn lock_state(run_dir: &Path) -> Result<File> {
     Ok(file)
 }
 
-/// `<run_dir>/state.json`, parsed.
 pub fn load_state(run_dir: &Path) -> Result<RunState> {
     let path = run_dir.join(STATE_FILE);
     let text = fs::read_to_string(&path).map_err(io(format!("read {}", path.display())))?;
     serde_json::from_str(&text).map_err(json(format!("parse {}", path.display())))
 }
 
-/// Write `state.json` whole, through a rename so a reader never sees half.
-/// The temp file is this process's own, so two writers never share one.
+/// The temp file carries the pid so two writers never share one; the rename keeps readers whole.
 pub fn write_state(run_dir: &Path, state: &RunState) -> Result<()> {
     let path = run_dir.join(STATE_FILE);
     let tmp = run_dir.join(format!("{STATE_FILE}.{}.tmp", std::process::id()));
@@ -602,7 +520,6 @@ pub fn write_state(run_dir: &Path, state: &RunState) -> Result<()> {
     fs::rename(&tmp, &path).map_err(io(format!("rename {}", path.display())))
 }
 
-/// Every state file for `repo` and `feature`, oldest first.
 fn list(data_dir: &Path, repo: &Path, feature: &str) -> Result<Vec<RunState>> {
     Ok(list_all(data_dir, repo)?
         .into_iter()
@@ -610,8 +527,6 @@ fn list(data_dir: &Path, repo: &Path, feature: &str) -> Result<Vec<RunState>> {
         .collect())
 }
 
-/// Every run of `repo`, any feature, that is neither finished nor failed,
-/// oldest first: `factory answer ASK-n` finds the one that waits on the ask.
 pub fn list_open(data_dir: &Path, repo: &Path) -> Result<Vec<RunState>> {
     let repo = canonical(repo)?;
     Ok(list_all(data_dir, &repo)?
@@ -620,7 +535,6 @@ pub fn list_open(data_dir: &Path, repo: &Path) -> Result<Vec<RunState>> {
         .collect())
 }
 
-/// Every state file for `repo`, oldest first.
 fn list_all(data_dir: &Path, repo: &Path) -> Result<Vec<RunState>> {
     Ok(list_runs(data_dir)?
         .into_iter()
@@ -628,8 +542,6 @@ fn list_all(data_dir: &Path, repo: &Path) -> Result<Vec<RunState>> {
         .collect())
 }
 
-/// Every run under `data_dir`, any repo, oldest first: what `factory status`
-/// lists when it is given no run or an unknown one (FR-7).
 pub fn list_runs(data_dir: &Path) -> Result<Vec<RunState>> {
     let runs = Run::runs_dir(data_dir);
     let entries = match fs::read_dir(&runs) {
@@ -659,27 +571,22 @@ fn canonical(repo: &Path) -> Result<PathBuf> {
         .map_err(io(format!("canonicalize {}", repo.display())))
 }
 
-/// `pid` is running and, when `start` is known, started then: a pid the
-/// kernel handed to another process since does not count.
+/// The start time tells a reused pid from the process that was recorded.
 pub fn alive(pid: u32, start: Option<u64>) -> bool {
     pid_alive(pid) && start.is_none_or(|s| start_time(pid) == Some(s))
 }
 
-/// When `pid` started, in clock ticks since boot: `/proc/<pid>/stat` field
-/// 22. Together with the pid it names one process; `None` when it is gone.
 pub fn start_time(pid: u32) -> Option<u64> {
     if pid == 0 {
         return None;
     }
     let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    // After `pid (comm)` the fields run from 3 (state); 22 is the 20th.
+    // `starttime` is stat field 22; after `pid (comm)` the fields run from 3, so the 20th.
     let (_, rest) = stat.rsplit_once(')')?;
     rest.split_whitespace().nth(19)?.parse().ok()
 }
 
-/// Is a process with this pid running? `kill -0` semantics read from
-/// `/proc/<pid>/stat`, so a zombie counts as gone (AD-202). Linux only, which
-/// is the PRD's target (§19).
+/// Unlike `kill -0`, a zombie counts as gone.
 pub fn pid_alive(pid: u32) -> bool {
     if pid == 0 {
         return false;

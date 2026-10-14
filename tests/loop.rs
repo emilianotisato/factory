@@ -1,7 +1,3 @@
-//! The serial loop end to end (PRD-001 slice 03, FR-1/FR-2): the pack, the
-//! stream parser, the worker's argv, three slices through the detached driver
-//! and in the foreground, a dead worker respawned once and blocked twice, and
-//! a driver killed mid-slice resumed to the end.
 #[path = "harness/mod.rs"]
 mod harness;
 
@@ -26,7 +22,6 @@ const PROMPT: &str =
     "Build slice {NN} of PRD-001 as the appended system prompt says. Return the STATUS block.";
 const LOG: &str = "docs/features/001-fixture/log.jsonl";
 
-/// The bodies of the `note` entries titled `title`, each with its `slice`.
 fn notes(fx: &Fixture, title: &str) -> Vec<(Option<u64>, String)> {
     fx.log_of("note")
         .iter()
@@ -40,7 +35,6 @@ fn notes(fx: &Fixture, title: &str) -> Vec<(Option<u64>, String)> {
         .collect()
 }
 
-/// The `(id, slice)` of each `decision` entry, in log order.
 fn decisions(fx: &Fixture) -> Vec<(String, u64)> {
     fx.log_of("decision")
         .iter()
@@ -53,7 +47,6 @@ fn decisions(fx: &Fixture) -> Vec<(String, u64)> {
         .collect()
 }
 
-/// The `answer` entries whose `ref` is `id`.
 fn answers_to(fx: &Fixture, id: &str) -> Vec<Value> {
     fx.log_of("answer")
         .into_iter()
@@ -135,7 +128,6 @@ fn dead() -> Value {
     json!({"outcome": "dead"})
 }
 
-/// A checkpoint worker's step (slice 06): writes `CP-n` and returns done.
 fn checkpoint() -> Value {
     json!({"outcome": "checkpoint"})
 }
@@ -151,10 +143,6 @@ fn wait_until(what: &str, secs: u64, mut ok: impl FnMut() -> bool) {
     }
 }
 
-/// The session id of the call, after checking FR-2's argv bullet by bullet.
-/// A worker's `--settings` file: JSON with the deny rules for any `gh` and
-/// any `git push` (S1), and one `PreToolUse` hook on `Bash|Read` whose
-/// command is this binary's absolute path and `hook` (K1).
 fn check_settings(path: &Path) {
     let v: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
     let deny: Vec<&str> = v["permissions"]["deny"]
@@ -198,8 +186,7 @@ fn check_worker_argv(fx: &Fixture, call: &Value, slice: u32, run_dir: &Path) -> 
     assert!(pack.starts_with(run_dir.join("packs")), "{pack:?}");
     let name = pack.file_name().unwrap().to_str().unwrap();
     assert!(name.starts_with(&format!("slice-{slice:02}-")), "{name}");
-    // K1: the driver's pack spells the lookup verbs with its own absolute
-    // path, so a worker runs the build that wrote the pack.
+    // The pack spells the lookup verbs with the driver's absolute path, so a worker runs the build that wrote it.
     let text = fs::read_to_string(&pack).unwrap();
     let lookup = &text[text.find("\n# Lookup\n").unwrap()..text.find("\n# Contract\n").unwrap()];
     let exe = factory::paths::shell_word(BIN);
@@ -214,9 +201,6 @@ fn check_worker_argv(fx: &Fixture, call: &Value, slice: u32, run_dir: &Path) -> 
     assert!(is_uuid_v4(sid), "{sid}");
     assert_eq!(flag("--model"), "opus");
     assert_eq!(flag("--effort"), "high");
-    // Slice 13: the settings file the driver owns, under the run's own
-    // directory, with the two deny rules and the `factory hook` PreToolUse
-    // command; the pack the hook reads, through FACTORY_PACK.
     let settings = PathBuf::from(flag("--settings"));
     assert_eq!(call["settings"], settings.to_str().unwrap());
     assert!(
@@ -225,8 +209,6 @@ fn check_worker_argv(fx: &Fixture, call: &Value, slice: u32, run_dir: &Path) -> 
     );
     check_settings(&settings);
     assert_eq!(call["env"]["FACTORY_PACK"], pack.to_str().unwrap());
-    // PRD-005 FR-2: the worker runs in its lane, and its board writes go
-    // to the main tree.
     let lane = call["env"]["FACTORY_LANE"].as_str().unwrap();
     let lane_dir = PathBuf::from(call["cwd"].as_str().unwrap());
     assert!(
@@ -279,7 +261,6 @@ fn pack_is_the_slice_the_cited_sections_the_contract_and_the_inner_loop() {
         )),
         "{text}"
     );
-    // The slice file byte for byte, the cited section only, the sections in order.
     assert!(text.contains(cited.trim_end()), "{text}");
     let at = |s: &str| {
         text.find(s)
@@ -297,7 +278,6 @@ fn pack_is_the_slice_the_cited_sections_the_contract_and_the_inner_loop() {
     );
     assert!(!text.contains("## 2. Blast radius"), "{text}");
     assert!(!text.contains("## 3. FR-"), "{text}");
-    // The contract with its placeholders filled; the autonomy copy whole.
     assert!(
         text.contains("docs set 001 slices.1.status=done`"),
         "{text}"
@@ -317,15 +297,12 @@ fn pack_is_the_slice_the_cited_sections_the_contract_and_the_inner_loop() {
         "{text}"
     );
 
-    // A cited section the PRD lacks is reported, not fatal; a respawn gets
-    // its own file.
     fs::write(&slice_file, scaffold.replacen("§_(n)_", "§1, §9", 1)).unwrap();
     let pack9 = Pack::for_slice(&docs, &board, 1, &packs, 2).unwrap();
     assert_eq!(pack9.missing_sections, vec![9]);
     assert_eq!(pack9.path, packs.join("slice-01-2.md"));
     assert!(pack.path.is_file());
 
-    // A different inner-loop command changes exactly one line of the pack.
     fs::write(&slice_file, &cited).unwrap();
     let idx = fx.path().join("docs/project.toml");
     let t = fs::read_to_string(&idx).unwrap();
@@ -355,10 +332,6 @@ fn pack_is_the_slice_the_cited_sections_the_contract_and_the_inner_loop() {
     );
 }
 
-/// Slice 13 task 3: `# Outline` (the `def` of each cited symbol, the outline
-/// of each cited file and of each file a printed `def` lives in) and
-/// `# Lookup`, between the PRD sections and the contract; the outlined
-/// files join the header's list.
 #[test]
 fn pack_outlines_the_cited_code_and_carries_the_lookup_verbs() {
     let fx = Fixture::new("pack-outline");
@@ -439,12 +412,9 @@ fn pack_outlines_the_cited_code_and_carries_the_lookup_verbs() {
         lookup.contains("grep only for literal strings and log output"),
         "{lookup}"
     );
-    // Byte-identical across builds of the same tree.
     let again = Pack::for_slice(&docs, &board, 1, &packs, 2).unwrap();
     assert_eq!(fs::read_to_string(&again.path).unwrap(), text);
 
-    // A long recon list: the outlines stop at 8k chars with a trailer, and
-    // only the files whose outline made it in join the header.
     let mut many = String::new();
     for n in 0..60 {
         let path = format!("src/m{n:02}.rs");
@@ -505,13 +475,12 @@ fn stream_recording_parses_into_the_workers_row_fields() {
     );
     assert_eq!(s.num_turns, Some(2));
     assert_eq!(s.duration_ms, Some(3710));
-    // measure.py:56-67 — max over assistant messages of input + cache writes + cache reads.
+    // Max over assistant messages of input + cache writes + cache reads.
     assert_eq!(s.peak_context, Some(24215));
     assert!(s.session_id.is_some());
     assert!(s.model_usage.is_object(), "{}", s.model_usage);
     assert!(!s.is_error);
     assert!(s.cost_usd.is_some());
-    // Every tool_use block in the recording is paired with its result size.
     let tool_uses = text
         .lines()
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
@@ -539,7 +508,6 @@ fn stream_recording_parses_into_the_workers_row_fields() {
     assert_eq!(d.peak_context, Some(24215));
     assert!(d.usage.is_none());
 
-    // An event type this driver does not know, and a line that is not JSON.
     let (ev, j) = stream::parse("{\"type\":\"something_new\",\"x\":1}\nnot json\n\n");
     assert_eq!(ev.len(), 1);
     assert!(matches!(ev[0], StreamEvent::Unknown));
@@ -579,8 +547,6 @@ fn run_drives_three_slices_through_the_detached_driver() {
     assert!(text.contains(&format!("driver pid {driver}")), "{text}");
     assert!(text.contains("driver.log"), "{text}");
 
-    // With every slice done the board says a checkpoint is due (`allDone`);
-    // the driver runs it (slice 06) and the run finishes.
     wait_until("the run to finish", 40, || {
         state(&dir)["phase"] == "finished"
     });
@@ -790,8 +756,6 @@ fn a_dead_worker_is_noted_and_respawned_once() {
     assert_eq!(dead_ev["session_id"], sid0.as_str());
     assert_eq!(dead_ev["exit_code"], 137);
 
-    // One `note` entry in log.jsonl for the death; the done worker's
-    // decision is logged under its slice.
     let dead_notes = notes(&fx, "Dead worker");
     assert_eq!(dead_notes.len(), 1, "{dead_notes:?}");
     assert_eq!(dead_notes[0].0, Some(1));
@@ -846,7 +810,7 @@ fn two_dead_workers_block_the_slice_and_park_the_run() {
     wait_until("the run to park", 40, || {
         state(&dir)["phase"] == "waiting-owner"
     });
-    // The driver stays alive on a slow tick, watching for the owner (FR-3).
+    // A parked driver stays alive, on a slow tick.
     assert!(pid_alive(driver));
     let log = fs::read_to_string(dir.join("driver.log")).unwrap();
     assert!(log.contains("respawning once"), "{log}");
@@ -926,8 +890,6 @@ fn two_dead_workers_block_the_slice_and_park_the_run() {
         "waiting-owner"
     );
 
-    // The driver gone (a reboot, say): resuming the parked run parks it again
-    // with no second `run_waiting` — the open block still waits for the owner.
     // SAFETY: a plain kill(2) on the test's own detached driver.
     let rc = unsafe { libc::kill(driver as i32, libc::SIGKILL) };
     assert_eq!(rc, 0);
@@ -955,7 +917,6 @@ fn two_dead_workers_block_the_slice_and_park_the_run() {
     assert_eq!(kinds(&dir).last().map(String::as_str), Some("run_resumed"));
     assert_eq!(count(&kinds(&dir), "run_waiting"), 1);
 
-    // `factory stop` reaches a parked driver on its slow tick.
     let out = factory(&fx, &["stop", &id]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     wait_until("the parked run to finish", 15, || {
@@ -975,8 +936,7 @@ fn two_dead_workers_block_the_slice_and_park_the_run() {
 fn the_driver_killed_mid_slice_resumes_and_finishes() {
     let fx = Fixture::with_index("resume", &[("checkpoint_every", "10")]);
     fx.chain();
-    // Five steps for five spawns: the killed worker's, its respawn's, slices
-    // 02 and 03, and the checkpoint worker's.
+    // Five spawns: the killed worker, its respawn, slices 02 and 03, the checkpoint.
     fx.write_plan(&[
         json!({"outcome": "done", "delay_ms": 4000}),
         done(),
@@ -1010,7 +970,6 @@ fn the_driver_killed_mid_slice_resumes_and_finishes() {
     assert_eq!(state(&dir)["pid"], driver);
     assert_eq!(state(&dir)["phase"], "building");
 
-    // A second `factory run` while the driver lives is refused.
     let out = factory(&fx, &["run", "001"]);
     assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
     assert!(
@@ -1019,7 +978,7 @@ fn the_driver_killed_mid_slice_resumes_and_finishes() {
         stdout(&out)
     );
 
-    // Kill the session: the driver and its worker share the group.
+    // The driver and its worker share the process group.
     // SAFETY: a plain kill(2) on the test's own child group.
     let rc = unsafe { libc::kill(-(driver as i32), libc::SIGKILL) };
     assert_eq!(rc, 0);
@@ -1035,8 +994,6 @@ fn the_driver_killed_mid_slice_resumes_and_finishes() {
         .unwrap()
         .to_string();
 
-    // Resume with the detached driver: the dead worker is settled, the slice
-    // gets a fresh one, the run finishes.
     let out = factory(&fx, &["run", "001"]);
     let text = stdout(&out);
     assert_eq!(out.status.code(), Some(0), "{text}");
@@ -1108,9 +1065,8 @@ fn the_driver_killed_mid_slice_resumes_and_finishes() {
     assert!(ws[1..].iter().all(|w| w["outcome"] == "done"));
 }
 
-// ── polish: the death cap counts from the last answer and survives a kill ───
+// ── the death cap counts from the last answer and survives a kill ───────────
 
-/// `slice_blocked` block ids, in order.
 fn blocked_ids(dir: &Path) -> Vec<String> {
     events(dir)
         .iter()
@@ -1137,8 +1093,7 @@ fn stop_and_wait(fx: &Fixture, dir: &Path) {
 fn deaths_count_from_the_last_answer_and_each_block_takes_a_free_id() {
     let fx = Fixture::with_index("dead-answered", &[("checkpoint_every", "10")]);
     fx.chain();
-    // A builder of slice 01 already used BLOCK-1, answered: the driver's
-    // death block must not take that number again.
+    // A seeded, answered block holds the first number: the death block must not take it again.
     let feature_dir = fx.path().join(FEATURE_DIR);
     let mut seeded = factory::docs::log::Entry::new(
         factory::docs::log::Kind::Block,
@@ -1161,9 +1116,6 @@ fn deaths_count_from_the_last_answer_and_each_block_takes_a_free_id() {
     assert_eq!(blocked_ids(&dir), ["BLOCK-2"]);
     assert_eq!(fx.calls().len(), 2);
 
-    // The owner answers: the two deaths before it are spent. One more death
-    // is a respawn, not a block; the second after the answer blocks again,
-    // under the next free number.
     let out = factory(&fx, &["answer", "BLOCK-2", "the login is fixed"]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     wait_until("the run to park again", 40, || {
@@ -1225,9 +1177,7 @@ fn a_kill_between_the_second_death_and_the_block_never_spawns_a_third_worker() {
     // SAFETY: a plain kill(2) on the test's own detached driver.
     assert_eq!(unsafe { libc::kill(driver as i32, libc::SIGKILL) }, 0);
     wait_until("the driver to die", 5, || !pid_alive(driver));
-    // Back to the moment after the second death was saved and before the
-    // block was written: both outcomes `dead`, the slice still `building`,
-    // no `block` entry in log.jsonl (the death notes stay).
+    // Rewind to just after the second death was saved and before the block was written.
     let log = fx.read(LOG);
     let kept: String = log
         .lines()
@@ -1256,8 +1206,6 @@ fn a_kill_between_the_second_death_and_the_block_never_spawns_a_third_worker() {
     stop_and_wait(&fx, &dir);
 }
 
-// ── slice 09 task 3: a preflight answer is one `ask` entry, a retry adds none
-
 #[test]
 fn a_preflight_answer_logs_one_ask_entry_and_a_retry_adds_none() {
     use factory::events::EventKind;
@@ -1266,8 +1214,7 @@ fn a_preflight_answer_logs_one_ask_entry_and_a_retry_adds_none() {
 
     let fx = Fixture::new("preflight-ask");
     let item = "no inner loop declared";
-    // A run parked on its preflight ask; its pid is this test's, so the
-    // answer finds a live driver and spawns none.
+    // The run's pid is this test's, so the answer finds a live driver and spawns none.
     let mut run = Run::create(&data_dir(&fx), fx.path(), "001", None, 1).unwrap();
     run.emit(EventKind::AskOpened {
         id: "ASK-1".into(),
@@ -1285,8 +1232,6 @@ fn a_preflight_answer_logs_one_ask_entry_and_a_retry_adds_none() {
             .collect()
     };
 
-    // The answer file cannot be written: the `ask` entry went out first and
-    // the ask stays open.
     fs::create_dir_all(&answers).unwrap();
     fs::set_permissions(&answers, fs::Permissions::from_mode(0o555)).unwrap();
     let out = factory(&fx, &["answer", "ASK-1", "proceed"]);
@@ -1311,7 +1256,6 @@ fn a_preflight_answer_logs_one_ask_entry_and_a_retry_adds_none() {
         .unwrap()
         .to_string();
 
-    // The retry writes the answer file and logs nothing more.
     let out = factory(&fx, &["answer", "ASK-1", "proceed"]);
     let text = stdout(&out);
     assert_eq!(out.status.code(), Some(0), "{text}");

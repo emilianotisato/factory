@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 'use strict'
-// Stub `gh` for the cargo test harness (PRD-001 FR-10). Records every call to
+// Stub `gh` for the cargo test harness. Records every call to
 // $FACTORY_STUB_DIR/gh.log, one argv line each, and answers the verbs the
 // driver reads, in the shapes the real `gh` prints.
 //
-// CI (slice 09) is scripted by `scenario/ci` in the cwd (the driver runs gh
+// CI is scripted by `scenario/ci` in the cwd (the driver runs gh
 // in the repo root), one line per poll. A poll starts at
 // `pr view <pr> --json …headRefOid…` and `pr checks <pr> --json …` prints that
 // poll's rows; a `pr checks` with no poll before it is a poll of its own. A
@@ -129,7 +129,7 @@ const buildRows = (line, k) => {
     const run = runs.get(runId) ?? {
       databaseId: runId,
       name: workflow,
-      displayTitle: 'PRD-001: Fixture',
+      displayTitle: 'Fixture',
       workflowName: workflow,
       headSha: sha ?? head,
       headBranch: prBranch(),

@@ -1,12 +1,4 @@
-//! `factory stop <run>` (PRD §3 FR-1, §9 FR-7): a request. The loop checks
-//! `stop_requested` between spawns, lets the in-flight workers finish and
-//! commits their done slices, then ends the run with `run_stopped`, phase
-//! `finished` and `stopped: true` (`scheduler::mark_stopped`). This command
-//! says how many workers are still in flight; asked again it says how many
-//! remain. With no live process there is no loop to honour it, so `stop`
-//! marks the run stopped itself. There is no kill mode: a kill is `kill` on
-//! the process group, and `factory run NNN` resumes what it left. A stopped
-//! run is over: `factory run NNN` then starts a new run from the board.
+//! A request, not a kill: a kill is `kill` on the process group, and `factory run` resumes what it left.
 use std::io::Write;
 
 use clap::Args;
