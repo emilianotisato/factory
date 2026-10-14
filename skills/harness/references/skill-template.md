@@ -9,7 +9,7 @@
 ```markdown
 ---
 name: verify-{app}
-description: Drive {App} ({surface}) the way a user does and capture proof — launch, doctor, drive a feature-map entry, evidence, cleanup. Use for Prove tasks, §QA plan rows, "verify it in the app", "prove FR-n", "screenshot the {feature}", "walk the {flow}".
+description: Drive {App} ({surface}) the way a user does and capture proof — launch, doctor, drive a feature-map entry, evidence, cleanup. Use for Prove tasks, §QA plan rows, "verify it in the app", "prove a § QA plan row", "screenshot the {feature}", "walk the {flow}".
 ---
 
 # Verify {App}
@@ -69,7 +69,7 @@ Stable handles in this app: {ARIA names on buttons and links, `data-testid` on t
 
 ## Evidence
 
-Artifacts: `.claude/skills/verify-{app}/artifacts/<run-id>/` — gitignored. Name files by feature id: `rules-create.png`, `rules-create.aria.txt`, `cli-search.txt`.
+Artifacts: `.claude/skills/verify-{app}/artifacts/<run-id>/` — gitignored. Name files by the behavior: `rules-create.png`, `rules-create.aria.txt`, `cli-search.txt`.
 
 **Rescue artifacts out of the driver's own directory immediately.** {Pest browser writes to `tests/Browser/Screenshots` and clears it when the next browser suite boots — a screenshot left there is gone by the next run. `bin/drive.sh` copies them across the moment the drive returns.} Never cite a path the driver owns as the evidence location.
 

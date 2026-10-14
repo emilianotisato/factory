@@ -3,7 +3,10 @@
 **Source**: [`prd.md`](prd.md) → §3 FR-1 (the rule every worker reads), §4 FR-2 (the skill and template edits), §5 FR-3 "Where it runs" item 2 (polish's § 1 Collect step and its two review questions). **Depends on**: — (independent of slice 01: it edits text and one test, and names the verb without calling its code)
 **Created**: 2026-10-14
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+- Built: `## The plan stays in docs/` in `assets/autonomy.md`, between Never-to-get-green and Tokens, verbatim from the PRD. `src/pack.rs` test `every_role_reads_the_plan_stays_in_docs` builds all six packs (merge included) and asserts the heading once in each; with the heading renamed it fails at the assert, restored it passes. `/slice` trap and Acceptance bullets, `/prd` §QA plan and FR-section bullets, the four anecdotes and the two harness-template lines edited; `/polish` § 1 gains the reader's questions in the local review's prompt and the `factory leaks --base <base-branch>` collector with its exit-code reading and the Fix bucket. Version 0.4.0, `skills/bundle.lock` rewritten with `FACTORY_BUNDLE_WRITE=1 cargo test`. Not tagged.
+- Inner loop: 1 run (plus the lock-writing `cargo test` and one targeted red run to prove the test fails without the section), 0 red, about 2 min. `grep -rniE "in a comment|code comment" skills/ assets/` prints nothing.
+- Deviations: none. The new `/slice` and `/prd` lines say "never a comment the slice asks for" and "never asks the code to carry a comment", which the grep does not match.
 
 **Slice**: After this slice every worker's pack carries the section `## The plan stays in docs/`, the shipped skills stop asking for comments and stop modeling plan ids in tests and file names, and `/polish` runs `factory leaks` over the branch and asks a reader's questions of every added comment and name. Every edit under `skills/` in this feature lands here, with the one version bump the bundle lock forces: no later slice touches `skills/`.
 
