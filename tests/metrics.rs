@@ -1197,3 +1197,56 @@ fn a_version_2_store_gains_retros_and_reports_the_same() {
     );
     assert_eq!(after.1, before.1);
 }
+
+/// PRD-005 FR-2: a worker that ran in a lane has its transcript under the
+/// lane's slug, named by its stream's `init` cwd; `--recount` reads it there.
+#[test]
+fn recount_finds_a_lane_workers_transcript_by_its_init_cwd() {
+    let (fx, id) = subagent_run(
+        "metrics-recount-lane",
+        json!({"outcome": "polish", "subagents": 2}),
+    );
+    let db = db(&fx);
+    let before = polish_row(&db, &id);
+    let session = before.session_id.clone().unwrap();
+    let sub = subagents_dir(&fx, &db, &id, &session);
+    let (from_dir, from) = (
+        sub.parent().unwrap().to_path_buf(),
+        sub.parent().unwrap().with_extension("jsonl"),
+    );
+    let lane = fx.path().with_file_name("metrics-recount-lane-2");
+    let config = PathBuf::from(&fx.env()["CLAUDE_CONFIG_DIR"]);
+    let to = factory::measure::transcript_path(&config, &lane, &session);
+    fs::create_dir_all(to.parent().unwrap()).unwrap();
+    fs::rename(&from, &to).unwrap();
+    fs::rename(&from_dir, to.with_extension("")).unwrap();
+    let stream = data_dir(&fx)
+        .join("runs")
+        .join(&id)
+        .join("workers")
+        .join(format!("{session}.jsonl"));
+    let root = serde_json::to_string(&fx.path().to_string_lossy()).unwrap();
+    let lane_json = serde_json::to_string(&lane.to_string_lossy()).unwrap();
+    let text = fs::read_to_string(&stream).unwrap();
+    assert!(text.contains(&format!("\"cwd\":{root}")), "{text}");
+    fs::write(
+        &stream,
+        text.replace(&format!("\"cwd\":{root}"), &format!("\"cwd\":{lane_json}")),
+    )
+    .unwrap();
+
+    let out = factory(&fx, &["report", &id, "--recount"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = stdout(&out);
+    let line = text
+        .lines()
+        .find(|l| l.starts_with("recount: polish "))
+        .unwrap_or_else(|| panic!("{text}"));
+    assert!(line.ends_with(" subagents 2"), "{line}");
+    assert_eq!(sub_cols(&polish_row(&db, &id)), sub_cols(&before));
+}
