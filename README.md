@@ -33,11 +33,13 @@ The inversion is the whole idea. **The binary orchestrates; the model only build
 
 **The docs framework.** `docs/project.toml` holds the project's knobs: the gate, the inner loop, lane count, model and effort per role, a per-run token budget. Each feature folder has `prd.md`, its slices, a `state.toml` written only by the binary under a lock, an append-only `log.jsonl` of decisions, blocks and notes, and a `retro.md`. `factory docs check` validates the board and runs as a pre-commit hook. `factory docs migrate` moves a repo from the previous format in one reviewable diff.
 
-**The skills.** The judgment calls stay in Claude Code as thin skills, shipped from this repo and installed by `factory` into each project: `/prd`, `/slice`, `/deliver` (the cockpit), `/polish`, `/gate`, `/harness`, `/prune`, `/ux`, and `/lanes`. They live in `skills/` and ship inside the binary. `factory init` writes byte-identical copies into each repo's `.claude/skills/`, with a manifest of their hashes, so `factory docs doctor` says when a repo's copy is behind, ahead or hand-edited.
+**The skills.** The judgment calls stay in Claude Code as thin skills, shipped from this repo and installed by `factory` into each project: `/prd`, `/slice`, `/deliver` (the cockpit), `/polish`, `/gate`, `/harness`, `/prune`, `/ux`, and `/lanes`. They live in `skills/` and ship inside the binary. `factory init` writes byte-identical copies into each repo's `.claude/skills/`, with a manifest of their hashes, so `factory docs doctor` says when a repo's copy is behind, ahead or hand-edited, and `factory skills update` brings it current.
 
 **The gate.** `/gate` interviews a project into one command that proves a change is done: tiered checks for lint, types, coverage floors, complexity, mutation, size budgets and architecture rules, measured against reality and proven to fail before they are declared. Every slice's Verify task, every checkpoint and the polish pass run that one command. A fast subset is the inner loop.
 
 **The app harness.** `/harness` writes a project-local skill that drives the real application the way a user does, in a browser, a CLI or an API, and captures proof. Checkpoint workers use it, so "done" means "seen working", not "tests pass".
+
+**Leaks.** The plan lives in `docs/`, and the code reads as if it never existed: no requirement or slice ids in comments, names, paths or strings, no "added for step 3" history, and a comment only for what the code cannot show. A prompt alone does not hold that, so `factory leaks` runs one rule table over the lines and paths a branch adds and prints each hit under its rule's fix line. Every worker's pack carries the rule, every checkpoint and every polish pass runs the check, and `factory docs doctor` reports old leaks already in the tree.
 
 **Lanes.** A lane is a git worktree with its own copy of ignored state (a copy-on-write clone where the filesystem allows it) and a per-lane setup: database, ports, queue prefix, env. `/lanes` interviews a project into those setups and proves two lanes' suites run at once without colliding. The driver assigns a lane per worker, lands each slice on the feature tip, and spawns a merge worker on a conflict.
 
@@ -57,7 +59,7 @@ The inversion is the whole idea. **The binary orchestrates; the model only build
 
 ## Where it stands
 
-Early and green. The driver (PRD-001), the metrics store (PRD-003) and the docs port (PRD-002) are built and merged, and the binary has delivered three features in this repo and two in production Laravel repos. Workers are Claude Code only. Each lane is its own git worktree, and a worker's work lands as one commit (PRD-005). The skills now live in `skills/` and ship inside the binary; the installer that writes them into a repo is PRD-004. The learn loop, stack plugins and a bug inbox fed by production errors are ideas with a shape, not code.
+Early and green. The driver, the metrics store, the docs board, the skill installer, isolated lanes and the leaks check are built and merged, and the binary has delivered more than fifty features, in this repo and in production Laravel repos. Workers are Claude Code only. Each lane is its own git worktree, and each slice lands on the feature branch as one commit. The learn loop, stack plugins and a bug inbox fed by production errors are ideas with a shape, not code.
 
 It is built for one developer so far. What a team repo commits, and what stays on the machine that ran it, is an open decision.
 
@@ -80,10 +82,17 @@ cargo install --path .
 ```
 factory --help
 factory init             # in a project: the docs layout, the skills in .claude/skills/, the convention block
-factory docs gate set "<the command that proves a change is done>"
 ```
 
-Then `/prd` in Claude Code to write the first feature, and `/deliver NNN` to build it.
+Then, in Claude Code, the setups a run relies on. Each is an interview, never unattended:
+
+1. `/gate` builds the one command that proves a change is done.
+2. `/lanes` sets up each lane's database, ports and env, and proves they run side by side.
+3. `/harness`, when the app has a UI or an API to drive, writes the skill that drives it, so checkpoints can see it working.
+
+Then `/prd` to write the first feature, `/slice` to cut it, and `/deliver NNN` to build it. `factory docs preflight NNN` says what a run would refuse before it starts.
+
+To move an existing repo instead, from older skills or from no board at all, point a Claude Code session at [docs/reference/adopt-a-repo.md](docs/reference/adopt-a-repo.md). It migrates the docs, installs the skills, runs the setups and stops for you at every judgment call.
 
 The gate for this repo is `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test`. The test harness is a fixture repo plus a stub `claude` that replays recorded streams, so the whole loop runs in `cargo test` with no tokens.
 
