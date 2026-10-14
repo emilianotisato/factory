@@ -1,0 +1,15 @@
+$ (lane-1) FACTORY_BOARD=/tmp/cp1-board.xyAq/main factory docs set 001 slices.1.status=building
+docs/features/001-fixture/state.toml updated
+exit 0
+$ (lane-1) FACTORY_BOARD=/tmp/cp1-board.xyAq/main factory docs log add 001 --kind note --slice 1 --title t --body-file -
+exit 0
+main state.toml slice 1: status = "building"
+lane state.toml == committed: yes
+main log.jsonl lines: 1; lane log.jsonl: absent
+$ (lane-1) FACTORY_BOARD=/tmp/cp1-board.xyAq/main factory docs status 001 --json | slice 1 status
+['building']
+$ (lane-1) FACTORY_BOARD=/tmp/cp1-board.xyAq/other factory docs set 001 slices.1.status=building   # another repo
+docs/features/001-fixture/state.toml updated
+exit 0
+lane state.toml changed: yes
+other repo untouched: yes

@@ -1,0 +1,18 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running tests/docs_v3.rs (/mnt/devcache/emiliano/cargo-target/debug/deps/docs_v3-f1106a41ad6ef406)
+
+running 1 test
+test a_lane_writes_the_main_trees_board_and_ignores_another_repos ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.25s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running tests/hook.rs (/mnt/devcache/emiliano/cargo-target/debug/deps/hook-6c98a21b7793dcfe)
+
+running 1 test
+hook, FACTORY_REPO=/tmp/.tmpO9qVC2/lane-1: {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"that file is in your pack under \"# Slice\"; read a range if you need more"}}
+
+test a_whole_read_of_a_held_file_in_a_lane_is_denied ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.02s
+
