@@ -133,7 +133,13 @@ fn stub_claude_flips_the_slice_then_replays_a_result() {
     );
     let paths = tool_use_paths(&events);
     assert!(
-        paths.contains(&fx.path().join("src/lib.txt").to_str().unwrap().to_string()),
+        paths.contains(
+            &fx.path()
+                .join("src/slice-01.txt")
+                .to_str()
+                .unwrap()
+                .to_string()
+        ),
         "{paths:?}"
     );
     assert!(
@@ -189,10 +195,9 @@ fn stub_claude_flips_the_slice_then_replays_a_result() {
     );
     assert!(!names.iter().any(|n| n == "agent-log.md"), "{names:?}");
     assert!(!names.iter().any(|n| n.starts_with("log-")), "{names:?}");
-    assert_eq!(
-        fx.read("src/lib.txt"),
-        "fixture code file\ntouched by spawn 1\n"
-    );
+    // PRD-005 slice 07: a slice owns its own file by default.
+    assert_eq!(fx.read("src/slice-01.txt"), "touched by spawn 1\n");
+    assert_eq!(fx.read("src/lib.txt"), "fixture code file\n");
     assert!(
         fs::read_to_string(&slice)
             .unwrap()
@@ -372,6 +377,38 @@ fn stub_claude_sh_edits_through_one_bash_call_and_no_named_tool() {
     for f in ["src/moved.txt", "src/printed.txt", "gen/a.txt", "gen-link"] {
         assert!(!named.iter().any(|p| p.ends_with(f)), "{f} in {named:?}");
     }
+}
+
+/// PRD-005 slice 07: a slice owns `src/slice-NN.txt` by default, the call
+/// records HEAD, and `linger_ms` holds a worker whose slice is `done`.
+#[test]
+fn stub_claude_slice_file_head_and_linger() {
+    let fx = Fixture::new("stub-linger");
+    fx.write_plan(&[json!({ "outcome": "done", "linger_ms": 1500 })]);
+    let pack = format!("{}\n", fx.slice_path(2).display());
+    let mut child = claude(&fx, &["--append-system-prompt", &pack])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut seen_done = false;
+    for _ in 0..100 {
+        if fx.slice_status(2) == "done" {
+            seen_done = true;
+            break;
+        }
+        sleep(Duration::from_millis(20));
+    }
+    assert!(seen_done, "the slice never read done");
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "the stub exited before its linger"
+    );
+    stream(&child.wait_with_output().unwrap());
+    assert_eq!(fx.read("src/slice-02.txt"), "touched by spawn 1\n");
+    assert_eq!(fx.read("src/lib.txt"), "fixture code file\n");
+    let head = fx.git(&["rev-parse", "HEAD"]);
+    assert_eq!(fx.calls()[0]["head"], head.trim());
 }
 
 #[test]

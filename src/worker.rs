@@ -90,6 +90,10 @@ pub fn scrubbed(name: &str) -> bool {
 /// The worker env var naming the repo the pack's paths are relative to.
 pub const REPO_ENV: &str = "FACTORY_REPO";
 
+/// The worker env var naming the main tree, whose board a lane worker's
+/// `factory docs` board verbs write (PRD-005 FR-2).
+pub const BOARD_ENV: &str = "FACTORY_BOARD";
+
 /// git's count of `GIT_CONFIG_KEY_<i>`/`GIT_CONFIG_VALUE_<i>` pairs.
 pub const GIT_CONFIG_COUNT: &str = "GIT_CONFIG_COUNT";
 
@@ -246,16 +250,19 @@ pub fn stream_path(run_dir: &Path, session_id: &str) -> PathBuf {
 }
 
 impl Worker {
-    /// Spawn `claude -p` for `job` with FR-2's flags and `env` on top of the
-    /// driver's environment, record it in the run. Every path on its command
-    /// line is absolute, so a relative data dir resolves against the
-    /// driver's cwd and not the repo the worker runs in.
+    /// Spawn `claude -p` for `job` in `cwd` with FR-2's flags and `env` on
+    /// top of the driver's environment, record it in the run. Every path on
+    /// its command line is absolute, so a relative data dir resolves against
+    /// the driver's cwd and not the tree the worker runs in. `cwd` is its
+    /// `FACTORY_REPO`; `FACTORY_BOARD` is always the run's main tree, whose
+    /// board a lane worker writes (PRD-005 FR-2).
     pub fn spawn(
         run: &mut Run,
         job: Job,
         pack: &Pack,
         cfg: &config::Worker,
         env: &[(String, String)],
+        cwd: &Path,
     ) -> Result<Worker> {
         let role = job.role();
         let slice = job.slice();
@@ -278,6 +285,9 @@ impl Worker {
         let pack_path = std::path::absolute(&pack.path)
             .map_err(io(format!("resolve {}", pack.path.display())))?;
         let repo = run.state().repo.clone();
+        // Canonical: the hook keys its guards to `FACTORY_REPO`, and the
+        // transcript slug comes from the cwd the worker sees.
+        let cwd = std::fs::canonicalize(cwd).map_err(io(format!("resolve {}", cwd.display())))?;
 
         let mut cmd = Command::new("claude");
         cmd.arg("-p")
@@ -291,7 +301,7 @@ impl Worker {
             .args(["--effort", &cfg.effort])
             .arg("--settings")
             .arg(&settings_file)
-            .current_dir(&repo)
+            .current_dir(&cwd)
             .stdin(Stdio::null())
             .stdout(Stdio::from(stream_file))
             .stderr(Stdio::from(stderr_file));
@@ -319,7 +329,8 @@ impl Worker {
             .or_else(|| std::env::var(GIT_CONFIG_COUNT).ok());
         cmd.envs(push_off_env(inherited.as_deref()));
         cmd.env(crate::cli::hook::PACK_ENV, &pack_path);
-        cmd.env(REPO_ENV, &repo);
+        cmd.env(REPO_ENV, &cwd);
+        cmd.env(BOARD_ENV, &repo);
         let mut child = cmd.spawn().map_err(|e| Error::Tool {
             cmd: format!("claude -p … --session-id {session_id}"),
             detail: format!("could not start claude: {e}"),

@@ -360,8 +360,9 @@ fn gate_shape(rows: &[GateRow], n: u32) -> Vec<(bool, bool, u32)> {
         .collect()
 }
 
-/// `CP-n` is one `checkpoint` entry with `slice` = the last covered slice.
-fn assert_cp(fx: &Fixture, n: u32, after: u8, covers: &str) {
+/// `CP-n` is one `checkpoint` entry with `slice` = the last covered slice and
+/// `covers` = every one of them.
+fn assert_cp(fx: &Fixture, n: u32, after: u8, covers: &str, numbers: &[u32]) {
     let id = format!("CP-{n}");
     let cps: Vec<Value> = fx
         .log_of("checkpoint")
@@ -371,6 +372,7 @@ fn assert_cp(fx: &Fixture, n: u32, after: u8, covers: &str) {
     assert_eq!(cps.len(), 1, "{id}: {:?}", fx.log_entries());
     let cp = &cps[0];
     assert_eq!(cp["slice"], after, "{cp}");
+    assert_eq!(cp["covers"], json!(numbers), "{cp}");
     assert_eq!(cp["phase"], "checkpoint", "{cp}");
     assert!(
         cp["title"]
@@ -394,8 +396,8 @@ fn assert_two_checkpoints(fx: &Fixture, dir: &Path) {
     for n in 1..=3 {
         assert_eq!(fx.slice_status(n), "done", "slice {n:02}");
     }
-    assert_cp(fx, 1, 2, "01, 02");
-    assert_cp(fx, 2, 3, "03");
+    assert_cp(fx, 1, 2, "01, 02", &[1, 2]);
+    assert_cp(fx, 2, 3, "03", &[3]);
     // One decision per slice, numbered by the tool in commit order.
     assert_eq!(
         decisions(fx),
@@ -565,7 +567,7 @@ fn the_driver_runs_the_gate_at_each_checkpoint_and_commits_the_cp_entries() {
         "# Contract",
         "You are running checkpoint 1 of PRD-001",
         "slices 01, 02: each one's Prove task",
-        "--kind checkpoint --phase checkpoint --slice 02 --title \"after slice-02\"",
+        "--kind checkpoint --phase checkpoint --slice 02 --covers 1,2 --title \"after slice-02\"",
         "# Autonomy",
     ] {
         assert!(
@@ -1365,12 +1367,13 @@ fn a_dead_fix_workers_changes_are_committed_before_the_gate_runs_again() {
 fn a_green_on_a_dirty_tree_serves_its_own_checkpoint_only() {
     let fx = Fixture::new("cp-dirty-green");
     fx.chain();
-    // notes.txt is listed, never committed: every gate runs on a dirty tree.
-    // Checkpoint 1's worker dies twice and the answer reuses its green (run
-    // B of the A/B reran 7 minutes). Slice 03 touches no code, so checkpoint
-    // 2 sees the same tree and still runs it (Xb7).
+    // The owner's untracked notes.txt, written once the run is past its
+    // clean-tree preflight: every gate runs on a dirty tree. Checkpoint 1's
+    // worker dies twice and the answer reuses its green (run B of the A/B
+    // reran 7 minutes). Slice 03 touches no code, so checkpoint 2 sees the
+    // same tree and still runs it (Xb7).
     fx.write_plan(&[
-        json!({"outcome": "done", "stray": ["notes.txt"]}),
+        done(),
         done(),
         step("dead"),
         step("dead"),
@@ -1379,6 +1382,7 @@ fn a_green_on_a_dirty_tree_serves_its_own_checkpoint_only() {
         step("checkpoint"),
     ]);
     let dir = start(&fx);
+    fs::write(fx.path().join("notes.txt"), "owner's notes\n").unwrap();
     wait_phase(&fx, &dir, "waiting-owner", 60);
     let out = factory(&fx, &["answer", "BLOCK-1", "logged in again"]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));

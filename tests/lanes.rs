@@ -6,6 +6,8 @@
 //! pack, the last `ASK-n` sends a parked run through branch and board.
 //! PRD-005 slice 03 adds lane worktrees: `factory lanes up`, and the run
 //! that refuses without `[lanes] seed` and makes its lanes before it starts.
+//! Slice 07 runs each build worker in its lane: a free lane is reset, a
+//! respawn keeps it, and a dependent waits for its dependency's landing.
 #[path = "harness/mod.rs"]
 mod harness;
 
@@ -22,6 +24,7 @@ use serde_json::{Value, json};
 const BIN: &str = env!("CARGO_BIN_EXE_factory");
 /// The fixture feature's log: blocks, answers, asks and decisions.
 const LOG: &str = "docs/features/001-fixture/log.jsonl";
+const STATE: &str = "docs/features/001-fixture/state.toml";
 const QUESTION: &str = "Which storage backs the fixture?";
 const ANSWER: &str = "Pick the Recommended option";
 
@@ -271,7 +274,9 @@ fn two_lanes_build_two_slices_at_once_and_the_third_waits_for_its_dependency() {
         builds.iter().map(|c| call_slice(c)).collect::<Vec<_>>(),
         [1, 2, 3]
     );
-    // Every worker saw its lane: `FACTORY_LANE` and the lane file's env.
+    // Every worker ran in its lane (PRD-005 FR-2): the lane's worktree as
+    // cwd and `FACTORY_REPO`, `FACTORY_LANE` and the lane file's env, and
+    // the main tree as `FACTORY_BOARD`.
     for call in &builds {
         let n = call_slice(call);
         let lane = slice_lane(&fx, n as u8).unwrap();
@@ -281,6 +286,34 @@ fn two_lanes_build_two_slices_at_once_and_the_third_waits_for_its_dependency() {
             format!("fixture_{lane}"),
             "{call}"
         );
+        assert_eq!(
+            call["cwd"],
+            lane_path(&fx, lane).to_str().unwrap(),
+            "{call}"
+        );
+        assert_eq!(call["env"]["FACTORY_REPO"], call["cwd"], "{call}");
+        assert_eq!(
+            call["env"]["FACTORY_BOARD"],
+            fx.path().to_str().unwrap(),
+            "{call}"
+        );
+    }
+    // Their board writes went to the main tree: each stub's decision is in
+    // its log, and no lane's copy of the board files moved.
+    let mut ads: Vec<u64> = fx
+        .log_of("decision")
+        .iter()
+        .map(|e| e["slice"].as_u64().unwrap())
+        .collect();
+    ads.sort_unstable();
+    assert_eq!(ads, [1, 2, 3]);
+    for lane in 1..=2 {
+        let moved = git_at(
+            &fx,
+            &lane_path(&fx, lane),
+            &["status", "--porcelain", "--", STATE, LOG],
+        );
+        assert_eq!(moved, "", "lane {lane}");
     }
     assert_eq!(slice_lane(&fx, 1), Some(1));
     assert_eq!(slice_lane(&fx, 2), Some(2));
@@ -1402,7 +1435,7 @@ fn a_run_without_a_lanes_seed_refuses_naming_lanes_and_creates_nothing() {
 }
 
 #[test]
-fn a_fresh_run_makes_its_lanes_and_workers_still_run_in_the_main_tree() {
+fn a_fresh_run_makes_its_lanes_and_builds_in_them() {
     let fx = Fixture::with_index("lanes-run-makes", &[("checkpoint_every", "10")]);
     fx.write_plan(&[done(), done(), done(), checkpoint()]);
     let out = factory(&fx, &["run", "001", "--foreground"]);
@@ -1417,12 +1450,162 @@ fn a_fresh_run_makes_its_lanes_and_workers_still_run_in_the_main_tree() {
             "{text}"
         );
     }
-    // Slice 07 moves the workers into the lanes; until then, the main tree.
+    // Build workers run in their lanes; the checkpoint and polish workers
+    // stay in the main tree until slices 09 and 10.
     let calls = fx.calls();
-    assert!(!calls.is_empty());
+    assert_eq!(builds(&calls).len(), 3, "{calls:?}");
     for c in &calls {
-        assert_eq!(c["cwd"], fx.path().to_str().unwrap(), "call {}", c["n"]);
+        let want = match lane_env(c) {
+            Some(n) if c["prompt"].as_str().unwrap().starts_with("Build slice ") => {
+                lane_path(&fx, n.parse().unwrap())
+            }
+            _ => fx.path().to_path_buf(),
+        };
+        assert_eq!(c["cwd"], want.to_str().unwrap(), "call {}", c["n"]);
     }
+}
+
+/// The canonical worktree of lane `n`.
+fn lane_path(fx: &Fixture, n: u32) -> PathBuf {
+    lane_worktrees(fx)
+        .into_iter()
+        .map(|(p, _)| p)
+        .find(|p| p.ends_with(format!("lane-{n}")))
+        .unwrap_or_else(|| panic!("no lane-{n} worktree"))
+}
+
+/// `git` in `dir`, with the fixture's env; its stdout.
+fn git_at(fx: &Fixture, dir: &Path, args: &[&str]) -> String {
+    let out = fx
+        .command("git")
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// The sha of the commit whose subject is `subject`.
+fn commit_of(fx: &Fixture, subject: &str) -> String {
+    fx.git(&["log", "--format=%H %s"])
+        .lines()
+        .find_map(|l| {
+            let (sha, s) = l.split_once(' ')?;
+            (s == subject).then(|| sha.to_string())
+        })
+        .unwrap_or_else(|| panic!("no commit {subject:?}"))
+}
+
+#[test]
+fn a_slice_taking_a_free_lane_resets_it_and_a_respawn_keeps_it() {
+    let fx = Fixture::with_index("lanes-reset", &[("checkpoint_every", "10"), ("lanes", "1")]);
+    // One lane wants a chain: the preflight asks about independent slices.
+    fx.chain();
+    // Setup appends the dir it ran in to a log in the main tree, through the
+    // common dir. Unquoted at the end: the lane file trims a trailing quote.
+    let lanes = fx.path().join("docs/reference/lanes");
+    fs::create_dir_all(&lanes).unwrap();
+    fs::write(
+        lanes.join("lane-1.md"),
+        "---\nlane: 1\nenv: [FACTORY_LANE_DB=fixture_1]\nsetup: pwd -P >> \"$(dirname \"$(git rev-parse --path-format=absolute --git-common-dir)\")\"/scenario/lane-setup.log\n---\n\nLane 1 of the fixture.\n",
+    )
+    .unwrap();
+    fx.git(&["add", "-A"]);
+    fx.git(&["commit", "-q", "-m", "chore: lane file"]);
+    fx.write_plan(&[
+        json!({"outcome": "blocked", "question": QUESTION}),
+        json!({"outcome": "done", "sh": "test -f kept.txt", "delay_ms": 1500}),
+        json!({"outcome": "done", "sh": "test ! -e junk.txt"}),
+        done(),
+        checkpoint(),
+    ]);
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let dir = only_run_dir(&fx);
+    wait_until(&fx, &dir, "slice 01 to block", 30, || {
+        state(&dir)["phase"] == "waiting-owner"
+    });
+    let lane = PathBuf::from(fx.calls()[0]["cwd"].as_str().unwrap());
+    assert_eq!(lane, lane_path(&fx, 1));
+
+    // A respawn keeps the lane as its worker left it.
+    fs::write(lane.join("kept.txt"), "kept\n").unwrap();
+    // The owner's untracked file where slice 01 lands holds its landing,
+    // which leaves a window to drop junk in the lane before slice 02.
+    fs::write(fx.path().join("src/slice-01.txt"), "owner\n").unwrap();
+    let out = factory(&fx, &["answer", "BLOCK-1", ANSWER]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    wait_until(&fx, &dir, "slice 01's landing to wait", 30, || {
+        driver_log(&dir).contains("slice 01 cannot land: src/slice-01.txt")
+    });
+    fs::write(lane.join("junk.txt"), "junk\n").unwrap();
+    fs::remove_file(fx.path().join("src/slice-01.txt")).unwrap();
+
+    // A slice taking the free lane resets it to the tip: junk gone, slice
+    // 01's landed commit its HEAD.
+    wait_until(&fx, &dir, "the run to finish", 60, || {
+        state(&dir)["phase"] == "finished"
+    });
+    let slice_01 = commit_of(&fx, "feat(001): slice-01 A");
+    let files = fx.git(&["show", "--format=", "--name-only", &slice_01]);
+    assert!(files.lines().any(|f| f == "kept.txt"), "{files}");
+    let calls = fx.calls();
+    assert_eq!(call_slice(&calls[2]), 2, "{calls:?}");
+    assert_eq!(calls[2]["cwd"], lane.to_str().unwrap());
+    assert_eq!(calls[2]["head"], slice_01.as_str());
+    assert!(!lane.join("junk.txt").exists());
+    // Setup ran once, in the lane.
+    assert_eq!(
+        fx.read("scenario/lane-setup.log"),
+        format!("{}\n", lane.display())
+    );
+}
+
+#[test]
+fn a_dependent_waits_for_its_dependency_to_land() {
+    // Slice 03 depends on 02. 01 frees lane 1 at once; 02's worker writes
+    // `done` and lingers 3 s before it exits, so 03 is ready on the board
+    // long before 02 lands.
+    let fx = Fixture::with_index("lanes-dependent", &[("checkpoint_every", "10")]);
+    fx.write_plan(&[
+        done(),
+        json!({"outcome": "done", "linger_ms": 3000}),
+        done(),
+        checkpoint(),
+    ]);
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let dir = only_run_dir(&fx);
+    wait_until(&fx, &dir, "the run to finish", 60, || {
+        state(&dir)["phase"] == "finished"
+    });
+    let calls = fx.calls();
+    let of = |n: u32| {
+        builds(&calls)
+            .into_iter()
+            .find(|c| call_slice(c) == n)
+            .unwrap_or_else(|| panic!("no call for slice {n:02}"))
+            .clone()
+    };
+    let (two, three) = (of(2), of(3));
+    assert!(three["n"].as_u64() > two["n"].as_u64(), "{calls:?}");
+    let slice_02 = commit_of(&fx, "feat(001): slice-02 B");
+    let head = three["head"].as_str().unwrap();
+    let out = fx
+        .command("git")
+        .current_dir(fx.path())
+        .args(["merge-base", "--is-ancestor", &slice_02, head])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "slice 03 started on {head}, without {slice_02}"
+    );
 }
 
 // ── PRD-005 slice 06: `lanes up --prove` and `lanes prune` ───────────────────

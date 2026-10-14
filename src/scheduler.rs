@@ -24,14 +24,15 @@
 //! counts the killed worker, and the spawn loop blocks a capped slice
 //! instead of giving it a third worker.
 //!
-//! FR-5: a worker whose slice reads `done` has its slice committed by
-//! pathspec before the next board read — the paths its stream named, the
-//! slice file, `state.toml` and `log.jsonl`, nothing with `-A` since another
-//! lane may be mid-write. The worker's outcome is saved after the commit, so a driver
-//! killed in between leaves it unsettled and the resume commits. A tracked
-//! file the worker changed without naming it joins the commit when no
-//! sibling was live, and is listed otherwise; a new file no tool call named
-//! is always listed (AD-20007). Every commit lands on the run's branch: HEAD
+//! PRD-005: a build worker runs in its lane worktree. A slice taking a free
+//! lane resets it to the feature tip first; a respawn keeps the lane as its
+//! worker left it. A worker whose slice reads `done` has its lane committed
+//! whole and landed on the feature tip by cherry-pick ([`land_slice`]), one
+//! commit per slice with the board files. The worker's outcome is saved
+//! after the landing, so a driver killed in between leaves it unsettled and
+//! the resume lands. A path the pick touches dirty in the main tree parks
+//! the run with nothing spawned until it lands; a dependent slice waits for
+//! its dependency's landing. Every commit lands on the run's branch: HEAD
 //! anywhere else parks the run until the owner switches back, with nothing
 //! reaped or spawned meanwhile (AD-20005).
 //!
@@ -55,12 +56,13 @@ use crate::config::Config;
 use crate::docs::{Docs, Status};
 use crate::error::{io, json};
 use crate::events::{self, EventKind};
+use crate::land::{self, Landing};
 use crate::pack::{BlockSection, Pack};
 use crate::quota::{self, Hold, Limit};
 use crate::run::{GateCmds, Phase, Run, WorkerOutcome, WorkerRef};
 use crate::stream::Summary;
 use crate::worker::{self, Exit, Job, Worker};
-use crate::{Result, clock, lanes, metrics};
+use crate::{Error, Result, clock, lanes, metrics, paths};
 
 /// Deaths on one slice before it is blocked: respawn once, then block.
 pub const DEATH_CAP: usize = 2;
@@ -76,20 +78,20 @@ struct Running {
     lane: u32,
     /// Set by `poll` when the process exited; routed on the next reap.
     exit: Option<Exit>,
-    /// The tree's changed paths at spawn: what the worker changes beyond
-    /// these and its stream's paths is unnamed (FR-5, [`unnamed`]).
-    changed_before: HashSet<String>,
 }
 
 type Table = HashMap<u32, Running>;
 
 /// What settling the unsettled workers of a resumed run found.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Orphans {
     None,
     /// A worker of a dead driver is still running: wait, then read again.
     Live,
     Settled,
+    /// A done slice cannot land on a dirty main tree: the run parks on this
+    /// line, nothing spawns, and the landing is tried again each tick.
+    Landing(String),
 }
 
 /// Drive `run` until it finishes, stops or reaches a checkpoint. A parked run
@@ -184,6 +186,8 @@ fn drive_inner(
         commit::hold_branch(&repo, &b, default.as_deref());
     }
     let mut off_branch = false;
+    // A landing parked on the owner's dirty main tree (PRD-005 FR-3).
+    let mut landing_wait = false;
     // Earlier drivers' live workers this one said it waits on.
     let mut waiting: HashSet<String> = HashSet::new();
     // Answer files that do not parse, said once each.
@@ -314,7 +318,30 @@ fn drive_inner(
             .values()
             .map(|r| r.worker.session_id.clone())
             .collect();
-        match settle_orphans(run, &board, &live, &mut waiting, out)? {
+        let orphans = settle_orphans(run, &board, &live, &mut waiting, out)?;
+        if landing_wait && !matches!(orphans, Orphans::Landing(_)) {
+            say(out, "the landing went through — the run goes on")?;
+            landing_wait = false;
+            parked = false;
+            announced = false;
+            run.set_phase(Phase::Building)?;
+        }
+        match orphans {
+            Orphans::Landing(what) => {
+                // Nothing spawns while a landing waits; live workers run on.
+                if !landing_wait {
+                    parked = false;
+                    announced = false;
+                    landing_wait = true;
+                }
+                park_with(run, &mut parked, &mut announced, &[], &[], &what, out)?;
+                if table.is_empty() {
+                    slow_tick(run)?;
+                } else {
+                    poll(table, TICK)?;
+                }
+                continue;
+            }
             Orphans::None => {}
             Orphans::Live => {
                 // The dead ones are settled; the live ones get a tick, as
@@ -376,8 +403,9 @@ fn drive_inner(
             if board.checkpoint_due {
                 continue;
             }
-            let lane = match b.lane {
-                Some(l) => l,
+            // A slice holding its lane keeps it as its worker left it.
+            let (lane, fresh) = match b.lane {
+                Some(l) => (l, false),
                 None => {
                     if free.is_empty() {
                         continue;
@@ -387,7 +415,7 @@ fn drive_inner(
                         &run.state().repo.join(&board.dir),
                         &[(&format!("slices.{}.lane", b.number), &l.to_string())],
                     )?;
-                    l
+                    (l, true)
                 }
             };
             let answer = answers::block_answer_for_slice(run.dir(), b.number)?;
@@ -398,6 +426,7 @@ fn drive_inner(
                 &board,
                 b.number,
                 lane,
+                fresh,
                 answer.as_ref(),
                 table,
                 out,
@@ -416,6 +445,21 @@ fn drive_inner(
                 if table.contains_key(&r.number) {
                     continue;
                 }
+                // A dependency counts as done once it has landed (FR-3): its
+                // worker wrote `done` before it exited, and a lane reset
+                // before the landing would miss its code.
+                let unlanded = board
+                    .slices
+                    .iter()
+                    .find(|s| s.number == r.number)
+                    .is_some_and(|s| {
+                        s.depends_on
+                            .iter()
+                            .any(|d| table.contains_key(d) || has_unsettled(run, *d))
+                    });
+                if unlanded {
+                    continue;
+                }
                 let lane = free.remove(0);
                 crate::docs::state::set(
                     &run.state().repo.join(&board.dir),
@@ -424,7 +468,9 @@ fn drive_inner(
                         (&format!("slices.{}.lane", r.number), &lane.to_string()),
                     ],
                 )?;
-                spawn_on(run, docs, cfg, &board, r.number, lane, None, table, out)?;
+                spawn_on(
+                    run, docs, cfg, &board, r.number, lane, true, None, table, out,
+                )?;
             }
         }
 
@@ -525,11 +571,7 @@ fn reap(
         let board = docs.status(feature)?;
         let mut r = table.remove(&slice).expect("key from the table");
         let exit = r.exit.take().expect("checked above");
-        let live: HashSet<String> = table
-            .values()
-            .map(|o| o.worker.session_id.clone())
-            .collect();
-        if let Err(e) = route_exit(run, &board, &r, exit, &live, out) {
+        if let Err(e) = route_exit(run, &board, &r, exit, out) {
             let summary = worker::summary_from_disk(run.dir(), &r.worker.session_id);
             settle_failed(run, r.worker.row_id, &r.worker.session_id, &summary);
             return Err(e);
@@ -679,10 +721,11 @@ fn has_unsettled(run: &Run, slice: u32) -> bool {
         .any(|w| w.slice == Some(slice) && w.outcome.is_none())
 }
 
-/// Pack and spawn `slice` on `lane`; the lane's setup runs once per run,
-/// recorded in `state.json` once it succeeded (a failed setup runs again).
-/// The worker is in the table the moment it runs, so an error after the
-/// spawn still finds it.
+/// Pack and spawn `slice` in `lane`'s worktree ([`open_lane`]; `fresh`, it
+/// is reset first). The lane's setup runs inside it once per run, recorded
+/// in `state.json` once it succeeded (a failed setup runs again). The
+/// worker is in the table the moment it runs, so an error after the spawn
+/// still finds it.
 #[allow(clippy::too_many_arguments)]
 fn spawn_on(
     run: &mut Run,
@@ -691,15 +734,23 @@ fn spawn_on(
     board: &Status,
     slice: u32,
     lane: u32,
+    fresh: bool,
     answer: Option<&Answer>,
     table: &mut Table,
     out: &mut dyn Write,
 ) -> Result<()> {
     let repo = run.state().repo.clone();
     let lane_def = lanes::load(&repo, lane)?;
+    let lane_dir = open_lane(run, lane, fresh)?;
+    // An earlier worker's unlanded commit (a conflict) is the lane's HEAD,
+    // or gone with a reset: this worker's landing commits the lane afresh.
+    let stale = slice_ref(board, slice);
+    if resolve(&repo, &stale)?.is_some() {
+        git_ok(&repo, &["update-ref", "-d", &stale])?;
+    }
     if !run.state().lanes_set_up.contains(&lane) {
         if let Some(cmd) = &lane_def.setup {
-            lane_def.setup(&repo)?;
+            lane_def.setup(&lane_dir)?;
             say(out, &format!("lane {lane} setup ran: {cmd}"))?;
         }
         run.mark_lane_set_up(lane)?;
@@ -727,15 +778,13 @@ fn spawn_on(
             &format!("slice {slice:02} cites §{section}, which prd.md does not have"),
         )?;
     }
-    // The tree's changed paths before the worker touches it (FR-5), kept
-    // on disk too for a resumed driver that settles this worker.
-    let changed_before = snapshot(run, &slice_key(slice))?;
     let w = Worker::spawn(
         run,
         Job::Build { slice },
         &pack,
         &cfg.workers.build,
         &lane_def.env(),
+        &lane_dir,
     )?;
     let line = format!(
         "slice {slice:02} → worker {} (pid {}), lane {lane}{}, pack {}",
@@ -750,10 +799,26 @@ fn spawn_on(
             worker: w,
             lane,
             exit: None,
-            changed_before,
         },
     );
     say(out, &line)
+}
+
+/// Lane `lane`'s worktree, made when missing (a resumed run skips the
+/// preflight that makes them). A slice taking it free (`fresh`) resets it to
+/// the main tree's HEAD and saves that sha as the lane's base; so does a
+/// lane just made, or one with no base saved, since its landing needs one.
+fn open_lane(run: &mut Run, lane: u32, fresh: bool) -> Result<PathBuf> {
+    let repo = run.state().repo.clone();
+    let main = lanes::main_tree(&repo)?;
+    let seed = crate::docs::project::seed(&main)?.unwrap_or_default();
+    let made = lanes::ensure(&paths::data_dir(), &main, lane, &seed)?;
+    if fresh || made.created || !run.state().lane_bases.contains_key(&lane) {
+        let head = git_ok(&repo, &["rev-parse", "HEAD"])?.trim().to_string();
+        lanes::reset(&made.dir, &head)?;
+        run.set_lane_base(lane, &head)?;
+    }
+    Ok(made.dir)
 }
 
 /// The `# Block and answer` section for an answered slice: the entry with its
@@ -791,7 +856,6 @@ fn route_exit(
     board: &Status,
     r: &Running,
     exit: Exit,
-    live: &HashSet<String>,
     out: &mut dyn Write,
 ) -> Result<()> {
     let slice = r.worker.slice.expect("the table holds build workers only");
@@ -799,8 +863,8 @@ fn route_exit(
     let row_id = r.worker.row_id;
     match slice_status(board, slice) {
         "done" => {
-            // The commit before the outcome: a driver killed in between
-            // leaves the worker unsettled, and the resume commits the slice.
+            // The landing before the outcome: a driver killed in between
+            // leaves the worker unsettled, and the resume lands the slice.
             if !done_logged(run, slice, &session_id)? {
                 run.emit(EventKind::SliceDone { slice })?;
             }
@@ -816,17 +880,11 @@ fn route_exit(
                     r.lane
                 ),
             )?;
-            commit_slice(
-                run,
-                board,
-                slice,
-                row_id,
-                &exit.summary,
-                &r.changed_before,
-                live,
-                out,
-            )?;
-            settle(run, row_id, &session_id, &exit.summary, WorkerOutcome::Done)?;
+            // A landing that waits leaves the worker unsettled: the next
+            // `settle_orphans` tries again and parks the run.
+            if let Some(outcome) = land_slice(run, board, slice, row_id, out)?.outcome() {
+                settle(run, row_id, &session_id, &exit.summary, outcome)?;
+            }
         }
         "blocked" => {
             settle(
@@ -870,11 +928,6 @@ fn route_exit(
 /// settled, so the key names it.
 fn baseline_path(run_dir: &Path, key: &str) -> PathBuf {
     run_dir.join("untracked-before").join(format!("{key}.json"))
-}
-
-/// The baseline key of a slice's worker.
-fn slice_key(slice: u32) -> String {
-    format!("slice-{slice:02}")
 }
 
 /// The baseline key of a checkpoint's worker of `role`.
@@ -949,110 +1002,283 @@ fn emit_blocked(run: &mut Run, slice: u32, block: Option<&(String, String)>) -> 
     Ok(())
 }
 
-/// FR-5: the slice's commit, right after the board read `done`. The paths
-/// its stream named go in (less the protected files), then the slice file,
-/// `state.toml` and `log.jsonl`. Files that appeared in the tree unnamed are
-/// a `note` entry in the log first, so the list is in the commit and the
-/// files are not.
-#[allow(clippy::too_many_arguments)]
-fn commit_slice(
+/// What [`land_slice`] made of a done slice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Landed {
+    /// Landed, or nothing to land: the worker settles `done`.
+    Done,
+    /// The pick conflicts: the slice is blocked and the worker settles so.
+    Blocked,
+    /// The main tree is dirty where the pick writes: the worker stays
+    /// unsettled, its ref holds the work, and the run parks on this line.
+    Waiting(String),
+}
+
+impl Landed {
+    fn outcome(&self) -> Option<WorkerOutcome> {
+        match self {
+            Landed::Done => Some(WorkerOutcome::Done),
+            Landed::Blocked => Some(WorkerOutcome::Blocked),
+            Landed::Waiting(_) => None,
+        }
+    }
+}
+
+/// `refs/factory/<NNN>/slice-NN`: a slice's lane commit until it lands.
+fn slice_ref(board: &Status, slice: u32) -> String {
+    format!("refs/factory/{:03}/slice-{slice:02}", board.number)
+}
+
+/// PRD-005 FR-3: a done slice's lane committed whole under its ref, then
+/// cherry-picked onto the feature tip with the board files. Safe to call
+/// again for the same worker, which is how a resumed driver finishes it: a
+/// worker row with a commit has landed; a ref that resolves is committed and
+/// waits for its landing; anything else commits the lane first, so the ref
+/// holds the work before any lane is reset.
+fn land_slice(
     run: &mut Run,
     board: &Status,
     slice: u32,
     row_id: i64,
-    summary: &Summary,
-    baseline: &HashSet<String>,
-    live: &HashSet<String>,
     out: &mut dyn Write,
-) -> Result<()> {
+) -> Result<Landed> {
+    let landed = run
+        .db()
+        .workers(run.id().as_str())?
+        .into_iter()
+        .any(|w| w.id == row_id && w.commit_sha.is_some());
+    if landed {
+        return Ok(Landed::Done);
+    }
     let repo = run.state().repo.clone();
-    let spec = Pathspec::from(summary, board, slice, &repo);
-    for path in &spec.protected {
-        run.emit(EventKind::WorkerWroteProtectedFile {
-            slice,
-            path: path.clone(),
-        })?;
-        say(
-            out,
-            &format!("slice {slice:02} wrote {path}, which no worker may — left out of the commit"),
-        )?;
-    }
-    for path in &spec.outside {
-        say(
-            out,
-            &format!("slice {slice:02} wrote {path}, outside the repo — left out of the commit"),
-        )?;
-    }
-    let Unnamed {
-        sweep,
-        listed,
-        blobs,
-    } = leftovers(run, board, slice, &spec, baseline, live)?;
-    if !listed.is_empty() {
-        let body: String = listed.iter().map(|p| format!("- {p}\n")).collect();
-        answers::add_note(
-            &repo.join(&board.dir),
-            Some(slice),
-            "Untracked leftovers",
-            &body,
-        )?;
-        run.emit(EventKind::UntrackedLeftovers {
-            slice,
-            files: listed.clone(),
-            blobs,
-        })?;
-        say(
-            out,
-            &format!(
-                "slice {slice:02} left {} file(s) no tool call named — listed in log.jsonl, not committed: {}",
-                listed.len(),
-                listed.join(", ")
-            ),
-        )?;
-    }
-    if !sweep.is_empty() {
-        say(
-            out,
-            &format!(
-                "slice {slice:02} changed {} tracked file(s) no tool call named, with no other worker live — in its commit: {}",
-                sweep.len(),
-                sweep.join(", ")
-            ),
-        )?;
-    }
-    let mut paths = spec.paths.clone();
-    paths.extend(sweep);
-    let title = board
-        .slices
-        .iter()
-        .find(|s| s.number == slice)
+    let board_files = commit::tool_files(board).to_vec();
+    let name = slice_ref(board, slice);
+    let row = board.slices.iter().find(|s| s.number == slice);
+    let lane = row.and_then(|s| s.lane);
+    let base = lane.and_then(|l| run.state().lane_bases.get(&l).cloned());
+    let title = row
         .and_then(|s| s.title.clone())
         .unwrap_or_else(|| format!("slice {slice:02}"));
-    match commit::commit(
-        &repo,
-        &paths,
-        &commit::subject(board, "feat", &format!("slice-{slice:02} {title}")),
-    )? {
-        Some(c) => {
-            run.db().set_worker_commit(row_id, &c.sha)?;
+    let subject = commit::subject(board, "feat", &format!("slice-{slice:02} {title}"));
+    // A driver killed after the landing commit and before its record: the
+    // commit is on the tip, its ref maybe not yet deleted. Record it; a
+    // second pick would find nothing to commit.
+    if let Some(base) = &base {
+        let range = format!("{base}..HEAD");
+        let tip = git_ok(&repo, &["log", "--format=%H %s", &range])?;
+        if let Some(landed) = tip
+            .lines()
+            .find_map(|l| l.split_once(' ').filter(|(_, s)| *s == subject))
+            .map(|(sha, _)| sha.to_string())
+        {
+            if resolve(&repo, &name)?.is_some() {
+                git_ok(&repo, &["update-ref", "-d", &name])?;
+            }
+            record_landing(run, slice, row_id, landed, out)?;
+            return Ok(Landed::Done);
+        }
+    }
+    let sha = match resolve(&repo, &name)? {
+        Some(sha) => sha,
+        None => {
+            let Some(lane) = lane else {
+                return Err(Error::Msg(format!("slice {slice:02} is done with no lane")));
+            };
+            let Some(base) = base else {
+                return Err(Error::Msg(format!(
+                    "lane {lane} has no base in state.json to commit slice {slice:02} on"
+                )));
+            };
+            let main = lanes::main_tree(&repo)?;
+            let Some(c) = land::commit_lane(
+                &lanes::dir(&paths::data_dir(), &main, lane),
+                &base,
+                &board_files,
+                &commit::protected_files(board),
+                &subject,
+                &name,
+            )?
+            else {
+                say(out, &format!("slice {slice:02}: nothing to commit"))?;
+                return Ok(Landed::Done);
+            };
+            for path in &c.dropped {
+                run.emit(EventKind::WorkerWroteProtectedFile {
+                    slice,
+                    path: path.clone(),
+                })?;
+                say(
+                    out,
+                    &format!(
+                        "slice {slice:02} wrote {path}, which no worker may — left out of the commit"
+                    ),
+                )?;
+            }
+            c.sha
+        }
+    };
+    undo_half_pick(&repo, &sha)?;
+    match land::land(&repo, &sha, &board_files)? {
+        Landing::Landed { sha: landed } => {
+            record_landing(run, slice, row_id, landed, out)?;
+            Ok(Landed::Done)
+        }
+        Landing::Dirty { paths } => Ok(Landed::Waiting(format!(
+            "slice {slice:02} cannot land: {} changed in the main tree — commit or discard them",
+            paths.join(", ")
+        ))),
+        Landing::Conflict { paths } => {
+            // Slice 08's merge worker takes this branch over; until then the
+            // slice blocks with its work on the ref.
+            let feature_dir = repo.join(&board.dir);
+            let list = paths.join(", ");
+            let body = format!(
+                "**Happened:** slice {slice:02}'s lane commit {} conflicts with the feature tip in {list}. The main tree is untouched; the commit is kept on `{name}`.\n\n\
+                 **Options:**\n\
+                 1. Land it by hand: cherry-pick `{name}` onto the feature branch, resolve {list}, commit, and leave the slice `done`.\n\
+                 2. Answer to respawn its worker in its lane, as the last one left it, to rework {list}.\n\n\
+                 **Recommended:** 1 for a small conflict; 2 otherwise.\n",
+                short(&sha)
+            );
+            let id = answers::add_block(
+                &feature_dir,
+                Some(slice),
+                None,
+                &format!("slice {slice:02} conflicts with the feature tip in {list}"),
+                &body,
+            )?;
+            crate::docs::state::set(
+                &feature_dir,
+                &[(&format!("slices.{slice}.status"), "blocked")],
+            )?;
+            let block = open_block(run, board, slice)?;
+            emit_blocked(run, slice, block.as_ref())?;
             say(
                 out,
                 &format!(
-                    "slice {slice:02} committed {} — {} file(s): {}",
-                    short(&c.sha),
-                    c.files.len(),
-                    c.files.join(", ")
+                    "slice {slice:02} cannot land: it conflicts with the feature tip in {list} — slice blocked ({id}), its commit kept on {name}"
                 ),
             )?;
-            run.emit(EventKind::SliceCommitted {
-                slice,
-                sha: c.sha,
-                files: c.files,
-            })?;
+            Ok(Landed::Blocked)
         }
-        None => say(out, &format!("slice {slice:02}: nothing to commit"))?,
+    }
+}
+
+/// A slice's landed commit, on the worker's row, in a line and an event.
+fn record_landing(
+    run: &mut Run,
+    slice: u32,
+    row_id: i64,
+    landed: String,
+    out: &mut dyn Write,
+) -> Result<()> {
+    let repo = run.state().repo.clone();
+    let files = nul_split(&git_ok(
+        &repo,
+        &[
+            "diff-tree",
+            "--no-commit-id",
+            "--name-only",
+            "-r",
+            "-z",
+            &landed,
+        ],
+    )?);
+    run.db().set_worker_commit(row_id, &landed)?;
+    say(
+        out,
+        &format!(
+            "slice {slice:02} landed {} — {} file(s): {}",
+            short(&landed),
+            files.len(),
+            files.join(", ")
+        ),
+    )?;
+    run.emit(EventKind::SliceCommitted {
+        slice,
+        sha: landed,
+        files,
+    })?;
+    Ok(())
+}
+
+/// A driver killed in [`land::land`] between its pick and its commit leaves
+/// the picked paths staged in the main tree, which the next landing would
+/// read as the owner's dirty work. When something is staged there and every
+/// picked path in the index and the tree is exactly `sha`'s, the pick is the
+/// driver's own: those paths go back to HEAD.
+fn undo_half_pick(repo: &Path, sha: &str) -> Result<()> {
+    let parent = format!("{sha}^");
+    let picked = nul_split(&git_ok(
+        repo,
+        &["diff", "--name-only", "--no-renames", "-z", &parent, sha],
+    )?);
+    if picked.is_empty() {
+        return Ok(());
+    }
+    let on = |args: &[&str]| -> Vec<String> {
+        args.iter()
+            .map(|a| a.to_string())
+            .chain(["--".to_string()])
+            .chain(picked.iter().cloned())
+            .collect()
+    };
+    let quiet = |args: &[&str]| -> Result<bool> {
+        let all = on(args);
+        let refs: Vec<&str> = all.iter().map(String::as_str).collect();
+        Ok(git_out(repo, &refs)?.status.success())
+    };
+    if !quiet(&["diff", "--cached", "--quiet", "HEAD"])?
+        && quiet(&["diff", "--cached", "--quiet", sha])?
+        && quiet(&["diff", "--quiet", sha])?
+    {
+        let all = on(&["restore", "--source=HEAD", "--staged", "--worktree"]);
+        let refs: Vec<&str> = all.iter().map(String::as_str).collect();
+        git_ok(repo, &refs)?;
     }
     Ok(())
+}
+
+/// The commit `name` points at, if it resolves.
+fn resolve(repo: &Path, name: &str) -> Result<Option<String>> {
+    let o = git_out(
+        repo,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{name}^{{commit}}"),
+        ],
+    )?;
+    Ok(o.status
+        .success()
+        .then(|| String::from_utf8_lossy(&o.stdout).trim().to_string()))
+}
+
+fn nul_split(text: &str) -> Vec<String> {
+    text.split('\0')
+        .filter(|p| !p.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn git_out(repo: &Path, args: &[&str]) -> Result<std::process::Output> {
+    std::process::Command::new("git")
+        .current_dir(repo)
+        .args(args)
+        .output()
+        .map_err(io(format!("run git {}", args.join(" "))))
+}
+
+fn git_ok(repo: &Path, args: &[&str]) -> Result<String> {
+    let o = git_out(repo, args)?;
+    if !o.status.success() {
+        return Err(Error::Tool {
+            cmd: format!("git {}", args.join(" ")),
+            detail: String::from_utf8_lossy(&o.stderr).trim().to_string(),
+        });
+    }
+    Ok(String::from_utf8_lossy(&o.stdout).into_owned())
 }
 
 /// What a worker changed in the tree that no tool call of its stream named
@@ -1136,33 +1362,6 @@ pub fn unnamed(
     Ok(found)
 }
 
-/// The slice's [`unnamed`] changes: not another slice's file,
-/// and nothing a live worker's stream names so far — the other lane's
-/// half-written work is its own, not this slice's leftover.
-fn leftovers(
-    run: &Run,
-    board: &Status,
-    slice: u32,
-    spec: &Pathspec,
-    baseline: &HashSet<String>,
-    live: &HashSet<String>,
-) -> Result<Unnamed> {
-    let repo = run.state().repo.clone();
-    let mut skip: HashSet<String> = HashSet::new();
-    skip.extend(spec.paths.iter().cloned());
-    skip.extend(spec.protected.iter().cloned());
-    for s in &board.slices {
-        if s.number != slice {
-            skip.insert(format!("docs/features/{}", s.file));
-        }
-    }
-    for sid in live {
-        let other = worker::summary_from_disk(run.dir(), sid);
-        skip.extend(commit::Pathspec::from_stream(&other, board, &repo).paths);
-    }
-    unnamed(run, board, baseline, &skip, &spec.dirs, live.is_empty())
-}
-
 pub fn short(sha: &str) -> &str {
     &sha[..sha.len().min(7)]
 }
@@ -1209,6 +1408,7 @@ fn settle_orphans(
     } else {
         Orphans::Live
     };
+    let mut landing = None;
     for w in dead {
         let summary = worker::summary_from_disk(run.dir(), &w.session_id);
         let Some(slice) = w.slice else {
@@ -1224,28 +1424,24 @@ fn settle_orphans(
                 if !done_logged(run, slice, &w.session_id)? {
                     run.emit(EventKind::SliceDone { slice })?;
                 }
-                say(
-                    out,
-                    &format!(
-                        "slice {:02} done by worker {} of an earlier driver",
-                        slice, w.session_id
-                    ),
-                )?;
-                // The snapshot the dead driver saved at this worker's spawn;
-                // the other orphans were live beside it.
-                let baseline = load_baseline(run.dir(), &slice_key(slice))?;
-                let mut beside = live.clone();
-                beside.extend(
-                    run.state()
-                        .workers
-                        .iter()
-                        .filter(|o| o.outcome.is_none() && o.session_id != w.session_id)
-                        .map(|o| o.session_id.clone()),
-                );
-                commit_slice(
-                    run, board, slice, w.row_id, &summary, &baseline, &beside, out,
-                )?;
-                settle(run, w.row_id, &w.session_id, &summary, WorkerOutcome::Done)?;
+                // A landing already under way (its ref made) is retried
+                // every tick a dirty main tree holds it: said once, at first.
+                if resolve(&run.state().repo, &slice_ref(board, slice))?.is_none() {
+                    say(
+                        out,
+                        &format!(
+                            "slice {:02} done by worker {} of an earlier driver",
+                            slice, w.session_id
+                        ),
+                    )?;
+                }
+                match land_slice(run, board, slice, w.row_id, out)? {
+                    Landed::Waiting(what) => landing = Some(what),
+                    l => {
+                        let outcome = l.outcome().expect("a settled landing");
+                        settle(run, w.row_id, &w.session_id, &summary, outcome)?;
+                    }
+                }
             }
             "blocked" => {
                 settle(
@@ -1266,7 +1462,7 @@ fn settle_orphans(
             },
         }
     }
-    Ok(outcome)
+    Ok(landing.map(Orphans::Landing).unwrap_or(outcome))
 }
 
 /// `slice NN` or `checkpoint n (role)`, for a line about a worker.
@@ -1420,7 +1616,7 @@ fn settle(
     run.db()
         .finish_worker(row_id, summary, outcome.as_str(), &clock::now_rfc3339())?;
     // Never fails the exit: an unreadable dir is an event and null columns.
-    let _ = metrics::record_subagents(run, row_id, session_id);
+    let _ = metrics::record_subagents(run, row_id, session_id, summary.cwd.as_deref());
     metrics::record_exit(run, row_id, summary)?;
     run.set_worker_outcome(session_id, outcome.as_str())
 }
