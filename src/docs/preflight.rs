@@ -307,6 +307,9 @@ fn feature(
         "missing" => refuse.push(format!("gate {}", gate::line(&g))),
         _ => ok.push(format!("gate {}", gate::line(&g))),
     }
+    if project::seed(root).ok().flatten().is_none() {
+        refuse.push(crate::lanes::NO_SEED.into());
+    }
     let open: Vec<String> = log::select(&entries, log::Filter::Open)
         .iter()
         .filter_map(|e| e.id.clone())
@@ -350,7 +353,7 @@ fn feature(
     let width = parallel_width(slices);
     if width >= 2 && lanes < 2 {
         ask.push(format!(
-            "{} slices, up to {width} of them runnable at once by depends_on, but `lanes = {lanes}` in docs/project.toml — they will build one after another. Defining lanes is a one-time interview per project (`factory docs lanes`).",
+            "{} slices, up to {width} of them runnable at once by depends_on, but `lanes = {lanes}` in docs/project.toml — they will build one after another. Defining lanes is a one-time interview per project (`/lanes`).",
             slices.len()
         ));
     } else if width >= 2 {
