@@ -685,7 +685,17 @@ fn a_finished_board_polishes_ships_pushes_and_opens_the_draft_pr() {
 fn a_second_run_of_the_repo_compares_with_the_first() {
     let fx = Fixture::new("retro-compare");
     fx.chain();
-    let plan = plan_with(&[step("polish")]);
+    // Two comment lines of three, one citing an id; the `printf` leaves the same file on a rerun.
+    let guard =
+        "printf '// FR-2: guard\\n// Keeps the order open.\\nfn guard() {}\\n' > src/guard.rs";
+    let plan = vec![
+        json!({"outcome": "done", "touch": ["src/a.txt"], "sh": guard}),
+        json!({"outcome": "done", "touch": ["src/b.txt"]}),
+        step("checkpoint"),
+        json!({"outcome": "done", "touch": ["src/c.txt"]}),
+        step("checkpoint"),
+        step("polish"),
+    ];
     fx.write_plan(&plan);
     let first_dir = start(&fx);
     wait_phase(&fx, &first_dir, "finished", 90);
@@ -719,6 +729,13 @@ fn a_second_run_of_the_repo_compares_with_the_first() {
         .unwrap();
     let lines = a.lines_added.unwrap() + a.lines_removed.unwrap();
     assert!(lines > 0, "{a:?}");
+    for r in [&a, &b] {
+        assert_eq!(
+            (r.comment_lines, r.nonblank_lines, r.id_hits),
+            (Some(2), Some(3), Some(1)),
+            "{r:?}"
+        );
+    }
     let text = fx.read(RETRO);
     let numbers = section(&text);
     let rows: Vec<&str> = numbers
@@ -728,6 +745,13 @@ fn a_second_run_of_the_repo_compares_with_the_first() {
         .collect();
     assert_eq!(rows.len(), 2, "{numbers}");
     assert!(
+        numbers.contains(
+            "| run | feature | weighted | slices | per slice | lines changed | per line | comment share | id hits |\n"
+        ),
+        "{numbers}"
+    );
+    assert!(rows[0].ends_with(" | 66.7% | 1 |"), "{numbers}");
+    assert!(
         rows[0].starts_with(&format!("| {second} (this run) | 001 | ")),
         "{numbers}"
     );
@@ -735,7 +759,9 @@ fn a_second_run_of_the_repo_compares_with_the_first() {
     let per_line = (weighted as f64 / lines as f64).round();
     assert_eq!(
         rows[1],
-        format!("| {first} | 001 | {weighted} | 3 | {per_slice} | {lines} | {per_line} |"),
+        format!(
+            "| {first} | 001 | {weighted} | 3 | {per_slice} | {lines} | {per_line} | 66.7% | 1 |"
+        ),
         "{numbers}"
     );
 
@@ -828,6 +854,13 @@ fn a_retro_the_polish_worker_left_out_is_a_flagged_stand_in() {
     assert!(!fx.read(RETRO).contains("Stub retro"), "{}", fx.read(RETRO));
     assert!(
         fx.read(RETRO).starts_with("# Retro — PRD-001\n"),
+        "{}",
+        fx.read(RETRO)
+    );
+    assert!(
+        fx.read(RETRO).contains(
+            "A comment or name the leaks check should have caught: `file:line` and the line.\n"
+        ),
         "{}",
         fx.read(RETRO)
     );
@@ -2029,8 +2062,9 @@ fn the_slice_contracts_commands_run_on_the_fixture() {
 // ── the retro's friction section, filed as an idea ──────────────────────────
 
 const FRICTION: &str = "- /polish § Fix: the stub step one\n- /slice § Tasks: the stub step two";
-const PLACEHOLDER: &str =
-    "A step, rule or template in the framework itself. Name the skill and the section.";
+const PLACEHOLDER: &str = "A step, rule or template in the framework itself. Name the skill and the section.\n\n\
+     A comment or name the leaks check should have caught: `file:line` and the line.";
+const MISSED: &str = "- `src/order.rs:3` `// until slice 4`";
 
 fn source_repo(fx: &Fixture) -> PathBuf {
     let src = fx.path().parent().unwrap().join("skills");
@@ -2115,6 +2149,28 @@ fn a_friction_section_is_filed_as_an_untracked_idea_in_the_source() {
         "{log}"
     );
     println!("--- {id}.md\n{idea}--- git status --porcelain\n{porcelain}");
+}
+
+#[test]
+fn a_filled_leaks_line_is_filed_as_an_idea_in_the_source() {
+    let fx = Fixture::new("friction-leaks-line");
+    fx.chain();
+    let src = source_repo(&fx);
+    fx.write_plan(&polish_with_friction(&format!("{PLACEHOLDER}\n\n{MISSED}")));
+    let before = today();
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "finished", 90);
+
+    let id = friction_id(&src, &before, "");
+    let path = src.join(format!("docs/ideas/{id}.md"));
+    let idea = fs::read_to_string(&path).unwrap();
+    assert!(idea.contains(MISSED), "{idea}");
+    let log = driver_log(&dir);
+    assert!(
+        log.contains(&format!("friction: filed {}", path.display())),
+        "{log}"
+    );
+    println!("--- {id}.md\n{idea}");
 }
 
 #[test]

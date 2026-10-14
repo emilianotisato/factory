@@ -134,12 +134,17 @@ fn compare_row(db: &Db, run: &RunRow, this: bool) -> Result<String> {
     } else {
         run.id.clone()
     };
+    let share = match (run.comment_lines, run.nonblank_lines) {
+        (Some(c), Some(n)) if n > 0 => format!("{:.1}%", c as f64 * 100.0 / n as f64),
+        _ => "—".to_string(),
+    };
     Ok(format!(
-        "| {name} | {} | {weighted} | {slices} | {} | {} | {} |",
+        "| {name} | {} | {weighted} | {slices} | {} | {} | {} | {share} | {} |",
         run.feature,
         per(Some(slices)),
         dash(lines),
-        per(lines)
+        per(lines),
+        dash(run.id_hits)
     ))
 }
 
@@ -202,9 +207,9 @@ pub fn numbers(db: &Db, run_id: &str) -> Result<String> {
     } else {
         s.push_str("Compared with:\n\n");
         s.push_str(
-            "| run | feature | weighted | slices | per slice | lines changed | per line |\n",
+            "| run | feature | weighted | slices | per slice | lines changed | per line | comment share | id hits |\n",
         );
-        s.push_str("|---|---|---:|---:|---:|---:|---:|\n");
+        s.push_str("|---|---|---:|---:|---:|---:|---:|---:|---:|\n");
         s.push_str(&compare_row(db, &run, true)?);
         s.push('\n');
         for e in &earlier {
@@ -423,7 +428,23 @@ mod tests {
             "2026-10-07T00:00:00Z",
             Some("2026-10-07T05:00:00Z"),
         );
+        db.set_run_leaks("008-20261007-hhhh", Some((2, 3, 1)))
+            .unwrap();
+        db.set_run_leaks("003-20261003-cccc", Some((0, 0, 0)))
+            .unwrap();
         let s = numbers(&db, "008-20261007-hhhh").unwrap();
+        assert!(
+            s.contains("| per line | comment share | id hits |\n"),
+            "{s}"
+        );
+        let row = |id: &str| {
+            s.lines()
+                .find(|l| l.starts_with(&format!("| {id}")))
+                .unwrap()
+        };
+        assert!(row("008-20261007-hhhh").ends_with("| 66.7% | 1 |"), "{s}");
+        assert!(row("004-20261004-dddd").ends_with("| — | — |"), "{s}");
+        assert!(row("003-20261003-cccc").ends_with("| — | 0 |"), "{s}");
         let rows: Vec<&str> = s
             .lines()
             .filter(|l| l.starts_with("| 0"))

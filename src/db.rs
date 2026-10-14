@@ -112,7 +112,7 @@ CREATE TABLE IF NOT EXISTS retros (
 ";
 
 /// SQLite's `ALTER TABLE ADD COLUMN` has no `IF NOT EXISTS`; each is guarded by the live column list.
-const COLUMNS: [(&str, &str, &str); 29] = [
+const COLUMNS: [(&str, &str, &str); 32] = [
     ("workers", "commit_sha", "TEXT"),
     ("workers", "checkpoint", "INTEGER"),
     ("gates", "cached", "INTEGER NOT NULL DEFAULT 0"),
@@ -142,6 +142,9 @@ const COLUMNS: [(&str, &str, &str); 29] = [
     ("runs", "blocks", "INTEGER"),
     ("runs", "lines_added", "INTEGER"),
     ("runs", "lines_removed", "INTEGER"),
+    ("runs", "comment_lines", "INTEGER"),
+    ("runs", "nonblank_lines", "INTEGER"),
+    ("runs", "id_hits", "INTEGER"),
 ];
 
 pub const RETRO_COLUMNS: [&str; 19] = [
@@ -200,6 +203,10 @@ pub struct RunRow {
     /// Changed lines against the base at ship; `None` when `git diff` failed.
     pub lines_added: Option<u64>,
     pub lines_removed: Option<u64>,
+    /// The leaks scan against the base at ship; `None` when it failed.
+    pub comment_lines: Option<u64>,
+    pub nonblank_lines: Option<u64>,
+    pub id_hits: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -434,7 +441,8 @@ impl Db {
             .query_row(
                 "SELECT id, repo, feature, branch, started_at, finished_at, phase, budget_weighted_tokens, pr_url,
                         findings_high, findings_medium, findings_low, findings_fixed, findings_parked,
-                        decisions, decide, blocks, knobs, hypothesis, lines_added, lines_removed
+                        decisions, decide, blocks, knobs, hypothesis, lines_added, lines_removed,
+                        comment_lines, nonblank_lines, id_hits
                  FROM runs WHERE id = ?1",
                 [id],
                 run_from_row,
@@ -453,7 +461,8 @@ impl Db {
         let mut stmt = self.conn.prepare(
             "SELECT id, repo, feature, branch, started_at, finished_at, phase, budget_weighted_tokens, pr_url,
                     findings_high, findings_medium, findings_low, findings_fixed, findings_parked,
-                    decisions, decide, blocks, knobs, hypothesis, lines_added, lines_removed
+                    decisions, decide, blocks, knobs, hypothesis, lines_added, lines_removed,
+                    comment_lines, nonblank_lines, id_hits
              FROM runs
              WHERE repo = ?1 AND phase = 'finished' AND finished_at IS NOT NULL AND finished_at <= ?2
                AND id != ?3
@@ -468,6 +477,20 @@ impl Db {
         self.conn.execute(
             "UPDATE runs SET lines_added = ?2, lines_removed = ?3 WHERE id = ?1",
             params![run_id, lines.map(|l| l.0 as i64), lines.map(|l| l.1 as i64)],
+        )?;
+        Ok(())
+    }
+
+    /// `(comment lines, non-blank added lines, id hits)`.
+    pub fn set_run_leaks(&self, run_id: &str, leaks: Option<(u64, u64, u64)>) -> Result<()> {
+        self.conn.execute(
+            "UPDATE runs SET comment_lines = ?2, nonblank_lines = ?3, id_hits = ?4 WHERE id = ?1",
+            params![
+                run_id,
+                leaks.map(|l| l.0 as i64),
+                leaks.map(|l| l.1 as i64),
+                leaks.map(|l| l.2 as i64)
+            ],
         )?;
         Ok(())
     }
@@ -994,13 +1017,16 @@ fn run_from_row(r: &rusqlite::Row) -> rusqlite::Result<RunRow> {
         decisions: r.get(14)?,
         decide: r.get(15)?,
         blocks: r.get(16)?,
-        lines_added: r
-            .get::<_, Option<i64>>("lines_added")?
-            .map(|n| n.max(0) as u64),
-        lines_removed: r
-            .get::<_, Option<i64>>("lines_removed")?
-            .map(|n| n.max(0) as u64),
+        lines_added: count(r, "lines_added")?,
+        lines_removed: count(r, "lines_removed")?,
+        comment_lines: count(r, "comment_lines")?,
+        nonblank_lines: count(r, "nonblank_lines")?,
+        id_hits: count(r, "id_hits")?,
     })
+}
+
+fn count(r: &rusqlite::Row, column: &str) -> rusqlite::Result<Option<u64>> {
+    Ok(r.get::<_, Option<i64>>(column)?.map(|n| n.max(0) as u64))
 }
 
 #[cfg(test)]
@@ -1237,5 +1263,41 @@ mod tests {
         let r = db.retro("/repo", 1).unwrap().unwrap();
         assert_eq!((r.score, r.gate_runs), (Some(5), Some(3)));
         assert_eq!(retros(&db), 1);
+    }
+
+    #[test]
+    fn the_leaks_figures_read_back_from_both_selects() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("factory.db")).unwrap();
+        for id in ["a", "b", "c"] {
+            db.conn()
+                .execute(
+                    "INSERT INTO runs (id, repo, feature, started_at, finished_at, phase, budget_weighted_tokens)
+                       VALUES (?1, '/repo', '001', 'then', 'then', 'finished', 0)",
+                    [id],
+                )
+                .unwrap();
+        }
+        db.set_run_leaks("a", Some((2, 3, 1))).unwrap();
+        db.set_run_leaks("b", None).unwrap();
+        let figures = |r: &RunRow| (r.comment_lines, r.nonblank_lines, r.id_hits);
+
+        let a = db.run_row("a").unwrap().unwrap();
+        assert_eq!(figures(&a), (Some(2), Some(3), Some(1)));
+        let b = db.run_row("b").unwrap().unwrap();
+        assert_eq!(figures(&b), (None, None, None));
+
+        let earlier = db.earlier_runs("/repo", "then", "c", 3).unwrap();
+        let read: Vec<_> = earlier
+            .iter()
+            .map(|r| (r.id.as_str(), figures(r)))
+            .collect();
+        assert_eq!(
+            read,
+            [
+                ("b", (None, None, None)),
+                ("a", (Some(2), Some(3), Some(1)))
+            ]
+        );
     }
 }

@@ -3,7 +3,11 @@
 **Source**: [`prd.md`](prd.md) → §6 FR-4 (the two columns, the friction prompt line, its acceptance); §7 FR-5 (its run row, rerun on the tree that ships). **Depends on**: 01 (ship calls the `scan` slice 01 wrote and stores the counts its `Report` carries)
 **Created**: 2026-10-14
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+- Built: three `runs` columns (`comment_lines`, `nonblank_lines`, `id_hits`; `COLUMNS` is 32) with `RunRow` fields, both SELECTs and `set_run_leaks`; ship runs `leaks::scan(repo, Base(base))` after `set_run_lines` and stores the figures, or says `ship: no leaks figures stored — {e}` and stores `NULL`; the compare table gains `comment share` (`66.7%`) and `id hits`, `—` when a run has none or no non-blank added lines; the friction prompt line in `assets/retro.md`.
+- Tests: `the_leaks_figures_read_back_from_both_selects` (db); the retro unit test sets figures on two runs and `(0, 0, 0)` on a third (`| — | 0 |`); `a_second_run_of_the_repo_compares_with_the_first` names every slice's `touch`, writes `src/guard.rs` (two comment lines of three, one `FR-2` id) and asserts both runs' stored figures, the header and both rows ending `| 66.7% | 1 |`; with the two cells removed it fails at the row assert (`tests/closeout.rs:753`); `a_filled_leaks_line_is_filed_as_an_idea_in_the_source` new; the stand-in test asserts the new line; `PLACEHOLDER` and the friction unit test hold the two-line section.
+- Inner loop: 2 runs, 1 red (fmt only), about 2 min.
+- Prove (FR-4 transcripts, FR-5 `--all` and doctor) is left for the checkpoint.
 
 **Slice**: After this slice, ship scans the feature's added lines against the default branch and stores two figures on the run: the comment share and the id hits in comments, names and strings. The retro's compare table shows both, for this run and the three earlier ones, with `—` for a run that has none. The retro template's `## Framework friction → skills repo` section gains one prompt line asking for a comment or name the check missed, with `file:line`, and closeout files that section as an idea when the line is filled, as it files any friction today.
 

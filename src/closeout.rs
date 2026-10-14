@@ -867,6 +867,14 @@ fn ship(
         }
     };
     run.db().set_run_lines(run.id().as_str(), lines)?;
+    let leaks = match crate::leaks::scan(&repo, crate::leaks::Input::Base(&base)) {
+        Ok(r) => Some((r.comment_lines, r.added_lines, r.id_hits() as u64)),
+        Err(e) => {
+            say(out, &format!("ship: no leaks figures stored — {e}"))?;
+            None
+        }
+    };
+    run.db().set_run_leaks(run.id().as_str(), leaks)?;
     let report = report::compute(run.db(), run.id().as_str(), None)?;
     let retro = feature_dir.join("retro.md");
     if !retro.exists() {
@@ -2419,7 +2427,8 @@ mod tests {
         let template = retro_template();
         assert_eq!(
             friction(&template),
-            "A step, rule or template in the framework itself. Name the skill and the section."
+            "A step, rule or template in the framework itself. Name the skill and the section.\n\n\
+             A comment or name the leaks check should have caught: `file:line` and the line."
         );
         let two =
             "# Retro\n\n## Framework friction → skills repo\n\n- one\n- two\n\n## Score\n\nx\n";
