@@ -1,0 +1,32 @@
+$ FACTORY_KEEP_FIXTURE=1 cargo test --test lanes -- lanes_up_prove --nocapture
+     Running tests/lanes.rs (/mnt/devcache/emiliano/cargo-target/debug/deps/lanes-463ee4e0d5fd4e53)
+
+running 2 tests
+fixture lanes-prove kept at /tmp/factory-lanes-prove-ZNjtkG
+fixture lanes-prove-no-seed kept at /tmp/factory-lanes-prove-no-seed-MFhwky
+test lanes_up_prove_stops_at_a_failed_up ... ok
+lane-1 1791946731.8530636..1791946732.8588145  lane-2 1791946731.8531454..1791946732.8587713
+test lanes_up_prove_runs_the_inner_loop_in_every_lane_at_once_and_names_a_red_lane ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 23 filtered out; finished in 1.13s
+
+$ FACTORY_KEEP_FIXTURE=1 cargo test --test init -- --nocapture
+     Running tests/init.rs (/mnt/devcache/emiliano/cargo-target/debug/deps/init-177d1587af4245c3)
+
+running 13 tests
+test a_source_checkout_keeps_its_live_skills ... ok
+test init_refuses_a_linked_skills_dir_and_writes_nothing ... ok
+test init_into_a_shared_agents_dir_writes_no_links ... ok
+test init_renders_over_a_hand_written_skill_and_never_through_a_link ... ok
+test a_link_to_a_not_yet_written_agents_md_is_no_skip ... ok
+test a_convention_file_linking_outside_or_nowhere_is_skipped ... ok
+test a_crlf_convention_file_gets_no_second_block ... ok
+test a_linked_pair_gets_the_block_once_and_an_identical_pair_both ... ok
+test init_and_docs_init_write_the_same_tree_and_say_the_same ... ok
+test the_convention_block_lands_once_in_each_file ... ok
+test init_renders_the_bundle_the_links_and_the_manifest ... ok
+test a_second_init_changes_nothing_and_leaves_the_skills_to_update ... ok
+test init_prints_the_commit_line_and_commits_nothing ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
