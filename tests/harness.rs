@@ -85,3 +85,34 @@ fn fixture_is_a_runnable_board_with_stubs_on_path() {
         t0.elapsed()
     );
 }
+
+#[test]
+fn gate_sh_reads_the_main_trees_scenario_from_a_worktree() {
+    let fx = Fixture::new("gate-worktree");
+    let tmp = tempfile::tempdir().unwrap();
+    let wt = tmp.path().join("wt");
+    fx.git(&["worktree", "add", "--detach", wt.to_str().unwrap(), "HEAD"]);
+    let head = fx.git(&["rev-parse", "HEAD"]).trim().to_string();
+
+    // A red scripted in the main tree stays red in a worktree that has no scenario/.
+    fx.script_gate(&["red"]);
+    let out = fx
+        .command(wt.join("gate.sh"))
+        .current_dir(&wt)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(!wt.join("scenario").exists());
+    let log = fx.gate_log();
+    assert_eq!(log.len(), 1, "{log:?}");
+    assert_eq!(log[0].kind, "gate");
+    assert_eq!(log[0].exit, 1);
+    assert_eq!(log[0].pwd, wt.canonicalize().unwrap());
+    assert_eq!(log[0].head, head);
+
+    assert_eq!(fx.run_gate(false), 0);
+    let log = fx.gate_log();
+    assert_eq!(log.len(), 2, "{log:?}");
+    assert_eq!(log[1].pwd, fx.path().canonicalize().unwrap());
+    assert_eq!(log[1].head, head);
+}
