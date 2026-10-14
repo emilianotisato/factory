@@ -54,6 +54,9 @@
 //     replays polish-subagents.jsonl and writes `subagents/agent-<i>.jsonl`
 //     under the session's transcript dir in $CLAUDE_CONFIG_DIR, and
 //     subagents_unreadable: true then makes that dir mode 000.
+//   On a checkpoint: leaks: "fix" deletes every `path:line` hit under the
+//     pack's `# Leaks` (bottom-up per file) and every bare `path` hit, then
+//     names each one under **Fixed** and FIXED: instead of `none`.
 //
 // The call record ($FACTORY_STUB_DIR/calls/<n>.json) carries argv, cwd, HEAD,
 // the FACTORY_* env, every env variable's name (never a value), GH_CONFIG_DIR,
@@ -264,19 +267,52 @@ if (role === 'checkpoint') {
     result(['STATUS: blocked', 'PROVE: 0/0 — evidence: none — unreached: all', 'FIXED: none', `BLOCK: ${block} — ${question}`])
     process.exit(0)
   }
+  const fixed = step.leaks === 'fix' ? fixLeaks(pack, cwd) : []
+  const fixedText = fixed.length ? fixed.map((h) => `leaks: ${h}`).join(', ') : 'none'
   const last = covered[covered.length - 1] ?? '00'
   const add = ['log', 'add', cpFeature, '--kind', 'checkpoint', '--phase', 'checkpoint', '--slice', String(Number(last)), '--covers', covered.map(Number).join(','), '--title', `after slice-${last} · ${today}`, '--body-file', '-']
   const id = docs(add, [
     `**Covers:** slices ${covered.join(', ')}`,
     '**Gate:** 1 runs, 0 red, 0 min — caught: nothing (driver-run)',
     `**Prove:** ${rows.join(', ') || 'none'} — evidence: none (stub)`,
-    '**Fixed:** none',
+    `**Fixed:** ${fixedText}`,
   ].join('\n'))
   emit(init)
   docsCall(add, id)
   emit(assistant([{ type: 'text', text: 'STATUS: done' }]))
-  result(['STATUS: done', `PROVE: ${rows.length}/${rows.length} — evidence: none (stub) — unreached: none`, 'FIXED: none', 'BLOCK: none'])
+  result(['STATUS: done', `PROVE: ${rows.length}/${rows.length} — evidence: none (stub) — unreached: none`, `FIXED: ${fixedText}`, 'BLOCK: none'])
   process.exit(0)
+}
+
+// The hits as `path:line` or `path`, once each, in the report's order.
+function fixLeaks (pack, cwd) {
+  const section = pack.match(/^# Leaks$([\s\S]*?)(?=^# |(?![\s\S]))/m)?.[1] ?? ''
+  const hits = []
+  const lines = new Map()
+  const paths = []
+  for (const l of section.split('\n')) {
+    const at = l.match(/^ {2}(\S+):(\d+) {2}/)
+    const bare = at ? null : l.match(/^ {2}(\S+)$/)
+    if (at) {
+      const hit = `${at[1]}:${at[2]}`
+      if (hits.includes(hit)) continue
+      hits.push(hit)
+      if (!lines.has(at[1])) lines.set(at[1], [])
+      lines.get(at[1]).push(Number(at[2]))
+    } else if (bare && !hits.includes(bare[1])) {
+      hits.push(bare[1])
+      paths.push(bare[1])
+    }
+  }
+  for (const [rel, nums] of lines) {
+    const abs = path.resolve(cwd, rel)
+    if (!fs.existsSync(abs)) continue
+    const text = fs.readFileSync(abs, 'utf8').split('\n')
+    for (const k of [...nums].sort((a, b) => b - a)) text.splice(k - 1, 1)
+    fs.writeFileSync(abs, text.join('\n'))
+  }
+  for (const rel of paths) fs.rmSync(path.resolve(cwd, rel), { force: true })
+  return hits
 }
 
 // ── 3c. a polish worker ──────────────────────────────────────────────────────

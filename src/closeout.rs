@@ -2240,7 +2240,7 @@ fn settle(
     run.set_worker_outcome(session_id, outcome.as_str())
 }
 
-fn default_branch(run: &Run, docs: &Docs) -> String {
+pub(crate) fn default_branch(run: &Run, docs: &Docs) -> String {
     load_preflight(run.dir())
         .ok()
         .flatten()

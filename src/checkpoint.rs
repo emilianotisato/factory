@@ -101,6 +101,7 @@ pub fn run(
     let mut ran_red = false;
     let green_log: PathBuf;
     let mut green_cached;
+    let leaks: String;
     loop {
         if run.state().stop_requested {
             return Ok(Outcome::Stopped);
@@ -111,6 +112,7 @@ pub fn run(
         if !result.red {
             green_log = result.log;
             green_cached = result.cached;
+            leaks = leaks_section(&lane_dir, &crate::closeout::default_branch(run, docs));
             break;
         }
         ran_red = true;
@@ -253,6 +255,7 @@ pub fn run(
             &covers,
             &green_log,
             green_cached,
+            &leaks,
             &packs,
             spawn,
         )?;
@@ -1074,6 +1077,17 @@ fn spawned_before_answer(events: &[Event], n: u32) -> HashSet<String> {
         .collect()
 }
 
+/// The body of the pack's `# Leaks`; a scan that fails reads `not run`, never a red.
+fn leaks_section(lane_dir: &Path, base: &str) -> String {
+    match crate::leaks::scan(lane_dir, crate::leaks::Input::Base(base)) {
+        Ok(report) => format!(
+            "<!-- factory leaks --base {base} -->\n\n```\n{}```",
+            report.render()
+        ),
+        Err(e) => format!("not run: {e}"),
+    }
+}
+
 pub(crate) fn park_line(id: &str, title: &str) -> String {
     format!(
         "checkpoint blocked — {title}: {id} in log.jsonl waits for the owner: `factory answer {id} \"<text>\"`"
@@ -1115,6 +1129,13 @@ mod tests {
             slice: None,
             text: "a".to_string(),
         })
+    }
+
+    #[test]
+    fn a_scan_that_fails_reads_not_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let body = leaks_section(tmp.path(), "main");
+        assert!(body.starts_with("not run: git "), "{body}");
     }
 
     #[test]

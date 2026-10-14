@@ -347,6 +347,7 @@ impl Pack {
         covers: &[u32],
         gate_log: &Path,
         cached: bool,
+        leaks: &str,
         packs_dir: &Path,
         spawn: u32,
     ) -> Result<Pack> {
@@ -413,6 +414,7 @@ impl Pack {
                     gate_log.display(),
                     tail(&log_text, TAIL_LINES).trim_end()
                 ),
+                format!("# Leaks\n\n{}", leaks.trim_end()),
                 format!("# Covered slices\n\n{}", slices.trim_end()),
                 format!(
                     "# QA rows\n\n<!-- {prd_rel}: § QA plan -->\n\n{}",
@@ -959,8 +961,18 @@ mod tests {
         let log = repo.join("gate.log");
         fs::write(&log, "ok\n").unwrap();
         let packs = repo.join("packs");
-        let cp =
-            Pack::for_checkpoint(&docs, &board, 1, &[1, 2, 4], &log, false, &packs, 1).unwrap();
+        let cp = Pack::for_checkpoint(
+            &docs,
+            &board,
+            1,
+            &[1, 2, 4],
+            &log,
+            false,
+            "clean\n",
+            &packs,
+            1,
+        )
+        .unwrap();
         let text = fs::read_to_string(&cp.path).unwrap();
         assert!(text.contains("--slice 04 --covers 1,2,4 --title"), "{text}");
         assert!(text.contains("**Covers:** slices 01, 02, 04"), "{text}");
@@ -1132,11 +1144,13 @@ mod tests {
             sections_of(&fix),
             ["gate_failure", "log", "contract", "autonomy", "inner_loop"]
         );
-        let cp = Pack::for_checkpoint(&docs, &board, 1, &[1], &log, false, &packs, 1).unwrap();
+        let cp = Pack::for_checkpoint(&docs, &board, 1, &[1], &log, false, "clean\n", &packs, 1)
+            .unwrap();
         assert_eq!(
             sections_of(&cp),
             [
                 "gate_transcript",
+                "leaks",
                 "covered_slices",
                 "qa_rows",
                 "log",
@@ -1222,7 +1236,8 @@ mod tests {
                 None,
             )
             .unwrap(),
-            Pack::for_checkpoint(&docs, &board, 1, &[1], &log, false, &packs, 1).unwrap(),
+            Pack::for_checkpoint(&docs, &board, 1, &[1], &log, false, "clean\n", &packs, 1)
+                .unwrap(),
             Pack::for_polish(&docs, &board, repo, "main", "feat/x", "# Retro", &packs, 1).unwrap(),
             Pack::for_ci_fix(&docs, &board, 1, 1, "test", "red\n", &packs, 1).unwrap(),
         ];
