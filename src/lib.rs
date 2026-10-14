@@ -17,6 +17,7 @@ pub mod events;
 pub mod gatecache;
 pub mod land;
 pub mod lanes;
+pub mod leaks;
 pub mod measure;
 pub mod metrics;
 pub mod pack;

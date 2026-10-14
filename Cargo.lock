@@ -470,6 +470,7 @@ dependencies = [
  "grep-searcher",
  "ignore",
  "libc",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",

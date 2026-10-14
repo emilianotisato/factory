@@ -3,7 +3,31 @@
 **Source**: [`prd.md`](prd.md) → §5 FR-3 (the verb, the input, the rule table, the allowlist; its first acceptance bullet), §7 FR-5 (the ten-step order the fix lines come from, the false positives the tuning keeps out). **Depends on**: — (the spine: slices 03, 04 and 05 call the library this slice writes)
 **Created**: 2026-10-14
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+- **Built.** `src/leaks.rs`: the nine-row `RULES` table (id, title, looks, detector, severity, fix line), the per-extension comment and string split, the `-U0` diff and `--name-status -z` parsers, the `[leaks] allow` reader, and `scan(repo, Input::Base | Input::All) -> Report` with `fix_hits()`, `id_hits()`, `share()` and `render()`. `check()` is the pure half, which the unit tests drive without git. `src/cli/leaks.rs` and `Command::Leaks` take exactly one of `--base` and `--all`. `"leaks"` is in `PROJECT_TOP_KEYS`, and `regex = "1"` is a direct dependency. The git calls pin `--src-prefix=a/ --dst-prefix=b/`, `-M`, `--no-textconv` and `core.quotepath=off`, because this machine's git config uses mnemonic prefixes (`i/`, `w/`).
+- **Tests.** 18 unit tests in `src/leaks.rs`: one per row with a hit and a non-hit, plus the split, the share, the report shape, the allowlist and both parsers. Also one `config.rs` test, and 3 integration tests in `tests/leaks.rs`: base against all, the flags, and the seeded branch.
+- **Inner loop.** 2 runs, 0 red, about 3.5 minutes, 592 tests. The second run only re-checked a comment fix.
+- **Dogfood.** The verb, run over this slice's own diff, found one leak outside test data: the `name_hit` doc comment listed id examples. It was rewritten. `--all` over factory's tree takes 0.8 s and gives 742 hits: 651 `id-string` (data, for slice 03's allowlist), 39 `id-name` (the PRD's predicted `ad1`/`AD1` locals plus `SLICE_01`/`slice_01` names), 16 `id-comment` (the known fixture narrations), 35 `line-cite` in recorded output, and 1 `section-cite`. Comment share is 2.7%.
+- **The seeded branch** (task 5's fixture, `factory leaks --base main`, exit 1):
+  ```
+  id-comment: a plan id in a comment
+    fix: Delete the id. Keep the fact as one short line only if the code cannot show it.
+    src/guard.rs:1  // FR-3: guard the lane before the merge
+    src/guard.rs:2  // until slice 4 this runs twice
+
+  id-name: a plan id in a name or path
+    fix: Rename after the behavior and update every reference.
+    tests/guard.rs:2  fn fr_12_guards_the_lane() {}
+    tests/fixture/prd-9/case.jsonl
+
+  history: history in a comment
+    fix: Delete it. A comment says what the code is; git log says what it was.
+    src/guard.rs:2  // until slice 4 this runs twice
+
+  comment share: 44.4% (4 of 9 added lines)
+  5 fix hits
+  ```
+- **Deviations.** AD-1 covers what a `strings` entry turns off and what the share counts. AD-2 covers the extension table and the split rules. A line that hits two rules is listed under both.
 
 **Slice**: After this slice `factory leaks --base <ref>` reads the added lines and added paths of `<ref>...HEAD` outside `docs/`, and `factory leaks --all` reads the whole tree against the empty tree. Both run one embedded rule table over them, print the hits grouped by rule under each rule's fix line, print the comment share of the added lines, and exit 1 on any `fix` hit. An allowlist in `docs/project.toml` turns rules off per path. The scan is a library function that returns the hits and the figure, so the checkpoint (slice 04), the retro (slice 05) and the doctor line (slice 03) call it without shelling out. Tuning the detectors against cody-agent, arca-api and factory's own tree, and factory's own allowlist, are slice 03's.
 
