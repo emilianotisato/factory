@@ -44,9 +44,12 @@ The rule:
 - Comments: default to none. One short line only for what the code cannot show: an invariant no name or test expresses, a quirk of something we cannot change, or why a choice is deliberate. No history, no narration, no TODOs.
 - A library's public API, an HTTP or CLI contract, and type annotations a checker reads keep their doc comment.
 
+**The work list is every comment, not the leaks hits.** `factory leaks` finds only comments with a marker: a plan id or a history word. A comment that restates the code has no marker, so no hit list holds it. A pass driven by the hits strips the ids and keeps every comment around them.
+
 Steps:
-1. `factory leaks --all` for the hit list. Split the source and test trees into module groups.
-2. One subagent per group, in parallel, no test runs between them. Each gets the rule and this order per comment:
+1. Run `factory leaks --all` and note the hits and the `comment share` line: the baseline.
+2. List every file that holds a comment, across the source, test, view, frontend, migration and config trees. Split them into groups of at most 40 files or 1,500 comment lines, along module lines. Leave out what a framework or tool still owns: vendored code, generated files, stock comment blocks in published config.
+3. One subagent per group, in parallel, no test runs between them. Each reads **every comment in every file** of its group and returns the files it visited and its comment lines before and after. For each comment, the first match decides:
    plan cite: drop it, keep the fact as one line if the code cannot show it;
    restates the code or the name: delete;
    history: delete;
@@ -57,11 +60,13 @@ Steps:
    a string citing the plan: rewrite it only after grepping that nothing compares against it;
    a wrong comment: delete, never patch;
    a section banner: keep it, minus any plan id.
+   **Delete is the default.** Rewording a comment that restates or narrates is not a fix: it clears the leaks hit and keeps the noise.
    When shortening a long why, keep its contract: exit codes, who owns what, which return value is which. Two lines beat one that drops it.
    Never rename migration files or anything a database or outside system records by name.
-3. Recorded data that must keep its ids (fixtures, captured tool output) goes in `[leaks] allow` in `docs/project.toml`: `{ path = "…" }` for strings only, `{ path = "…", scope = "all" }` for everything. Plain paths, no globs.
-4. Run the gate once at the end and fix until green. `factory leaks --all` must print clean.
-5. Commit, then give me a sample read to do: 20 random deleted comment lines, 20 random kept ones, and every renamed test and file, each with the git command that lists it. I judge those and merge.
+4. Check coverage: each group's visited count equals its file count. Send back once any group that skipped files.
+5. Recorded data that must keep its ids (fixtures, captured tool output) goes in `[leaks] allow` in `docs/project.toml`: `{ path = "…" }` for strings only, `{ path = "…", scope = "all" }` for everything. Plain paths, no globs.
+6. Run the gate once at the end and fix until green. `factory leaks --all` must print clean.
+7. Commit, then report the comment share before and after, per group and in total. Give me a sample read to do: 20 random deleted comment lines, 20 random kept ones, and every renamed test and file, each with the git command that lists it. I judge those and merge.
 
 ## 6. Report
 Branches and commits, the final doctor output, anything you skipped and why, and my next step: usually I merge, then `/prd` or `/deliver NNN` on the first feature.
