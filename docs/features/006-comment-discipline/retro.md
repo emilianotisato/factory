@@ -44,3 +44,31 @@ None. The full gate costs about 1.5 minutes, and the inner loop's one red was a 
 ## Score
 
 4/5: the feature shipped with field-verified counts, and polish caught two real medium defects (the exit code, and option injection through `--base`) that two green checkpoints did not. One point off because the second opinion's vendor was down and the fallback was costly.
+
+## Numbers
+
+<!-- factory:numbers -->
+| role | workers | own | subagents | weighted | minutes | turns |
+|---|---:|---:|---:|---:|---:|---:|
+| build | 5 | 2746335 | 0 | 2746335 | 40 | 141 |
+| checkpoint | 2 | 453155 | 0 | 453155 | 4 | 34 |
+| polish | 1 | 877206 | 1301755 | 2178961 | 17 | 45 |
+| total | 8 | 4076695 | 1301755 | 5378450 | 60 | 220 |
+
+Knobs: build opus/high default · fix opus/high default · checkpoint opus/high default · polish opus/high default · budget 30000000 default · lanes 4 · factory 0.3.0 · claude 2.1.296
+
+Hypothesis: none
+
+quality: gate_red 0 · worker_gate_red 0 · fix_commits 0 · ci_red_rounds 0 · ci_reruns 0 · findings high=0 medium=13 low=12 fixed=16 parked=9 · decisions 6 decide 1 blocks 0
+
+Pack (build): slice 13017 · prd_sections 16124 · log 1563 · outline 8775 · lookup 890 · contract 3180 · autonomy 10906 · inner_loop 91 · total 54546 · start_context 49332
+
+Compared with:
+
+| run | feature | weighted | slices | per slice | lines changed | per line |
+|---|---|---:|---:|---:|---:|---:|
+| 006-20261014-0643 (this run) | 006 | 5378450 | 5 | 1075690 | 6185 | 870 |
+| 005-20261014-d1ad | 005 | 16568730 | 10 | 1656873 | 9217 | 1798 |
+| 004-20261013-f6d3 | 004 | 7369085 | 7 | 1052726 | 9785 | 753 |
+| 002-20261013-e729 | 002 | 15464292 | 11 | 1405845 | 24701 | 626 |
+<!-- /factory:numbers -->
