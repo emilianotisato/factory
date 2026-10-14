@@ -815,6 +815,7 @@ fn per_worker_weighted(fx: &Fixture, id: &str) -> BTreeMap<String, u64> {
     by_role
 }
 
+/// Returns the run dir, the PR body and the cockpit's replayed lines.
 fn stood_in_run(name: &str, skip: &[&str]) -> (Fixture, PathBuf, String, String) {
     let fx = Fixture::new(name);
     fx.chain();

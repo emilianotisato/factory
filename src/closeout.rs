@@ -691,6 +691,7 @@ fn landed_files(run: &Run, sha: &str) -> Result<Vec<String>> {
     )?))
 }
 
+/// Only the owner moves the tip while a closeout worker runs; the block names the paths and the ref keeping the commit.
 fn block_conflict(
     run: &mut Run,
     board: &Status,

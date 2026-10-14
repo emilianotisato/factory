@@ -271,6 +271,8 @@ reads as if the plan never existed.
 
 **Merged 2026-10-14** as `9e79a87`, on the owner's word and before the sample read; the gate is green on `main` (570 tests). The read now runs on the merge's diff, `git diff 9e79a87^1 9e79a87`, and a miss becomes a dated line here.
 
+**Sample read 2026-10-14.** The owner's read: 20 kept comments pass, 7 renames pass; of 20 deleted, 3 lost a why: `src/cli/review.rs:1-2` (the exit contract), `src/closeout.rs:694` on `block_conflict` (only the owner moves the tip; the block keeps the commit), `tests/closeout.rs:818` on `stood_in_run` (which String is which). All three are restored in the commit that adds this line. Borderline, left as is: the `tests/merge.rs` pointer kept in `tests/commits.rs`, and the deleted "this repo's copy" on `PR_BODY` in `src/pack.rs`. The class, a long why squeezed to one line that drops its contract, has no grep, so it gets no FR-3 row.
+
 ## 8. Decisions log
 
 - ~~**OPEN-1** — Invariants in our own code: keep them as a one-line comment, or require a test, type or rename and delete the comment (the `/no-comments` line)?~~ **Settled 2026-10-14:** keep, one line, in FR-1's rule. Strict would lose the class both audits say a reader would miss (races, coupled timeouts), because concurrency rarely renames away.
