@@ -85,7 +85,13 @@ Caveat: most studies are single-shot, with 2024-25 models.
 - `IMPORTANT`, `do not remove`, `fine for now` and long justifications are "scent, not conviction". It checks the claim against nearby code first.
 - A suppression whose rule protects correctness or safety is itself a `MUST KILL`.
 
-**Verdict for factory.** Take the shape for FR-5: a cleanup agent, a review of its report, and a constraint encoded as a test before its comment goes. Take the keep-list, plus one class it kills: **invariants in our own code that no rename expresses** (races, coupled timeouts, cross-module couplings). Both field audits flag that class as the one a reader would miss (PRD OPEN-1).
+**Verdict for factory.** Take the shape for FR-5: a cleanup agent, a review of its report, and a constraint encoded as a test before its comment goes. The keep-list is close to the right line. Change three things:
+
+1. **Keep invariants in our own code that no rename expresses** (races, coupled timeouts, cross-module couplings). Both field audits flag that class as the one a reader would miss (PRD OPEN-1).
+2. **Allow links to external trackers only.** Internal ids rot.
+3. **In an unattended run, park `MUST KILL` refactors as ideas** instead of redesigning.
+
+**Where the tweet goes beyond the evidence** (§ 10): it is one practitioner's opinion. "Ban most if not all" deletes the class above. And what spreads in these repos is plan ids and test headers, not workaround notes.
 
 ## 7. Refuted claims
 
@@ -176,3 +182,43 @@ No TODOs.
 **Rules in force:** `AGENTS.md:86` says to extract a function instead of writing a comment. 012's PRD and slices mention comments 36 times, and 012 is the densest feature.
 
 **Verdict.** **18%** survives `/no-comments` strictly, and 35% is pure noise. A reader would miss own-code invariants such as `internal/http/manage_apikey.go:159` and `internal/queue/jobs.go:381`.
+
+## 10. The final synthesis
+
+The workflow's synthesis was rerun with the tweet, the keep-list and both audits as input (task `w2zr1oxog`, 2026-10-14). It agrees with § 1-5. These points are new:
+
+- **More evidence:**
+  - Misleading comments cut output prediction by 21-29% across the 17 models in CodeCrash.
+  - Reasoning models mostly ignore plainly wrong comments. A wrong *result* is the exception.
+  - On Claude Code with Sonnet 4.6, TODO and lint-suppression markers had almost no effect on what the agent did ([SonarSource](https://arxiv.org/abs/2605.20049)).
+  - A TODO that described a problem made Copilot reproduce the debt in 29 of 82 cases ([O'Brien et al., ICSE 2024](https://doi.org/10.1145/3597503.3639176)). This is the best support for lauren's "workaround virus".
+- **How agents read here.** 83% of mid-file reads in the owner's transcripts included a comment line. Comments are 21.8% of the characters in factory's `src/`, and agents pay for them on every read.
+- **Factory's own trend.** Density did not rise: 8.9% of lines on both `main` and this branch. The ids did carry over. 307 of 435 plan references name no PRD, and the wrong AD refs at `src/closeout.rs:2176` came from PRD-004.
+- **Factory's own specs ask for comments:** `docs/features/004-skills/slice-01-spine.md:79` "Write it in the doc comment."
+- **A history note to fix:** `src/db.rs:257-258` "(slice 13)… before slice 13" should name the real condition.
+- **Keep "deliberately" notes**, which stop a well-meant fix. Examples: cody `routes/web.php:155`, factory `src/events.rs:539`. The latter also cites "PRD-005 FR-6", which should become the condition.
+- **Ban test and section headers** like "FR-n on surface X". They spread fastest. Ban TODOs too; `docs idea add` already parks the work.
+- **Where the rule lives**, as the synthesis proposed it:
+  - Builder contract: `assets/contract-slice.md`, next to the trap line (`:18`).
+  - `/slice` § 4 (`skills/slice/SKILL.md:74`): a task never asks for a comment. A fact worth keeping becomes a test or a log note.
+  - `/polish`: a scripted check over added lines only, with hits triaged as Fix.
+- **Review order:** the reviewer checks each remaining comment against its code, starting with security claims.
+- **Its grep**, a starting point for FR-3's table:
+
+  ```
+  git diff -U0 "$BASE"... -- '*.rs' '*.go' '*.php' '*.ts' '*.vue' \
+    | grep -E '^\+\s*(//|#|\*|/\*)' \
+    | grep -inE '\b(slice[ -]?[0-9]+|PRD-[0-9]+|(FR|AD|OQ|OPEN|CP)-[0-9]+)\b'
+  ```
+
+**Still uncertain:**
+
+- No study separates "why" comments from "what" comments, or measures plan-id comments for agents.
+- Most input studies ask one question about one function, with 2024-25 models.
+- The evidence that agents copy nearby comment density is weak (r 0.31-0.47, small samples), though all three repos agree.
+
+**Its questions**, now PRD OPEN-2, OPEN-3 and OPEN-4:
+
+1. Should the id check fail the gate, or only send findings to polish triage?
+2. Clean the ~630 existing id lines now, or only the lines each diff touches?
+3. Ban docblocks on private functions, or allow them when they state a contract?

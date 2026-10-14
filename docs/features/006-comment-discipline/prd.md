@@ -52,13 +52,17 @@ Docblocks are 68% of cody's framework comments. In arca, the share of new **priv
   - `// FR-NN:` test headers grew from 1 test to 45. They open 36% of 021's test comments.
   - Markdown bold inside Go comments started in one CAEA file. Feature 012, working in that package, added 67. Features in other packages added almost none.
   - Two runs of the same PRD (024) tagged 14% and 2% of their comments. So tagging is run noise, not a need of the PRD.
+- **factory:** density did not rise (8.9% of lines on both `main` and this branch), but the ids carried over. 307 of 435 plan references name no PRD. The wrong AD refs at `src/closeout.rs:2176` were carried from PRD-004 into PRD-005.
+- **The evidence beyond our repos.** A TODO that described a problem made Copilot reproduce the debt in 29 of 82 cases ([O'Brien et al., ICSE 2024](https://doi.org/10.1145/3597503.3639176)). The density-copying correlation itself is weak (r 0.31-0.47, small samples), though all three repos agree.
+
+**Where lauren goes too far.** The tweet is one practitioner's opinion, not evidence. "Ban most if not all" deletes what both audits say a reader would miss: concurrency invariants and "deliberately" notes. And what spreads here is plan ids and test headers, not workaround notes. One counterpoint: TODO and lint-suppression markers had almost no effect on Claude Code on Sonnet 4.6 ([SonarSource](https://arxiv.org/abs/2605.20049)).
 
 **Why the default rule does not hold.** Workers already get Claude Code's own rule, from the 2.1.296 system prompt: default to no comments, write only a non-obvious WHY, and never cite the task or issue, because those "rot". `src/worker.rs:307` appends the pack to that prompt and does not replace it. On this machine, workers also get the owner's output style, "Fewer comments beat more"; all 16 PRD-005 worker streams show it. Yet 14% of factory's comment lines cite an id. A rule in the default prompt loses to three things:
 
 1. **The specs ask for comments.**
    - In cody, 25 of 148 slice files mention comments: "State the invariant in a comment" (013/slice-01:56), "a code comment pointing at slice 03" (024/slice-01:45).
    - In arca, 012's PRD and slices mention comments 36 times, and 012 is the densest feature.
-   - Factory's skills neither ask nor forbid: `grep -i comment skills/ assets/` finds only `assets/lookup.md:4`.
+   - Factory's skills neither ask nor forbid: `grep -i comment skills/ assets/` finds only `assets/lookup.md:4`. Its own slices do ask: "Write it in the doc comment" (`docs/features/004-skills/slice-01-spine.md:79`).
 2. **The packs are thick with ids, and workers echo them into code.** `/slice` makes every task trace to the PRD (`skills/slice/SKILL.md:86`). Builders number their decisions AD-n (`assets/contract-slice.md:17`).
 3. **Workers match the comment density they see** (the spread above).
 
@@ -67,7 +71,8 @@ Docblocks are 68% of cody's framework comments. In arca, the share of new **priv
 - **Correct comments barely help frontier models.** Correct docstrings did not raise GPT-4's pass rate ([Macke & Doyle 2024](https://arxiv.org/abs/2404.03114)). The one agentic ablation found, a blog, showed stripping comments slightly *helped* GPT-5-mini on SWE-bench Verified ([comment ablation](https://antimemetics.institute/comment-ablation)).
 - **Wrong comments hurt, and models trust them.** Misleading comments cut accuracy about 24% across 17 models, and telling the model to ignore comments barely helped ([CodeCrash, NeurIPS 2025](https://arxiv.org/abs/2504.14119)). A wrong "returns X" comment cost a reasoning model up to 28%. Misleading comments hurt fault localisation more than misleading names ([Haroon et al., ICST 2026](https://arxiv.org/abs/2504.04372)).
 - **Agent-written comments are often false.** GPT-4's Java comments held a false statement about 1 time in 5 ([Kang et al.](https://arxiv.org/abs/2406.14836)). Changes that left a comment inconsistent preceded bugs 1.5x more often ([Radmanesh et al.](https://arxiv.org/abs/2409.10781)).
-- **A comment is the one note an agent actually sees.** In the owner's 1,731 sessions, agents read code in about 60-line windows, and `git blame` ran in 0.6% of them. So the few comments worth having belong inline, and narration belongs in the commit, where only humans look.
+- **A comment is the one note an agent actually sees.** In the owner's 1,731 sessions, agents read code in about 60-line windows. 83% of mid-file reads included a comment line, and `git blame` ran in 0.6% of sessions. So the few comments worth having belong inline, and narration belongs in the commit, where only humans look.
+- **Comments cost tokens on every read.** They are 21.8% of the characters in factory's `src/`.
 - **Vendors agree:** default to none. See Claude Code's [why-only guidance](https://github.com/Piebald-AI/claude-code-system-prompts/blob/main/system-prompts/system-prompt-comment-why-only-guidance.md) and Codex's ["should be rare"](https://github.com/openai/codex/blob/main/codex-rs/core/gpt_5_codex_prompt.md).
 
 **Where this lands against `/no-comments`.** lauren's tweet points at pstack's `/no-comments` skill, which is open source in `cursor/plugins`:
@@ -77,7 +82,11 @@ Docblocks are 68% of cody's framework comments. In arca, the share of new **priv
 
 It deletes everything except license headers, foreign quirks, public API contracts, issue links and justified lint suppressions. "When I am not sure a keep clause applies, the comment dies." Our own surprises get marked `MUST KILL` for a rename or refactor instead. FR-5's skill borrows this shape.
 
-Under that list, 8% of cody's sample survives and 18% of arca's. Both audits say a reader would miss one more class: **invariants in our own code that no rename expresses**, like races, coupled timeouts and cross-module couplings. Examples: arca `internal/http/manage_apikey.go:159`, `internal/queue/jobs.go:381`; cody `PromptCompiler.php:237`. Factory keeps that class (OPEN-1) and otherwise takes the same line.
+Under that list, 8% of cody's sample survives and 18% of arca's. The keep-list is close to the right line. Factory changes three things:
+
+1. **Keep invariants in our own code that no rename or type expresses**, like races, coupled timeouts and cross-module couplings (OPEN-1). The strict list deletes exactly the class both audits say a reader would miss. Examples: arca `internal/http/manage_apikey.go:159`, `internal/queue/jobs.go:381`; cody `PromptCompiler.php:237`.
+2. **Allow links to external trackers only** (an upstream issue, an RFC). Internal ids rot.
+3. **An unattended run parks a `MUST KILL` refactor as an idea** instead of redesigning code the PRD did not ask it to touch.
 
 **Leaves alone:** prose in `docs/`, READMEs, commit messages and PR bodies; per-language linters.
 
@@ -101,18 +110,24 @@ Under that list, 8% of cody's sample survives and 18% of arca's. Both audits say
 
 ```
 ## Comments
-- Default to none. Write one only for what the code cannot show: an invariant in our code
-  that no name or test expresses, a quirk of a dependency, platform or protocol we cannot
-  change, or why this order or shape is deliberate.
+- Default to none. The next worker reads, trusts and copies every comment you write.
+- Write one short line only for what the code cannot show: an ordering, race or
+  cross-module invariant in our code that no name or test expresses; a quirk of a
+  dependency, platform or protocol we cannot change; or why a choice is deliberate.
 - A public contract (a library's pub API, an HTTP endpoint, a CLI output format) gets a doc
-  comment that states it. A doc comment that repeats the name or the signature is noise.
+  comment that states it and its edge cases. Never repeat the name or the signature.
 - Never cite a PRD, FR, AD, CP, OPEN, slice, task or section. Write the condition itself.
+  A link to an external tracker (an upstream issue, an RFC) is fine.
 - Never narrate the change, its history ("until slice 4", "for now", "previously") or why
-  it is correct. That goes in the log, the commit or the PR body.
-- Do not match the file's comment density. When you change code, fix or delete its comment.
+  it is correct. That goes in Progress, the log or the PR body.
+- No TODOs. Park the work with `docs idea add`.
+- Match the file's idiom, not its comment density, headers or tags. When you change code,
+  fix or delete its comment.
 ```
 
-**Accepted cost.** About 150 tokens on every call of every worker. We take it because one wrong comment costs more: about 24% accuracy for the next reader.
+**Where it lives.** The research synthesis put it in `assets/contract-slice.md`, next to the trap line (`:18`). This draft puts it in `autonomy.md` instead, for the reason under "Alternative that lost".
+
+**Accepted cost.** About 200 tokens on every call of every worker. We take it because one wrong comment costs more: about 24% accuracy for the next reader.
 
 **Alternative that lost.** Putting it in `contract-slice.md` only. Fix, merge and polish workers write code too, and the comment at `src/closeout.rs:2176` came from a polish run.
 
@@ -138,13 +153,14 @@ Under that list, 8% of cody's sample survives and 18% of arca's. Both audits say
 **Proposed (2026-10-14).**
 
 - **A verb, `factory comments check [--base <ref>]`.** It reads the added lines of `git diff -U0 <base>...HEAD` and finds comment lines through an extension table: rs, go, php, js/ts/vue, py, sh, toml/yaml. It reports three things:
-  - **Ids:** `(PRD|FR|AD|CP|OPEN|DEC|BLOCK|ASK)-\d+`, `slice[- ]?\d+`, `§`.
+  - **Ids:** `(PRD|FR|AD|CP|OPEN|OQ|DEC|BLOCK|ASK)-\d+`, `slice[- ]?\d+`, `§`.
   - **History words:** "until slice", "for now", "previously", "no longer", "added in".
+  - **New comment blocks of 3 or more lines.**
   - **The comment share** of the added lines.
 
   It exits 1 on any id hit.
-- **Polish runs it in § 5 Fix.** Id and history hits go to the Fix bucket, and polish fixes them itself, with no question to the owner.
-- **Polish's code review gets one question per surviving added comment:** does it still match the code beside it, and would a reader miss it? A grep cannot catch the `scheduler.rs:399` class; a reader can.
+- **Polish runs it beside its reviewers in § 1 Collect** (`skills/polish/SKILL.md:29`). Its hits pass § 2 Verify like any reviewer's and land in § 3's Fix bucket. Polish fixes them itself, with no question to the owner.
+- **Polish's code review gets one question per surviving added comment,** starting with any security claim: does it still match the code beside it, and would a reader miss it? A grep cannot catch the `scheduler.rs:399` class, or cody's false security claim; a reader can.
 
 **Accepted cost.** A new verb, and a comment-syntax table to maintain per language.
 
@@ -172,6 +188,7 @@ Under that list, 8% of cody's sample survives and 18% of arca's. Both audits say
 - **Rewrite:** a comment whose fact is real but whose label is an id becomes the condition itself.
 - **Check:** each kept why or invariant against the code. A wrong one is a finding, not a deletion.
 - **Propose:** a test where an invariant can be pinned.
+- **Park:** a surprise in our own code that needs a rename or a redesign becomes an idea (`docs idea add`). The cleanup never redesigns code.
 
 Verify after each batch with the gate, as `/prune` does.
 
@@ -191,12 +208,14 @@ Verify after each batch with the gate, as `/prune` does.
   - **Recommended:** exactly that split. No new owner question.
 - **OPEN-3** — Is FR-5's skill in this PRD, or an idea for later?
   - **In:** it proves the rule on factory's own code, but makes the PRD bigger.
+  - **Touched lines only:** each diff cleans the comments it touches, and there is no skill. It is cheap, but the untouched ids keep seeding copies for years.
   - **Later:** the 692 lines keep seeding copies in every factory run until then.
   - **Recommended:** in. Factory's own cleanup is its proof; cody and arca run it later as their own features.
-- **OPEN-4** — Which doc comments count as a "public contract"?
+- **OPEN-4** — Which doc comments count as a "public contract"? Are docblocks on private functions banned, or allowed when they state a contract?
   - Factory is a binary crate, so its `pub` items are not public API.
   - Laravel PHPDoc that PHPStan needs is types, not prose.
-  - **Recommended:** a library crate's pub API, an HTTP or CLI contract, and type annotations a checker reads. Every other docblock follows the rule for ordinary comments.
+  - arca's new private functions carry a doc comment 64% of the time, and 17 of its 60 sampled comments repeat the signature.
+  - **Recommended:** a library crate's pub API, an HTTP or CLI contract, and type annotations a checker reads. Every other docblock, private ones included, follows the rule for ordinary comments.
 - **OPEN-5** — Ban `// FR-NN:` test headers and FR ids in test names?
   - **Cost:** grepping from an FR to its test stops working; the QA plan row is the mapping.
   - **Recommended:** ban them. In both field repos these headers spread fastest.
@@ -242,5 +261,8 @@ Checked against `feat/isolated-lanes` (b2fca3c) 2026-10-14. **Re-verify at slice
 - `src/scheduler.rs:399-401`: the comment reads as the inverse of `checkpoint_waits = board.checkpoint_due && !free.is_empty()`.
 - src+tests (Rust): 4,910 comment lines, 50,062 code lines, 692 comment lines citing an id, in 100 files. On `main`: 4,508 and 634.
 - `src/retro.rs:162` `numbers()` builds the retro table between `factory:numbers` markers.
-- `skills/slice/SKILL.md:83` (the trap line) and `:86` (every task traces to the PRD); `assets/contract-slice.md:17` (AD-n in the log).
+- `skills/slice/SKILL.md:83` (the trap line) and `:86` (every task traces to the PRD); `assets/contract-slice.md:17` (AD-n in the log), `:18` (the trap note).
+- `skills/polish/SKILL.md`: § 1 Collect at `:29`, § 2 Verify at `:60`, § 3 Triage at `:78`, § 5 Fix at `:101`.
+- `docs/features/004-skills/slice-01-spine.md:79`: "Write it in the doc comment."
+- `src/db.rs:257-258`: "(slice 13)… before slice 13", a history note citing a slice.
 - The field audits were read-only, 2026-10-13. cody-agent at d858bc4, arca-api at 91b4c59. Their file:line facts are theirs to re-verify.
