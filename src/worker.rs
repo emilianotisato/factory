@@ -188,12 +188,19 @@ pub enum Job {
         round: u32,
         attempt: u32,
     },
+    /// PRD-005 FR-4: a merge worker resolving the slice's conflicted
+    /// landing in its lane; `attempt` counts the slice's merge workers.
+    Merge {
+        slice: u32,
+        attempt: u32,
+    },
 }
 
 impl Job {
     pub fn role(&self) -> &'static str {
         match self {
             Job::Build { .. } => "build",
+            Job::Merge { .. } => "merge",
             Job::Fix { .. } | Job::CiFix { .. } => "fix",
             Job::Checkpoint { .. } => "checkpoint",
             Job::Polish { .. } => "polish",
@@ -202,14 +209,14 @@ impl Job {
 
     pub fn slice(&self) -> Option<u32> {
         match self {
-            Job::Build { slice } => Some(*slice),
+            Job::Build { slice } | Job::Merge { slice, .. } => Some(*slice),
             _ => None,
         }
     }
 
     pub fn checkpoint(&self) -> Option<u32> {
         match self {
-            Job::Build { .. } | Job::Polish { .. } | Job::CiFix { .. } => None,
+            Job::Build { .. } | Job::Polish { .. } | Job::CiFix { .. } | Job::Merge { .. } => None,
             Job::Fix { checkpoint, .. } => Some(*checkpoint),
             Job::Checkpoint { n, .. } => Some(*n),
         }
@@ -220,7 +227,8 @@ impl Job {
 /// into an [`Exit`].
 pub struct Worker {
     pub job: Job,
-    /// The slice of a build worker; `None` for a fix or checkpoint worker.
+    /// The slice of a build or merge worker; `None` for a fix or checkpoint
+    /// worker.
     pub slice: Option<u32>,
     pub role: String,
     pub session_id: String,
@@ -455,6 +463,12 @@ fn record(
         },
         Job::CiFix { round, attempt } => EventKind::CiFixSpawned {
             round,
+            attempt,
+            session_id,
+            pid,
+        },
+        Job::Merge { slice, attempt } => EventKind::MergeSpawned {
+            slice,
             attempt,
             session_id,
             pid,

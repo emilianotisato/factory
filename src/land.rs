@@ -53,6 +53,11 @@ pub fn commit_lane(
 ) -> Result<Option<LaneCommit>> {
     // Before `add -A`: against a HEAD that already holds the worker's own
     // commit, its files would stage as unchanged and miss the squash.
+    // A merge worker's lane can still hold unmerged entries from the pick
+    // it resolved without `git add`, and `reset --soft` refuses those.
+    if !git(lane, &["ls-files", "-u"])?.trim().is_empty() {
+        git(lane, &["add", "-A"])?;
+    }
     git(lane, &["reset", "-q", "--soft", base])?;
     git(lane, &["add", "-A"])?;
     let drop: Vec<&str> = board.iter().chain(protected).map(String::as_str).collect();

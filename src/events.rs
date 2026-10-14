@@ -40,6 +40,20 @@ pub enum EventKind {
         session_id: String,
         pid: u32,
     },
+    /// PRD-005 FR-4: a merge worker started in the slice's lane, on a
+    /// landing that conflicted; `attempt` counts the slice's merge workers.
+    MergeSpawned {
+        slice: u32,
+        attempt: u32,
+        session_id: String,
+        pid: u32,
+    },
+    /// PRD-005 FR-4: the slice's lane commit conflicts with the feature tip
+    /// in `paths`; the driver redoes the pick in the lane for a merge worker.
+    LandingConflicted {
+        slice: u32,
+        paths: Vec<String>,
+    },
     /// The board read `done` after the worker exited.
     SliceDone {
         slice: u32,
