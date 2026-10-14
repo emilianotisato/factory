@@ -309,14 +309,21 @@ fn each_done_slice_lands_as_one_commit_from_its_lane() {
 
 // ── two lanes: landings interleave ─────────────────────────────────────────
 
+/// A stub barrier that passes once `subject` is on the main tree's log.
+fn landed(subject: &str) -> String {
+    format!(
+        r#"git -C "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")" log --format=%s | grep -qxF '{subject}'"#
+    )
+}
+
 #[test]
 fn two_lanes_land_out_of_order_and_each_commit_takes_only_its_own_files() {
     let fx = Fixture::with_index("commits-two-lanes", &[("checkpoint_every", "10")]);
-    // 02 (200ms) lands while 01 (800ms) still writes in its lane; 03 follows 02.
+    // 02 lands while 01 waits in its lane; 03 waits for 01, so no worker writes the board mid-landing.
     fx.write_plan(&[
-        json!({"outcome": "done", "delay_ms": 800}),
-        json!({"outcome": "done", "delay_ms": 200}),
+        json!({"outcome": "done", "wait_sh": landed("feat(001): slice-02 B")}),
         json!({"outcome": "done"}),
+        json!({"outcome": "done", "wait_sh": landed("feat(001): slice-01 A")}),
         json!({"outcome": "checkpoint"}),
     ]);
     let dir = start(&fx);
