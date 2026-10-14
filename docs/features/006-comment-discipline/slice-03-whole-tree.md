@@ -119,3 +119,8 @@ Rows from [`prd.md`](prd.md) §9 this slice proves, below the UI:
 - **FR-5**: "run `factory leaks --all` on the feature branch, which holds the merged cleanup: zero `fix` hits outside the allowlist, and `factory docs doctor` prints `leaks    clean`; the gate is green" — run on the lane at this checkpoint. Slices 04 and 05 name it again, so the final checkpoint reruns it on the tree that ships whichever of the three lands last.
 
 **Acceptance:** after the checkpoint, Progress holds the three evidence paths, the doctor and preflight test transcript, and the `--all` and `doctor` output on the lane.
+
+**Code-review fixes (2026-10-14).**
+
+- An allowlist `path` of `./src`, `/src` or `src/*.rs` was taken literally and covered nothing, silently. `./` is trimmed, and an absolute path or a glob is an error naming the entry.
+- The `history` test's "no longer" string case could not fail (the row reads comments, not strings); it now checks a `for now` string stays quiet.

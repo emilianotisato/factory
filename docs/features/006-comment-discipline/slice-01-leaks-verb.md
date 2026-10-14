@@ -138,3 +138,11 @@ Rows from [`prd.md`](prd.md) §9 this slice proves, below the UI:
 - **FR-3**, its first half: "run `factory leaks --base main` on the seeded fixture branch: it lists the id comment, the history note, the FR test name and the `prd-9` folder under their rules, each under its fix line, skips the why, the quirk and the allowlisted string, prints the share, exits 1" — task 5's test. The read-only `--all` over the three repos is slice 03's.
 
 **Acceptance:** after the checkpoint, Progress holds task 5's test transcript and the report it printed.
+
+**Code-review fixes (2026-10-14).**
+
+- `factory leaks` exited 1 both on hits and when the scan could not run, so an agent read a bad ref as hits to fix. It now exits 2 with `factory leaks: did not run — …` on stderr (`src/cli/leaks.rs`); the polish skill already reads anything but 0 and 1 as not run.
+- A `--base` starting with `-` reached `git diff` as an option (`--output=<file>` writes a file). `scan` refuses it before git runs; the verb test drives `--base=--output=leaked` and checks no file appears.
+- A diff header for a path with a space ends in a tab, and a quoted path (`core.quotepath`, a `"` in the name) came back with its quotes, so its hits were filed under a name that matched no allowlist entry. `header_path` drops the tab and C-unquotes; a unit test and `odd_paths_and_the_local_git_config_hide_no_hit` (local `diff.noprefix`, `mnemonicPrefix`, `relative`, `color.ui=always`) cover it.
+- A git failure printed git's whole stderr into a one-line report; it keeps the first line. A hit on a minified line printed the whole line; `cut` keeps 160 characters.
+- The `Syntax.hash` doc said "after a space" where the code reads any whitespace.

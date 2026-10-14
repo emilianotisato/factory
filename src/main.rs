@@ -79,7 +79,7 @@ fn main() -> ExitCode {
         Command::Answer(a) => cli::answer::answer(&a, &mut stdout()),
         Command::Report(a) => cli::report::report(&a, &mut stdout()),
         Command::Retro(a) => cli::retro::retro(&a, &mut stdout()),
-        Command::Leaks(a) => cli::leaks::leaks(&a, &mut stdout()),
+        Command::Leaks(a) => cli::leaks::leaks(&a, &mut stdout(), &mut stderr()),
         Command::Wait(a) => cli::wait::wait(&a, &mut stdout(), &mut stderr()),
         Command::Status(a) => cli::status::status(&a, &mut stdout(), &mut stderr()),
         Command::Review { verb } => cli::review::review(&verb, &mut stdout(), &mut stderr()),

@@ -235,7 +235,7 @@ fn name_hit(name: &str) -> bool {
 struct Syntax {
     /// `//`, `/* … */`, and a block comment's middle line by its leading `*`.
     slashes: bool,
-    /// `#` at the line start or after a space.
+    /// `#` at the line start or after whitespace.
     hash: bool,
     /// `#[` is an attribute, not a comment.
     hash_attr: bool,
@@ -451,15 +451,21 @@ pub fn allowlist(root: &Path) -> Result<Vec<Allow>> {
             let path = t
                 .get("path")
                 .and_then(toml::Value::as_str)
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| bad("no `path` string", entry))?;
+                .ok_or_else(|| bad("no `path` string", entry))?
+                .trim_start_matches("./");
+            if path.is_empty() || path.starts_with('/') || path.contains(['*', '?', '[']) {
+                return Err(bad(
+                    "`path` is not a file or folder relative to the repo root; a glob is not read",
+                    entry,
+                ));
+            }
             let scope = match t.get("scope").map(|s| s.as_str()) {
                 None | Some(Some("strings")) => Scope::Strings,
                 Some(Some("all")) => Scope::All,
                 _ => return Err(bad("scope is not `strings` or `all`", entry)),
             };
             Ok(Allow {
-                path: path.trim_start_matches("./").to_string(),
+                path: path.to_string(),
                 scope,
             })
         })
@@ -530,7 +536,7 @@ impl Report {
             out.push_str(&format!("{}: {}\n  fix: {}\n", r.id, r.title, r.fix));
             for h in hits {
                 match h.line {
-                    Some(n) => out.push_str(&format!("  {}:{n}  {}\n", h.path, h.text)),
+                    Some(n) => out.push_str(&format!("  {}:{n}  {}\n", h.path, cut(&h.text))),
                     None => out.push_str(&format!("  {}\n", h.path)),
                 }
             }
@@ -548,6 +554,15 @@ impl Report {
             n => out.push_str(&format!("{n} fix hits\n")),
         }
         out
+    }
+}
+
+/// A minified line can run to megabytes, and the path and line already say where it is.
+fn cut(text: &str) -> String {
+    const MAX: usize = 160;
+    match text.char_indices().nth(MAX) {
+        Some((i, _)) => format!("{}…", &text[..i]),
+        None => text.to_string(),
     }
 }
 
@@ -640,8 +655,7 @@ pub fn parse_diff(text: &str) -> Vec<Added> {
             continue;
         }
         if let Some(p) = line.strip_prefix("+++ ") {
-            let p = p.trim_end_matches('\r').trim_matches('"');
-            path = p.strip_prefix("b/").map(str::to_string);
+            path = header_path(p);
         } else if let Some(h) = line.strip_prefix("@@ ") {
             let mut ranges = h.split_whitespace();
             let count = |r: Option<&str>, sign: char| -> (u64, u64) {
@@ -654,6 +668,52 @@ pub fn parse_diff(text: &str) -> Vec<Added> {
         }
     }
     out
+}
+
+/// Git ends a `+++` path with a tab when it holds a space, and C-quotes it when it holds `"`, `\` or a control byte.
+fn header_path(raw: &str) -> Option<String> {
+    let raw = raw.trim_end_matches(['\r', '\t']);
+    let path = match raw.strip_prefix('"').and_then(|r| r.strip_suffix('"')) {
+        Some(quoted) => unquote(quoted),
+        None => raw.to_string(),
+    };
+    path.strip_prefix("b/").map(str::to_string)
+}
+
+fn unquote(quoted: &str) -> String {
+    let b = quoted.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] != b'\\' || i + 1 == b.len() {
+            out.push(b[i]);
+            i += 1;
+            continue;
+        }
+        let octal = b
+            .get(i + 1..i + 4)
+            .filter(|d| d.iter().all(|c| (b'0'..=b'7').contains(c)));
+        if let Some(d) = octal {
+            out.push(
+                d.iter()
+                    .fold(0u8, |n, c| n.wrapping_mul(8).wrapping_add(c - b'0')),
+            );
+            i += 4;
+            continue;
+        }
+        out.push(match b[i + 1] {
+            b'a' => 0x07,
+            b'b' => 0x08,
+            b'f' => 0x0c,
+            b'n' => b'\n',
+            b'r' => b'\r',
+            b't' => b'\t',
+            b'v' => 0x0b,
+            c => c,
+        });
+        i += 2;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// The new path of every added or renamed row of a `--name-status -z` listing.
@@ -687,6 +747,9 @@ fn git(repo: &Path, args: &[&str]) -> Result<String> {
             "git {}: {}",
             args.join(" "),
             out.text()
+                .lines()
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or("no output")
         )));
     }
     Ok(out.stdout)
@@ -695,9 +758,14 @@ fn git(repo: &Path, args: &[&str]) -> Result<String> {
 /// Lines and paths the input adds outside `docs/`, run through the rules and the repo's allowlist.
 pub fn scan(repo: &Path, input: Input) -> Result<Report> {
     let allow = allowlist(repo)?;
-    // A SHA-256 repo has another empty tree, so ask git for it.
     let range: Vec<String> = match input {
+        Input::Base(base) if base.starts_with('-') => {
+            return Err(Error::Msg(format!(
+                "base `{base}` starts with `-`, and git would read it as an option"
+            )));
+        }
         Input::Base(base) => vec![format!("{base}...HEAD")],
+        // A SHA-256 repo has another empty tree, so ask git for it.
         Input::All => vec![
             git(repo, &["hash-object", "-t", "tree", "/dev/null"])?
                 .trim()
@@ -837,7 +905,7 @@ mod tests {
         );
         assert_eq!(hits("a.py", "# kept for now"), ["history"]);
         assert!(hits("a.go", "// returns YYYYMM for now and the next month").is_empty());
-        assert!(hits("a.rs", r#"bail!("the lane is no longer running");"#).is_empty());
+        assert!(hits("a.rs", r#"bail!("the lane is kept for now");"#).is_empty());
         assert!(hits("a.go", "// skip a row that is no longer pending").is_empty());
         for real in [
             "// this used to panic on an empty list",
@@ -1052,7 +1120,12 @@ mod tests {
 
         let d = project("[leaks]\nallow = [{ path = \"x\", scope = \"names\" }]\n");
         let e = allowlist(d.path()).unwrap_err().to_string();
-        assert!(e.contains("\"names\"") && e.contains("scope"), "{e}");
+        assert!(e.contains("scope is not `strings` or `all`"), "{e}");
+        for path in ["./", "/src", "src/*.rs"] {
+            let d = project(&format!("[leaks]\nallow = [{{ path = \"{path}\" }}]\n"));
+            let e = allowlist(d.path()).unwrap_err().to_string();
+            assert!(e.contains("a glob is not read"), "{path}: {e}");
+        }
     }
 
     #[test]
@@ -1069,6 +1142,29 @@ mod tests {
         ]
         .map(|(p, n, t)| (p.to_string(), n, t.to_string()));
         assert_eq!(got, want);
+    }
+
+    #[test]
+    fn a_header_path_loses_the_tab_and_the_quotes_git_adds() {
+        let diff = "+++ b/src/my dir/a.rs\t\n@@ -0,0 +1 @@\n+x\n+++ \"b/q\\\"x\\303\\251.rs\"\n@@ -0,0 +1 @@\n+y\n";
+        let paths: Vec<String> = parse_diff(diff).into_iter().map(|a| a.path).collect();
+        assert_eq!(paths, ["src/my dir/a.rs", "q\"xé.rs"]);
+    }
+
+    #[test]
+    fn a_long_hit_is_cut_in_the_report() {
+        let text = format!("// FR-3 {}", "x".repeat(400));
+        let r = check(
+            &[],
+            &[Added {
+                path: "a.rs".into(),
+                line: 1,
+                text,
+            }],
+            &[],
+        );
+        let line = r.render().lines().nth(2).unwrap().to_string();
+        assert!(line.ends_with("x…") && line.chars().count() < 200, "{line}");
     }
 
     #[test]

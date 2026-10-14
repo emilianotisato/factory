@@ -76,3 +76,9 @@ Rows from [`prd.md`](prd.md) §9 this slice proves, below the UI:
 - **FR-5**, on the tree this checkpoint covers, once slice 03 is done: "run `factory leaks --all` on the feature branch, which holds the merged cleanup: zero `fix` hits outside the allowlist, and `factory docs doctor` prints `leaks    clean`; the gate is green". Run both with the lane's build, as slice 03's Prove does. Slice 03 owns this row; it is named here so the final checkpoint reruns it on the tree that ships, whichever slice lands last. If slice 03 is not done when this checkpoint runs, Progress says so and slice 03's own checkpoint runs it.
 
 **Acceptance:** after the checkpoint, Progress holds task 4's test transcript and the `# Leaks` section of its checkpoint pack, and the `--all` and `doctor` output or the line saying slice 03 runs it.
+
+**Code-review fixes (2026-10-14).**
+
+- A leaks scan that failed at a checkpoint showed only in the worker's pack; the driver now also prints `checkpoint N: leaks not run — …`.
+- The `# Leaks` fence was a fixed three backticks, so a hit holding ` ``` ` closed it early. The fence is one longer than the longest backtick run in the report; a unit test seeds one.
+- The stub-run test checked `# Leaks` only at CP-1; it now also checks CP-2's section reads `clean` after the worker's fixes. The contract's **Fixed** line says a path hit is listed as a bare path.

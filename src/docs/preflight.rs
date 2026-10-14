@@ -113,7 +113,7 @@ pub fn run(root: &Path, reference: &str) -> Result<(Preflight, i32)> {
             let v = skills::verdict(root);
             let into = if v.is_ok() { &mut ok } else { &mut judge };
             into.extend(v.lines().into_iter().map(|l| format!("skills {l}")));
-            // Old leaks in the tree warn like a stale skill: the owner cleans first, the run never waits on it.
+            // Old leaks in the tree warn like a stale skill; the run never waits on them.
             let l = leaks::verdict(root);
             let into = if l == "clean" { &mut ok } else { &mut judge };
             into.push(format!("leaks {l}"));

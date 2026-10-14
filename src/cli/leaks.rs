@@ -1,4 +1,4 @@
-//! Prints the rule report and exits 1 on any `fix` hit; the share is a figure, never a hit.
+//! Prints the rule report and exits 1 on any `fix` hit, 2 when the scan could not run; the share is a figure, never a hit.
 use std::io::Write;
 use std::path::Path;
 
@@ -19,13 +19,18 @@ pub struct LeaksArgs {
     pub all: bool,
 }
 
-pub fn leaks(args: &LeaksArgs, out: &mut dyn Write) -> Result<i32> {
-    let root = paths::repo_root(Path::new("."))?;
+pub fn leaks(args: &LeaksArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i32> {
     let input = match &args.base {
         Some(base) => Input::Base(base),
         None => Input::All,
     };
-    let report = leaks::scan(&root, input)?;
+    let report = match paths::repo_root(Path::new(".")).and_then(|root| leaks::scan(&root, input)) {
+        Ok(r) => r,
+        Err(e) => {
+            writeln!(err, "factory leaks: did not run — {e}").map_err(io("stderr"))?;
+            return Ok(2);
+        }
+    };
     out.write_all(report.render().as_bytes())
         .map_err(io("stdout"))?;
     Ok(i32::from(report.fix_hits() > 0))

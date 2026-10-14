@@ -88,12 +88,45 @@ fn the_verb_takes_exactly_one_of_base_and_all() {
     let fx = Fixture::new("leaks-flags");
     assert_eq!(leaks(&fx, &[]).0, Some(2));
     assert_eq!(leaks(&fx, &["--base", "main", "--all"]).0, Some(2));
-    let (code, out) = leaks(&fx, &["--base", "no-such-ref"]);
-    assert_eq!(code, Some(1), "{out}");
-    assert!(
-        out.contains("factory: git") && out.contains("no-such-ref"),
-        "{out}"
+    for base in ["no-such-ref", "--output=leaked"] {
+        let (code, out) = leaks(&fx, &[&format!("--base={base}")]);
+        assert_eq!(code, Some(2), "{out}");
+        assert!(
+            out.starts_with("factory leaks: did not run — ") && out.contains(base),
+            "{out}"
+        );
+        assert!(!out.contains("clean"), "{out}");
+    }
+    assert!(!fx.path().join("leaked...HEAD").exists());
+}
+
+#[test]
+fn odd_paths_and_the_local_git_config_hide_no_hit() {
+    let fx = Fixture::new("leaks-odd");
+    fx.git(&["checkout", "-q", "-b", "feat/odd"]);
+    for (key, value) in [
+        ("diff.noprefix", "true"),
+        ("diff.mnemonicPrefix", "true"),
+        ("diff.relative", "true"),
+        ("diff.external", "false"),
+        ("color.ui", "always"),
+        ("core.quotepath", "true"),
+    ] {
+        fx.git(&["config", key, value]);
+    }
+    write(
+        &fx,
+        "src/my dir/a.rs",
+        "// FR-2: in a folder with a space\n",
     );
+    write(&fx, "src/q\"é.rs", "// FR-3: in a quoted name\n");
+    commit(&fx, "odd paths");
+
+    let (code, out) = leaks(&fx, &["--base", "main"]);
+    assert_eq!(code, Some(1), "{out}");
+    let ids = section(&out, "id-comment");
+    assert!(ids.contains("  src/my dir/a.rs:1  // FR-2"), "{out}");
+    assert!(ids.contains("  src/q\"é.rs:1  // FR-3"), "{out}");
 }
 
 const WHY: &str = "// The lock stays held across both writes, or a reader sees half a record.\n";

@@ -332,7 +332,7 @@ fn file_friction(run: &Run, board: &Status, cfg: &Config, out: &mut dyn Write) {
         return;
     };
     let section = friction(&text);
-    if section.is_empty() || section == friction(&retro_template()) {
+    if only_placeholder(&section) {
         return;
     }
     let name = repo
@@ -352,6 +352,16 @@ fn file_friction(run: &Run, board: &Status, cfg: &Config, out: &mut dyn Write) {
         let path = source.join(ideas::DIR).join(format!("{id}.md"));
         let _ = say(out, &format!("friction: filed {}", path.display()));
     }
+}
+
+/// Every paragraph left is one of the template's, whichever the writer kept or deleted.
+fn only_placeholder(section: &str) -> bool {
+    let template = friction(&retro_template());
+    let placeholders: Vec<&str> = template.split("\n\n").map(str::trim).collect();
+    section
+        .split("\n\n")
+        .map(str::trim)
+        .all(|p| p.is_empty() || placeholders.contains(&p))
 }
 
 fn friction(retro: &str) -> String {
@@ -2436,6 +2446,18 @@ mod tests {
         let last = "# Retro\n\n## Framework friction → skills repo\n- tail\n### sub\nmore\n";
         assert_eq!(friction(last), "- tail\n### sub\nmore");
         assert_eq!(friction("# Retro\n\n## Score\n"), "");
+    }
+
+    #[test]
+    fn a_friction_section_of_kept_placeholders_is_not_filed() {
+        let template = friction(&retro_template());
+        let (first, leaks) = template.split_once("\n\n").unwrap();
+        for kept in ["", template.as_str(), first, leaks] {
+            assert!(only_placeholder(kept), "{kept}");
+        }
+        assert!(!only_placeholder(&format!(
+            "{first}\n\n- `src/a.rs:3` // FR-2 slipped past"
+        )));
     }
 
     #[test]

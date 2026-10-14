@@ -704,11 +704,11 @@ fn the_checkpoint_worker_reads_the_leaks_and_its_fixes_land_with_the_checkpoint(
     wait_phase(&fx, &dir, "finished", 60);
 
     let calls = fx.calls();
-    let cp1 = calls
+    let first = calls
         .iter()
         .find(|c| c["prompt"] == checkpoint(1))
         .expect("a checkpoint 1 call");
-    let (_, pack) = pack_of(cp1);
+    let (_, pack) = pack_of(first);
     let start = pack.find("\n# Leaks\n").expect("a # Leaks section") + 1;
     let leaks = &pack[start..start + pack[start..].find("\n# Covered slices\n").unwrap()];
     assert!(
@@ -761,6 +761,14 @@ fn the_checkpoint_worker_reads_the_leaks_and_its_fixes_land_with_the_checkpoint(
     want.sort();
     assert_eq!(named, want, "{fixed}");
     assert!(body(&cps[1]).contains("**Fixed:** none"), "{}", cps[1]);
+    let last = calls
+        .iter()
+        .find(|c| c["prompt"] == checkpoint(2))
+        .expect("a checkpoint 2 call");
+    let (_, pack) = pack_of(last);
+    let start = pack.find("\n# Leaks\n").expect("a # Leaks section");
+    let leaks = &pack[start..start + pack[start..].find("\n# Covered slices\n").unwrap()];
+    assert!(leaks.contains("\nclean\n```"), "{leaks}");
 
     let sha = sha_of(&fx, "docs(001): checkpoint 1");
     let status = fx.git(&["show", "--format=", "--name-status", &sha]);

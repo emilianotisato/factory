@@ -112,7 +112,12 @@ pub fn run(
         if !result.red {
             green_log = result.log;
             green_cached = result.cached;
-            leaks = leaks_section(&lane_dir, &crate::closeout::default_branch(run, docs));
+            let base = crate::closeout::default_branch(run, docs);
+            let scanned = crate::leaks::scan(&lane_dir, crate::leaks::Input::Base(&base));
+            if let Err(e) = &scanned {
+                say(out, &format!("checkpoint {n}: leaks not run — {e}"))?;
+            }
+            leaks = leaks_section(&base, scanned);
             break;
         }
         ran_red = true;
@@ -1078,12 +1083,15 @@ fn spawned_before_answer(events: &[Event], n: u32) -> HashSet<String> {
 }
 
 /// The body of the pack's `# Leaks`; a scan that fails reads `not run`, never a red.
-fn leaks_section(lane_dir: &Path, base: &str) -> String {
-    match crate::leaks::scan(lane_dir, crate::leaks::Input::Base(base)) {
-        Ok(report) => format!(
-            "<!-- factory leaks --base {base} -->\n\n```\n{}```",
-            report.render()
-        ),
+fn leaks_section(base: &str, scanned: Result<crate::leaks::Report>) -> String {
+    match scanned {
+        Ok(report) => {
+            let body = report.render();
+            // Longer than any backtick run in the hits, so a hit's own fence cannot close it.
+            let run = body.split(|c| c != '`').map(str::len).max().unwrap_or(0);
+            let fence = "`".repeat(run.max(2) + 1);
+            format!("<!-- factory leaks --base {base} -->\n\n{fence}\n{body}{fence}")
+        }
         Err(e) => format!("not run: {e}"),
     }
 }
@@ -1134,8 +1142,25 @@ mod tests {
     #[test]
     fn a_scan_that_fails_reads_not_run() {
         let tmp = tempfile::tempdir().unwrap();
-        let body = leaks_section(tmp.path(), "main");
+        let scanned = crate::leaks::scan(tmp.path(), crate::leaks::Input::Base("main"));
+        let body = leaks_section("main", scanned);
         assert!(body.starts_with("not run: git "), "{body}");
+        assert_eq!(body.lines().count(), 1, "{body}");
+    }
+
+    #[test]
+    fn a_hit_holding_a_fence_cannot_close_the_leaks_block() {
+        let line = crate::leaks::Added {
+            path: "a.rs".into(),
+            line: 1,
+            text: "/// ```FR-3".into(),
+        };
+        let report = crate::leaks::check(&[], &[line], &[]);
+        let body = leaks_section("main", Ok(report));
+        assert!(
+            body.contains("\n````\n") && body.ends_with("````"),
+            "{body}"
+        );
     }
 
     #[test]
