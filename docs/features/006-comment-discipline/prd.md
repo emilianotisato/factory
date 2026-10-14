@@ -219,6 +219,8 @@ reads as if the plan never existed.
 - `factory docs doctor` and `factory run`'s preflight on that branch print the `leaks` line with the count; on the feature branch, which holds the cleanup (merged before slicing), they print `clean`.
 - A read-only `--all` run over the whole of cody-agent (`~/Projects/CODESM/cody-agent`) and arca-api (`~/Projects/Prokey/arca-api`), and over the feature branch, reports no false hit: the builder writes every hit and its verdict into the slice's log entry, and a reader agrees each one is a real leak.
 
+**Changed 2026-10-14, at the owner's review.** The run tuned "used to" as purpose, "previously" as an adjective and "for now and" out of the `history` row (AD-4). The owner reversed it: they are hits again, about 60 false ones over cody and arca, taken over a history comment in those shapes passing. The no-false-hit line above holds for every other row.
+
 ## 6. FR-4 — The retro tracks the numbers and feeds missed classes back
 
 **Today.** The retro's numbers table (`src/retro.rs:162`, between `<!-- factory:numbers -->` markers) has tokens, slices and tokens per slice, but no comment figures. The retro template has a `## Framework friction → skills repo` section (`assets/retro.md:33-35`), and closeout files that section as an idea in the `[source]` checkout when it differs from the template (`src/closeout.rs:356-373`, PRD-004 FR-7).
