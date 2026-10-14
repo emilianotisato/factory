@@ -6,3 +6,6 @@ lanes = 4
 checkpoint_every = 2
 prd_max_kb = 120
 slice_max_kb = 30
+
+[lanes]
+seed = []
