@@ -1450,19 +1450,16 @@ fn a_fresh_run_makes_its_lanes_and_builds_in_them() {
             "{text}"
         );
     }
-    // Build and checkpoint workers run in their lanes; the polish worker
-    // stays in the main tree until slice 10.
+    // Every worker runs in its lane, the polish worker too (PRD-005 FR-5).
     let calls = fx.calls();
     assert_eq!(builds(&calls).len(), 3, "{calls:?}");
     for c in &calls {
-        let want = match lane_env(c) {
-            Some(n) if !c["prompt"].as_str().unwrap().starts_with("/polish") => {
-                lane_path(&fx, n.parse().unwrap())
-            }
-            _ => fx.path().to_path_buf(),
-        };
+        let n = lane_env(c).unwrap_or_else(|| panic!("call {} has no lane", c["n"]));
+        let want = lane_path(&fx, n.parse().unwrap());
         assert_eq!(c["cwd"], want.to_str().unwrap(), "call {}", c["n"]);
     }
+    let polish = calls.iter().find(|c| c["prompt"] == "/polish").unwrap();
+    assert_eq!(polish["cwd"], lane_path(&fx, 1).to_str().unwrap());
 }
 
 /// The canonical worktree of lane `n`.
