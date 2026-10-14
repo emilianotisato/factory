@@ -1,0 +1,22 @@
+$ grep -rniE "in a comment|code comment" skills/ assets/
+exit: 1 (1 = no match)
+
+# the four anecdote lines, as they read now
+66:- **Who builds it.** When a `factory` run will build it, every FR has to be buildable with nobody in the room. An FR that needs a human mid-run ("the owner approves each…") contradicts the run, and the first builder blocks on it (factory's first run did exactly that). Say which FRs are decided by the run's autonomy rules and which the owner reviews afterwards.
+132:- **A tier red at checkpoints and never in the inner loop** belongs in the inner loop (round 3's rule). Fmt and clippy red at a checkpoint and never in the inner loop is the pattern.
+134:- **A test red in one run of five** is flaky. It needs a stabilise pass, named as a finding with the test's name, not a retry rule. One such test cost a run a full gate rerun and a Trap lookup each time it fired.
+33:- **Isolate.** Can two instances run side by side (port, data dir, DB name, browser profile)? If not, the generated skill says so and refuses to double-drive a shared instance — refusing beats corrupting the owner's session. Inside one `factory` run only the checkpoint worker drives, one checkpoint at a time, so the collision to design for is a second run or the owner's own instance: two A/B runs of the same PRD had harness stacks on fixed ports, and the first had to be stopped before the second could drive.
+
+# the two harness-template lines
+12:description: Drive {App} ({surface}) the way a user does and capture proof — launch, doctor, drive a feature-map entry, evidence, cleanup. Use for Prove tasks, §QA plan rows, "verify it in the app", "prove a § QA plan row", "screenshot the {feature}", "walk the {flow}".
+72:Artifacts: `.claude/skills/verify-{app}/artifacts/<run-id>/` — gitignored. Name files by the behavior: `rules-create.png`, `rules-create.aria.txt`, `cli-search.txt`.
+
+# none of the six holds a bare PRD-n, FR-n or CP-n
+$ { sed -n 66p skills/prd/SKILL.md; sed -n "132p;134p" skills/gate/SKILL.md; sed -n 33p skills/harness/SKILL.md; sed -n "12p;72p" skills/harness/references/skill-template.md; } | grep -cE "\b(PRD|FR|CP)-[0-9]"
+0
+
+# the four /slice and /prd places (task 3), the evidence for "no slice file asks for a comment or names a test after an FR"
+83:- **The trap**, when there is one: a fact of today's code, cited `file:line`, that makes the obvious approach wrong. *"`markFailed()` never clears the failure keys (`{file}:{line}`), so clear them on a fresh attempt or a retry looks failed forever."* Never a what-if that needs new machinery. That is an extra the PRD did not ask for. The trap is for the builder, not the code: an invariant the slice must keep becomes a test that pins it, a type or a name, never a comment the slice asks for.
+84:- **`**Acceptance:**`** — a test that could fail. Name what it asserts, not "it works", and name the test by that behavior, never by an FR or slice id.
+132:- **One section per FR.** What is true today, with `file:line`. Then the decisions taken, dated, each with its **accepted cost** stated plainly and why the alternative lost; a decision with no stated cost reads as unconsidered. Then **Acceptance**: a number with a load, or an observable behaviour. An FR never asks the code to carry a comment: an invariant it must keep becomes a test that pins it, a type or a name. A retired FR keeps its section: whose call, why, and that the recon went to `docs/ideas/` with `factory docs idea add` so a future PRD does not redo it.
+134:- **§QA plan.** Gate, surface, harness, seed state, and one proof row per FR: a path a user could take, not "tests pass". An FR with no UI (a scheduler, a worker, an API contract) is proven below the UI: its Proof starts with `run` and names the test or command whose transcript is the evidence. The Proof cell names a test by its behavior name, and the test never names the FR: the row is the only map from FR to test. **Human?** is yes only for a judgment a machine cannot make, and those rows are all `qa-guide.md` is generated from. A missing harness is a decided prerequisite with a cost (a harness slice, first in the order), not an OPEN. The PRD is not `ready` without this section; `factory docs check` warns `W-NO-QA-PLAN` until it exists.

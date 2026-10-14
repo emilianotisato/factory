@@ -1,0 +1,34 @@
+# seeded branch: id comment, history note, why, quirk, FR test name, prd-9 fixture, allowlisted BLOCK-1 (src/ids.rs, scope strings), README and docs/ ids
+$ git diff --stat main
+ README.md                      | 1 +
+ docs/snippet.rs                | 1 +
+ src/guard.rs                   | 5 +++++
+ src/ids.rs                     | 1 +
+ tests/fixture/prd-9/case.jsonl | 1 +
+ tests/guard.rs                 | 2 ++
+ 6 files changed, 11 insertions(+)
+
+$ factory leaks --base main
+id-comment: a plan id in a comment
+  fix: Delete the id. Keep the fact as one short line only if the code cannot show it.
+  src/guard.rs:1  // FR-3: guard the lane before the merge
+  src/guard.rs:2  // until slice 4 this runs twice
+
+id-name: a plan id in a name or path
+  fix: Rename after the behavior and update every reference.
+  tests/guard.rs:2  fn fr_12_guards_the_lane() {}
+  tests/fixture/prd-9/case.jsonl
+
+history: history in a comment
+  fix: Delete it. A comment says what the code is; git log says what it was.
+  src/guard.rs:2  // until slice 4 this runs twice
+
+comment share: 44.4% (4 of 9 added lines)
+5 fix hits
+exit: 1
+
+# a second branch with only the why and the quirk
+$ factory leaks --base main
+comment share: 66.7% (2 of 3 added lines)
+clean
+exit: 0

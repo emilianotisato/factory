@@ -28,6 +28,7 @@
   5 fix hits
   ```
 - **Deviations.** AD-1 covers what a `strings` entry turns off and what the share counts. AD-2 covers the extension table and the split rules. A line that hits two rules is listed under both.
+- **Proved at checkpoint 1.** FR-3 (first half): task 5's test transcript `evidence/cp-1-fr3-seeded-test.txt` (1 passed); the real binary over a seeded branch, report and exit 1, then a why-and-quirk branch printing `clean` and exit 0, `evidence/cp-1-fr3-seeded-cli.txt`.
 
 **Slice**: After this slice `factory leaks --base <ref>` reads the added lines and added paths of `<ref>...HEAD` outside `docs/`, and `factory leaks --all` reads the whole tree against the empty tree. Both run one embedded rule table over them, print the hits grouped by rule under each rule's fix line, print the comment share of the added lines, and exit 1 on any `fix` hit. An allowlist in `docs/project.toml` turns rules off per path. The scan is a library function that returns the hits and the figure, so the checkpoint (slice 04), the retro (slice 05) and the doctor line (slice 03) call it without shelling out. Tuning the detectors against cody-agent, arca-api and factory's own tree, and factory's own allowlist, are slice 03's.
 
