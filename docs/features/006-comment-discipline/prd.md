@@ -7,7 +7,7 @@ type: feature
 created: 2026-10-14
 author: Emiliano Tisato
 summary: |
-  The plan stays in docs/. Code reads as if the plan never existed: no PRD, FR, AD, slice or checkpoint id in comments, names, paths, fixtures or strings, and a comment only for what the code cannot show. Four layers, because a prompt alone does not hold: one rule in every worker's pack, templates that stop modeling ids, one rule table (`factory leaks`) run at every checkpoint, in polish and in the doctor preflight, and factory's own cleanup, done 2026-10-14 on `chore/comment-cleanup`. The retro tracks the numbers and feeds missed classes back. **Interview done 2026-10-14, all seven OPENs settled. Adversarial pass done the same day** by a fresh agent on the session model (`factory review second` exited 2, cursor-agent unauthenticated): four wrong code claims, two contradictions, four detector rows that hit factory's own words, and six acceptance criteria with no surface, all corrected inline and dated. Research is in `research.md`.
+  The plan stays in docs/. Code reads as if the plan never existed: no PRD, FR, AD, slice or checkpoint id in comments, names, paths, fixtures or strings, and a comment only for what the code cannot show. Four layers, because a prompt alone does not hold: one rule in every worker's pack, templates that stop modeling ids, one rule table (`factory leaks`) run at every checkpoint, in polish and in the doctor preflight, and factory's own cleanup, done 2026-10-14 on `chore/comment-cleanup`. The retro tracks the numbers and feeds missed classes back. **Interview done 2026-10-14, all seven OPENs settled. Adversarial pass done the same day** by a fresh agent on the session model (`factory review second` exited 2, cursor-agent unauthenticated): four wrong code claims, two contradictions, four detector rows that hit factory's own words, and six acceptance criteria with no surface, all corrected inline and dated. **The cut (2026-10-14) kept every extra but one**, the `note` on a three-line comment block; agreed and ready to slice once `chore/comment-cleanup` is merged. Research is in `research.md`.
 ---
 
 # PRD-006 — Comment and naming discipline
@@ -179,7 +179,7 @@ reads as if the plan never existed.
 
 - **A verb, `factory leaks [--base <ref> | --all]`, built as a rule runner.** One embedded table of rules. Each rule is an id, a detector over added lines or paths, a severity and a one-line fix instruction. The report groups hits by rule and prints the rule's fix line above them, so one text serves the checkpoint worker, the polish worker, the doctor line and a human who pastes it to an agent. A new class of leak is one row in the table and nothing else changes. That is the owner's ask (2026-10-14): "tomorrow I may find something new and we have an easy place to put it and the machinery already will run it."
 - **The input.** `--base <ref>` reads `git diff -U0 <base>...HEAD` outside `docs/`: the added lines and the added paths. `--all` reads the whole tree against the empty tree, for adoption and for the doctor line. An extension table tells comments from code: rs, go, php, js/ts/vue, py, sh, toml/yaml, json/jsonl. Markdown outside `docs/` is skipped, like READMEs.
-- **The rules at ship.** A `fix` hit exits 1; a `note` prints with its question; a figure is never a hit.
+- **The rules at ship.** A `fix` hit exits 1; a figure is never a hit. (A `note` severity, one row for a comment block of three or more lines, was cut at the cut question, 2026-10-14; see § Non-goals.)
 
   | Rule | Detector | Severity |
   |---|---|---|
@@ -192,7 +192,6 @@ reads as if the plan never existed.
   | a task or step marker | `\b[Tt]asks? \d`, `/// Task \d+:`, a banner `── (task \d+\|PRD-\|FR-\|slice \d)`. Not a bare phase word: closeout's own `── polish ──` banner (`src/closeout.rs:132`) | fix |
   | a review-finding id in a comment | `\b(C\|Cn\|K\|L\|Ln\|S\|X[a-d])\d{1,2}\b`, `finding [A-Z]+\d`: `C3:`, `Cn4`, `K3`, `L11`, `Ln6`, `S1` (tuned: `L1` is also a cache) | fix |
   | plan words with no id, in a comment | "the spec says", "the PRD says", "qa-guide row", "slice-entry", "checkpoint's transcript" | fix |
-  | comment block of 3 or more lines | | note |
   | comment share of the added lines | | figure |
 
   The last five rows and the longer history list came from FR-5's cleanup (2026-10-14); its learnings say what each one caught. A sixth, a date in a comment, was dropped after the adversarial pass: both dates the cleanup found sat beside a history word, and the two left on the branch (`src/measure.rs:282`, `tests/harness/mod.rs:83`) explain a fixture.
@@ -320,6 +319,7 @@ _(Not sliced yet. Run `/slice`, or write "No slices — build straight from this
 - **Not handled: a per-repo rule table** (rules in `project.toml`). Accepted 2026-10-14: every rule so far is a framework rule, and a repo-only rule would drift. Revisit when a repo needs a rule factory's table should not carry.
 - **Not handled: refusing to run on a leaky base.** Accepted 2026-10-14: the doctor line warns and the owner cleans. Revisit if a repo adopts the rule and its id hits do not fall within two features.
 - **Not handled: a `## Leak candidates` retro section.** Accepted 2026-10-14: the friction line and the numbers are enough. Revisit if a missed class shows up in the numbers and nobody filed it.
+- **Not handled: a `note` on a comment block of three or more lines.** Cut 2026-10-14 at the cut question: no evidence beyond the comment-share figure, which already shows a docblock growing back. Revisit if the share figure climbs across runs while the id hits stay at zero.
 
 ## 12. Verification notes
 
