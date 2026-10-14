@@ -7,7 +7,7 @@ type: feature
 created: 2026-10-14
 author: Emiliano Tisato
 summary: |
-  Every worker runs in its own git worktree (a lane), seeded by clone; the driver commits the lane with `git add -A` and lands one commit per slice on the feature tip, a merge worker on conflict. Deletes the pathspec guessing. Folds in checkpoint coverage; adds the `/lanes` skill and `factory lanes up|prune`. **Agreed 2026-10-13** (three interview rounds; Cursor unauthenticated, so the adversarial pass was a fresh Claude agent: 2 high and 5 medium findings, all corrected inline; the cut kept FR-10 and retired FR-8, protecting `project.toml`). Proof: a stub harness slice first in the order, then live runs here and in a Laravel repo after release.
+  Every worker runs in its own git worktree (a lane), seeded by clone; the driver commits the lane with `git add -A` and lands one commit per slice on the feature tip, a merge worker on conflict. Deletes the pathspec guessing. Folds in checkpoint coverage; adds the `/lanes` skill and `factory lanes up|prune`. **Agreed 2026-10-13** (three interview rounds; Cursor unauthenticated, so the adversarial pass was a fresh Claude agent: 2 high and 5 medium findings, all corrected inline; the cut kept FR-10 and retired FR-8, protecting `project.toml`). Proof: a stub harness slice first in the order, then live runs here and in a Laravel repo after release. **Sliced 2026-10-13, ten slices:** 01 harness, 02 board and transcripts from a lane, 03 lane worktrees and `lanes up`, 04 landing library (independent) ▲ · 05 checkpoint covers, 06 `/lanes`, `--prove`, `prune` and the bump to 0.3.0 (after 03), 07 build workers in lanes (spine, highest risk, after 01-04) ▲ · 08 merge worker → 09 checkpoint in a free lane ▲ · 10 closeout in a lane and the guessing deleted, alone ▲. Numbered for the installed v0.2.1 driver that builds it. No `qa-guide.md`: no Human rows.
 from_idea: "2026-10-13-isolated-lanes-a-git-worktree-per-lane-a-cow-clone"
 ---
 
@@ -234,7 +234,24 @@ No question is open. The idea's and the brief's questions, settled at the interv
 
 ## 15. Slices
 
-_(Not sliced yet. Run `/slice`, or write "No slices — build straight from this document" if it is small.)_
+Ten slices, built on `feat/isolated-lanes`: one branch, one PR, one commit per slice, Prove at the checkpoints. `factory docs status` is the board.
+
+- **01, the harness for lanes** (§14 Harness). `gate.sh` and the lane setups reach the gitignored `scenario/` from a worktree, `gate.log` records the gate's directory and HEAD, and the stub gains a `merge` role and an `sh` step. Every later slice's acceptance runs on it, so it goes first.
+- **02, the board and transcripts from a lane** (FR-2: the board redirect, the transcript slug, the hook). `factory docs set`, `log add`, `retro` and `status` write the main tree's board from a linked worktree, and the metrics read the worker's cwd. Nothing spawns in a lane yet.
+- **03, lane worktrees and `factory lanes up`** (FR-1). `src/lanes.rs` owns where a lane lives, seeding it, resetting it and its setup; a fresh run refuses a repo with no `[lanes] seed`.
+- **04, the landing library** (FR-3's mechanics). `commit_lane` and `land` turn a lane into one commit on the feature tip, or report a conflict or the owner's dirty paths with the main tree untouched. Nothing calls it yet.
+- **05, checkpoint covers** (FR-7). A checkpoint entry names the slices it covered, so a slice that finishes after a higher-numbered one is still checked. Independent of the rest.
+- **06, `/lanes`, `--prove`, `prune` and 0.3.0** (FR-9, FR-10, FR-5's polish §5). The new skill, the proving and pruning verbs, the template edit, and the one version bump. It reads 03's lane functions.
+- **07, ⚠ the highest risk: build workers in lanes** (FR-2, FR-3). Every build and fix worker spawns in its own lane and lands through 04; the pathspec commit leaves the build path. The spine: it needs 01 to 04, and 08 to 10 build on it.
+- **08, the merge worker** (FR-4). A conflicting landing spawns a merge worker in the slice's lane instead of blocking at once.
+- **09, the checkpoint in a free lane** (FR-5). Driver gates and the checkpoint worker run in the lowest free lane, reset to HEAD.
+- **10, closeout in a lane, and the guessing deleted** (FR-5's polish and CI fix, FR-6, FR-2's polish subagents, FR-9's lane files). Polish and CI fix land from a lane; then the baselines, the unnamed-file handling, the leftovers notes and the `Pathspec` commit are deleted.
+
+**Order.** The installed v0.2.1 driver builds this run: one shared tree, pathspec commits, and the slice-number high-water checkpoint rule that 05 replaces. The numbers follow the expected finish order, so no checkpoint skips a slice. 01 to 04 are independent and fill the four lanes; 05 waits for a free lane. 06 holds every skill edit under one bump, because the bundle lock refuses a second skill change at the same version (`src/skills.rs:176-200`); after it, 07 to 10 edit `assets/` only, which is outside the bundle. 08, 09 and 10 are chained because they edit the same `scheduler.rs`, `worker.rs` and `closeout.rs`, and the old driver commits whole files. 10 runs alone and last: it rewrites this repo's lane files, which the running driver reads.
+
+**Checkpoints** (`checkpoint_every = 2`). The first covers 01 to 04: it falls due after two, and waits for the live workers. The second covers 05, 06 and 07, which build together. The third covers 08 and 09; the last covers 10. 07, the spine, is proven before 08 builds on it.
+
+**No `qa-guide.md`**: §14 has no Human row. The two live runs in §14 come after the merge, when the owner releases 0.3.0 and runs `/lanes` here and in a Laravel repo.
 
 ## 16. Non-goals
 

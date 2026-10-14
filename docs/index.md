@@ -23,7 +23,7 @@
 
 ## Live features
 
-**Build order:** **001, 002 and 003 shipped; 004 is next, alone.** 002 ate the merge in text on 2026-10-13 (`retros` at schema v3, no `## Numbers` table of its own, `[docs]` table beside `[run]` and `[workers]`; 002 §11 OPEN-10…12) and merged the same day (`fd220f1`). **PRD-004 (the skill family held in this repo, rendered into repos by `factory init`) waited for 002** because it redoes 002's one-line skill edits as in-repo files; that gate is open. 004 touches `src/main.rs`, `src/docs/{doctor,preflight,scaffold}.rs`, `src/closeout.rs`, `src/config.rs`, `Cargo.toml` and adds `skills/`; nothing else on the board is live.
+**Build order:** **001 to 004 shipped; 005 is next, alone.** PRD-005 (isolated lanes) rewrites the driver's spawn, commit and closeout paths (`src/scheduler.rs`, `src/worker.rs`, `src/commit.rs`, `src/closeout.rs`) and adds `src/lanes.rs` and `src/land.rs`; the installed v0.2.1 driver builds it, which is why its slices are chained and numbered as they are (005 §15). Earlier: 002 ate the merge in text on 2026-10-13 (`retros` at schema v3, no `## Numbers` table of its own, `[docs]` table beside `[run]` and `[workers]`; 002 §11 OPEN-10…12) and merged the same day (`fd220f1`). **PRD-004 (the skill family held in this repo, rendered into repos by `factory init`) waited for 002** because it redoes 002's one-line skill edits as in-repo files; that gate is open. 004 touches `src/main.rs`, `src/docs/{doctor,preflight,scaffold}.rs`, `src/closeout.rs`, `src/config.rs`, `Cargo.toml` and adds `skills/`; nothing else on the board is live.
 
 **FR numbers:** PRDs written before v3 (PRD-001 … PRD-003) keep their global FR numbers; from v3 on, FR ids are feature-scoped: `FR-1` within a PRD, `PRD-NNN FR-n` across.
 
