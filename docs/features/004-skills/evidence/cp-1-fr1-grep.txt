@@ -1,2 +1,0 @@
-$ grep -rn feature-docs skills/
-exit=1 (1 = no match)

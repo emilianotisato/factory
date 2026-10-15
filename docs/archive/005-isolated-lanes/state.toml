@@ -1,0 +1,53 @@
+status = "archived"
+reviewed = "2026-10-14"
+shipped = "2026-10-14"
+
+[slices.1]
+status = "done"
+lane = 1
+depends_on = []
+
+[slices.2]
+status = "done"
+lane = 2
+depends_on = []
+
+[slices.3]
+status = "done"
+lane = 3
+depends_on = []
+
+[slices.4]
+status = "done"
+lane = 4
+depends_on = []
+
+[slices.5]
+status = "done"
+lane = 1
+depends_on = []
+
+[slices.6]
+status = "done"
+lane = 2
+depends_on = [3]
+
+[slices.7]
+status = "done"
+lane = 3
+depends_on = [1, 2, 3, 4]
+
+[slices.8]
+status = "done"
+lane = 1
+depends_on = [7]
+
+[slices.9]
+status = "done"
+lane = 2
+depends_on = [8]
+
+[slices.10]
+status = "done"
+lane = 1
+depends_on = [9]

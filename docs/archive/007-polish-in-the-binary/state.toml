@@ -1,0 +1,28 @@
+status = "archived"
+reviewed = "2026-10-15"
+shipped = "2026-10-15"
+
+[slices.1]
+status = "done"
+lane = 1
+depends_on = []
+
+[slices.2]
+status = "done"
+lane = 2
+depends_on = []
+
+[slices.3]
+status = "done"
+lane = 1
+depends_on = [1]
+
+[slices.4]
+status = "done"
+lane = 1
+depends_on = [3]
+
+[slices.5]
+status = "done"
+lane = 2
+depends_on = [3]

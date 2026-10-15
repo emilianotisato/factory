@@ -1,7 +1,0 @@
-$ factory review second --diff main -- src/review.rs src/cli/review.rs   # target/debug/factory, real cursor-agent, no ~/.config/factory/config.toml (defaults)
-2026-10-13T15:54:06-06:00
-unreviewed: cursor-agent --list-models exited 1: Error: Authentication required. Run 'agent login', pass --api-key/--auth-token, or set CURSOR_API_KEY/CURSOR_AUTH_TOKEN.
-
-log: /home/emiliano/.local/share/factory/reviews/20261013-215406
-exit=2
-2026-10-13T15:54:06-06:00

@@ -1,7 +1,0 @@
-# git checkout-index -a of the staged tree into a scratch dir, then:
-$ cargo test --test skills_bundle --test review --test init
-test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
-test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.22s
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
-$ cargo check --all-targets
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.83s

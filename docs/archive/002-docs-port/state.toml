@@ -1,0 +1,57 @@
+status = "archived"
+reviewed = "2026-10-13"
+
+[slices.1]
+status = "done"
+lane = 1
+depends_on = []
+
+[slices.2]
+status = "done"
+lane = 2
+depends_on = [1]
+
+[slices.3]
+status = "done"
+lane = 1
+depends_on = [2]
+
+[slices.4]
+status = "done"
+lane = 2
+depends_on = [3]
+
+[slices.5]
+status = "done"
+lane = 3
+depends_on = [3]
+
+[slices.6]
+status = "done"
+lane = 3
+depends_on = [1]
+
+[slices.7]
+status = "done"
+lane = 4
+depends_on = [3, 6]
+
+[slices.8]
+status = "done"
+lane = 1
+depends_on = [5, 7]
+
+[slices.9]
+status = "done"
+lane = 1
+depends_on = [4]
+
+[slices.10]
+status = "done"
+lane = 2
+depends_on = [5, 6, 9]
+
+[slices.11]
+status = "done"
+lane = 2
+depends_on = [8, 10]
