@@ -576,7 +576,7 @@ fn a_finished_board_polishes_ships_pushes_and_opens_the_draft_pr() {
         per_worker_weighted(&fx, &run_id(&dir))
     );
     assert!(
-        numbers.contains("Compared with: No earlier finished run in this repo.\n"),
+        numbers.contains("Compared with: No earlier retro in this repo.\n"),
         "{numbers}"
     );
     assert!(numbers.contains("Hypothesis: none\n"), "{numbers}");
@@ -681,92 +681,80 @@ fn a_finished_board_polishes_ships_pushes_and_opens_the_draft_pr() {
     );
 }
 
-/// A run's cohort is fixed by its `started_at`: regenerated, the first still has no earlier run.
+/// The store holds this run alone; the earlier rows come from the retros in the tree, copied.
 #[test]
-fn a_second_run_of_the_repo_compares_with_the_first() {
-    let fx = Fixture::new("retro-compare");
+fn the_retro_compares_with_the_three_newest_tracked_retros() {
+    let fx = Fixture::new("retro-tracked");
     fx.chain();
-    // Two comment lines of three, one citing an id; the `printf` leaves the same file on a rerun.
+    // Two comment lines of three, one citing an id.
     let guard =
         "printf '// FR-2: guard\\n// Keeps the order open.\\nfn guard() {}\\n' > src/guard.rs";
-    let plan = vec![
+    fx.write_plan(&[
         json!({"outcome": "done", "touch": ["src/a.txt"], "sh": guard}),
         json!({"outcome": "done", "touch": ["src/b.txt"]}),
         step("checkpoint"),
         json!({"outcome": "done", "touch": ["src/c.txt"]}),
         step("checkpoint"),
         step("polish"),
-    ];
-    fx.write_plan(&plan);
-    let first_dir = start(&fx);
-    wait_phase(&fx, &first_dir, "finished", 90);
-    let first = run_id(&first_dir);
-
-    fx.git(&["rm", "-r", "-q", "docs"]);
-    fx.git(&["checkout", "main", "--", "docs"]);
-    fx.git(&["commit", "-q", "-m", "chore: reset the board"]);
-    fx.write_plan(&[plan.clone(), plan].concat());
-    let out = factory(&fx, &["run", "001"]);
-    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
-    let mut dirs: Vec<PathBuf> = fs::read_dir(data_dir(&fx).join("runs"))
-        .unwrap()
-        .map(|e| e.unwrap().path())
-        .filter(|p| *p != first_dir)
-        .collect();
-    assert_eq!(dirs.len(), 1, "{dirs:?}");
-    let second_dir = dirs.remove(0);
-    wait_phase(&fx, &second_dir, "finished", 90);
-    let second = run_id(&second_dir);
-
-    let store = db(&fx);
-    let (a, b) = (
-        store.run_row(&first).unwrap().unwrap(),
-        store.run_row(&second).unwrap().unwrap(),
-    );
-    assert_eq!(a.repo, b.repo);
-    let report = factory(&fx, &["report", &first, "--json"]);
-    let weighted = serde_json::from_slice::<Value>(&report.stdout).unwrap()["weighted_tokens"]
-        .as_u64()
-        .unwrap();
-    let lines = a.lines_added.unwrap() + a.lines_removed.unwrap();
-    assert!(lines > 0, "{a:?}");
-    for r in [&a, &b] {
-        assert_eq!(
-            (r.comment_lines, r.nonblank_lines, r.id_hits),
-            (Some(2), Some(3), Some(1)),
-            "{r:?}"
-        );
-    }
-    let text = fx.read(RETRO);
-    let numbers = section(&text);
-    let rows: Vec<&str> = numbers
-        .lines()
-        .skip_while(|l| *l != "Compared with:")
-        .filter(|l| l.starts_with("| 001-"))
-        .collect();
-    assert_eq!(rows.len(), 2, "{numbers}");
+    ]);
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "finished", 90);
+    let id = run_id(&dir);
     assert!(
-        numbers.contains(
-            "| run | feature | weighted | slices | per slice | lines changed | per line | comment share | id hits |\n"
-        ),
-        "{numbers}"
+        section(&fx.read(RETRO)).contains("Compared with: No earlier retro in this repo.\n"),
+        "{}",
+        fx.read(RETRO)
     );
-    assert!(rows[0].ends_with(" | 66.7% | 1 |"), "{numbers}");
-    assert!(
-        rows[0].starts_with(&format!("| {second} (this run) | 001 | ")),
-        "{numbers}"
-    );
-    let per_slice = (weighted as f64 / 3.0).round();
-    let per_line = (weighted as f64 / lines as f64).round();
-    assert_eq!(
-        rows[1],
+
+    let numbers = |rows: &str| {
         format!(
-            "| {first} | 001 | {weighted} | 3 | {per_slice} | {lines} | {per_line} | 66.7% | 1 |"
+            "# Retro\n\n## Numbers\n\n<!-- factory:numbers -->\nCompared with:\n\n{rows}<!-- /factory:numbers -->\n"
+        )
+    };
+    for (folder, body) in [
+        (
+            "004-older",
+            numbers(
+                "| 004-20261013-f6d3 (this run) | 004 | 7099681 | 7 | 1014240 | 9785 | 726 |\n",
+            ),
         ),
-        "{numbers}"
-    );
+        (
+            "005-lanes",
+            numbers(
+                "| 005-20261014-d1ad (this run) | 005 | 16568730 | 10 | 1656873 | 9217 | 1798 |\n",
+            ),
+        ),
+        (
+            "006-comments",
+            numbers(
+                "| 006-20261014-0643 (this run) | 006 | 5378450 | 5 | 1075690 | 6185 | 870 |\n",
+            ),
+        ),
+        (
+            "007-polish",
+            numbers(
+                "| 007-20261015-c8fa (this run) | 007 | 4526459 | 5 | 905292 | 3611 | 1254 | 4.0% | 0 |\n| 006-20261014-0643 | 006 | 5378450 | 5 | 1075690 | 6185 | 870 | — | — |\n",
+            ),
+        ),
+        (
+            "003-rowless",
+            "# Retro\n\n| 003-20261016-aaaa (this run) | report |\n".to_string(),
+        ),
+    ] {
+        fs::create_dir_all(fx.path().join("docs/features").join(folder)).unwrap();
+        fs::write(
+            fx.path()
+                .join("docs/features")
+                .join(folder)
+                .join("retro.md"),
+            body,
+        )
+        .unwrap();
+    }
+    fx.git(&["add", "docs/features"]);
+    fx.git(&["commit", "-q", "-m", "docs: earlier retros"]);
 
-    let out = factory(&fx, &["retro", &first]);
+    let out = factory(&fx, &["retro", &id]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     assert!(
         stdout(&out).ends_with(" updated\nscore: none\n"),
@@ -775,11 +763,47 @@ fn a_second_run_of_the_repo_compares_with_the_first() {
     );
     let text = fx.read(RETRO);
     let numbers = section(&text);
-    assert!(
-        numbers.contains("Compared with: No earlier finished run in this repo.\n"),
+    let rows: Vec<&str> = numbers
+        .lines()
+        .skip_while(|l| *l != "Compared with:")
+        .filter(|l| l.starts_with("| 0"))
+        .collect();
+    let row = db(&fx).run_row(&id).unwrap().unwrap();
+    let report = factory(&fx, &["report", &id, "--json"]);
+    let weighted = serde_json::from_slice::<Value>(&report.stdout).unwrap()["weighted_tokens"]
+        .as_u64()
+        .unwrap();
+    let lines = row.lines_added.unwrap() + row.lines_removed.unwrap();
+    let per_slice = (weighted as f64 / 3.0).round();
+    let per_line = (weighted as f64 / lines as f64).round();
+    assert_eq!(
+        rows,
+        [
+            format!(
+                "| {id} (this run) | 001 | {weighted} | 3 | {per_slice} | {lines} | {per_line} | 66.7% | 1 |"
+            )
+            .as_str(),
+            "| 007-20261015-c8fa | 007 | 4526459 | 5 | 905292 | 3611 | 1254 | 4.0% | 0 |",
+            "| 006-20261014-0643 | 006 | 5378450 | 5 | 1075690 | 6185 | 870 | — | — |",
+            "| 005-20261014-d1ad | 005 | 16568730 | 10 | 1656873 | 9217 | 1798 | — | — |",
+        ],
         "{numbers}"
     );
-    assert!(!numbers.contains(&second), "{numbers}");
+    assert!(
+        numbers.contains(
+            "| run | feature | weighted | slices | per slice | lines changed | per line | comment share | id hits |\n"
+        ),
+        "{numbers}"
+    );
+    assert!(!numbers.contains("004-20261013"), "{numbers}");
+    assert!(!numbers.contains("003-20261016"), "{numbers}");
+
+    let out = factory(&fx, &["retro", &id]);
+    assert!(
+        stdout(&out).ends_with(" unchanged\nscore: none\n"),
+        "{}",
+        stdout(&out)
+    );
 }
 
 fn section(retro: &str) -> &str {

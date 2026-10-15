@@ -36,7 +36,15 @@ pub fn retro(args: &RetroArgs, out: &mut dyn Write) -> Result<i32> {
         .map_err(io("stdout"))?;
         return Ok(1);
     }
-    let changed = retro::write(&path, &retro::numbers(&db, &args.run)?)?;
+    // The earlier retros compared with are the ones in the tree the file is written in.
+    let root = match &args.file {
+        Some(_) => {
+            let dir = path.parent().unwrap_or(Path::new("."));
+            paths::repo_root(dir).unwrap_or_else(|_| dir.to_path_buf())
+        }
+        None => PathBuf::from(&row.repo),
+    };
+    let changed = retro::write(&path, &retro::numbers(&db, &args.run, &root)?)?;
     writeln!(
         out,
         "retro: {} {}",

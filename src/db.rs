@@ -450,29 +450,6 @@ impl Db {
             .optional()?)
     }
 
-    /// Bounded by `before` so a rerun sees the same cohort; inclusive since the store keeps whole seconds.
-    pub fn earlier_runs(
-        &self,
-        repo: &str,
-        before: &str,
-        except: &str,
-        limit: u32,
-    ) -> Result<Vec<RunRow>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, repo, feature, branch, started_at, finished_at, phase, budget_weighted_tokens, pr_url,
-                    findings_high, findings_medium, findings_low, findings_fixed, findings_parked,
-                    decisions, decide, blocks, knobs, hypothesis, lines_added, lines_removed,
-                    comment_lines, nonblank_lines, id_hits
-             FROM runs
-             WHERE repo = ?1 AND phase = 'finished' AND finished_at IS NOT NULL AND finished_at <= ?2
-               AND id != ?3
-               AND NOT EXISTS (SELECT 1 FROM events e WHERE e.run_id = runs.id AND e.kind = 'run_stopped')
-             ORDER BY finished_at DESC, id DESC LIMIT ?4",
-        )?;
-        let rows = stmt.query_map(params![repo, before, except, limit], run_from_row)?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-    }
-
     pub fn set_run_lines(&self, run_id: &str, lines: Option<(u64, u64)>) -> Result<()> {
         self.conn.execute(
             "UPDATE runs SET lines_added = ?2, lines_removed = ?3 WHERE id = ?1",
@@ -1266,10 +1243,10 @@ mod tests {
     }
 
     #[test]
-    fn the_leaks_figures_read_back_from_both_selects() {
+    fn the_leaks_figures_read_back_from_the_run_row() {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open(&dir.path().join("factory.db")).unwrap();
-        for id in ["a", "b", "c"] {
+        for id in ["a", "b"] {
             db.conn()
                 .execute(
                     "INSERT INTO runs (id, repo, feature, started_at, finished_at, phase, budget_weighted_tokens)
@@ -1286,18 +1263,5 @@ mod tests {
         assert_eq!(figures(&a), (Some(2), Some(3), Some(1)));
         let b = db.run_row("b").unwrap().unwrap();
         assert_eq!(figures(&b), (None, None, None));
-
-        let earlier = db.earlier_runs("/repo", "then", "c", 3).unwrap();
-        let read: Vec<_> = earlier
-            .iter()
-            .map(|r| (r.id.as_str(), figures(r)))
-            .collect();
-        assert_eq!(
-            read,
-            [
-                ("b", (None, None, None)),
-                ("a", (Some(2), Some(3), Some(1)))
-            ]
-        );
     }
 }

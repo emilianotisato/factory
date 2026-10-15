@@ -933,7 +933,7 @@ fn ship(
         stood_in(run, STAND_IN_RETRO, &retro_rel)?;
     }
     retro_row(run, board, &report)?;
-    if let Err(e) = retro::write(&retro, &retro::numbers(run.db(), run.id().as_str())?) {
+    if let Err(e) = retro::write(&retro, &retro::numbers(run.db(), run.id().as_str(), &repo)?) {
         say(out, &format!("ship: no ## Numbers written — {e}"))?;
     }
     let want = commit::expand(&repo, std::slice::from_ref(&board.dir))?;
