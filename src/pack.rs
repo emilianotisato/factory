@@ -14,7 +14,9 @@ pub const CONTRACT_POLISH: &str = include_str!("../assets/contract-polish.md");
 pub const CONTRACT_CI_FIX: &str = include_str!("../assets/contract-ci-fix.md");
 pub const CONTRACT_MERGE: &str = include_str!("../assets/contract-merge.md");
 pub const PR_BODY: &str = include_str!("../assets/pr-body.md");
-pub const AUTONOMY: &str = include_str!("../assets/autonomy.md");
+const AUTONOMY: &str = include_str!("../assets/autonomy.md");
+const CUT: &str = "<!-- builder: cut -->";
+const CUT_END: &str = "<!-- builder: end -->";
 pub const RETRO: &str = include_str!("../assets/retro.md");
 pub const LOOKUP: &str = include_str!("../assets/lookup.md");
 
@@ -24,6 +26,33 @@ pub fn lookup() -> String {
         "`factory ctx ",
         &format!("`{} ctx ", crate::paths::factory_command()),
     )
+}
+
+/// The whole Autonomy file, its cut markers removed.
+pub fn autonomy() -> String {
+    autonomy_text(false)
+}
+
+/// The Autonomy a builder reads: the parts that are the orchestrator's or the driver's job left out.
+pub fn builder_autonomy() -> String {
+    autonomy_text(true)
+}
+
+fn autonomy_text(cut: bool) -> String {
+    let mut out = String::new();
+    let mut inside = false;
+    for line in AUTONOMY.lines() {
+        match line.trim() {
+            CUT => inside = true,
+            CUT_END => inside = false,
+            _ if inside && cut => {}
+            _ => {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+    }
+    out.trim_end().to_string()
 }
 
 fn contract(text: &str) -> String {
@@ -226,7 +255,7 @@ impl Pack {
         sections.push(format!("# Outline\n\n{}", recon.text.trim_end()));
         sections.push(format!("# Lookup\n\n{}", lookup()));
         sections.push(format!("# Contract\n\n{}", contract.trim_end()));
-        sections.push(format!("# Autonomy\n\n{}", AUTONOMY.trim_end()));
+        sections.push(format!("# Autonomy\n\n{}", builder_autonomy()));
         sections.push(format!("# Inner loop\n\n{}", inner.trim()));
         let (text, parts) = assemble(
             format!("<!-- factory-pack files: {} -->\n\n", files.join(",")),
@@ -280,7 +309,7 @@ impl Pack {
                 ),
                 log_section(docs, board)?,
                 format!("# Contract\n\n{}", contract.trim_end()),
-                format!("# Autonomy\n\n{}", AUTONOMY.trim_end()),
+                format!("# Autonomy\n\n{}", autonomy()),
                 format!("# Inner loop\n\n{}", inner.trim()),
             ],
         );
@@ -359,7 +388,7 @@ impl Pack {
         }
         sections.push(log_section(docs, board)?);
         sections.push(format!("# Contract\n\n{}", contract.trim_end()));
-        sections.push(format!("# Autonomy\n\n{}", AUTONOMY.trim_end()));
+        sections.push(format!("# Autonomy\n\n{}", autonomy()));
         sections.push(format!("# Inner loop\n\n{}", inner.trim()));
         let (text, parts) = assemble(
             format!("<!-- factory-pack files: {} -->\n\n", files.join(",")),
@@ -463,7 +492,7 @@ impl Pack {
                 ),
                 log_section(docs, board)?,
                 format!("# Contract\n\n{}", contract.trim_end()),
-                format!("# Autonomy\n\n{}", AUTONOMY.trim_end()),
+                format!("# Autonomy\n\n{}", autonomy()),
             ],
         );
 
@@ -545,7 +574,7 @@ impl Pack {
                 retro,
                 pr_body,
                 format!("# Contract\n\n{}", contract.trim_end()),
-                format!("# Autonomy\n\n{}", AUTONOMY.trim_end()),
+                format!("# Autonomy\n\n{}", autonomy()),
             ],
         );
 
@@ -592,7 +621,7 @@ impl Pack {
                 ),
                 log_section(docs, board)?,
                 format!("# Contract\n\n{}", contract.trim_end()),
-                format!("# Autonomy\n\n{}", AUTONOMY.trim_end()),
+                format!("# Autonomy\n\n{}", autonomy()),
                 format!("# Inner loop\n\n{}", inner.trim()),
             ],
         );
@@ -1277,7 +1306,75 @@ mod tests {
     #[test]
     fn every_role_reads_the_plan_stays_in_docs() {
         let tmp = tempfile::tempdir().unwrap();
-        let repo = tmp.path();
+        for pack in &every_role_pack(tmp.path()) {
+            let text = fs::read_to_string(&pack.path).unwrap();
+            assert_eq!(
+                text.matches("\n## The plan stays in docs/\n").count(),
+                1,
+                "{}",
+                pack.path.display()
+            );
+        }
+    }
+
+    fn section_text(pack: &Pack, name: &str) -> String {
+        let text = fs::read_to_string(&pack.path).unwrap();
+        let (_, body) = text.split_once("\n\n").unwrap();
+        let mut chars = body.chars();
+        for part in &pack.parts {
+            let section: String = chars.by_ref().take(part.chars).collect();
+            if part.section == name {
+                return section;
+            }
+        }
+        panic!("no {name} in {}", pack.path.display())
+    }
+
+    #[test]
+    fn a_builder_reads_autonomy_without_the_drivers_and_the_orchestrators_parts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let all = every_role_pack(tmp.path());
+        for pack in &all {
+            let text = fs::read_to_string(&pack.path).unwrap();
+            assert!(!text.contains(CUT), "{}", pack.path.display());
+            assert!(!text.contains(CUT_END), "{}", pack.path.display());
+            assert!(!text.contains("<!-- builder"), "{}", pack.path.display());
+        }
+        let builder = section_text(&all[0], "autonomy");
+        let checkpoint = section_text(&all[3], "autonomy");
+        for cut in [
+            "## Mapping",
+            "**Slice hand-back:**",
+            "**CI:**",
+            "**Flaky:**",
+            "**Not this branch's:**",
+            "**Notify**",
+            "## The owner answers mid-run",
+            "## Resuming",
+        ] {
+            assert!(!builder.contains(cut), "{cut}");
+            assert!(checkpoint.contains(cut), "{cut}");
+        }
+        for kept in [
+            "\n## The plan stays in docs/\n",
+            "5. **Stop.**",
+            "**Gate:**",
+        ] {
+            assert!(builder.contains(kept), "{kept}");
+        }
+        assert!(
+            checkpoint.chars().count() >= builder.chars().count() + 2500,
+            "{} vs {}",
+            checkpoint.chars().count(),
+            builder.chars().count()
+        );
+        for autonomy in [&builder, &checkpoint] {
+            assert!(autonomy.contains("Several tool calls side by side"));
+            assert!(!autonomy.contains("Read, Grep or Bash"));
+        }
+    }
+
+    fn every_role_pack(repo: &Path) -> [Pack; 6] {
         let git = |args: &[&str]| {
             let ok = std::process::Command::new("git")
                 .args(["-c", "user.name=t", "-c", "user.email=t@t"])
@@ -1320,7 +1417,7 @@ mod tests {
         let log = repo.join("gate.log");
         fs::write(&log, "ok\n").unwrap();
 
-        let all = [
+        [
             Pack::for_slice(&docs, &board, 1, &packs, 1).unwrap(),
             Pack::for_fix(&docs, &board, 1, 1, &log, &packs, 1).unwrap(),
             Pack::for_merge(
@@ -1349,15 +1446,6 @@ mod tests {
             )
             .unwrap(),
             Pack::for_ci_fix(&docs, &board, 1, 1, "test", "red\n", &packs, 1).unwrap(),
-        ];
-        for pack in &all {
-            let text = fs::read_to_string(&pack.path).unwrap();
-            assert_eq!(
-                text.matches("\n## The plan stays in docs/\n").count(),
-                1,
-                "{}",
-                pack.path.display()
-            );
-        }
+        ]
     }
 }

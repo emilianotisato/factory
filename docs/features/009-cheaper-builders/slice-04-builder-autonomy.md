@@ -3,7 +3,11 @@
 **Source**: [`prd.md`](prd.md) → §3 FR-7, and FR-1's Autonomy wording. **Depends on**: — (independent of every other slice: only this one touches `assets/autonomy.md` and the `AUTONOMY` pushes in `src/pack.rs`)
 **Created**: 2026-10-15
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+- **Built**: `assets/autonomy.md` holds four `<!-- builder: cut -->` / `<!-- builder: end -->` pairs around § Mapping, the four § Caps bullets, Blocker protocol steps 3-4, and § The owner answers mid-run through § Resuming; § Tokens reads "Several tool calls side by side". `src/pack.rs`: `AUTONOMY` is now private; `autonomy()` gives the whole file without marker lines (fix, merge, checkpoint, polish, CI fix packs), `builder_autonomy()` drops the marked parts (slice pack). The builder's Autonomy is 8,596 chars against 11,856 whole, 3,260 shorter. New pack test `a_builder_reads_autonomy_without_the_drivers_and_the_orchestrators_parts` shares the six-role pack setup with `every_role_reads_the_plan_stays_in_docs` through an extracted `every_role_pack` helper; `tests/loop.rs:294` compares against `builder_autonomy()`.
+- **Inner loop**: 1 run, 0 red, ~2 min (a second `cargo test` pass to confirm no truncated failure: 37 binaries ok).
+- **Deviations**: none. Marker shape is AD-3.
+- **Prove**: FR-7 row left for the checkpoint.
 
 **Slice**: The slice pack carries a builder's Autonomy: the whole file minus the parts that are the orchestrator's or the driver's job, about 800 tokens per builder start. Markers in `assets/autonomy.md` delimit the cut, and no pack carries a marker. Every other pack carries the file whole. § Tokens stops naming the Grep tool, which build, fix and merge workers lose in slice 03.
 

@@ -272,7 +272,7 @@ fn pack_is_the_slice_the_cited_sections_the_contract_and_the_inner_loop() {
     for ph in ["{NNN}", "{NN}", "{N}", "{seed}", "{factory}"] {
         assert!(!text.contains(ph), "{ph} left in pack");
     }
-    assert!(text.contains(pack::AUTONOMY.trim_end()), "autonomy copy");
+    assert!(text.contains(&pack::builder_autonomy()), "autonomy copy");
     assert!(
         text.ends_with("\n# Inner loop\n\n./gate.sh --inner\n"),
         "{text}"
