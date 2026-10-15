@@ -15,6 +15,23 @@ use crate::{Result, ci, paths, review};
 /// One file under this many changed lines needs the local review only.
 pub const LOCAL_ONLY_LINES: u64 = 50;
 
+/// The `second opinion:` state when no pass counted.
+const FALLBACK_OWED: &str = "fallback owed";
+/// The leaks `verdict:` when the scan errored.
+const DID_NOT_RUN: &str = "did not run";
+
+fn head_line(head: &str) -> String {
+    format!("<!-- head: {head} -->")
+}
+
+/// Whether a collected `text` may stand in for a fresh collect at `head`. A file from another HEAD reviewed other
+/// code, and one owing a fallback or a leaks scan would carry a failure a rerun may clear.
+pub fn reusable(text: &str, head: &str) -> bool {
+    text.lines().next() == Some(head_line(head).as_str())
+        && !text.contains(&format!("\nsecond opinion: {FALLBACK_OWED}"))
+        && !text.contains(&format!("\nverdict: {DID_NOT_RUN}"))
+}
+
 /// Whether the size row adds the second opinion to the local review.
 pub fn needs_second_opinion(files: &[(String, u64)]) -> bool {
     let lines: u64 = files.iter().map(|(_, n)| n).sum();
@@ -59,7 +76,8 @@ pub fn collect(root: &Path, base: &str, cfg: &Review, progress: &mut dyn Write) 
         ));
     }
     Ok(format!(
-        "<!-- head: {head} -->\n\n## Plan\n\n{plan}size: {size}\nsecond opinion: {state}\n\n## Leaks\n\n{leaks}\n## Second opinion\n\n{opinion}"
+        "{}\n\n## Plan\n\n{plan}size: {size}\nsecond opinion: {state}\n\n## Leaks\n\n{leaks}\n## Second opinion\n\n{opinion}",
+        head_line(&head)
     ))
 }
 
@@ -80,7 +98,7 @@ fn leaks_part(root: &Path, base: &str) -> String {
             };
             format!("verdict: {verdict}\n\n{}", report.render())
         }
-        Err(e) => format!("verdict: did not run — {e}\n"),
+        Err(e) => format!("verdict: {DID_NOT_RUN} — {e}\n"),
     }
 }
 
@@ -95,7 +113,7 @@ fn second_opinion(
     let unreviewed = |reason: &str, log: Option<&Path>, passes: &str| {
         let log = log.map_or(String::new(), |d| format!("log: {}\n", d.display()));
         (
-            format!("fallback owed — unreviewed: {reason}"),
+            format!("{FALLBACK_OWED} — unreviewed: {reason}"),
             format!("exit: 2\nunreviewed: {reason}\n{log}{passes}"),
         )
     };
@@ -151,5 +169,22 @@ mod tests {
         assert!(!needs_second_opinion(&files(&[49])));
         assert!(needs_second_opinion(&files(&[50])));
         assert!(needs_second_opinion(&files(&[1, 1])));
+    }
+
+    #[test]
+    fn a_file_is_reusable_at_its_head_unless_it_owes_a_rerun() {
+        let file = |head: &str, state: &str, verdict: &str| {
+            format!(
+                "{}\n\n## Plan\n\nsecond opinion: {state}\n\n## Leaks\n\nverdict: {verdict}\n",
+                head_line(head)
+            )
+        };
+        let counted = "reviewed, 1 of 1 passes counted";
+        assert!(reusable(&file("abc", counted, "clean"), "abc"));
+        assert!(!reusable(&file("abc", counted, "clean"), "def"));
+        let owed = format!("{FALLBACK_OWED} — unreviewed: logged out");
+        assert!(!reusable(&file("abc", &owed, "clean"), "abc"));
+        let errored = format!("{DID_NOT_RUN} — x");
+        assert!(!reusable(&file("abc", counted, &errored), "abc"));
     }
 }

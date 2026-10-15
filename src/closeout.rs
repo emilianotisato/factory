@@ -332,8 +332,8 @@ fn polish(
     }
 }
 
-/// The `# Collected` body. The file is reused while its head line names the lane's HEAD and nothing in it owes a
-/// rerun (a fallback, a leaks scan that did not run); a failed collect is the body, never the error.
+/// The `# Collected` body, from the file while `collect::reusable` holds at the lane's HEAD; a failed collect is
+/// the body, never the error.
 fn collected(
     lane_dir: &Path,
     base: &str,
@@ -343,9 +343,7 @@ fn collected(
 ) -> Result<String> {
     if let Ok(head) = ci::head(lane_dir)
         && let Ok(text) = fs::read_to_string(file)
-        && text.lines().next() == Some(format!("<!-- head: {head} -->").as_str())
-        && !text.contains("\nsecond opinion: fallback owed")
-        && !text.contains("\nverdict: did not run")
+        && collect::reusable(&text, &head)
     {
         say(
             out,
