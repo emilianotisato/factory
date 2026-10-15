@@ -159,6 +159,7 @@ fn a_conflicting_landing_spawns_a_merge_worker_in_the_slices_lane() {
         .unwrap_or_else(|| panic!("no workers row for {session}"));
     assert_eq!(row.role, "merge");
     assert_eq!(row.slice, Some(2));
+    assert_eq!(harness::assert_role_scope(&calls[2]), "merge");
 
     assert_eq!(fx.slice_status(2), "building");
     assert_eq!(head_subject(&fx), SLICE_01);

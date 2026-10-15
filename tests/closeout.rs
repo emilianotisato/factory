@@ -1051,6 +1051,8 @@ fn a_red_check_gets_one_fix_round_then_green() {
     assert_eq!(p.len(), 7, "{p:?}");
     assert_eq!(p[6], CI_FIX);
     assert_eq!(roles(&fx, &dir)[5..], ["polish", "fix"]);
+    assert_eq!(harness::assert_role_scope(&fx.calls()[5]), "polish");
+    assert_eq!(harness::assert_role_scope(&fx.calls()[6]), "fix");
     let fixer = &db(&fx).workers(&run_id(&dir)).unwrap()[6];
     assert_eq!(fixer.checkpoint, None);
     assert_eq!(fixer.slice, None);

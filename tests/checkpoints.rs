@@ -998,6 +998,8 @@ fn red_red_green_runs_two_fix_workers_and_three_gates_before_the_cp() {
     assert_eq!(r["fix_commits"], 2, "{r}");
 
     let calls = fx.calls();
+    let scoped: Vec<&str> = calls.iter().map(harness::assert_role_scope).collect();
+    assert_eq!(scoped, roles(&fx, &dir));
     let (name, pack) = pack_of(&calls[2]);
     assert_eq!(name, "fix-1-3.md");
     for want in [

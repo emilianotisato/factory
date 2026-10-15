@@ -89,16 +89,26 @@ pub fn hook_command(exe: &Path) -> String {
     format!("{} hook", paths::shell_word(&exe.to_string_lossy()))
 }
 
-pub fn settings(exe: &Path) -> serde_json::Value {
-    serde_json::json!({
+// Checkpoint and polish keep the rest: they call skills, subagents and MCP servers.
+fn narrowed(role: &str) -> bool {
+    matches!(role, "build" | "fix" | "merge")
+}
+
+pub fn settings(exe: &Path, role: &str) -> serde_json::Value {
+    let mut v = serde_json::json!({
         "permissions": { "deny": DENY_RULES },
         "hooks": {
             "PreToolUse": [{
                 "matcher": "Bash|Read",
                 "hooks": [{ "type": "command", "command": hook_command(exe), "timeout": 5 }]
             }]
-        }
-    })
+        },
+        "outputStyle": "default"
+    });
+    if narrowed(role) {
+        v["autoMemoryEnabled"] = false.into();
+    }
+    v
 }
 
 pub fn settings_path(run_dir: &Path, session_id: &str) -> PathBuf {
@@ -195,7 +205,7 @@ impl Worker {
         let exe = paths::self_exe().map_err(io("locate the factory binary"))?;
         let settings_file = settings_path(&run_dir, &session_id);
         private_file(&settings_file)?
-            .write_all(format!("{:#}\n", settings(&exe)).as_bytes())
+            .write_all(format!("{:#}\n", settings(&exe, role)).as_bytes())
             .map_err(io(format!("write {}", settings_file.display())))?;
         let pack_path = std::path::absolute(&pack.path)
             .map_err(io(format!("resolve {}", pack.path.display())))?;
@@ -212,8 +222,12 @@ impl Worker {
             .arg(&pack_path)
             .args(["--session-id", &session_id])
             .args(["--model", &cfg.model])
-            .args(["--effort", &cfg.effort])
-            .arg("--settings")
+            .args(["--effort", &cfg.effort]);
+        if narrowed(role) {
+            cmd.args(["--strict-mcp-config", "--disable-slash-commands"])
+                .args(["--tools", "Bash,Read,Edit,Write"]);
+        }
+        cmd.arg("--settings")
             .arg(&settings_file)
             .current_dir(&cwd)
             .stdin(Stdio::null())

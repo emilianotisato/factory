@@ -3,7 +3,12 @@
 **Source**: [`prd.md`](prd.md) → §3 FR-1, FR-2. **Depends on**: — (independent of every other slice: only this one touches `src/worker.rs`. FR-1's Autonomy wording, "Several tool calls side by side", is slice 04's, which owns `assets/autonomy.md`)
 **Created**: 2026-10-15
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+- **Built.** `Worker::spawn()` adds `--strict-mcp-config --disable-slash-commands --tools Bash,Read,Edit,Write` before `--settings` for `build`, `fix` and `merge`; checkpoint and polish keep today's command. `settings()` takes the role: every role gets `"outputStyle": "default"`, build, fix and merge also `"autoMemoryEnabled": false`. Deny rules and the hook are unchanged.
+- **Tests.** A shared `assert_role_scope` helper (`tests/harness/mod.rs`) reads the role from the pack name and checks argv and settings; `check_settings` moved beside it so it runs for every role. Wired into the build test (`tests/loop.rs`, argv now 21 words), checkpoint/fix/polish (`tests/checkpoints.rs`), merge (`tests/merge.rs`) and polish/CI fix (`tests/closeout.rs`).
+- **Inner loop.** 2 runs, 0 red, about 4 min (657 tests). The second run followed making the role predicate private.
+- **Deviations.** None from the slice; the test shape is AD-1.
+- **Prove.** FR-1 and FR-2 rows left for the checkpoint.
 
 **Slice**: Each worker's `claude` command and settings file follow its role. Build, fix and merge workers get four tools, no MCP servers and no slash commands; every role gets the default output style; build, fix and merge also run without the owner's auto memory. Checkpoint and polish keep today's tools and memory. This is the start-context cut, from about 26k to about 7k tokens in the probe.
 

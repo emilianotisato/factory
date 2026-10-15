@@ -143,25 +143,6 @@ fn wait_until(what: &str, secs: u64, mut ok: impl FnMut() -> bool) {
     }
 }
 
-fn check_settings(path: &Path) {
-    let v: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
-    let deny: Vec<&str> = v["permissions"]["deny"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|d| d.as_str().unwrap())
-        .collect();
-    assert_eq!(deny, ["Bash(gh)", "Bash(gh *)", "Bash(git push*)"]);
-    let pre = &v["hooks"]["PreToolUse"];
-    assert_eq!(pre.as_array().map(Vec::len), Some(1), "{v}");
-    assert_eq!(pre[0]["matcher"], "Bash|Read");
-    let hook = &pre[0]["hooks"][0];
-    assert_eq!(hook["type"], "command");
-    let cmd = hook["command"].as_str().unwrap();
-    assert_eq!(cmd, format!("{} hook", factory::paths::shell_word(BIN)));
-    assert_eq!(hook["timeout"], 5);
-}
-
 fn check_worker_argv(fx: &Fixture, call: &Value, slice: u32, run_dir: &Path) -> String {
     let argv: Vec<&str> = call["argv"]
         .as_array()
@@ -207,7 +188,7 @@ fn check_worker_argv(fx: &Fixture, call: &Value, slice: u32, run_dir: &Path) -> 
         settings.starts_with(run_dir.join("workers")),
         "{settings:?}"
     );
-    check_settings(&settings);
+    assert_eq!(harness::assert_role_scope(call), "build");
     assert_eq!(call["env"]["FACTORY_PACK"], pack.to_str().unwrap());
     let lane = call["env"]["FACTORY_LANE"].as_str().unwrap();
     let lane_dir = PathBuf::from(call["cwd"].as_str().unwrap());
@@ -219,7 +200,7 @@ fn check_worker_argv(fx: &Fixture, call: &Value, slice: u32, run_dir: &Path) -> 
     assert_eq!(lane_dir, lane_dir.canonicalize().unwrap());
     assert_eq!(call["env"]["FACTORY_REPO"], call["cwd"]);
     assert_eq!(call["env"]["FACTORY_BOARD"], fx.path().to_str().unwrap());
-    assert_eq!(argv.len(), 17, "{argv:?}");
+    assert_eq!(argv.len(), 21, "{argv:?}");
     assert_eq!(call["pack_source"], "file");
     assert!(
         run_dir
