@@ -19,12 +19,12 @@
 - **ready** — PRD agreed, not started (may not be sliced yet).
 - **in-progress** — at least one slice building.
 - **shipped** — every slice done and this branch completes the feature. Set in the last commit of its PR, never in a follow-up.
-- **archived** — every slice done *and* nothing left to do; folder moved to `archive/`. A feature with nothing outstanding goes here directly, skipping `shipped`.
+- **archived** — folder moved to `archive/`, holding the records only: `prd.md` with its history banner, `state.toml`, `log.jsonl` and `retro.md`. `/harvest` routes the lessons first, then `factory docs harvest NNN --done` (or `factory docs archive NNN`) leaves this shape.
 - **retired** — never built, number burned. A tombstone folder in `archive/` with `status = "retired"` says why.
 
 A slice is `pending → building → done`, or `blocked` while it waits on the owner.
 
-**Build order:** nothing is live; 001 to 006 have shipped. When more than one feature is live, state the order here and say why: shared files, migration risk, whichever ships second eats the merge.
+**Build order:** nothing is live; 001 to 008 are archived. When more than one feature is live, state the order here and say why: shared files, migration risk, whichever ships second eats the merge.
 
 **Retired numbers — never reused:** _(none yet)_
 
@@ -33,6 +33,10 @@ A slice is `pending → building → done`, or `blocked` while it waits on the o
 - [adopt-a-repo.md](reference/adopt-a-repo.md) — the prompt that moves another repo onto factory v3.
 - [skills-decisions.md](reference/skills-decisions.md) — the skill family's decisions from 2026-08 to 2026-10, imported from the old `feature-docs` repo. History only: new ones go to `decisions.md`.
 - [lanes/](reference/lanes/) — `lane-1.md` … `lane-4.md`, the env and setup the driver gives each lane.
+- [ctx-research.md](reference/ctx-research.md) — the 2026-10-09 recon behind `factory ctx`: transcript mining, a typed lookup layer weighed and left out.
+- [ctx-jev-research.md](reference/ctx-jev-research.md) — Jev System One weighed as a `ctx` picker, with the replays on real lookups. Parked.
+- [ab/](reference/ab/) — the A/B method: `runs.md` (setup, timeline, blind review of the icg-cloud and arca-api runs) and `worktrees.sh`, which cuts the two worktrees.
+- [leaks-research.md](reference/leaks-research.md) — code comments and agents: the studies, vendor guidance and field counts behind the leaks rules.
 
 ---
 
@@ -58,7 +62,7 @@ A slice is `pending → building → done`, or `blocked` while it waits on the o
 ### When done
 Set the terminal status **in the last commit of the feature's PR**, never after the merge. The docs ride the same branch as the code, so the main branch flips at the exact moment the merge lands.
 - Something survives the merge (a post-deploy measurement, a QA guide still to run, a follow-up FR) ⇒ **shipped**.
-- Nothing left at all ⇒ folder moved to `archive/`, status **archived**. Do not edit files after archiving.
+- The closeout ships, never archives. Archiving comes later, from `/harvest`. Do not edit files after archiving.
 - Both refuse while any slice is not `done`.
 
 ### Rules that keep this working for agents

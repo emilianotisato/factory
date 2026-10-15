@@ -12,7 +12,7 @@ summary: |
 
 # PRD-006 — Comment and naming discipline
 
-Drafted from one session's research (2026-10-13/14): a 9-agent web and repo sweep with a skeptic per sweep (54 claims, 52 held), a comment audit of two field repos, and a second sweep for plan ids in names (§ 11 of the research). The full write-up is in [research.md](research.md). **The interview ran 2026-10-14**, three rounds; all seven OPENs are settled and every decision below carries its date. Factory's own cleanup (FR-5) ran the same day, and what it taught is folded into FR-1, FR-3 and FR-5. The adversarial pass ran after that; each correction is marked *Corrected 2026-10-14* where it sits.
+Drafted from one session's research (2026-10-13/14): a 9-agent web and repo sweep with a skeptic per sweep (54 claims, 52 held), a comment audit of two field repos, and a second sweep for plan ids in names (§ 11 of the research). The full write-up is in [research.md](../../reference/leaks-research.md). **The interview ran 2026-10-14**, three rounds; all seven OPENs are settled and every decision below carries its date. Factory's own cleanup (FR-5) ran the same day, and what it taught is folded into FR-1, FR-3 and FR-5. The adversarial pass ran after that; each correction is marked *Corrected 2026-10-14* where it sits.
 
 ## 1. Why now
 
@@ -66,7 +66,7 @@ Docblocks are 68% of cody's framework comments. In arca, the share of new **priv
 2. **The packs are thick with ids, and workers echo them into code.** `/slice` makes every task trace to the PRD (`skills/slice/SKILL.md:86`). Builders number their decisions AD-n (`assets/contract-slice.md:17`).
 3. **Workers match the comment density they see** (the spread above).
 
-**What the evidence says.** Full sources are in [research.md](research.md).
+**What the evidence says.** Full sources are in [research.md](../../reference/leaks-research.md).
 
 - **Correct comments barely help frontier models.** Correct docstrings did not raise GPT-4's pass rate ([Macke & Doyle 2024](https://arxiv.org/abs/2404.03114)). The one agentic ablation found, a blog, showed stripping comments slightly *helped* GPT-5-mini on SWE-bench Verified ([comment ablation](https://antimemetics.institute/comment-ablation)).
 - **Wrong comments hurt, and models trust them.** Misleading comments cut accuracy about 24% across 17 models, and telling the model to ignore comments barely helped ([CodeCrash, NeurIPS 2025](https://arxiv.org/abs/2504.14119)). A wrong "returns X" comment cost a reasoning model up to 28%. Misleading comments hurt fault localisation more than misleading names ([Haroon et al., ICST 2026](https://arxiv.org/abs/2504.04372)).
@@ -93,7 +93,7 @@ Under that list, 8% of cody's sample survives and 18% of arca's. The keep-list i
 - **Factory removed this pattern once and it came back the same day.** 0d55577 deleted 3,145 lines of plan-named tests and frozen docs. That evening, PRD-005 created `tests/fixture/prd-004` (f35ed4c), because the owner's rule was written nowhere a worker reads.
 - **No skill asks for id names, but factory's templates model them.** The QA plan and the slice's **Source** line key everything by FR (`assets/docs/slice.scaffold.md:19`). The harness template says "Name files by feature id" (`skills/harness/references/skill-template.md:72`).
 
-Counts, spread, harm and seven options are in [research.md § 11](research.md). **This PRD covers names too** (OPEN-7, settled 2026-10-14): same cause, same rule, same check, same cleanup.
+Counts, spread, harm and seven options are in [research.md § 11](../../reference/leaks-research.md). **This PRD covers names too** (OPEN-7, settled 2026-10-14): same cause, same rule, same check, same cleanup.
 
 **Leaves alone:** prose in `docs/`, READMEs, commit messages and PR bodies; per-language linters; factory's own domain words (PRD, slice, checkpoint as concepts, not as a specific item).
 

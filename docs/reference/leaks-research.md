@@ -1,6 +1,6 @@
 # PRD-006 research — Code comments and agents
 
-Collected 2026-10-13/14 for [prd.md](prd.md). Three sources:
+Collected 2026-10-13/14 for [PRD-006](../features/006-comment-discipline/prd.md). Three sources:
 
 1. **A research workflow** (`code-comments-for-agents`, run `wf_3d555c22-f8a`). Four sweeps (studies, vendor guidance, mechanics, this repo), a skeptic per sweep, one synthesis. 54 claims checked: **52 held, 2 refuted** (§ 7).
 2. **lauren's tweet** and pstack's open-source `/no-comments` skill (§ 6).
@@ -100,7 +100,7 @@ Caveat: most studies are single-shot, with 2024-25 models.
 
 ## 8. Field audit: cody-agent
 
-`/home/emiliano/Projects/CODESM/cody-agent` at d858bc4. Laravel and Vue. Features 003-027, 2026-07-23 to 10-12. Read-only.
+`~/Projects/CODESM/cody-agent` at d858bc4. Laravel and Vue. Features 003-027, 2026-07-23 to 10-12. Read-only.
 
 **Density** (comment lines as a share of added non-blank lines):
 
@@ -149,7 +149,7 @@ By feature group: 20.4% (005-014), 20.6% (015-020), 26.5% (021-025), then 027 at
 
 ## 9. Field audit: arca-api
 
-`/home/emiliano/Projects/Prokey/arca-api` at 91b4c59. Go. Features 012-024, 2026-09-16 to 10-12. Read-only.
+`~/Projects/Prokey/arca-api` at 91b4c59. Go. Features 012-024, 2026-09-16 to 10-12. Read-only.
 
 **Density:** 4% (05-23 to 07-03), 19% (07-27 to 09-15), 21% under the v3 factory. Without feature 012, which hit 49%, the factory era is 15%. New **private** functions with a doc comment: 5%, then 39%, then a 64% median.
 

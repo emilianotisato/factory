@@ -68,7 +68,7 @@ Gate numbers come from the `CP-1`..`CP-7` entries in `agent-log.md` (17 runs, 5 
 
 ## FR-11 — A/B, icg-cloud PRD-018 · 2026-10-11
 
-Run A was `/deliver 018`, PR [#24](https://github.com/ICG-Argentina/icg-cloud/pull/24). Run B was `/factory-deliver 018`, run `018-20261011-6490`, PR [#25](https://github.com/ICG-Argentina/icg-cloud/pull/25). Both started from base `cde31ac` on Opus 5.5. The setup, the owner's answers and the timeline are in [`ab/runs.md`](ab/runs.md). This section holds the results the QA guide asks for. arca-api, the second project, ran on 2026-10-12; its results are in the next section.
+Run A was `/deliver 018`, PR [#24](https://github.com/ICG-Argentina/icg-cloud/pull/24). Run B was `/factory-deliver 018`, run `018-20261011-6490`, PR [#25](https://github.com/ICG-Argentina/icg-cloud/pull/25). Both started from base `cde31ac` on Opus 5.5. The setup, the owner's answers and the timeline are in [`ab/runs.md`](../../reference/ab/runs.md). This section holds the results the QA guide asks for. arca-api, the second project, ran on 2026-10-12; its results are in the next section.
 
 ### The sixteen answers
 
@@ -162,7 +162,7 @@ All fixes are on `fix/001-ab-findings`: 268 tests before the claim change, 272 a
 
 ## FR-11 — A/B, arca-api PRD-024 · 2026-10-12
 
-Run A was `/deliver 024`, PR [#64](https://github.com/prokeycloud/arca/pull/64). Run B was `/factory-deliver 024`, run `024-20261012-e894`, PR [#65](https://github.com/prokeycloud/arca/pull/65), on the binary from `main` with the icg fixes. Both started from base `91b4c59` on Opus 5.5, serial, one after the other. Setup, timeline, the owner's answers and the blind review are in [`ab/runs.md`](ab/runs.md) § arca-api.
+Run A was `/deliver 024`, PR [#64](https://github.com/prokeycloud/arca/pull/64). Run B was `/factory-deliver 024`, run `024-20261012-e894`, PR [#65](https://github.com/prokeycloud/arca/pull/65), on the binary from `main` with the icg fixes. Both started from base `91b4c59` on Opus 5.5, serial, one after the other. Setup, timeline, the owner's answers and the blind review are in [`ab/runs.md`](../../reference/ab/runs.md) § arca-api.
 
 ### Answers and review
 
