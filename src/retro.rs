@@ -12,8 +12,9 @@ use crate::{Error, Result, ci, quota};
 
 pub const OPEN: &str = "<!-- factory:numbers -->";
 pub const CLOSE: &str = "<!-- /factory:numbers -->";
-pub const NO_EARLIER: &str = "No earlier finished run in this repo.";
-const COHORT: u32 = 3;
+pub const NO_EARLIER: &str = "No earlier retro in this repo.";
+const COHORT: usize = 3;
+const THIS_RUN: &str = " (this run)";
 
 /// `(insertions, deletions)` of a `git diff --shortstat` line; either part may be absent.
 pub fn shortstat(text: &str) -> (u64, u64) {
@@ -118,7 +119,7 @@ fn slices_of(db: &Db, run_id: &str) -> Result<u64> {
         .count() as u64)
 }
 
-fn compare_row(db: &Db, run: &RunRow, this: bool) -> Result<String> {
+fn compare_row(db: &Db, run: &RunRow) -> Result<String> {
     let weighted = quota::weighted(db, &run.id)?;
     let slices = slices_of(db, &run.id)?;
     let lines = match (run.lines_added, run.lines_removed) {
@@ -129,11 +130,7 @@ fn compare_row(db: &Db, run: &RunRow, this: bool) -> Result<String> {
         Some(d) if d > 0 => (weighted as f64 / d as f64).round().to_string(),
         _ => "—".to_string(),
     };
-    let name = if this {
-        format!("{} (this run)", run.id)
-    } else {
-        run.id.clone()
-    };
+    let name = format!("{}{THIS_RUN}", run.id);
     let share = match (run.comment_lines, run.nonblank_lines) {
         (Some(c), Some(n)) if n > 0 => format!("{:.1}%", c as f64 * 100.0 / n as f64),
         _ => "—".to_string(),
@@ -148,8 +145,8 @@ fn compare_row(db: &Db, run: &RunRow, this: bool) -> Result<String> {
     ))
 }
 
-/// Deterministic on the same store: no time, no version but the run's own.
-pub fn numbers(db: &Db, run_id: &str) -> Result<String> {
+/// Deterministic on the same store and tree: no time, no version but the run's own.
+pub fn numbers(db: &Db, run_id: &str, root: &Path) -> Result<String> {
     let run = db
         .run_row(run_id)?
         .ok_or_else(|| Error::Msg(format!("no run {run_id} in the store")))?;
@@ -201,7 +198,7 @@ pub fn numbers(db: &Db, run_id: &str) -> Result<String> {
     };
     s.push_str(&format!("Pack (build): {pack}\n\n"));
 
-    let earlier = db.earlier_runs(&run.repo, &run.started_at, &run.id, COHORT)?;
+    let earlier = tracked_rows(root, &run.feature)?;
     if earlier.is_empty() {
         s.push_str(&format!("Compared with: {NO_EARLIER}\n"));
     } else {
@@ -210,14 +207,70 @@ pub fn numbers(db: &Db, run_id: &str) -> Result<String> {
             "| run | feature | weighted | slices | per slice | lines changed | per line | comment share | id hits |\n",
         );
         s.push_str("|---|---|---:|---:|---:|---:|---:|---:|---:|\n");
-        s.push_str(&compare_row(db, &run, true)?);
+        s.push_str(&compare_row(db, &run)?);
         s.push('\n');
-        for e in &earlier {
-            s.push_str(&compare_row(db, e, false)?);
+        for row in &earlier {
+            s.push_str(row);
             s.push('\n');
         }
     }
     Ok(s)
+}
+
+/// The `(this run)` row of each retro git tracks under `root`'s features and archive but `feature`'s own,
+/// newest run date first, then the higher feature number; copied, not recounted.
+fn tracked_rows(root: &Path, feature: &str) -> Result<Vec<String>> {
+    let number = |name: &str| name.split('-').next().and_then(|n| n.parse::<u32>().ok());
+    let own = number(feature);
+    let listed = crate::docs::preflight::git(
+        root,
+        &[
+            "ls-files",
+            "-z",
+            "--",
+            "docs/features/*/retro.md",
+            "docs/archive/*/retro.md",
+        ],
+    )
+    .unwrap_or_default();
+    let mut rows = Vec::new();
+    for rel in listed.split('\0') {
+        let ["docs", _, folder, "retro.md"] = rel.split('/').collect::<Vec<_>>()[..] else {
+            continue;
+        };
+        let Some(n) = number(folder).filter(|n| Some(*n) != own) else {
+            continue;
+        };
+        // Another feature's unreadable retro must not cost this one its Numbers.
+        let Ok(text) = fs::read_to_string(root.join(rel)) else {
+            continue;
+        };
+        if let Some(row) = this_run_row(&text) {
+            let date = row
+                .trim_start_matches(['|', ' '])
+                .split(['-', ' '])
+                .nth(1)
+                .unwrap_or("")
+                .to_string();
+            rows.push((date, n, row));
+        }
+    }
+    rows.sort_by(|a, b| (&b.0, b.1).cmp(&(&a.0, a.1)));
+    Ok(rows.into_iter().take(COHORT).map(|r| r.2).collect())
+}
+
+/// Only between the markers: a retro's prose may hold other tables.
+fn this_run_row(retro: &str) -> Option<String> {
+    let from = retro.find(OPEN)? + OPEN.len();
+    let to = from + retro[from..].find(CLOSE)?;
+    let line = retro[from..to].lines().find(|l| l.contains(THIS_RUN))?;
+    let row = line.replacen(THIS_RUN, "", 1).trim().to_string();
+    // Seven cells: written before the comment-share and id-hits columns existed.
+    if row.matches('|').count() == 8 {
+        Some(format!("{row} — | — |"))
+    } else {
+        Some(row)
+    }
 }
 
 /// A stray marker is refused: the next write would replace the prose up to it.
@@ -350,148 +403,110 @@ mod tests {
         }
     }
 
-    fn insert(db: &Db, id: &str, repo: &str, started: &str, finished: Option<&str>) {
-        db.conn()
-            .execute(
-                "INSERT INTO runs (id, repo, feature, started_at, finished_at, phase, budget_weighted_tokens)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)",
-                rusqlite::params![
-                    id,
-                    repo,
-                    &id[..3],
-                    started,
-                    finished,
-                    if finished.is_some() { "finished" } else { "building" }
-                ],
-            )
-            .unwrap();
+    fn tracked(root: &Path, dir: &str, body: impl AsRef<[u8]>) {
+        let d = root.join(dir);
+        fs::create_dir_all(&d).unwrap();
+        fs::write(d.join("retro.md"), body).unwrap();
+        for args in [&["init", "-q"][..], &["add", "--", dir]] {
+            let ok = std::process::Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "git {args:?}");
+        }
+    }
+
+    fn numbers_block(rows: &str) -> String {
+        format!("# Retro\n\n## Numbers\n\n{OPEN}\nCompared with:\n\n{rows}{CLOSE}\n")
     }
 
     #[test]
-    fn numbers_compares_with_the_three_newest_earlier_runs_of_the_repo() {
+    fn a_seven_cell_row_is_padded_and_a_nine_cell_row_copied() {
         let dir = tempfile::tempdir().unwrap();
-        let db = Db::open(&dir.path().join("factory.db")).unwrap();
-        insert(
-            &db,
-            "001-20261001-aaaa",
-            "/r",
-            "2026-10-01T00:00:00Z",
-            Some("2026-10-01T01:00:00Z"),
+        tracked(
+            dir.path(),
+            "docs/features/002-old",
+            numbers_block("| 002-20261013-e729 (this run) | 002 | 15 | 11 | 1 | 24 | 6 |\n"),
         );
-        let alone = numbers(&db, "001-20261001-aaaa").unwrap();
-        assert!(
-            alone.contains(&format!("Compared with: {NO_EARLIER}\n")),
-            "{alone}"
+        tracked(
+            dir.path(),
+            "docs/archive/007-new",
+            numbers_block(
+                "| 007-20261015-c8fa (this run) | 007 | 4 | 5 | 1 | 3 | 1 | 4.0% | 0 |\n| 002-20261013-e729 | 002 | 15 | 11 | 1 | 24 | 6 | — | — |\n",
+            ),
         );
+        assert_eq!(
+            tracked_rows(dir.path(), "008").unwrap(),
+            [
+                "| 007-20261015-c8fa | 007 | 4 | 5 | 1 | 3 | 1 | 4.0% | 0 |",
+                "| 002-20261013-e729 | 002 | 15 | 11 | 1 | 24 | 6 | — | — |",
+            ]
+        );
+    }
 
-        insert(
-            &db,
-            "002-20261002-bbbb",
-            "/r",
-            "2026-10-02T00:00:00Z",
-            Some("2026-10-02T01:00:00Z"),
+    #[test]
+    fn a_retro_without_a_row_between_the_markers_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        tracked(
+            dir.path(),
+            "docs/features/001-prose",
+            format!(
+                "| 001-20261010-aaaa (this run) | report |\n\n{OPEN}\nCompared with: {NO_EARLIER}\n{CLOSE}\n"
+            ),
         );
-        insert(
-            &db,
-            "003-20261003-cccc",
-            "/r",
-            "2026-10-03T00:00:00Z",
-            Some("2026-10-03T01:00:00Z"),
+        tracked(dir.path(), "docs/features/003-none", "# Retro\n");
+        tracked(
+            dir.path(),
+            "docs/features/004-latin1",
+            b"# Retro\n\ncaf\xe9\n",
         );
-        insert(
-            &db,
-            "004-20261004-dddd",
-            "/r",
-            "2026-10-04T00:00:00Z",
-            Some("2026-10-04T01:00:00Z"),
-        );
-        // Another repo, an unfinished run, one finished after this run started: none in the cohort.
-        insert(
-            &db,
-            "005-20261004-eeee",
-            "/other",
-            "2026-10-04T02:00:00Z",
-            Some("2026-10-04T03:00:00Z"),
-        );
-        insert(&db, "006-20261005-ffff", "/r", "2026-10-05T00:00:00Z", None);
-        insert(
-            &db,
-            "007-20261006-gggg",
-            "/r",
-            "2026-10-06T00:00:00Z",
-            Some("2026-10-07T09:00:00Z"),
-        );
-        insert(
-            &db,
-            "008-20261007-hhhh",
-            "/r",
-            "2026-10-07T00:00:00Z",
-            Some("2026-10-07T05:00:00Z"),
-        );
-        db.set_run_leaks("008-20261007-hhhh", Some((2, 3, 1)))
-            .unwrap();
-        db.set_run_leaks("003-20261003-cccc", Some((0, 0, 0)))
-            .unwrap();
-        let s = numbers(&db, "008-20261007-hhhh").unwrap();
+        let draft = dir.path().join("docs/features/009-draft");
+        fs::create_dir_all(&draft).unwrap();
+        fs::write(
+            draft.join("retro.md"),
+            numbers_block("| 009-20261020-dddd (this run) | 009 | 1 | 1 | 1 | 1 | 1 | — | — |\n"),
+        )
+        .unwrap();
+        assert!(tracked_rows(dir.path(), "008").unwrap().is_empty());
         assert!(
-            s.contains("| per line | comment share | id hits |\n"),
-            "{s}"
-        );
-        let row = |id: &str| {
-            s.lines()
-                .find(|l| l.starts_with(&format!("| {id}")))
+            tracked_rows(&dir.path().join("missing"), "008")
                 .unwrap()
-        };
-        assert!(row("008-20261007-hhhh").ends_with("| 66.7% | 1 |"), "{s}");
-        assert!(row("004-20261004-dddd").ends_with("| — | — |"), "{s}");
-        assert!(row("003-20261003-cccc").ends_with("| — | 0 |"), "{s}");
-        let rows: Vec<&str> = s
-            .lines()
-            .filter(|l| l.starts_with("| 0"))
-            .map(|l| &l[2..19])
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn the_newest_three_win_a_tie_goes_to_the_higher_feature_and_the_own_is_left_out() {
+        let dir = tempfile::tempdir().unwrap();
+        for (dir_name, id) in [
+            ("004-a", "004-20261013-0004"),
+            ("005-b", "005-20261014-0005"),
+            ("006-c", "006-20261014-0006"),
+            ("002-d", "002-20261013-0002"),
+            ("008-own", "008-20261016-0008"),
+        ] {
+            tracked(
+                dir.path(),
+                &format!("docs/features/{dir_name}"),
+                numbers_block(&format!(
+                    "| {id} (this run) | x | 1 | 1 | 1 | 1 | 1 | 1% | 0 |\n"
+                )),
+            );
+        }
+        let ids: Vec<String> = tracked_rows(dir.path(), "008")
+            .unwrap()
+            .iter()
+            .map(|r| r[2..19].to_string())
             .collect();
         assert_eq!(
-            rows,
+            ids,
             [
-                "008-20261007-hhhh",
-                "004-20261004-dddd",
-                "003-20261003-cccc",
-                "002-20261002-bbbb"
-            ],
-            "{s}"
+                "006-20261014-0006",
+                "005-20261014-0005",
+                "004-20261013-0004"
+            ]
         );
-        assert!(s.contains("| 008-20261007-hhhh (this run) | 008 |"), "{s}");
-        assert!(!s.contains(NO_EARLIER), "{s}");
-        assert_eq!(s, numbers(&db, "008-20261007-hhhh").unwrap());
-    }
-
-    /// A stopped run is phase `finished` too: it never joins the cohort.
-    #[test]
-    fn a_stopped_run_is_not_compared_with() {
-        let dir = tempfile::tempdir().unwrap();
-        let db = Db::open(&dir.path().join("factory.db")).unwrap();
-        insert(
-            &db,
-            "001-20261001-aaaa",
-            "/r",
-            "2026-10-01T00:00:00Z",
-            Some("2026-10-01T01:00:00Z"),
-        );
-        db.conn()
-            .execute(
-                "INSERT INTO events (run_id, seq, ts, kind, payload)
-                 VALUES ('001-20261001-aaaa', 1, '2026-10-01T01:00:00Z', 'run_stopped', '{}')",
-                [],
-            )
-            .unwrap();
-        insert(
-            &db,
-            "002-20261002-bbbb",
-            "/r",
-            "2026-10-02T00:00:00Z",
-            Some("2026-10-02T01:00:00Z"),
-        );
-        let s = numbers(&db, "002-20261002-bbbb").unwrap();
-        assert!(s.contains(NO_EARLIER), "{s}");
     }
 }

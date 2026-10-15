@@ -211,7 +211,7 @@ fn a_repo_with_no_docs_is_off_the_framework_until_init() {
     }
     assert_eq!(
         fs::read_to_string(dir.path().join("docs/.gitignore")).unwrap(),
-        "docs.lock\n"
+        "docs.lock\n__pycache__/\n"
     );
     let snapshot = |root: &Path| -> Vec<(String, String)> {
         ["project.toml", "index.md", ".gitignore"]
@@ -315,7 +315,7 @@ fn concurrent_sets_on_two_slices_never_lose_one() {
     assert_eq!(st.slices[&2].status, "building");
 }
 
-const DOCS_VERBS: [&str; 18] = [
+const DOCS_VERBS: [&str; 19] = [
     "init",
     "new",
     "slice",
@@ -327,6 +327,7 @@ const DOCS_VERBS: [&str; 18] = [
     "idea",
     "ship",
     "archive",
+    "harvest",
     "renumber",
     "lanes",
     "check",
@@ -353,7 +354,7 @@ fn help_verbs(help: &str) -> std::collections::BTreeSet<String> {
 }
 
 #[test]
-fn help_lists_the_eighteen_verbs_in_and_out_of_a_repo() {
+fn help_lists_the_nineteen_verbs_in_and_out_of_a_repo() {
     let fx = Fixture::new("docs-help");
     let none = tempfile::tempdir().unwrap();
     let want: std::collections::BTreeSet<String> =

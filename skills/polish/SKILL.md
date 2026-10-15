@@ -19,7 +19,7 @@ The work is built and QA'd. This is everything between "it works" and "merge it"
 - **Framework project?** `factory docs status`. If `docs/` exists, this is a feature closeout and everything below applies. If not, you still do collect → triage → fix → cleanup; skip the framework-specific steps and say which you skipped.
 - **Load the arbiters, before reading a single finding.** This is what makes triage sharp instead of noisy:
   - the feature's `prd.md` — especially its **Decisions log** (`OPEN-n`), **Non-goals**, and **§QA plan** (the proof each FR promised — a `done` slice whose Prove task has no evidence in Progress is a finding, not a formality)
-  - `docs/decisions.md` — the project's standing engineering decisions (`DEC-n`), if it exists
+  - `docs/decisions.md` — the project's standing engineering decisions, one named entry each, if it exists
   - `docs/ux-rubric.md` — what "finished" looks like on screen here, if the diff touches UI
   - `CLAUDE.md` / `AGENTS.md` / `.ai/guidelines/` — the project's own rules. The gate itself comes from `factory docs gate`.
 - **Are the slices done?** If any slice is still `pending`/`building`, say so and ask whether to continue — polishing half a feature usually means the review runs twice.
@@ -84,7 +84,7 @@ The file says `fallback owed`, or the last resort's run fails → a fresh agent 
 For every external finding:
 
 - **Verify it against the actual code**, at `file:line`. A finding that misreads the code gets a **one-line rebuttal recorded in the report, not silently dropped** — the user must be able to disagree with your pushback.
-- **Check it against the PRD's decisions log and `docs/decisions.md`.** A finding that contradicts a settled `OPEN-n` or a `DEC-n` is not a bug — it is re-litigating a decision. Flag it as such, with the citation. This is the single most common false-positive class from a context-less reviewer.
+- **Check it against the PRD's decisions log and `docs/decisions.md`.** A finding that contradicts a settled `OPEN-n` or a decision in `docs/decisions.md` is not a bug — it is re-litigating a decision. Flag it as such, with the citation. This is the single most common false-positive class from a context-less reviewer.
 - **Dedup against the local findings.** The two reviewers overlap. Merge duplicates into one entry keeping the better explanation, so nothing gets considered — or fixed — twice.
 
 Triage the merged set **once**, not each batch separately.
@@ -107,8 +107,10 @@ Use **AskUserQuestion**, one round covering every Ask-bucket item. Per item: the
 
 **Consult `docs/decisions.md` first:**
 
-- **An exact match to an existing `DEC-n`** → do not ask at all. Apply the prior decision, cite it, and list it under what you fixed. The user already answered this.
-- **A near match** → still ask, but put the prior decision first as the recommended option, labelled *"(Recommended — consistent with DEC-7)"*.
+Look an entry up by the question it answers and its **Applies when**, never by its heading's shape: an older file may still number its entries.
+
+- **An exact match** → do not ask at all. Apply the prior decision, cite it as `docs/decisions.md#{slug}`, and list it under what you fixed. The user already answered this.
+- **A near match** → still ask, but put the prior decision first as the recommended option, labelled *"(Recommended — consistent with decisions.md#cache-at-the-query-level)"*.
 
 Follow-up questions only if an answer opens a genuinely new fork.
 
@@ -144,7 +146,7 @@ Invoke the `prune` skill in **`pr` mode** (only tests added or changed on this b
 ## 8. Distil — three destinations, then the scratchpad dies
 
 - **Fixed** → the slice's `**Code-review fixes ({date}).**` section, one bullet each: what was wrong, why it mattered, what it is now. Feature-wide fixes go in the last slice touched, or the PRD's Status prose if they belong to no single slice.
-- **Decided** → candidate `DEC-n` entries in `docs/decisions.md` (see below).
+- **Decided** → candidate entries in `docs/decisions.md` (see below).
 - **Parked** → already handled in step 6.
 - **Rebutted** → keep the one-line rebuttals in your report to the user. They do not need a permanent home, but the user must see them.
 
@@ -156,11 +158,11 @@ Then set `reviewed: {date}` in the PRD's frontmatter.
 
 - a design rule the review missed → a line in `docs/ux-rubric.md`
 - a rule a machine could enforce → a lint rule, an arch test, or a gate tier via `/gate`, and then it does *not* go in the rubric
-- a recurring engineering fork → a `DEC-n`, under the three tests below
+- a recurring engineering fork → an entry in `docs/decisions.md`, under the three tests below
 
 Without this, the same correction arrives by hand on every feature. It is the cheapest step in the ritual and the one most often skipped.
 
-### Which decisions earn a `DEC` entry — recommend, do not assume
+### Which decisions earn an entry — recommend, do not assume
 
 **Most do not.** A bloated decisions log defeats its own purpose: it exists to be searched three PRs later, and noise makes it unsearchable.
 
@@ -170,12 +172,12 @@ Propose an entry only when all three hold:
 2. **It was not obvious.** If the answer follows from an existing convention, the convention already covers it.
 3. **You can write a real "Applies when" line.** If the trigger is "in `AgentController::edit()`", it is not a decision, it is a fix. **This is the sharpest filter — use it.**
 
-**Recommend, with your reasoning, and let the user choose.** Default is not to log. Say something like: *"Two of these five are worth logging as DECs — the caching one and the status-enum one, because both will come up again the moment we touch another aggregate. The other three are local."*
+**Recommend, with your reasoning, and let the user choose.** Default is not to log. Say something like: *"Two of these five are worth logging in `docs/decisions.md` — the caching one and the status-enum one, because both will come up again the moment we touch another aggregate. The other three are local."*
 
 Entry shape:
 
 ```markdown
-### DEC-7 — {the question, phrased as a question} · {date} · {PRD-013 slice-03}
+## {Short name}
 
 **Chose:** {what}
 **Over:** {the alternative, and why it lost}
@@ -183,7 +185,7 @@ Entry shape:
 **Applies when:** {the trigger a future agent will recognise}
 ```
 
-Numbers are monotonic and never reused. A reversed decision is **superseded, not deleted**: leave the old entry and add `**Superseded by DEC-12.**`
+No number, date or origin: the heading is the name, and its link is the heading's own anchor, the slug GitHub makes from it (`## Cache at the query level` → `docs/decisions.md#cache-at-the-query-level`). Cite an entry by that link. Renaming an entry keeps its old slug as an `<a id="old-slug"></a>` line above the heading, so every link to it still resolves. A reversed decision folds into the winner's **Over**, with the reason it lost, and its anchors move above the winner's heading.
 
 ## 9. Close out
 
@@ -193,8 +195,8 @@ The closeout is one final commit:
 
 - the prose **Status** line in `prd.md` — what actually landed
 - the index **Notes** cell — decisions taken, what remains, the PR number
-- any new `DEC-n` entries the user approved
-- then `factory docs ship <NNN>` (something outstanding survives the merge) or `factory docs archive <NNN>` (nothing left at all)
+- any new `docs/decisions.md` entries the user approved
+- then `factory docs ship <NNN>`. Archiving is `/harvest`'s, once the owner has routed the feature's lessons
 - `factory docs check` clean **before** committing — never commit docs that fail it
 
 Pushing still asks. Everything up to the push is yours to do.
@@ -207,6 +209,6 @@ Inside a `factory` run these are the sections of the PR body, in the shape the p
 - **what you fixed**, grouped, one line each
 - **what you rebutted and why** — the user may disagree
 - what you parked, and where it went
-- which decisions you recommend logging as `DEC`s, and which you deliberately did not
+- which decisions you recommend logging in `docs/decisions.md`, and which you deliberately did not
 - what `/prune` removed or consolidated
 - gate output, and the closeout state

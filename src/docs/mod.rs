@@ -4,6 +4,7 @@ pub mod check;
 pub mod doctor;
 pub mod frontmatter;
 pub mod gate;
+pub mod harvest;
 pub mod hook;
 pub mod ideas;
 pub mod lanes;

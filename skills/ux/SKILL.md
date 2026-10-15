@@ -39,7 +39,7 @@ Then stop. A fresh rubric plus a review in one pass means reviewing against rule
 
 - `docs/ux-rubric.md` — the project's answers. Absent → rubric mode first, when the owner is in the room. The rubric is the owner's file, so a `factory` run never writes one: it runs the mechanical checks against the tokens and components the code defines and says the review had no rubric, which `factory docs preflight` already judged before the run started.
 - The feature's `prd.md` §QA plan Human rows, and its Non-goals. **A finding that contradicts a settled decision is re-litigation, not a defect** — same rule as `/polish`.
-- `docs/decisions.md` for any `DEC-n` about the interface.
+- `docs/decisions.md` for any decision about the interface.
 
 ### 3. Drive every state, not every screen
 

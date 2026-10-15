@@ -1,1 +1,43 @@
-status = "ready"
+status = "shipped"
+reviewed = "2026-10-15"
+shipped = "2026-10-15"
+
+[slices.1]
+status = "done"
+lane = 1
+depends_on = []
+
+[slices.2]
+status = "done"
+lane = 2
+depends_on = []
+
+[slices.3]
+status = "done"
+lane = 3
+depends_on = []
+
+[slices.4]
+status = "done"
+lane = 4
+depends_on = []
+
+[slices.5]
+status = "done"
+lane = 1
+depends_on = [2, 4]
+
+[slices.6]
+status = "done"
+lane = 2
+depends_on = [2]
+
+[slices.7]
+status = "done"
+lane = 1
+depends_on = []
+
+[slices.8]
+status = "done"
+lane = 1
+depends_on = [5, 6]

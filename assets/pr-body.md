@@ -7,13 +7,13 @@ GitHub does not resolve repository-relative links in a PR body, so paths go in b
 
 {One paragraph: what this makes true that was not true before.} PRD: `docs/features/{NNN}-{slug}/prd.md`
 
-> Opened by `/deliver`, unattended. **Not merged — that is yours.** If nothing is left after review, run `docs archive {NNN}` on this branch before merging.
+> Opened by `/deliver`, unattended. **Not merged — that is yours.**
 
 ### Needs your review
 
 - **AD-{n}** · slice-{NN} — {the question} → {what was chosen}
   *(entries marked `Review: decide`, then one line "+ {n} fyi entries"; every decision is in `factory docs log show {NNN}`. After the owner review in `/deliver` § 8, each reviewed entry ends in `— kept` or `— changed: {to what}`.)*
-- **DEC candidates** — {the question and the recommendation} · or none
+- **Decision candidates** — {the question and the recommendation} · or none
 - **Rubric proposals** — {the line} · or none
 - **OPENs carried, parked by design** — OPEN-{n} · or omit
 
@@ -27,9 +27,9 @@ GitHub does not resolve repository-relative links in a PR body, so paths go in b
 
 | Slice | FRs | Gate | Proof |
 |---|---|---|---|
-| {NN} — {title} | FR-{n} | inner {runs}/{red} red · verified at CP-{n} | {evidence path, or "no Prove rows: why"} |
+| {NN} — {title} | FR-{n} | inner {runs}/{red} red · verified at CP-{n} | {CP-{n}: {rows}, or "no Prove rows: why"} |
 
-Evidence lives on the machine that ran the build; harness artifacts are gitignored.
+Evidence stays in the run dir of the machine that ran the build, under `evidence/cp-{n}/`; none of it is committed.
 
 ### Review
 

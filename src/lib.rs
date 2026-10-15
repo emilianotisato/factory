@@ -31,6 +31,7 @@ pub mod scheduler;
 pub mod shell;
 pub mod skills;
 pub mod stream;
+pub mod upstream;
 pub mod worker;
 
 pub use error::{Error, Result};

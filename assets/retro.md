@@ -30,7 +30,7 @@ Instructions that contradicted each other, or were silent where a decision was n
 
 A gate tier, floor or lint rule that cost more than it caught *in this project*. Evidence, not preference.
 
-## Framework friction → skills repo
+## Framework friction → factory
 
 A step, rule or template in the framework itself. Name the skill and the section.
 

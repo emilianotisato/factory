@@ -149,6 +149,7 @@ pub fn run(root: &Path) -> Report {
         }
     }
     archive_frozen(root, &mut r);
+    home_paths(root, &mut r);
     links(root, &mut r);
     ideas(root, &mut r);
     for dir in [root.to_path_buf(), docs] {
@@ -522,7 +523,7 @@ fn state_rules(dir: &str, state_rel: &str, nnn: &str, f: &Feature, s: &State, r:
             Some(d) => r.warn(
                 "W-READY-TO-SHIP",
                 format!(
-                    "PRD-{nnn}: reviewed {d}, every slice done, status still \"{st}\" — run `factory docs ship {nnn}` before you merge (or `factory docs archive {nnn}` if nothing is left)"
+                    "PRD-{nnn}: reviewed {d}, every slice done, status still \"{st}\" — run `factory docs ship {nnn}` before you merge"
                 ),
             ),
         }
@@ -688,6 +689,40 @@ fn git(root: &Path, args: &[&str]) -> Option<String> {
     out.status
         .success()
         .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Bytes, not text: a tracked `.pyc` holds home paths too. `docs/archive/` is frozen, so a hit there cannot be fixed.
+fn home_paths(root: &Path, r: &mut Report) {
+    if git(root, &["rev-parse", "--is-inside-work-tree"])
+        .as_deref()
+        .map(str::trim)
+        != Some("true")
+    {
+        return;
+    }
+    let Some(tracked) = git(root, &["ls-files", "-z", "--", "docs"]) else {
+        return;
+    };
+    for rel in tracked.split('\0').filter(|p| !p.is_empty()) {
+        if rel.starts_with("docs/archive/") {
+            continue;
+        }
+        let path = root.join(rel);
+        // A tracked symlink can point at `/dev/zero` or a FIFO, and reading it would hang the check.
+        if !fs::symlink_metadata(&path).is_ok_and(|m| m.is_file()) {
+            continue;
+        }
+        let Ok(bytes) = fs::read(&path) else {
+            continue;
+        };
+        if let Some(at) = crate::paths::find_home_path(&bytes) {
+            let line = bytes[..at].iter().filter(|b| **b == b'\n').count() + 1;
+            r.warn(
+                "W-HOME-PATH",
+                format!("{rel}:{line} holds a home path — write it as `~/…`"),
+            );
+        }
+    }
 }
 
 /// A move in (`R`, `A`, `??`) is how archiving works; only an `M` in either column is an error.
@@ -1059,6 +1094,48 @@ mod tests {
             &["mv", "docs/features/007-moved", "docs/archive/007-moved"],
         );
         assert_eq!(codes(root), Vec::<String>::new(), "a move in");
+    }
+
+    #[test]
+    fn a_tracked_doc_holding_a_home_path_warns_once_with_its_first_line() {
+        let d = tree();
+        let root = d.path();
+        let slice = "docs/features/001-fixture/slice-01-a.md";
+        let line = fs::read_to_string(root.join(slice))
+            .unwrap()
+            .lines()
+            .count()
+            + 1;
+        append(root, slice, "the run dir: /home/x/a\nagain /home/x/b\n");
+        append(
+            root,
+            "docs/features/001-fixture/slice-02-b.md",
+            "scratch: /tmp/home/x/a\n",
+        );
+        write(
+            root,
+            "docs/archive/005-old/prd.md",
+            "---\nnumber: 5\nslug: old\nstatus: archived\n---\n/home/x/a\n",
+        );
+        write(root, "outside.txt", "/home/x/a\n");
+        std::os::unix::fs::symlink(
+            "../../../outside.txt",
+            root.join("docs/features/001-fixture/link.md"),
+        )
+        .unwrap();
+        let home_paths = |root: &Path| -> Vec<String> {
+            run(root)
+                .warnings
+                .into_iter()
+                .filter(|(c, _)| c == "W-HOME-PATH")
+                .map(|(_, m)| m)
+                .collect()
+        };
+        assert_eq!(home_paths(root), Vec::<String>::new(), "untracked");
+        git_ok(root, &["add", "-A"]);
+        let hits = home_paths(root);
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert!(hits[0].starts_with(&format!("{slice}:{line} ")), "{hits:?}");
     }
 
     #[test]

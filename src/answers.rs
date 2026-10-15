@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::docs::log;
 use crate::error::{io, json};
 use crate::events::EventKind;
+use crate::paths;
 use crate::run::Run;
 use crate::{Error, Result};
 
@@ -227,23 +228,28 @@ pub fn add_block(
     title: &str,
     body: &str,
 ) -> Result<String> {
-    let mut e = log::Entry::new(log::Kind::Block, &block_title(title), body);
+    let mut e = log::Entry::new(log::Kind::Block, &block_title(&tilde(title)), &tilde(body));
     e.slice = slice;
     e.phase = phase.map(str::to_string);
     log::add(feature_dir, e)?.ok_or_else(|| Error::Msg("log add returned no block id".into()))
 }
 
 pub fn add_note(feature_dir: &Path, slice: Option<u32>, title: &str, body: &str) -> Result<()> {
-    let mut e = log::Entry::new(log::Kind::Note, title, body);
+    let mut e = log::Entry::new(log::Kind::Note, &tilde(title), &tilde(body));
     e.slice = slice;
     log::add(feature_dir, e).map(|_| ())
 }
 
 pub fn resolve(feature_dir: &Path, entry: &BlockEntry, text: &str) -> Result<()> {
-    let mut e = log::Entry::new(log::Kind::Answer, "", text);
+    let mut e = log::Entry::new(log::Kind::Answer, "", &tilde(text));
     e.slice = entry.slice;
     e.reference = Some(entry.id.clone());
     log::add(feature_dir, e).map(|_| ())
+}
+
+/// The owner answering is on the same machine, so `~/` still opens.
+fn tilde(text: &str) -> String {
+    paths::home_to_tilde(text, &paths::home())
 }
 
 #[cfg(test)]

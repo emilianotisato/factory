@@ -5,6 +5,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::LazyLock;
 
 use crate::{Error, Result};
 
@@ -81,6 +82,73 @@ pub fn home() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/"))
 }
 
+/// A byte that continues a path segment: a home prefix right after one is mid-path, as in `/tmp/home/x/`.
+fn in_segment(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'~')
+}
+
+static HOME_PATH: LazyLock<regex::bytes::Regex> = LazyLock::new(|| {
+    regex::bytes::Regex::new(r"(?:^|(?-u:[^A-Za-z0-9._~-]))(/(?:home|Users)/[A-Za-z0-9._-]+/)")
+        .expect("home path pattern compiles")
+});
+
+static ANY_HOME_PATH: LazyLock<regex::bytes::Regex> = LazyLock::new(|| {
+    regex::bytes::Regex::new(r"/(?:home|Users)/[A-Za-z0-9._-]+/")
+        .expect("home path pattern compiles")
+});
+
+/// Byte offset of the first `/home/<name>/` or `/Users/<name>/` that starts a path in `text`.
+/// In binary (a NUL byte), a length byte such as `E` can sit right before a path, so any hit counts.
+pub fn find_home_path(text: &[u8]) -> Option<usize> {
+    if text.contains(&0) {
+        return ANY_HOME_PATH.find(text).map(|m| m.start());
+    }
+    HOME_PATH
+        .captures(text)
+        .and_then(|c| c.get(1))
+        .map(|m| m.start())
+}
+
+/// `text` with every `/home/<name>/` and `/Users/<name>/` that starts a path written as `~/`, whoever's home it is.
+pub fn home_paths_to_tilde(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
+    for c in HOME_PATH.captures_iter(text.as_bytes()) {
+        let m = c.get(1).expect("the pattern has one group");
+        out.push_str(&text[last..m.start()]);
+        out.push_str("~/");
+        last = m.end();
+    }
+    out.push_str(&text[last..]);
+    out
+}
+
+/// `text` with each path under `home` written as `~/…`; a home of `/` rewrites nothing.
+pub fn home_to_tilde(text: &str, home: &Path) -> String {
+    let Some(home) = home.to_str().map(|h| h.trim_end_matches('/')) else {
+        return text.to_string();
+    };
+    if home.is_empty() {
+        return text.to_string();
+    }
+    let prefix = format!("{home}/");
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(&prefix) {
+        let starts_path = at == 0 || !in_segment(rest.as_bytes()[at - 1]);
+        let take = if starts_path { at } else { at + 1 };
+        out.push_str(&rest[..take]);
+        if starts_path {
+            out.push_str("~/");
+            rest = &rest[at + prefix.len()..];
+        } else {
+            rest = &rest[take..];
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 pub fn claude_config_dir() -> PathBuf {
     non_empty("CLAUDE_CONFIG_DIR")
         .map(PathBuf::from)
@@ -120,4 +188,62 @@ pub fn repo_root(from: &Path) -> Result<PathBuf> {
     PathBuf::from(&root)
         .canonicalize()
         .map_err(crate::error::io(format!("canonicalize {root}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_home_path_is_found_only_where_a_path_starts() {
+        assert_eq!(find_home_path(b"/home/x/a"), Some(0));
+        assert_eq!(find_home_path(b"see /Users/ana.b/notes"), Some(4));
+        assert_eq!(find_home_path(b"(`/home/x/`)"), Some(2));
+        assert_eq!(find_home_path(b"line\n/home/x-1/"), Some(5));
+        assert_eq!(find_home_path(b"/tmp/home/x/ and ~/home/y/"), None);
+        assert_eq!(find_home_path(b"/home/x and /home/ and /Users"), None);
+        assert_eq!(find_home_path(b"/tmp/home/x/ then /home/y/"), Some(18));
+        assert_eq!(find_home_path(b"caf\xe9/home/x/a"), Some(4));
+    }
+
+    #[test]
+    fn in_binary_a_home_path_after_a_length_byte_is_found() {
+        assert_eq!(find_home_path(b"\x00\x01zE/home/x/a"), Some(4));
+        assert_eq!(find_home_path(b"zE/home/x/a"), None);
+    }
+
+    #[test]
+    fn only_the_home_prefix_starting_a_path_becomes_a_tilde() {
+        let home = Path::new("/home/x");
+        assert_eq!(
+            home_to_tilde("log (/home/x/data/runs/1) and /home/x/", home),
+            "log (~/data/runs/1) and ~/"
+        );
+        assert_eq!(
+            home_to_tilde("/home/xy/a /home/x", home),
+            "/home/xy/a /home/x"
+        );
+        assert_eq!(home_to_tilde("/tmp/home/x/a", home), "/tmp/home/x/a");
+        assert_eq!(
+            home_to_tilde("/tmp/home/x/a /home/x/b", home),
+            "/tmp/home/x/a ~/b"
+        );
+        assert_eq!(home_to_tilde("/Users/x/a", Path::new("/Users/x/")), "~/a");
+    }
+
+    #[test]
+    fn every_home_path_starting_a_path_becomes_a_tilde() {
+        assert_eq!(
+            home_paths_to_tilde("/home/x/a (`/Users/ana.b/c`)\n/home/y/d /tmp/home/z/e"),
+            "~/a (`~/c`)\n~/d /tmp/home/z/e"
+        );
+    }
+
+    #[test]
+    fn a_home_of_root_rewrites_nothing() {
+        assert_eq!(
+            home_to_tilde("/home/x/a /tmp/b", Path::new("/")),
+            "/home/x/a /tmp/b"
+        );
+    }
 }

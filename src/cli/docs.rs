@@ -91,8 +91,15 @@ enum Verb {
     },
     /// Mark a feature shipped once every slice is done
     Ship { feature: String },
-    /// Move a feature whose slices are all done into docs/archive/
+    /// Move a feature whose slices are all done into docs/archive/, records only: slices and evidence are dropped
     Archive { feature: String },
+    /// Print shipped features' retro lessons and the ideas they spawned; `--done` archives them
+    Harvest {
+        features: Vec<String>,
+        /// Archive the batch: records only, history banner on, staged, not committed
+        #[arg(long)]
+        done: bool,
+    },
     /// The lanes; `set N --env K=V` writes the lane files
     Lanes {
         args: Vec<String>,
@@ -377,6 +384,9 @@ fn dispatch(root: &Path, verb: Verb, out: &mut dyn Write, err: &mut dyn Write) -
         }
         Verb::Ship { feature } => crate::docs::ship::ship(root, &feature, out),
         Verb::Archive { feature } => crate::docs::ship::archive(root, &feature, out),
+        Verb::Harvest { features, done } => {
+            crate::docs::harvest::harvest(root, &features, done, out)
+        }
         Verb::Lanes { args, env, setup } => {
             crate::docs::lanes::run(root, &args, env.as_deref(), setup.as_deref(), out)
         }

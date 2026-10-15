@@ -649,6 +649,49 @@ fn the_driver_runs_the_gate_at_each_checkpoint_and_commits_the_cp_entries() {
     );
 }
 
+#[test]
+fn checkpoint_evidence_lands_in_the_run_dir_and_never_in_the_branch() {
+    let fx = Fixture::new("cp-evidence");
+    fx.chain();
+    fx.write_plan(&[
+        done(),
+        done(),
+        step("checkpoint"),
+        done(),
+        step("checkpoint"),
+    ]);
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "finished", 60);
+
+    let calls = fx.calls();
+    assert_eq!(calls[2]["prompt"], checkpoint(1));
+    let canon = |p: &Path| fs::canonicalize(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+    let evidence = canon(&dir.join("evidence"));
+    for call in &calls {
+        let named = call["env"]["FACTORY_EVIDENCE"]
+            .as_str()
+            .unwrap_or_else(|| panic!("no FACTORY_EVIDENCE: {}", call["env"]));
+        assert_eq!(canon(Path::new(named)), evidence, "{}", call["prompt"]);
+    }
+    let row = evidence.join("cp-1/row.txt");
+    assert!(row.is_file(), "{} missing", row.display());
+
+    let tree = fx.git(&["ls-tree", "-r", "--name-only", "feat/fixture"]);
+    assert!(
+        !tree.lines().any(|p| p.split('/').any(|s| s == "evidence")),
+        "{tree}"
+    );
+    let shown = fx.docs(&["log", "show", "001"]);
+    let cp1 = &shown[shown
+        .find("CP-1")
+        .unwrap_or_else(|| panic!("no CP-1:\n{shown}"))..];
+    let cp1 = &cp1[..cp1.find("CP-2").unwrap_or(cp1.len())];
+    assert!(
+        cp1.contains("**Prove:** FR-1 — evidence: cp-1/row.txt"),
+        "{shown}"
+    );
+}
+
 // ── leaks at the checkpoint ─────────────────────────────────────────────────
 
 /// A rule's heading, its fix line and its hits, up to the blank line.
@@ -1190,6 +1233,34 @@ fn three_reds_block_the_run_and_the_answer_reruns_the_gate() {
     assert_eq!(answers_to(&fx, "BLOCK-1").len(), 1);
     assert_eq!(fx.docs_json("status")["openBlocks"], json!([]));
     assert_two_checkpoints(&fx, &dir);
+}
+
+#[test]
+fn a_block_body_names_the_run_dir_under_the_home_as_tilde() {
+    let fx = Fixture::new("cp-block-home");
+    fx.chain();
+    fx.script_gate(&["red", "red", "red"]);
+    fx.write_plan(&[done(), done(), step("fix"), step("fix")]);
+    let base = fx.data_dir().parent().unwrap().to_path_buf();
+    let out = fx
+        .command(BIN)
+        .env("HOME", &base)
+        .args(["run", "001"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let dir = only_run_dir(&fx);
+    assert!(dir.starts_with(&base), "{dir:?}");
+    wait_phase(&fx, &dir, "waiting-owner", 90);
+
+    let b = block(&fx, "BLOCK-1");
+    let text = body(&b);
+    assert!(text.contains("transcript (~/data/runs/"), "{text}");
+    let log = fx.read(LOG);
+    assert!(!log.contains("/home/"), "{log}");
+    assert!(!log.contains(base.to_str().unwrap()), "{log}");
+    let out = factory(&fx, &["stop", &run_id(&dir)]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
 }
 
 // ── a run killed under the checkpoint worker resumes there ──────────────────

@@ -296,6 +296,7 @@ fn archive_moves_the_folder_and_leaves_the_index_alone() {
         "slices.2.status=done",
         "slices.3.status=done",
     ]);
+    commit(&fx);
     let index = fx.read("docs/index.md");
     fx.docs(&["archive", "001"]);
     assert!(!fx.path().join(FEATURE_DIR).exists());
@@ -418,4 +419,306 @@ fn renumber_rewrites_live_docs_and_leaves_the_archive_alone() {
         "{}",
         stderr(&o)
     );
+}
+
+// ── harvest ──────────────────────────────────────────────────────────────────
+
+fn retro(lesson: &str) -> String {
+    format!(
+        "# Retro\n\n## Cost vs catch\n\n{lesson}\n\n## Numbers\n\n<!-- factory:numbers -->\n| tokens | 1 |\n<!-- /factory:numbers -->\n"
+    )
+}
+
+fn idea(fx: &Fixture, title: &str, origin: Option<&str>, body: &str) -> String {
+    let file = fx.path().join("idea-body.md");
+    fs::write(&file, body).unwrap();
+    let file = file.to_string_lossy().into_owned();
+    let mut args = vec!["idea", "add", "--title", title, "--body-file", &file];
+    if let Some(o) = origin {
+        args.extend(["--origin", o]);
+    }
+    let id = fx.docs(&args).trim().to_string();
+    fs::remove_file(&file).unwrap();
+    id
+}
+
+/// 001 and 002 shipped with retros, 003 left ready; one idea each from 001, from 0012, from nowhere.
+fn harvest_fixture(name: &str) -> (Fixture, String) {
+    let fx = Fixture::new(name);
+    fx.docs(&[
+        "set",
+        "001",
+        "slices.1.status=done",
+        "slices.2.status=done",
+        "slices.3.status=done",
+    ]);
+    fx.docs(&["ship", "001"]);
+    fs::write(
+        fx.path().join(FEATURE_DIR).join("retro.md"),
+        retro("the fixture lesson"),
+    )
+    .unwrap();
+    commit(&fx);
+    fx.docs(&["new", "second"]);
+    fx.docs(&["set", "002", "status=ready"]);
+    fx.docs(&["ship", "002"]);
+    fs::write(
+        fx.path().join("docs/features/002-second/retro.md"),
+        "---\nscore: 4\n---\n\n".to_string() + &retro("the second lesson"),
+    )
+    .unwrap();
+    fx.docs(&["new", "third"]);
+    fx.docs(&["set", "003", "status=ready"]);
+    let from_001 = idea(
+        &fx,
+        "Spawned by the fixture",
+        Some("PRD-001 polish"),
+        "The fixture spawned this. More after.",
+    );
+    idea(
+        &fx,
+        "Spawned by a longer number",
+        Some("factory PRD-0012 run 012-x"),
+        "Not the fixture's.",
+    );
+    idea(&fx, "Nobody's", None, "No origin at all.");
+    commit(&fx);
+    (fx, from_001)
+}
+
+#[test]
+fn harvest_prints_every_shipped_retro_without_numbers_and_the_ideas_each_spawned() {
+    let (fx, from_001) = harvest_fixture("v3-harvest-all");
+    let before = fx.git(&["status", "--porcelain"]);
+    let said = fx.docs(&["harvest"]);
+    assert_eq!(fx.git(&["status", "--porcelain"]), before, "harvest wrote");
+
+    assert!(said.contains("the fixture lesson"), "{said}");
+    assert!(said.contains("the second lesson"), "{said}");
+    assert!(!said.contains("score: 4"), "{said}");
+    assert!(!said.contains("factory:numbers"), "{said}");
+    assert!(!said.contains("| tokens |"), "{said}");
+    assert!(!said.contains("003-third"), "{said}");
+
+    let (first, second) = said.split_at(said.find("PRD-002").expect("002 harvested"));
+    assert!(first.contains("PRD-001"), "{said}");
+    assert!(
+        first.contains(&format!("{from_001} · The fixture spawned this.")),
+        "{said}"
+    );
+    assert!(!first.contains("More after"), "{said}");
+    assert!(!second.contains(&from_001), "{said}");
+    assert!(!said.contains("longer number"), "{said}");
+    assert!(!said.contains("Not the fixture's"), "{said}");
+    assert!(!said.contains("No origin"), "{said}");
+}
+
+#[test]
+fn harvest_of_a_named_feature_prints_that_feature_alone() {
+    let (fx, from_001) = harvest_fixture("v3-harvest-one");
+    let said = fx.docs(&["harvest", "002"]);
+    assert!(said.contains("the second lesson"), "{said}");
+    assert!(!said.contains("PRD-001"), "{said}");
+    assert!(!said.contains("the fixture lesson"), "{said}");
+    assert!(!said.contains(&from_001), "{said}");
+}
+
+#[test]
+fn harvest_refuses_a_named_feature_that_is_not_shipped() {
+    let (fx, _) = harvest_fixture("v3-harvest-ready");
+    let o = fx.docs_output(&["harvest", "001", "003"]);
+    assert_eq!(exit(&o), 2, "{}", stderr(&o));
+    assert!(stderr(&o).contains("ready"), "{}", stderr(&o));
+    assert!(stdout(&o).is_empty(), "{}", stdout(&o));
+}
+
+const BANNER: &str =
+    "> **History.** The code, `docs/reference` and `docs/decisions.md` win over this document.";
+
+/// The harvest fixture with a qa guide, an evidence file and a home path in 001's prd and log, committed.
+fn archive_fixture(name: &str) -> Fixture {
+    let (fx, _) = harvest_fixture(name);
+    let dir = fx.path().join(FEATURE_DIR);
+    fs::write(dir.join("qa-guide.md"), "# QA\n").unwrap();
+    fs::create_dir_all(dir.join("evidence")).unwrap();
+    fs::write(dir.join("evidence/run.txt"), "ok\n").unwrap();
+    let prd = dir.join("prd.md");
+    let text = fs::read_to_string(&prd).unwrap();
+    fs::write(&prd, text + "\nRan from /home/x/src/app.\n").unwrap();
+    let log = dir.join("log.jsonl");
+    let text = fs::read_to_string(&log).unwrap_or_default();
+    fs::write(&log, text + "{\"note\":\"/home/x/run\"}\n").unwrap();
+    commit(&fx);
+    fx
+}
+
+fn archived_files(fx: &Fixture, dir: &str) -> Vec<String> {
+    let mut v: Vec<String> = fx
+        .git(&["ls-files", "--", dir])
+        .lines()
+        .map(|l| l.trim_start_matches(&format!("{dir}/")).to_string())
+        .collect();
+    v.sort();
+    v
+}
+
+#[test]
+fn harvest_done_leaves_the_records_only_with_the_banner_staged_and_passing_the_hook() {
+    let fx = archive_fixture("v3-harvest-done");
+    let dir = "docs/archive/001-fixture";
+    let said = fx.docs(&["harvest", "001", "--done"]);
+
+    assert!(!fx.path().join(FEATURE_DIR).exists());
+    assert_eq!(
+        archived_files(&fx, dir),
+        ["log.jsonl", "prd.md", "retro.md", "state.toml"]
+    );
+    let prd = fx.read(&format!("{dir}/prd.md"));
+    let body = prd.strip_prefix("---\n").expect("frontmatter");
+    let after = &body[body.find("\n---\n").expect("closing ---") + 5..];
+    assert_eq!(after.lines().next(), Some(BANNER), "{prd}");
+    assert_eq!(prd.matches(BANNER).count(), 1, "{prd}");
+    assert!(prd.contains("Ran from ~/src/app."), "{prd}");
+    for f in ["prd.md", "state.toml", "log.jsonl", "retro.md"] {
+        let text = fx.read(&format!("{dir}/{f}"));
+        assert!(!text.contains("/home/"), "{f}: {text}");
+    }
+    let state = fx.read(&format!("{dir}/state.toml"));
+    assert!(state.contains("status = \"archived\""), "{state}");
+    for dropped in ["slice-01-a.md", "qa-guide.md", "evidence/run.txt"] {
+        assert!(
+            said.contains(&format!("dropped {FEATURE_DIR}/{dropped}")),
+            "{said}"
+        );
+    }
+    let porcelain = fx.git(&["status", "--porcelain", "--", "docs/archive"]);
+    assert!(
+        porcelain.lines().all(|l| !l[..2].contains('M')),
+        "{porcelain}"
+    );
+    assert!(fx.path().join("docs/features/002-second").exists());
+
+    let check = fx.docs_output(&["check"]);
+    let said = format!("{}{}", stdout(&check), stderr(&check));
+    assert!(!said.contains("E-ARCHIVE-MODIFIED"), "{said}");
+
+    fx.docs(&["hook"]);
+    let bin_dir = std::path::Path::new(env!("CARGO_BIN_EXE_factory"))
+        .parent()
+        .unwrap();
+    let path = format!("{}:{}", bin_dir.display(), fx.env()["PATH"]);
+    let out = fx
+        .command("git")
+        .args(["commit", "-q", "-m", "docs: harvest 001"])
+        .env("PATH", path)
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}{}",
+        stdout(&out),
+        stderr(&out)
+    );
+    assert!(fx.git(&["status", "--porcelain"]).is_empty());
+}
+
+#[test]
+fn harvest_done_refuses_an_uncommitted_folder_and_moves_nothing() {
+    let fx = archive_fixture("v3-harvest-dirty");
+    let retro = fx.path().join("docs/features/002-second/retro.md");
+    let text = fs::read_to_string(&retro).unwrap();
+    fs::write(&retro, text + "\nlate edit\n").unwrap();
+    let before = fx.git(&["status", "--porcelain"]);
+
+    let o = fx.docs_output(&["harvest", "001", "002", "--done"]);
+    assert_eq!(exit(&o), 2, "{}", stderr(&o));
+    assert!(stderr(&o).contains("002-second"), "{}", stderr(&o));
+    assert!(fx.path().join(FEATURE_DIR).exists());
+    assert!(!fx.path().join("docs/archive/002-second").exists());
+    assert_eq!(fx.git(&["status", "--porcelain"]), before);
+}
+
+#[test]
+fn harvest_done_takes_a_feature_named_twice_once_and_a_file_named_star_literally() {
+    let fx = archive_fixture("v3-harvest-star");
+    fs::write(fx.path().join(FEATURE_DIR).join("*"), "stray\n").unwrap();
+    commit(&fx);
+
+    let o = fx.docs_output(&["harvest", "001", "001", "--done"]);
+    assert_eq!(exit(&o), 0, "{}", stderr(&o));
+    assert_eq!(
+        archived_files(&fx, "docs/archive/001-fixture"),
+        ["log.jsonl", "prd.md", "retro.md", "state.toml"]
+    );
+    assert_eq!(stdout(&o).matches("PRD-001 →").count(), 1, "{}", stdout(&o));
+}
+
+#[test]
+fn harvest_done_refuses_a_kept_file_that_is_a_symlink() {
+    let fx = archive_fixture("v3-harvest-symlink");
+    let outside = fx.path().join("outside.md");
+    fs::write(&outside, "kept at /home/x/notes\n").unwrap();
+    let retro = fx.path().join(FEATURE_DIR).join("retro.md");
+    fs::remove_file(&retro).unwrap();
+    std::os::unix::fs::symlink("../../../outside.md", &retro).unwrap();
+    commit(&fx);
+
+    let o = fx.docs_output(&["harvest", "001", "--done"]);
+    assert_eq!(exit(&o), 2, "{}", stderr(&o));
+    assert!(stderr(&o).contains("is a symlink"), "{}", stderr(&o));
+    assert_eq!(
+        fs::read_to_string(&outside).unwrap(),
+        "kept at /home/x/notes\n"
+    );
+    assert!(fx.path().join(FEATURE_DIR).exists());
+}
+
+#[test]
+fn harvest_done_refuses_a_folder_holding_ignored_files() {
+    let fx = archive_fixture("v3-harvest-ignored");
+    fs::write(fx.path().join(".git/info/exclude"), "*.pyc\n").unwrap();
+    let cache = fx.path().join(FEATURE_DIR).join("evidence/__pycache__");
+    fs::create_dir_all(&cache).unwrap();
+    fs::write(cache.join("s.pyc"), b"\x00/home/x/a").unwrap();
+
+    let o = fx.docs_output(&["harvest", "001", "--done"]);
+    assert_eq!(exit(&o), 2, "{}", stderr(&o));
+    assert!(stderr(&o).contains("ignored files"), "{}", stderr(&o));
+    assert!(cache.join("s.pyc").exists());
+    assert!(!fx.path().join("docs/archive/001-fixture").exists());
+}
+
+#[test]
+fn harvest_done_writes_nothing_when_a_kept_file_is_not_utf8() {
+    let fx = archive_fixture("v3-harvest-latin1");
+    let dir = fx.path().join(FEATURE_DIR);
+    fs::write(dir.join("retro.md"), b"# Retro\n\ncaf\xe9\n").unwrap();
+    commit(&fx);
+    let prd = fs::read_to_string(dir.join("prd.md")).unwrap();
+
+    let o = fx.docs_output(&["harvest", "001", "--done"]);
+    assert_ne!(exit(&o), 0, "{}", stdout(&o));
+    assert_eq!(fs::read_to_string(dir.join("prd.md")).unwrap(), prd);
+    assert!(!fx.path().join("docs/archive/001-fixture").exists());
+}
+
+#[test]
+fn archive_leaves_the_same_records_only_shape() {
+    let fx = archive_fixture("v3-archive-shape");
+    let o = fx.docs_output(&["archive", "001"]);
+    assert_eq!(exit(&o), 0, "{}", stderr(&o));
+    let dir = "docs/archive/001-fixture";
+    assert_eq!(
+        archived_files(&fx, dir),
+        ["log.jsonl", "prd.md", "retro.md", "state.toml"]
+    );
+    let prd = fx.read(&format!("{dir}/prd.md"));
+    assert_eq!(prd.matches(BANNER).count(), 1, "{prd}");
+    assert!(!prd.contains("/home/"), "{prd}");
+    assert!(
+        fx.read(&format!("{dir}/state.toml"))
+            .contains("status = \"archived\"")
+    );
+    assert!(stdout(&o).contains("dropped"), "{}", stdout(&o));
 }

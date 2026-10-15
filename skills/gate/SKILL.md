@@ -37,7 +37,7 @@ Then detect the stacks. A repo is often two or three: a PHP backend with a TS fr
 - **CI**: `.github/workflows/*.yml`, `.gitlab-ci.yml`. **Which checks CI runs is a fact you need**, because §4's fork is whether the gate and CI stay in sync or deliberately diverge.
 - **Existing config**: `phpstan.neon`, `eslint.config.js`, `.golangci.yml`, `detekt.yml`, `pyproject.toml`, `phpunit.xml` testsuites, coverage settings.
 - **The test suite's actual shape**: how many tests, how long it takes, whether it is green right now. **A red suite stops this cold** — say so and fix or report it first. Building a gate on a red suite bakes in a bypass.
-- **The project's own rules**: `CLAUDE.md`, `AGENTS.md`, `.ai/guidelines/`, `docs/decisions.md`. A `DEC-n` about testing already answers some of what you are about to ask.
+- **The project's own rules**: `CLAUDE.md`, `AGENTS.md`, `.ai/guidelines/`, `docs/decisions.md`. A decision there about testing already answers some of what you are about to ask.
 
 ## 2. Measure the baseline — run the tools, record the numbers
 

@@ -13,8 +13,7 @@ use crate::cli::run::load_preflight;
 use crate::commit;
 use crate::config::{self, Config};
 use crate::db::RetroRow;
-use crate::docs::ideas::{self, Idea};
-use crate::docs::{Docs, Ship, Status, scaffold};
+use crate::docs::{Docs, Ship, Status};
 use crate::error::io;
 use crate::events::EventKind;
 use crate::land::{self, Landing};
@@ -327,7 +326,6 @@ fn polish(
             }
         }
         settle(run, row_id, &session_id, &exit.summary, WorkerOutcome::Done)?;
-        file_friction(run, board, cfg, out);
         return Ok(None);
     }
 }
@@ -410,64 +408,6 @@ impl Write for Stamped<'_> {
     fn flush(&mut self) -> std::io::Result<()> {
         self.out.flush()
     }
-}
-
-/// Never committed, and a failure never stops the closeout: it returns nothing on purpose.
-fn file_friction(run: &Run, board: &Status, cfg: &Config, out: &mut dyn Write) {
-    let Some(source) = cfg.source.as_ref().map(|s| &s.path) else {
-        return;
-    };
-    if !source.join(ideas::DIR).is_dir() {
-        return;
-    }
-    let repo = &run.state().repo;
-    let retro = repo.join(&board.dir).join("retro.md");
-    let Ok(text) = fs::read_to_string(&retro) else {
-        return;
-    };
-    let section = friction(&text);
-    if only_placeholder(&section) {
-        return;
-    }
-    let name = repo
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let prd = format!("{name} PRD-{}", run.state().feature);
-    let idea = Idea {
-        title: format!("friction: {prd}"),
-        state: "open".into(),
-        added: scaffold::today(),
-        origin: Some(format!("{prd} run {}", run.id())),
-        body: format!("{section}\n\nFrom {}\n", retro.display()),
-        ..Idea::default()
-    };
-    if let Ok(id) = ideas::add(source, &idea) {
-        let path = source.join(ideas::DIR).join(format!("{id}.md"));
-        let _ = say(out, &format!("friction: filed {}", path.display()));
-    }
-}
-
-/// Every paragraph left is one of the template's, whichever the writer kept or deleted.
-fn only_placeholder(section: &str) -> bool {
-    let template = friction(&retro_template());
-    let placeholders: Vec<&str> = template.split("\n\n").map(str::trim).collect();
-    section
-        .split("\n\n")
-        .map(str::trim)
-        .all(|p| p.is_empty() || placeholders.contains(&p))
-}
-
-fn friction(retro: &str) -> String {
-    retro
-        .lines()
-        .skip_while(|l| !l.starts_with("## Framework friction"))
-        .skip(1)
-        .take_while(|l| !l.starts_with("## "))
-        .collect::<Vec<_>>()
-        .join("\n")
-        .trim()
-        .to_string()
 }
 
 // ── landing ─────────────────────────────────────────────────────────────────
@@ -993,7 +933,7 @@ fn ship(
         stood_in(run, STAND_IN_RETRO, &retro_rel)?;
     }
     retro_row(run, board, &report)?;
-    if let Err(e) = retro::write(&retro, &retro::numbers(run.db(), run.id().as_str())?) {
+    if let Err(e) = retro::write(&retro, &retro::numbers(run.db(), run.id().as_str(), &repo)?) {
         say(out, &format!("ship: no ## Numbers written — {e}"))?;
     }
     let want = commit::expand(&repo, std::slice::from_ref(&board.dir))?;
@@ -2133,12 +2073,6 @@ pub fn settle_orphan(
         }
     }
     settle(run, w.row_id, &w.session_id, &summary, WorkerOutcome::Done)?;
-    if w.role == "polish" {
-        let repo = run.state().repo.clone();
-        if let Ok(loaded) = config::load_with_project(&paths::config_dir(), &repo) {
-            file_friction(run, board, &loaded.config, out);
-        }
-    }
     Ok(None)
 }
 
@@ -2529,34 +2463,6 @@ mod tests {
         assert!(shipped_in(state));
         assert!(!shipped_in("status = \"in-progress\"\n"));
         assert!(!shipped_in("# no state\nstatus = shipped\n"));
-    }
-
-    #[test]
-    fn the_friction_section_is_read_to_the_next_heading_or_the_end() {
-        let template = retro_template();
-        assert_eq!(
-            friction(&template),
-            "A step, rule or template in the framework itself. Name the skill and the section.\n\n\
-             A comment or name the leaks check should have caught: `file:line` and the line."
-        );
-        let two =
-            "# Retro\n\n## Framework friction → skills repo\n\n- one\n- two\n\n## Score\n\nx\n";
-        assert_eq!(friction(two), "- one\n- two");
-        let last = "# Retro\n\n## Framework friction → skills repo\n- tail\n### sub\nmore\n";
-        assert_eq!(friction(last), "- tail\n### sub\nmore");
-        assert_eq!(friction("# Retro\n\n## Score\n"), "");
-    }
-
-    #[test]
-    fn a_friction_section_of_kept_placeholders_is_not_filed() {
-        let template = friction(&retro_template());
-        let (first, leaks) = template.split_once("\n\n").unwrap();
-        for kept in ["", template.as_str(), first, leaks] {
-            assert!(only_placeholder(kept), "{kept}");
-        }
-        assert!(!only_placeholder(&format!(
-            "{first}\n\n- `src/a.rs:3` // FR-2 slipped past"
-        )));
     }
 
     #[test]

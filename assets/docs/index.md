@@ -19,7 +19,7 @@
 - **ready** — PRD agreed, not started (may not be sliced yet).
 - **in-progress** — at least one slice building.
 - **shipped** — every slice done and this branch completes the feature. Set in the last commit of its PR, never in a follow-up.
-- **archived** — every slice done *and* nothing left to do; folder moved to `archive/`. A feature with nothing outstanding goes here directly, skipping `shipped`.
+- **archived** — folder moved to `archive/`, holding the records only: `prd.md` with its history banner, `state.toml`, `log.jsonl` and `retro.md`. `/harvest` routes the lessons first, then `factory docs harvest NNN --done` (or `factory docs archive NNN`) leaves this shape.
 - **retired** — never built, number burned. A tombstone folder in `archive/` with `status = "retired"` says why.
 
 A slice is `pending → building → done`, or `blocked` while it waits on the owner.
@@ -56,7 +56,7 @@ _(none yet)_
 ### When done
 Set the terminal status **in the last commit of the feature's PR**, never after the merge. The docs ride the same branch as the code, so the main branch flips at the exact moment the merge lands.
 - Something survives the merge (a post-deploy measurement, a QA guide still to run, a follow-up FR) ⇒ **shipped**.
-- Nothing left at all ⇒ folder moved to `archive/`, status **archived**. Do not edit files after archiving.
+- The closeout ships, never archives. Archiving comes later, from `/harvest`. Do not edit files after archiving.
 - Both refuse while any slice is not `done`.
 
 ### Rules that keep this working for agents
