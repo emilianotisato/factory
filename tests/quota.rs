@@ -467,6 +467,89 @@ fn a_rate_limited_fix_worker_is_not_a_red() {
     );
 }
 
+fn pack_text(call: &Value) -> String {
+    let argv = call["argv"].as_array().unwrap();
+    let i = argv
+        .iter()
+        .position(|a| a == "--append-system-prompt-file")
+        .unwrap_or_else(|| panic!("no pack flag in {argv:?}"));
+    fs::read_to_string(argv[i + 1].as_str().unwrap()).unwrap()
+}
+
+fn collected_section(pack: &str) -> &str {
+    let from = pack.find("\n# Collected\n").expect("# Collected");
+    let to = pack[from..]
+        .find("\n# Log\n")
+        .expect("# Log after # Collected");
+    &pack[from..from + to]
+}
+
+fn cursor_calls(fx: &Fixture) -> usize {
+    fs::read_to_string(fx.stub_dir().join("cursor-agent.log"))
+        .unwrap_or_default()
+        .lines()
+        .count()
+}
+
+#[test]
+fn polish_collects_once_and_a_rate_limited_respawn_reuses_the_file() {
+    let fx = Fixture::new("quota-polish-collect");
+    fx.chain();
+    fx.write_plan(&[
+        done(),
+        done(),
+        step("checkpoint"),
+        done(),
+        step("checkpoint"),
+        step("rate_limited"),
+        step("polish"),
+    ]);
+    let clk = Clock::new(60);
+    let dir = start(&fx, &clk);
+    wait_until(&fx, &dir, "the polish collect", 60, || {
+        driver_log(&dir).contains("polish: collected ")
+    });
+    let collected_calls = cursor_calls(&fx);
+    assert!(
+        collected_calls >= 1,
+        "the collect never called cursor-agent"
+    );
+    wait_phase(&fx, &dir, "finished", 120);
+
+    let file = dir.join("collect.md");
+    let text = fs::read_to_string(&file).unwrap();
+    assert!(text.starts_with("<!-- head: "), "{text}");
+    let log = driver_log(&dir);
+    let line = log
+        .lines()
+        .find(|l| l.contains("polish: collected "))
+        .unwrap();
+    assert!(
+        line.contains(&format!("{} against main in ", file.display())) && line.ends_with(" s"),
+        "{line}"
+    );
+    let collected_at = log.find("polish: collected ").unwrap();
+    let spawned_at = log.find("polish: worker ").expect("a polish spawn line");
+    assert!(collected_at < spawned_at, "{log}");
+    assert!(log.contains("polish: reused "), "{log}");
+
+    let p = prompts(&fx);
+    assert_eq!(p[5..], [polish(), polish()], "{p:?}");
+    let calls = fx.calls();
+    let first = pack_text(&calls[5]);
+    let respawn = pack_text(&calls[6]);
+    let section = collected_section(&first);
+    assert!(
+        section.contains(&format!("`{}`", file.display())),
+        "{section}"
+    );
+    assert!(section.contains("\nverdict: "), "{section}");
+    assert!(section.contains("\nsecond opinion: "), "{section}");
+    assert_eq!(collected_section(&respawn), section);
+    assert_eq!(cursor_calls(&fx), collected_calls);
+    assert_eq!(outcomes(&fx, &dir, "polish"), ["rate_limited", "done"]);
+}
+
 #[test]
 fn a_spent_budget_parks_the_run_and_a_higher_budget_resumes_it() {
     let fx = Fixture::with_index("quota-budget", &[("checkpoint_every", "10")]);

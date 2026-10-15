@@ -85,6 +85,41 @@ fn assemble(header: String, sections: Vec<String>) -> (String, Vec<Part>) {
     (text, parts)
 }
 
+/// The `# Collected` body from a collect file: its plan, the leaks verdict, the second opinion's status
+/// and pass lines, then the file's path. The findings stay in the file, so they do not anchor the local review.
+pub fn collected(text: &str, file: &Path) -> String {
+    let part = |heading: &str| {
+        let marker = format!("\n## {heading}\n");
+        text.find(&marker).map(|i| {
+            let rest = &text[i + marker.len()..];
+            rest.find("\n## ").map_or(rest, |end| &rest[..end]).trim()
+        })
+    };
+    let plan = part("Plan").unwrap_or("(no plan in the file)");
+    let verdict = part("Leaks")
+        .and_then(|l| l.lines().find(|l| l.starts_with("verdict:")))
+        .unwrap_or("verdict: (none in the file)");
+    let marker = "\n## Second opinion\n";
+    let opinion = text.find(marker).map_or("", |i| &text[i + marker.len()..]);
+    let mut status: Vec<String> = Vec::new();
+    let mut in_pass = false;
+    for line in opinion.lines() {
+        if let Some(pass) = line.strip_prefix("### Pass ") {
+            in_pass = true;
+            if pass.ends_with(" — counted") || pass.ends_with(" — unreviewed") {
+                status.push(format!("- Pass {pass}"));
+            }
+        } else if !in_pass && !line.trim().is_empty() {
+            status.push(line.to_string());
+        }
+    }
+    format!(
+        "## Plan\n\n{plan}\n\n## Leaks\n\n{verdict}\n\n## Second opinion\n\n{}\n\nThe whole file, findings included: `{}`",
+        status.join("\n"),
+        file.display()
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockSection {
     pub id: String,
@@ -448,6 +483,7 @@ impl Pack {
         run_dir: &Path,
         default_branch: &str,
         feature_branch: &str,
+        collected: &str,
         retro_template: &str,
         packs_dir: &Path,
         spawn: u32,
@@ -498,6 +534,7 @@ impl Pack {
             ),
             vec![
                 branch,
+                format!("# Collected\n\n{}", collected.trim_end()),
                 log_section(docs, board)?,
                 retro,
                 pr_body,
@@ -1158,11 +1195,29 @@ mod tests {
                 "autonomy"
             ]
         );
-        let polish =
-            Pack::for_polish(&docs, &board, repo, "main", "feat/x", "# Retro", &packs, 1).unwrap();
+        let polish = Pack::for_polish(
+            &docs,
+            &board,
+            repo,
+            "main",
+            "feat/x",
+            "collect failed: x",
+            "# Retro",
+            &packs,
+            1,
+        )
+        .unwrap();
         assert_eq!(
             sections_of(&polish),
-            ["branch", "log", "retro", "pr_body", "contract", "autonomy"]
+            [
+                "branch",
+                "collected",
+                "log",
+                "retro",
+                "pr_body",
+                "contract",
+                "autonomy"
+            ]
         );
         let ci = Pack::for_ci_fix(&docs, &board, 1, 1, "test", "red — ✗\n", &packs, 1).unwrap();
         assert_eq!(
@@ -1174,6 +1229,19 @@ mod tests {
             text.contains("# Log\n\n<!-- factory docs log show 001 -->\n\nnone yet\n\n# Outline"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn the_collected_section_keeps_the_status_lines_and_leaves_the_findings_in_the_file() {
+        let file = Path::new("/runs/r1/collect.md");
+        let text = "<!-- head: abc -->\n\n## Plan\n\nchanged: 2 files, 70 lines against main...HEAD\n- a.rs (60 lines)\n- b.rs (10 lines)\nsize: local review and second opinion\nsecond opinion: reviewed, 1 of 2 passes counted\n\n## Leaks\n\nverdict: clean\n\nno hits\n\n## Second opinion\n\nexit: 0\nlog: /data/reviews/x\n\n### Pass 1 — a.rs (60 lines, 3 s, grok) — counted\n\n## Bugs\n\na.rs:4 drops the error\n\n### Pass 2 — b.rs (10 lines, 1 s, grok) — unreviewed\n\nunreviewed (exit 1, no text)\n";
+        let section = collected(text, file);
+        assert_eq!(
+            section,
+            "## Plan\n\nchanged: 2 files, 70 lines against main...HEAD\n- a.rs (60 lines)\n- b.rs (10 lines)\nsize: local review and second opinion\nsecond opinion: reviewed, 1 of 2 passes counted\n\n## Leaks\n\nverdict: clean\n\n## Second opinion\n\nexit: 0\nlog: /data/reviews/x\n- Pass 1 — a.rs (60 lines, 3 s, grok) — counted\n- Pass 2 — b.rs (10 lines, 1 s, grok) — unreviewed\n\nThe whole file, findings included: `/runs/r1/collect.md`"
+        );
+        assert!(!section.contains("drops the error"), "{section}");
+        assert!(!section.contains("## Bugs"), "{section}");
     }
 
     #[test]
@@ -1238,7 +1306,18 @@ mod tests {
             .unwrap(),
             Pack::for_checkpoint(&docs, &board, 1, &[1], &log, false, "clean\n", &packs, 1)
                 .unwrap(),
-            Pack::for_polish(&docs, &board, repo, "main", "feat/x", "# Retro", &packs, 1).unwrap(),
+            Pack::for_polish(
+                &docs,
+                &board,
+                repo,
+                "main",
+                "feat/x",
+                "collect failed: x",
+                "# Retro",
+                &packs,
+                1,
+            )
+            .unwrap(),
             Pack::for_ci_fix(&docs, &board, 1, 1, "test", "red\n", &packs, 1).unwrap(),
         ];
         for pack in &all {

@@ -18,18 +18,19 @@ use crate::docs::{Docs, Ship, Status, scaffold};
 use crate::error::io;
 use crate::events::EventKind;
 use crate::land::{self, Landing};
-use crate::pack::Pack;
+use crate::pack::{self, Pack};
 use crate::quota::{self, Hold, Limit};
 use crate::run::{Phase, Run, WorkerOutcome, WorkerRef};
 use crate::scheduler::{self, DEATH_CAP, say, short};
 use crate::stream::{Findings, Summary};
 use crate::worker::{self, Exit, Job, Worker};
-use crate::{Result, clock, lanes, metrics, paths, retro};
+use crate::{Result, clock, collect, lanes, metrics, paths, retro, review};
 
 /// The phases a closeout block names in its heading.
 pub const PHASES: [&str; 3] = ["polish", "pr", "ci"];
 
 pub const PR_BODY_FILE: &str = "pr-body.md";
+pub const COLLECT_FILE: &str = "collect.md";
 
 pub const STAND_IN_RETRO: &str = "retro";
 pub const STAND_IN_BODY: &str = "pr_body";
@@ -191,6 +192,15 @@ fn polish(
         }
         let attempt = run.state().workers.iter().filter(|w| mine(w)).count() as u32 + 1;
         let spawn = run.state().workers.len() as u32 + 1;
+        let lane = closeout_lane(board);
+        let (lane_dir, lane_def) = scheduler::prepare_lane(run, lane, true, out)?;
+        let collected = collected(
+            &lane_dir,
+            &default_branch,
+            &cfg.review,
+            &collect_path(run.dir()),
+            out,
+        )?;
         let packs = scheduler::packs_dir(run.dir());
         let pack = Pack::for_polish(
             docs,
@@ -198,6 +208,7 @@ fn polish(
             run.dir(),
             &default_branch,
             &feature_branch,
+            &collected,
             &template,
             &packs,
             spawn,
@@ -206,8 +217,6 @@ fn polish(
             .into_iter()
             .map(|b| b.id)
             .collect();
-        let lane = closeout_lane(board);
-        let (lane_dir, lane_def) = scheduler::prepare_lane(run, lane, true, out)?;
         drop_ref(run, board, &Closer::Polish)?;
         let w = Worker::spawn(
             run,
@@ -315,6 +324,52 @@ fn polish(
         settle(run, row_id, &session_id, &exit.summary, WorkerOutcome::Done)?;
         file_friction(run, board, cfg, out);
         return Ok(None);
+    }
+}
+
+/// The `# Collected` body. The file is reused while its head line names the lane's HEAD; a failed collect is the body, never the error.
+fn collected(
+    lane_dir: &Path,
+    base: &str,
+    review: &config::Review,
+    file: &Path,
+    out: &mut dyn Write,
+) -> Result<String> {
+    if let Ok(head) = review::head(lane_dir)
+        && let Ok(text) = fs::read_to_string(file)
+        && text.lines().next() == Some(format!("<!-- head: {head} -->").as_str())
+    {
+        say(
+            out,
+            &format!("polish: reused {} (head {})", file.display(), short(&head)),
+        )?;
+        return Ok(pack::collected(&text, file));
+    }
+    let started = Instant::now();
+    let written = collect::collect(lane_dir, base, review, out).and_then(|text| {
+        fs::write(file, &text).map_err(io(format!("write {}", file.display())))?;
+        Ok(text)
+    });
+    let secs = started.elapsed().as_secs_f64();
+    match written {
+        Ok(text) => {
+            say(
+                out,
+                &format!(
+                    "polish: collected {} against {base} in {secs:.1} s",
+                    file.display()
+                ),
+            )?;
+            Ok(pack::collected(&text, file))
+        }
+        Err(e) => {
+            let reason = e.to_string().trim().replace('\n', " ");
+            say(
+                out,
+                &format!("polish: collect failed in {secs:.1} s — {reason}"),
+            )?;
+            Ok(format!("collect failed: {reason}"))
+        }
     }
 }
 
@@ -2288,6 +2343,10 @@ pub fn pr_body_path(run_dir: &Path) -> PathBuf {
     run_dir.join(PR_BODY_FILE)
 }
 
+pub fn collect_path(run_dir: &Path) -> PathBuf {
+    run_dir.join(COLLECT_FILE)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2459,6 +2518,28 @@ mod tests {
         assert!(!only_placeholder(&format!(
             "{first}\n\n- `src/a.rs:3` // FR-2 slipped past"
         )));
+    }
+
+    #[test]
+    fn a_collect_that_fails_is_the_section_and_writes_no_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let not_a_repo = tmp.path().join("lane");
+        fs::create_dir_all(&not_a_repo).unwrap();
+        let file = tmp.path().join(COLLECT_FILE);
+        let mut out = Vec::new();
+        let body = collected(
+            &not_a_repo,
+            "main",
+            &config::Review::default(),
+            &file,
+            &mut out,
+        )
+        .unwrap();
+        assert!(body.starts_with("collect failed: "), "{body}");
+        assert!(!body.contains('\n'), "{body}");
+        assert!(!file.exists());
+        let log = String::from_utf8(out).unwrap();
+        assert!(log.contains("polish: collect failed in "), "{log}");
     }
 
     #[test]
