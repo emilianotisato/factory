@@ -9,6 +9,8 @@
 - Inner loop: 1 run, 0 red, 2 min. A live denial on this repo (debug build) took 0.3 s.
 - Deviation: `src/pack.rs` changed one call site for `def::find()`'s new root argument.
 - Prove: FR-5 and FR-6 rows left for the checkpoint.
+- FR-5 (checkpoint 2): `factory hook` fed `grep -rn alpha src` in a temp-dir fixture denies with the hint, then `ctx refs alpha` and `ctx def alpha --no-body` output; a grep with no hit gets the hint alone — evidence: cp-2/fr5-hook-answer.txt
+- FR-6 (checkpoint 2): `ctx def notify` on the ctx fixture prints two locations and the narrowing line, `--in php/OtherService.php` prints the one body, `refs planted --in refs/caller02.php` lists that file only — evidence: cp-2/fr6-ctx-def-refs.txt
 
 **Slice**: `ctx def` prints a body only when exactly one definition matches; with several it prints each location and signature, then one line naming `--kind` and `--in` to narrow. `--in` takes a file or a directory, for `def` and `refs`. A grep the hook denies carries ctx's answer under the hint: `refs <word>` and `def <word> --no-body`, run in-process from the worker's cwd. The worker gets in one turn what it would have fetched in the next.
 

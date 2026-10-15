@@ -8,6 +8,8 @@
 - **Inner loop:** 2 runs, 1 red, ~1.7 min. The red was `cargo fmt --check` on the new test's iterator chain.
 - **Deviations:** none. The relock ran as `FACTORY_BUNDLE_WRITE=1 cargo test -q --test skills_bundle`, the one test target that writes the lock.
 - **Left for the checkpoint:** the FR-9 and FR-10 (inner-loop half) transcripts.
+- **FR-9 (checkpoint 2):** `factory docs gate --inner` prints `cargo fmt && … && cargo test -q`, `factory docs gate` keeps `cargo fmt --check && … && cargo test`, byte-identical to main; `skills_bundle` 9 passed at 0.7.0 — evidence: cp-2/fr9-gate-inner-bundle.txt
+- **FR-10, inner-loop half (checkpoint 2):** the inner loop ends in `cargo test -q`; run in this lane it was green in 80 s, 37 test targets ok, no per-test lines, tree clean after the write-mode fmt — evidence: cp-2/fr10-inner-quiet.txt
 
 **Slice**: The inner loop formats in write mode and runs tests quiet; the gate keeps check mode. `/gate` round 3 and its audit say so, round 3 names each stack's quiet test flag, and the stack table gives each stack's write form beside its check form. This repo's `inner` becomes `cargo fmt && cargo clippy --all-targets -- -D warnings && cargo test -q`, and its `gate` stays byte-identical. The skill edit changes the bundle's hash, so this slice bumps to 0.7.0 and relocks.
 
