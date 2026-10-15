@@ -1,4 +1,4 @@
-//! `factory review second` against a stub `cursor-agent` replaying `tests/stubs/cursor-review.jsonl`.
+//! `factory review second` and `factory review collect` against a stub `cursor-agent` replaying `tests/stubs/cursor-review.jsonl`.
 #[path = "harness/mod.rs"]
 mod harness;
 
@@ -15,14 +15,23 @@ const BIN: &str = env!("CARGO_BIN_EXE_factory");
 const STREAM: &str = include_str!("stubs/cursor-review.jsonl");
 
 fn fixture(name: &str, timeout: u64) -> Fixture {
+    branch(
+        name,
+        timeout,
+        &[("a", 300), ("b", 250), ("c", 700), ("d", 150), ("e", 100)],
+    )
+}
+
+/// `feat/review` off `main`, committing each file with its number of lines.
+fn branch(name: &str, timeout: u64, files: &[(&str, usize)]) -> Fixture {
     let fx = Fixture::new(name);
     fx.git(&["checkout", "-q", "-b", "feat/review"]);
-    for (f, n) in [("a", 300), ("b", 250), ("c", 700), ("d", 150), ("e", 100)] {
-        let body: String = (1..=n).map(|i| format!("{f} line {i}\n")).collect();
+    for (f, n) in files {
+        let body: String = (1..=*n).map(|i| format!("{f} line {i}\n")).collect();
         fs::write(fx.path().join(f), body).unwrap();
+        fx.git(&["add", f]);
     }
-    fx.git(&["add", "a", "b", "c", "d", "e"]);
-    fx.git(&["commit", "-q", "-m", "feat: five files"]);
+    fx.git(&["commit", "-q", "-m", "feat: the branch"]);
     let cfg = PathBuf::from(&fx.env()["FACTORY_CONFIG_DIR"]);
     fs::write(
         cfg.join("config.toml"),
@@ -150,11 +159,51 @@ fn a_diff_is_three_passes_and_the_oversized_file_is_alone() {
     }
     let d2 = fs::read_to_string(dir.join("review-2.diff")).unwrap();
     assert!(d2.contains("+++ b/c") && !d2.contains("+++ b/a"), "{d2}");
-    assert!(
-        reviews[1]
-            .last()
-            .unwrap()
-            .contains(&dir.join("review-2.diff").display().to_string())
+    let d2_path = dir.join("review-2.diff").display().to_string();
+    assert_eq!(
+        reviews
+            .iter()
+            .filter(|a| a.last().unwrap().contains(&d2_path))
+            .count(),
+        1,
+        "{reviews:?}"
+    );
+}
+
+#[test]
+fn the_passes_run_at_once_and_print_in_pass_order() {
+    let fx = fixture("review-parallel", 20);
+    // Pass 1 finishes last, so printing in finishing order would break the order below.
+    scenario(&fx, json!({"sleep_secs": {"1": 2, "2": 1, "3": 1}}));
+    let started = Instant::now();
+    let o = review(&fx, &["--diff", "main"]);
+    let took = started.elapsed();
+    let out = stdout(&o);
+    assert_eq!(o.status.code(), Some(0), "{out}");
+    assert!(took < Duration::from_secs(4), "took {took:?}");
+    let at = |s: &str| out.find(s).unwrap_or_else(|| panic!("no {s:?}: {out}"));
+    let order = [
+        at("## Pass 1 "),
+        at("## Pass 2 "),
+        at("## Pass 3 "),
+        at("\nlog: "),
+    ];
+    assert!(order.is_sorted(), "{out}");
+    for n in 1..=3 {
+        let s = section(&out, n);
+        for m in 1..=3 {
+            let tag = format!("(replayed for pass {m})");
+            assert_eq!(s.contains(&tag), m == n, "pass {n} holding {tag}: {s}");
+        }
+    }
+    let err = String::from_utf8_lossy(&o.stderr);
+    for n in 1..=3 {
+        assert!(err.contains(&format!("review pass {n}/3: ")), "{err}");
+    }
+    let headers: Vec<&str> = out.lines().filter(|l| l.starts_with("## Pass")).collect();
+    println!(
+        "three passes of 2 s each took {took:?}\n{}",
+        headers.join("\n")
     );
 }
 
@@ -368,39 +417,201 @@ fn alive(pid: i32) -> bool {
 }
 
 #[test]
-fn a_signal_to_factory_kills_the_reviewer_too() {
+fn a_signal_to_factory_kills_every_reviewer_too() {
     let fx = fixture("review-signal", 60);
     scenario(&fx, json!({"sleep_after_assistant": 1}));
     let mut child = fx
         .command(BIN)
-        .args(["review", "second", "--diff", "main", "--", "a", "b"])
+        .args(["review", "second", "--diff", "main"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    let pid_file = fx.stub_dir().join("cursor-agent.pid");
     let deadline = Instant::now() + Duration::from_secs(10);
-    let pid = loop {
-        if let Ok(t) = fs::read_to_string(&pid_file)
-            && let Ok(p) = t.trim().parse::<i32>()
-        {
-            break p;
-        }
-        assert!(Instant::now() < deadline, "the stub never started");
-        std::thread::sleep(Duration::from_millis(20));
-    };
+    let pids: Vec<i32> = (1..=3)
+        .map(|n| {
+            let pid_file = fx.stub_dir().join(format!("cursor-agent-{n}.pid"));
+            loop {
+                if let Ok(t) = fs::read_to_string(&pid_file)
+                    && let Ok(p) = t.trim().parse::<i32>()
+                {
+                    break p;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "the stub for pass {n} never started"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        })
+        .collect();
     std::thread::sleep(Duration::from_millis(200));
     // SAFETY: a plain syscall on the child this test spawned.
     unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
     let status = child.wait().unwrap();
     assert_eq!(status.signal(), Some(libc::SIGTERM), "{status:?}");
     let deadline = Instant::now() + Duration::from_secs(5);
-    while alive(pid) && Instant::now() < deadline {
+    while pids.iter().any(|&p| alive(p)) && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
     }
-    if alive(pid) {
-        // SAFETY: as above; the stray stub must not outlive the test.
-        unsafe { libc::kill(pid, libc::SIGKILL) };
-        panic!("the reviewer {pid} outlived factory");
+    let left: Vec<i32> = pids.into_iter().filter(|&p| alive(p)).collect();
+    for &p in &left {
+        // SAFETY: as above; a stray stub must not outlive the test.
+        unsafe { libc::kill(p, libc::SIGKILL) };
     }
+    assert!(left.is_empty(), "the reviewers {left:?} outlived factory");
+}
+
+fn collect(fx: &Fixture, args: &[&str]) -> Output {
+    fx.command(BIN)
+        .args(["review", "collect"])
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+/// Runs the collect into `f.md` and returns the file.
+fn collected(fx: &Fixture) -> String {
+    let o = collect(fx, &["--base", "main", "--out", "f.md"]);
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert!(stdout(&o).is_empty(), "{}", stdout(&o));
+    fx.read("f.md")
+}
+
+/// The second opinion is last and runs to the end: the findings hold headings of their own.
+fn part<'a>(file: &'a str, heading: &str) -> &'a str {
+    let start = file
+        .find(&format!("\n## {heading}\n"))
+        .unwrap_or_else(|| panic!("no {heading}: {file}"));
+    let rest = &file[start + 1..];
+    if heading == "Second opinion" {
+        return rest;
+    }
+    let end = rest.find("\n## ").map_or(rest.len(), |e| e + 1);
+    &rest[..end]
+}
+
+#[test]
+fn collect_writes_the_head_the_plan_the_leaks_and_one_section_per_pass() {
+    let fx = branch("collect-two", 20, &[("a", 400), ("b", 300)]);
+    let file = collected(&fx);
+    let head = fx.git(&["rev-parse", "HEAD"]);
+    assert_eq!(
+        file.lines().next(),
+        Some(format!("<!-- head: {} -->", head.trim()).as_str())
+    );
+    let plan = part(&file, "Plan");
+    assert!(
+        plan.contains("changed: 2 files, 700 lines against main...HEAD\n"),
+        "{plan}"
+    );
+    assert!(
+        plan.contains("\n- a (400 lines)\n- b (300 lines)\n"),
+        "{plan}"
+    );
+    assert!(
+        plan.contains("\nsize: local review and second opinion\n"),
+        "{plan}"
+    );
+    assert!(
+        plan.contains("\nsecond opinion: reviewed, 2 of 2 passes counted\n"),
+        "{plan}"
+    );
+    assert!(
+        part(&file, "Leaks").contains("\nverdict: clean\n"),
+        "{file}"
+    );
+    let second = part(&file, "Second opinion");
+    assert!(second.contains("\nexit: 0\n"), "{second}");
+    let passes: Vec<&str> = second
+        .lines()
+        .filter(|l| l.starts_with("### Pass"))
+        .collect();
+    assert_eq!(passes.len(), 2, "{second}");
+    assert!(
+        passes[0].starts_with("### Pass 1 — a (400 lines,"),
+        "{}",
+        passes[0]
+    );
+    assert!(
+        passes[1].starts_with("### Pass 2 — b (300 lines,"),
+        "{}",
+        passes[1]
+    );
+    assert!(
+        passes.iter().all(|p| p.ends_with(" — counted")),
+        "{passes:?}"
+    );
+    let bodies: Vec<&str> = second.split("\n### Pass ").skip(1).collect();
+    for (i, body) in bodies.iter().enumerate() {
+        for m in 1..=2 {
+            let tag = format!("(replayed for pass {m})");
+            assert_eq!(
+                body.contains(&tag),
+                m == i + 1,
+                "pass {} holding {tag}: {body}",
+                i + 1
+            );
+        }
+    }
+    assert_eq!(review_calls(&fx).len(), 2);
+}
+
+#[test]
+fn collect_logged_out_is_unreviewed_and_owes_the_fallback() {
+    let fx = branch("collect-auth", 20, &[("a", 400), ("b", 300)]);
+    scenario(&fx, json!({"list_models": "auth"}));
+    let file = collected(&fx);
+    let plan = part(&file, "Plan");
+    assert!(
+        plan.contains(
+            "\nsecond opinion: fallback owed — unreviewed: cursor-agent --list-models exited 1: Error: Authentication required."
+        ),
+        "{plan}"
+    );
+    let second = part(&file, "Second opinion");
+    assert!(
+        second.contains("\nexit: 2\nunreviewed: cursor-agent --list-models exited 1: Error: Authentication required."),
+        "{second}"
+    );
+    assert!(!second.contains("### Pass"), "{second}");
+    assert_eq!(calls(&fx), [vec!["--list-models".to_string()]]);
+}
+
+#[test]
+fn collect_skips_the_second_opinion_of_one_small_file_without_calling_the_reviewer() {
+    let fx = branch("collect-small", 20, &[("a", 49)]);
+    let file = collected(&fx);
+    let plan = part(&file, "Plan");
+    assert!(plan.contains("\n- a (49 lines)\n"), "{plan}");
+    assert!(
+        plan.contains("\nsize: local review only\nsecond opinion: skipped by size\n"),
+        "{plan}"
+    );
+    assert!(
+        part(&file, "Second opinion").contains("skipped by size: 1 file under 50 changed lines"),
+        "{file}"
+    );
+    assert!(calls(&fx).is_empty(), "{:?}", calls(&fx));
+}
+
+#[test]
+fn collect_without_a_base_or_with_a_dash_base_is_a_usage_error() {
+    let fx = branch("collect-usage", 20, &[("a", 400), ("b", 300)]);
+    for args in [&["--out", "f.md"][..], &["--base", "-x"], &[]] {
+        let o = collect(&fx, args);
+        assert_eq!(o.status.code(), Some(1), "{args:?}");
+        assert!(
+            String::from_utf8_lossy(&o.stderr)
+                .contains("factory review collect --base <branch> [--out <file>]"),
+            "{args:?}"
+        );
+    }
+    assert!(!fx.path().join("f.md").exists());
+    assert!(calls(&fx).is_empty());
 }

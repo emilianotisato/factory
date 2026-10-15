@@ -1,5 +1,6 @@
 //! Every child writes to files, never a pipe: an undrained 34 KB stream blocks the reviewer.
 use std::fs::{self, File};
+use std::io::Write;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -159,23 +160,40 @@ pub enum Ended {
     Killed,
 }
 
-/// The reviewer's own process group: a Ctrl-C reaches factory alone, so the handler must kill it.
-static CHILD_GROUP: AtomicI32 = AtomicI32::new(0);
+/// Each running reviewer's own process group: a Ctrl-C reaches factory alone, so the handler must kill them.
+const SLOTS: usize = 256;
+static CHILD_GROUPS: [AtomicI32; SLOTS] = [const { AtomicI32::new(0) }; SLOTS];
 
-struct Watched;
+/// Holds a slot from before the spawn (as -1, which the handler skips) until the child is done.
+struct Watched(&'static AtomicI32);
+
+impl Watched {
+    fn claim() -> Result<Watched> {
+        CHILD_GROUPS
+            .iter()
+            .find(|s| {
+                s.compare_exchange(0, -1, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+            })
+            .map(Watched)
+            .ok_or_else(|| Error::Msg(format!("more than {SLOTS} reviewers at once")))
+    }
+}
 
 impl Drop for Watched {
     fn drop(&mut self) {
-        CHILD_GROUP.store(0, Ordering::SeqCst);
+        self.0.store(0, Ordering::SeqCst);
     }
 }
 
 extern "C" fn forward(sig: libc::c_int) {
-    let group = CHILD_GROUP.load(Ordering::SeqCst);
-    // SAFETY: async-signal-safe calls only; the re-raise under SIG_DFL ends factory as the signal would.
+    // SAFETY: atomics and async-signal-safe calls only; the re-raise under SIG_DFL ends factory as the signal would.
     unsafe {
-        if group > 0 {
-            libc::kill(-group, libc::SIGKILL);
+        for slot in &CHILD_GROUPS {
+            let group = slot.load(Ordering::SeqCst);
+            if group > 0 {
+                libc::kill(-group, libc::SIGKILL);
+            }
         }
         libc::signal(sig, libc::SIG_DFL);
         libc::raise(sig);
@@ -216,6 +234,7 @@ fn run_logged(
         // Its own group: a wrapper script's children die with it.
         .process_group(0);
     forward_signals();
+    let watched = Watched::claim()?;
     let started = Instant::now();
     let mut child = cmd.spawn().map_err(|e| {
         Error::Msg(format!(
@@ -223,8 +242,7 @@ fn run_logged(
             cmd.get_program().to_string_lossy()
         ))
     })?;
-    let _watched = Watched;
-    CHILD_GROUP.store(child.id() as i32, Ordering::SeqCst);
+    watched.0.store(child.id() as i32, Ordering::SeqCst);
     loop {
         if let Some(status) = child.try_wait().map_err(io("poll the reviewer"))? {
             return Ok((Ended::Exited(status.code()), started.elapsed()));
@@ -240,12 +258,20 @@ fn run_logged(
     }
 }
 
+/// Listing the models takes about a second; a hung agent must not hold preflight for a whole pass's timeout.
+const PROBE_SECS: u64 = 60;
+
 pub fn probe(cfg: &Review, dir: &Path) -> std::result::Result<(), String> {
     let out = dir.join("list-models.txt");
     let mut cmd = Command::new(&cfg.agent);
     cmd.arg("--list-models");
-    let timeout = Duration::from_secs(cfg.timeout_secs);
-    let ended = match run_logged(cmd, &out, &out.with_extension("err"), timeout) {
+    let secs = cfg.timeout_secs.min(PROBE_SECS);
+    let ended = match run_logged(
+        cmd,
+        &out,
+        &out.with_extension("err"),
+        Duration::from_secs(secs),
+    ) {
         Ok((ended, _)) => ended,
         Err(e) => return Err(e.to_string()),
     };
@@ -262,8 +288,8 @@ pub fn probe(cfg: &Review, dir: &Path) -> std::result::Result<(), String> {
         .to_string();
     match ended {
         Ended::Killed => Err(format!(
-            "{} --list-models timed out after {} s",
-            cfg.agent, cfg.timeout_secs
+            "{} --list-models timed out after {secs} s",
+            cfg.agent
         )),
         Ended::Exited(code) if code != Some(0) => Err(format!(
             "{} --list-models exited {}: {first}",
@@ -368,6 +394,169 @@ pub fn run_pass(cfg: &Review, cwd: &Path, dir: &Path, n: usize, prompt: &str) ->
     })
 }
 
+/// One pass's outcome, or why it never ran, and how long it took.
+#[derive(Debug)]
+pub struct Ran {
+    pub outcome: Result<Outcome>,
+    pub elapsed: Duration,
+}
+
+/// Starts every pass at once, writing each one's progress line to `progress` as it starts; returns in pass order.
+pub fn run_passes(
+    cfg: &Review,
+    cwd: &Path,
+    dir: &Path,
+    passes: &[Pass],
+    prompt: impl Fn(usize, &Pass) -> Result<String> + Sync,
+    progress: &mut dyn Write,
+) -> Result<Vec<Ran>> {
+    // Written before any spawn: a failed write must not leave reviewers running for nothing.
+    for (i, pass) in passes.iter().enumerate() {
+        writeln!(
+            progress,
+            "review pass {}/{}: {} ({} lines)",
+            i + 1,
+            passes.len(),
+            file_list(&pass.files),
+            pass.lines
+        )
+        .map_err(io("review progress"))?;
+    }
+    let ran = std::thread::scope(|s| {
+        let mut running = Vec::with_capacity(passes.len());
+        for (i, pass) in passes.iter().enumerate() {
+            let n = i + 1;
+            let prompt = &prompt;
+            running.push(s.spawn(move || {
+                let started = Instant::now();
+                let outcome = prompt(n, pass).and_then(|p| run_pass(cfg, cwd, dir, n, &p));
+                let elapsed = outcome.as_ref().map_or(started.elapsed(), |o| o.elapsed);
+                Ran { outcome, elapsed }
+            }));
+        }
+        running
+            .into_iter()
+            .map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)))
+            .collect()
+    });
+    Ok(ran)
+}
+
+/// Git allows a newline in a path; written raw, one could forge the headings that follow.
+pub fn one_line(path: &str) -> String {
+    let mut line = String::with_capacity(path.len());
+    for c in path.chars() {
+        if c.is_control() {
+            line.extend(c.escape_default());
+        } else {
+            line.push(c);
+        }
+    }
+    line
+}
+
+fn file_list(files: &[String]) -> String {
+    files
+        .iter()
+        .map(|f| one_line(f))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// A pass's text and whether it counted; a pass that never ran is unreviewed with why.
+pub fn pass_text(ran: &Ran, timeout_secs: u64) -> (String, bool) {
+    match &ran.outcome {
+        Ok(o) => body(o, timeout_secs),
+        Err(e) => (format!("unreviewed (error: {e})\n"), false),
+    }
+}
+
+/// `Pass n — files (lines, seconds, model)`, the heading of a pass's findings.
+pub fn pass_header(n: usize, pass: &Pass, ran: &Ran, cfg: &Review) -> String {
+    let over = if pass.over {
+        format!(" (over {}, alone)", cfg.pass_lines)
+    } else {
+        String::new()
+    };
+    format!(
+        "Pass {n} — {}{over} ({} lines, {} s, {})",
+        file_list(&pass.files),
+        pass.lines,
+        ran.elapsed.as_secs(),
+        cfg.model
+    )
+}
+
+/// Writes the pass's slice of `<base>...HEAD` into the log dir and asks the reviewer to read it.
+pub fn diff_pass_prompt(
+    root: &Path,
+    base: &str,
+    dir: &Path,
+    n: usize,
+    pass: &Pass,
+) -> Result<String> {
+    let file = dir.join(format!("review-{n}.diff"));
+    fs::write(&file, diff(root, base, &pass.files)?)
+        .map_err(io(format!("write {}", file.display())))?;
+    Ok(diff_prompt(&pass.files, base, &file))
+}
+
+fn exit_words(code: Option<i32>) -> String {
+    code.map_or("killed by a signal".to_string(), |c| format!("exit {c}"))
+}
+
+/// A kill's partial counts (it had the whole timeout); an exit's does not, or an opening line stops the fallback.
+fn body(o: &Outcome, timeout_secs: u64) -> (String, bool) {
+    let p = &o.parsed;
+    if let Some(r) = p.result.as_deref().filter(|r| !r.trim().is_empty()) {
+        return (format!("{}\n", r.trim_end()), true);
+    }
+    let partial = Some(p.partial.trim_end()).filter(|t| !t.trim().is_empty());
+    let code = match o.ended {
+        Ended::Killed => {
+            return match partial {
+                Some(t) => (
+                    format!("(timed out after {timeout_secs} s, partial)\n\n{t}\n"),
+                    true,
+                ),
+                None => (
+                    format!("unreviewed (timed out after {timeout_secs} s with no text)\n"),
+                    false,
+                ),
+            };
+        }
+        Ended::Exited(code) => code,
+    };
+    let words = exit_words(code);
+    let mut text = match &p.error {
+        Some(e) if e.trim().is_empty() => format!("unreviewed ({words}, error result)\n"),
+        Some(e) => format!("unreviewed ({words}, error: {})\n", e.trim()),
+        None if code == Some(0) => match partial {
+            Some(t) => return (format!("{t}\n"), true),
+            None => String::new(),
+        },
+        None => String::new(),
+    };
+    match partial {
+        Some(t) => {
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(&format!("({words}, partial)\n\n{t}\n"));
+        }
+        None if text.is_empty() => {
+            let why = if o.stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {}", o.stderr)
+            };
+            text = format!("unreviewed ({words}, no text{why})\n");
+        }
+        None => {}
+    }
+    (text, false)
+}
+
 pub fn diff_prompt(files: &[String], base: &str, diff_file: &Path) -> String {
     format!(
         "Adversarial code review. The diff of {} against {base} is in {}: read it, and read any file in the repository you need for context. Report only defects you can point to at file:line with a failure scenario; no praise, no style. Do not edit anything.",
@@ -395,7 +584,96 @@ pub fn with_others(prompt: &str, others: &str) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_path_stays_on_its_own_line() {
+        assert_eq!(one_line("a\n## Leaks\tb.rs"), "a\\n## Leaks\\tb.rs");
+        assert_eq!(one_line("dir/é.rs"), "dir/é.rs");
+    }
+
     const STREAM: &str = include_str!("../tests/stubs/cursor-review.jsonl");
+
+    const OPENING: &str = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"I'll read the diff."}]}}"#;
+    const DONE: &str = r#"{"type":"result","is_error":false,"result":"the parser breaks"}"#;
+    const FAILED: &str = r#"{"type":"result","is_error":true,"result":"rate limited"}"#;
+
+    fn outcome(ended: Ended, stream: &[&str], stderr: &str) -> Outcome {
+        Outcome {
+            ended,
+            elapsed: Duration::ZERO,
+            parsed: parse_stream(&stream.join("\n")),
+            stderr: stderr.to_string(),
+        }
+    }
+
+    #[test]
+    fn each_ending_has_its_marker_and_only_text_that_finished_counts() {
+        let cases = [
+            (
+                Ended::Exited(Some(0)),
+                vec![OPENING, DONE],
+                "the parser breaks\n",
+                true,
+            ),
+            (
+                Ended::Exited(Some(1)),
+                vec![OPENING, DONE],
+                "the parser breaks\n",
+                true,
+            ),
+            (
+                Ended::Exited(Some(0)),
+                vec![OPENING],
+                "I'll read the diff.\n",
+                true,
+            ),
+            (
+                Ended::Killed,
+                vec![OPENING],
+                "(timed out after 9 s, partial)\n\nI'll read the diff.\n",
+                true,
+            ),
+            (
+                Ended::Exited(Some(1)),
+                vec![OPENING],
+                "(exit 1, partial)\n\nI'll read the diff.\n",
+                false,
+            ),
+            (
+                Ended::Exited(None),
+                vec![OPENING],
+                "(killed by a signal, partial)\n\nI'll read the diff.\n",
+                false,
+            ),
+            (
+                Ended::Exited(Some(1)),
+                vec![FAILED],
+                "unreviewed (exit 1, error: rate limited)\n",
+                false,
+            ),
+            (
+                Ended::Exited(Some(0)),
+                vec![OPENING, FAILED],
+                "unreviewed (exit 0, error: rate limited)\n\n(exit 0, partial)\n\nI'll read the diff.\n",
+                false,
+            ),
+            (
+                Ended::Exited(Some(2)),
+                vec![],
+                "unreviewed (exit 2, no text: boom)\n",
+                false,
+            ),
+            (
+                Ended::Killed,
+                vec![],
+                "unreviewed (timed out after 9 s with no text)\n",
+                false,
+            ),
+        ];
+        for (ended, stream, want, counts) in cases {
+            let got = body(&outcome(ended, &stream, "boom"), 9);
+            assert_eq!(got, (want.to_string(), counts), "{ended:?} {stream:?}");
+        }
+    }
 
     fn sized(ns: &[u64]) -> Vec<(String, u64)> {
         ns.iter()

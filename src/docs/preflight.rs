@@ -5,8 +5,9 @@ use std::process::{Command, Stdio};
 
 use super::board::{self, Feature};
 use super::{Branch, FeatureRef, Preflight, Slice, check, gate, log, project};
+use crate::config::{self, Review};
 use crate::error::{io, json};
-use crate::{Result, leaks, skills};
+use crate::{Result, leaks, paths, review, skills};
 
 pub fn git(root: &Path, args: &[&str]) -> Option<String> {
     let out = Command::new("git")
@@ -350,8 +351,35 @@ fn feature(
     Ok(())
 }
 
+/// Probes the second opinion: an ok line when it is ready, a judge line otherwise, never a refusal.
+/// Kept out of `run`, whose in-process callers must not spawn the agent.
+pub fn second_opinion(cfg: &Review, pf: &mut Preflight) {
+    let probed = review::new_log_dir(&paths::data_dir())
+        .map_err(|e| e.to_string())
+        .and_then(|dir| {
+            let probed = review::probe(cfg, &dir);
+            // The line carries the verdict; a log dir per preflight would only pile up.
+            let _ = std::fs::remove_dir_all(&dir);
+            probed
+        });
+    match probed {
+        Ok(()) => pf.ok.push(format!(
+            "second opinion: {} with {} ready",
+            cfg.agent, cfg.model
+        )),
+        Err(reason) => pf.judge.push(format!(
+            "second opinion not ready: {reason} — run `{} login`; polish falls back to one Claude agent per {}-line pass",
+            cfg.agent, cfg.pass_lines
+        )),
+    }
+}
+
 pub fn cli(root: &Path, reference: &str, as_json: bool, out: &mut dyn Write) -> Result<i32> {
-    let (pf, code) = run(root, reference)?;
+    let (mut pf, code) = run(root, reference)?;
+    match config::load(&paths::config_dir()) {
+        Ok(loaded) => second_opinion(&loaded.config.review, &mut pf),
+        Err(e) => pf.judge.push(format!("second opinion not probed: {e}")),
+    }
     let mut text = String::new();
     if as_json {
         text = serde_json::to_string_pretty(&pf).map_err(json("serialize preflight"))?;

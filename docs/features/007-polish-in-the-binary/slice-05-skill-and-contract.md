@@ -3,7 +3,8 @@
 **Source**: [`prd.md`](prd.md) → §9 FR-7. **Depends on**: 03 (the skill describes the file `factory review collect` writes and the verb's flags). Independent of 04: this slice edits the skill, the contract asset and the version, and 04 edits the driver and the pack builder.
 **Created**: 2026-10-15
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**: Polish §1 now starts from the collected file: the pack's `# Collected` section in a run; otherwise `factory review collect --base … --out <scratchpad>/collect.md` in the background; a collect that leaves no file → the last resort (`factory leaks --base`, `factory review second --diff`, with their exit codes and `--others`). §1 reads the plan's `size:` and `second opinion:` rows, the leaks `verdict:` and each `### Pass` status; the findings text waits for §2, which gains one line pointing at it. The table drops the second opinion (the size row decides it) and keeps picking security and UX; the fallback paragraph keeps its words, triggered by `fallback owed` or a failed last resort. The polish contract's Read-first list gains the `# Collected` item between `# Branch` and `# Log`. Crate 0.5.0, `skills/bundle.lock` rewritten. New test `polish_collect_starts_from_the_collected_file_with_the_last_resort_beside_it` (checked red with `collect` renamed in §1, then restored). Inner loop: 1 run, 0 red, 2.0 min (plus the 1.6 min `FACTORY_BUNDLE_WRITE=1 cargo test` lock rewrite). Deviation: one sentence lets the worker run `factory review second --diff` itself when the size row skipped it on a blast-radius change, per prd §5's accepted cost.
+Checkpoint 2 (FR-7): gate green at 0.5.0 with `bundle_lock_matches`, `polish_collect_starts_from_the_collected_file_with_the_last_resort_beside_it` and `a_finished_board_polishes_ships_pushes_and_opens_the_draft_pr` passing; the polish pack's contract lists `# Collected` before `# Log`: `docs/features/007-polish-in-the-binary/evidence/cp-2-gate-0.5.0.txt`, transcript `docs/features/007-polish-in-the-binary/evidence/cp-2-gate.log`.
 
 **Slice**: After this slice, polish §1 starts from the collected file. In a run, the pack's `# Collected` section names it. Attended, or when the pack says `collect failed`, the skill runs `factory review collect` in the background. When that fails too, §1 falls back to today's `factory leaks --base` and `factory review second --diff`. The size table and the two override rules still pick the security and UX passes. The polish contract gains one line pointing §1 at `# Collected`, and the crate goes to 0.5.0 with a rewritten `skills/bundle.lock`. Releasing the tag stays the owner's.
 
@@ -66,3 +67,7 @@ Rows from [`prd.md`](prd.md) §11 this slice proves, below the UI:
 - **FR-7**: "run the gate: bundle lock green at 0.5.0, the polish pack's contract starts §1 from `# Collected`" — the checkpoint's gate transcript, with `bundle_lock_matches`, the new §1 test and `a_finished_board_polishes_ships_pushes_and_opens_the_draft_pr` named in it.
 
 **Acceptance:** after the checkpoint, Progress holds the gate transcript.
+
+**Code-review fixes (2026-10-15).**
+
+- The contract line said `factory review collect` wrote the `# Collected` section, which reads as a command the worker runs. It now says the driver collected it before the spawn.

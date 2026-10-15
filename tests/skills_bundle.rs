@@ -92,6 +92,21 @@ fn models_md_holds_no_invocation_and_the_skills_call_review_second() {
 }
 
 #[test]
+fn polish_collect_starts_from_the_collected_file_with_the_last_resort_beside_it() {
+    let text = fs::read_to_string(root().join("skills/polish/SKILL.md")).unwrap();
+    let start = text.find("## 1.").expect("§1");
+    let end = start + text[start..].find("## 2.").expect("§2");
+    let collect = &text[start..end];
+    for keep in [
+        "factory review collect",
+        "factory leaks --base",
+        "factory review second --diff",
+    ] {
+        assert!(collect.contains(keep), "{keep:?} left polish §1");
+    }
+}
+
+#[test]
 fn polish_fixers_run_one_after_another_with_no_lane_rule() {
     let text = fs::read_to_string(root().join("skills/polish/SKILL.md")).unwrap();
     let start = text.find("## 5. Fix").expect("§5");

@@ -3,7 +3,11 @@
 **Source**: [`prd.md`](prd.md) → §5 FR-3. **Depends on**: 01 (the second opinion runs through the parallel pass runner slice 01 moved into the `review` library; both slices edit `src/cli/review.rs` and `tests/review.rs`)
 **Created**: 2026-10-15
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+- **Built**: `src/collect.rs` — `collect(root, base, cfg, progress)` returns the file: `<!-- head: <sha> -->`, then `## Plan` (`changed:` row, one `- file (n lines)` per file, `size:` and `second opinion:` rows), `## Leaks` (`verdict:` line, then the report under its fix lines), `## Second opinion` last (`exit:`, `log:`, one `### Pass n — … — counted|unreviewed` per pass, or `unreviewed: <reason>`, or `skipped by size: …`). Unreviewed reads `second opinion: fallback owed — unreviewed: <reason>` in the plan. HEAD and numstat git errors are the function's error; a leaks error is `verdict: did not run — …`; a log-dir, probe or runner failure is unreviewed. The size row is decided before any `cursor-agent` call. `body()`, the pass header and the per-pass diff prompt moved into `src/review.rs` (`pass_text`, `pass_header`, `diff_pass_prompt`, `head`), so `second` and the collect print the same pass header. `factory review collect --base <branch> [--out <file>]` in `src/cli/review.rs`, `--base` hand-checked (with `allow_hyphen_values`, so `--base -x` reaches the check and exits 1 instead of clap's 2).
+- **Inner loop**: 2 runs, 1 red, 2.8 min — caught: the reviewer's findings carry `## ` headings, so the second opinion must run to the end of the file (now in the module doc, and a note for slice 04); two test literals (the probe's reason prefix, the usage line's second row).
+- **Deviation**: no `--out` → stdout (AD-3).
+- **Checkpoint 2 (FR-3).** The real binary on a fixture branch with the stub reviewer: two files → head line, plan, leaks, two counted passes; logged out → `fallback owed`, exit 2 in the section; one 40-line file → `skipped by size`, no stub call. Test transcript and the three runs: `docs/features/007-polish-in-the-binary/evidence/cp-2-review-collect.txt`; the two-file case's file: `docs/features/007-polish-in-the-binary/evidence/cp-2-collect-two-files.md`.
 
 **Slice**: After this slice, `factory review collect --base <branch> [--out <file>]` does polish's three mechanical steps and writes one markdown file: the head line, the plan (changed files and lines, the size row), the leaks scan with its verdict, and the second opinion when the size row asks for it. It exits 0 when the file was written, whatever each part found, and 1 on a usage error. The work lives in the library, so slice 04's driver calls it in-process. Slice 05 points the skill at it.
 
@@ -67,3 +71,10 @@ Rows from [`prd.md`](prd.md) §11 this slice proves, below the UI:
 - **FR-3**: "run `factory review collect` on a fixture branch: one file with the head line, plan, leaks and second opinion; logged out, `fallback owed`; a small one-file branch never calls the stub" — task 3's test transcript, and the written file of the two-file case.
 
 **Acceptance:** after the checkpoint, Progress holds the transcript and the two-file case's file.
+
+**Code-review fixes (2026-10-15).**
+
+- Plan paths went into `collect.md` unescaped: a path with a newline followed by `## Leaks` and `verdict: clean` made the pack report clean while the real hits sat lower in the file (found by the second opinion). Paths go through `review::one_line` now.
+- The module doc said each status was a heading; the leaks `verdict:` and the second opinion's `exit:` are lines of their own, and the doc says so. The `collect` CLI doc now names the stdout case.
+- `review::head` duplicated `ci::head`; collect uses `ci::head` and the copy is gone.
+- The collect test checked that pass 2's replay was somewhere in the section, so a heading paired with the wrong pass's text passed. Each `### Pass n` block must now hold its own replay and no other.

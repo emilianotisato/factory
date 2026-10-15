@@ -28,24 +28,29 @@ Create a working file in your scratchpad directory (`findings.md`). **Everything
 
 ## 1. Collect — scale the reviewers to the diff
 
-**Every reviewer on a one-line bugfix is theatre, and a ritual that always costs an hour gets skipped entirely.** Pick the set from the diff and its blast radius, say which set you picked and why, then run only those:
+**Every reviewer on a one-line bugfix is theatre, and a ritual that always costs an hour gets skipped entirely.** The mechanical part (the plan, the leaks scan and the second opinion) comes from one collected file. The model reviewers come from the table below: pick the set from the diff and its blast radius, say which set you picked and why, then run only those.
+
+**Start from the collected file.** Inside a `factory` run, the pack's `# Collected` section names it and holds its plan, its leaks verdict and each second-opinion pass's status line. With no `# Collected` section, attended, or when it says `collect failed`, run `factory review collect --base <base-branch> --out <scratchpad>/collect.md` **in the background**, since it can outlast a Bash call, and read the file when it exits; the local review can run meanwhile. A collect that leaves no file (an error, or a binary without the verb) → say so out loud and take the last resort at the end of this section.
+
+**Read only the plan, the leaks verdict and each pass's status line now.** The findings text under `## Second opinion` waits for step 2, so the local review runs first and unanchored.
 
 | Diff | Reviewers |
 |---|---|
-| A few lines, one file, no user-visible surface | **local review only** |
-| One slice, or a bugfix with a regression test | local + the second opinion |
-| A feature: several slices, or anything user-visible | local + UX + second opinion |
-| Migrations, auth, money, an external contract, a public API | all of them, and say so — blast radius, not diff size, decides this row |
+| A few lines, or one slice, with no user-visible surface | **local review only** |
+| A feature: several slices, or anything user-visible | local + UX |
+| Migrations, auth, money, an external contract, a public API | local + security, + UX if anything is user-visible, and say so — blast radius, not diff size, decides this row |
+
+**The plan's `size:` row decides the second opinion, never the table.** One file under 50 changed lines is `local review only`; anything larger adds the second opinion. A small change on the table's last row gets none from the collect: run `factory review second --diff <base-branch>` yourself when its blast radius earns one, and say so.
 
 Two rules override the table. **Anything security-sensitive gets the security pass**, however small — a one-line change to a permission check is the whole attack. **Anything user-visible gets the UX pass**, however small — a one-line CSS change is exactly where a state breaks.
 
 **Every reviewer is read-only on the checkout: no `git switch`, no `checkout`, no `stash`, ever.** Reviewers run side by side, and one that moves HEAD to compare against the base branch pulls the tree out from under the others mid-read — it happened. A reviewer that needs the base tree gets a worktree (`git worktree add`), never the shared checkout. Say this in every reviewer's prompt.
 
-**Local review first**, always. Invoke the `code-review` skill. It has full repository context and its findings are the higher-signal set; running it first also stops the second opinion's noise from anchoring the local pass.
+**Local review first**, always. Invoke the `code-review` skill. It has full repository context and its findings are the higher-signal set; leaving the second opinion's findings unread until step 2 also stops their noise from anchoring the local pass.
 
 Its prompt carries a reader's questions, because a rule table cannot ask them. One per surviving added comment, security claims first: does it still match the code beside it, does it sit on the item it describes, does it name only what the tree defines, and would a reader miss it? One per added name: does it point at the plan without a number, like `weights_match_the_prd_formula` or cody's `seedPre025Workspaces`?
 
-**Then `factory leaks --base <base-branch>`, on every polish, whatever the diff size.** It costs no reviewer: it checks the branch's added lines and paths against one rule table and prints each hit under its rule's fix line. **Read its exit code.** `0` is clean. `1` is hits. Anything else means the check did not run: say so out loud, and never report it as *no hits*. Its hits are findings like any reviewer's: step 2 verifies them and they land in the **Fix** bucket, with no question to the owner. Each hit's fix line is its instruction.
+**Then the leaks verdict, on every polish, whatever the diff size.** The `## Leaks` part checked the branch's added lines and paths against one rule table and prints each hit under its rule's fix line. **Read its `verdict:` line.** `clean` is clean. `n fix hits` is hits. `did not run` means the check did not run: say so out loud, and never report it as *no hits*. Its hits are findings like any reviewer's: step 2 verifies them and they land in the **Fix** bucket, with no question to the owner. Each hit's fix line is its instruction.
 
 **Then `security-review`, when the diff touches security-sensitive code** — authentication or authorization, a permission or tenancy check, parsing or validating outside input, raw queries, file paths or shell commands built from input, a read, write or delete through a path the repo itself controls (a symlink in a cloned repo can redirect it outside), deserialization, crypto, secrets or config, CORS, headers or cookies, or logging that could carry user data. The general review does not look through that lens. Skip it only when none of that changed, and say so. Its findings join the same triage. **Run it as its own subagent**: its contract ends the turn on a report, which is right for a standalone review and wrong for a collector in the middle of a ritual.
 
@@ -53,15 +58,20 @@ Its prompt carries a reader's questions, because a rule table cannot ask them. O
 
 Skip it only when nothing user-visible changed, and say so. No harness (`.claude/skills/verify-*` missing) → say that instead, and that the UI went unreviewed; do not substitute reading the source.
 
-**Then a second opinion that did not write the code.** Use the `second opinion` role in [_shared/models.md](../_shared/models.md) — Cursor CLI, unconditionally. Do not probe for any other vendor's CLI or plugin and do not branch on one being installed; presence says nothing about whether its subscription is live. Cross-vendor is the entire point: models from one vendor share blind spots, so a second Claude agreeing with the first is weak evidence.
+**Then the second opinion, a reviewer that did not write the code.** It is the `second opinion` role in [_shared/models.md](../_shared/models.md) — Cursor CLI, unconditionally. Do not probe for any other vendor's CLI or plugin and do not branch on one being installed; presence says nothing about whether its subscription is live. Cross-vendor is the entire point: models from one vendor share blind spots, so a second Claude agreeing with the first is weak evidence.
 
-**Run `factory review second --diff <base-branch>`.** It checks `--list-models` before it spends anything, splits the diff into passes of about 600 changed lines, runs each pass read-only under a timeout, and prints one section per pass with the log path last. Scope it with `-- <paths>` when the diff mixes risky and trivial files. When the local review or the security pass found high-severity defects, write their one-line summaries to a file and add `--others <file>`: the reviewer is then asked what fixing those would still miss, which is how Cursor found three escalation paths two Claude reviewers had missed. The agent and the model are `[review]` in `~/.config/factory/config.toml`, never this file.
+**Read the plan's `second opinion:` line.** `skipped by size` means the size row asked for none. `reviewed, n of m passes counted` means each `### Pass` heading below holds claims to verify in step 2. `fallback owed` means nothing counted (the auth is gone, the model is missing, or no pass returned text), so the fallback below starts now, said out loud. A pass marked `unreviewed`, or `timed out … partial`, is never *no findings*: name the files it did not finish.
 
-**Read its exit code.** `0` is findings: claims to verify in step 2. `2` is unreviewed (the auth is gone, the model is missing, or no pass returned text), so the fallback below starts now, said out loud. `1` is a usage error: fix the command and run it again. A pass marked `unreviewed`, or `timed out … partial`, is never *no findings*: name the files it did not finish.
+**The last resort, when the collect left no file:** today's two commands, by hand.
 
-Cursor unavailable, or the run fails → a fresh agent on the judgment model with **no inherited context**, never a `fork`, **one per pass of about 600 changed lines** (`[review] pass_lines`), the same passes the command would have run: one agent over a whole feature diff skims. Either way its findings are claims to verify in step 2, and you say which reviewer produced them.
+- **`factory leaks --base <base-branch>`.** **Read its exit code.** `0` is clean. `1` is hits. Anything else means the check did not run: say so out loud, and never report it as *no hits*. Its hits land in the **Fix** bucket, as above.
+- **`factory review second --diff <base-branch>`**, unless the diff is one file under 50 changed lines. It checks `--list-models` before it spends anything, splits the diff into passes of about 600 changed lines, runs each pass read-only under a timeout, and prints one section per pass with the log path last. Scope it with `-- <paths>` when the diff mixes risky and trivial files. When the local review or the security pass found high-severity defects, write their one-line summaries to a file and add `--others <file>`: the reviewer is then asked what fixing those would still miss, which is how Cursor found three escalation paths two Claude reviewers had missed. The agent and the model are `[review]` in `~/.config/factory/config.toml`, never this file. **Read its exit code.** `0` is findings: claims to verify in step 2. `2` is unreviewed (the auth is gone, the model is missing, or no pass returned text), so the fallback below starts now, said out loud. `1` is a usage error: fix the command and run it again. A pass marked `unreviewed`, or `timed out … partial`, is never *no findings*: name the files it did not finish.
+
+The file says `fallback owed`, or the last resort's run fails → a fresh agent on the judgment model with **no inherited context**, never a `fork`, **one per pass of about 600 changed lines** (`[review] pass_lines`), the same passes the command would have run: one agent over a whole feature diff skims. Either way its findings are claims to verify in step 2, and you say which reviewer produced them.
 
 ## 2. Verify and dedup — one pass over every set
+
+**Now read the second opinion's findings**: the `### Pass` sections under the collected file's `## Second opinion`, or the last resort's output.
 
 **The second opinion does not have the context you do.** It has not read the PRD, does not know what was deliberately decided, and cannot see the reasoning behind a design. Treat its findings as claims to check, not instructions.
 

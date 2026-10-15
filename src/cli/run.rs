@@ -6,7 +6,7 @@ use std::process::{Command, Stdio};
 use clap::Args;
 
 use crate::cli::lanes;
-use crate::docs::{Branch, Docs, Preflight};
+use crate::docs::{Branch, Docs, Preflight, preflight};
 use crate::error::{io, json};
 use crate::events::EventKind;
 use crate::run::{Phase, Run};
@@ -90,7 +90,7 @@ pub fn run(args: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i
         return launch(&mut run, &docs, &loaded.config, args.foreground, out);
     }
 
-    let (pf, _code) = docs.preflight(&feature)?;
+    let (mut pf, _code) = docs.preflight(&feature)?;
     if !pf.refuse.is_empty() {
         for line in &pf.refuse {
             writeln!(out, "  ✗ {line}").map_err(io("stdout"))?;
@@ -98,6 +98,7 @@ pub fn run(args: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i
         writeln!(out, "\nrefused: {} blocker(s)", pf.refuse.len()).map_err(io("stdout"))?;
         return Ok(1);
     }
+    preflight::second_opinion(&loaded.config.review, &mut pf);
     // Lanes are made before the run exists, so a lane failure leaves no run behind.
     if !lanes::ensure_all(&data_dir, &crate::lanes::main_tree(&repo)?, out)? {
         writeln!(out, "\nrefused: a lane could not be made").map_err(io("stdout"))?;

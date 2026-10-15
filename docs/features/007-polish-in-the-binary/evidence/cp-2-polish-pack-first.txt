@@ -1,0 +1,359 @@
+<!-- factory-pack files: docs/features/001-fixture/prd.md -->
+<!-- run dir: /tmp/factory-quota-polish-collect-4MF4dR/data/runs/001-20261015-eba2 -->
+
+# Branch
+
+Default branch: `main` · feature branch: `feat/fixture`
+
+Commits this branch adds (`git log --oneline main..HEAD`):
+
+```
+830d094 docs(001): checkpoint 2
+e013fbd feat(001): slice-03 C
+38d1f7d docs(001): checkpoint 1
+4dd8058 feat(001): slice-02 B
+17da319 feat(001): slice-01 A
+```
+
+# Collected
+
+## Plan
+
+changed: 8 files, 23 lines against main...HEAD
+- docs/features/001-fixture/log.jsonl (5 lines)
+- docs/features/001-fixture/slice-01-a.md (2 lines)
+- docs/features/001-fixture/slice-02-b.md (2 lines)
+- docs/features/001-fixture/slice-03-c.md (2 lines)
+- docs/features/001-fixture/state.toml (9 lines)
+- src/slice-01.txt (1 line)
+- src/slice-02.txt (1 line)
+- src/slice-03.txt (1 line)
+size: local review and second opinion
+second opinion: reviewed, 1 of 1 passes counted
+
+## Leaks
+
+verdict: 3 fix hits
+
+## Second opinion
+
+exit: 0
+log: /tmp/factory-quota-polish-collect-4MF4dR/data/reviews/20261015-005433
+- Pass 1 — docs/features/001-fixture/log.jsonl, docs/features/001-fixture/slice-01-a.md, docs/features/001-fixture/slice-02-b.md, docs/features/001-fixture/slice-03-c.md, docs/features/001-fixture/state.toml, src/slice-01.txt, src/slice-02.txt, src/slice-03.txt (23 lines, 0 s, grok-4.7-high) — counted
+
+The whole file, findings included: `/tmp/factory-quota-polish-collect-4MF4dR/data/runs/001-20261015-eba2/collect.md`
+
+# Log
+
+<!-- factory docs log show 001 -->
+
+# Agent log — PRD-001
+
+## Notes
+
+_(none)_
+
+## Blockers
+
+_(none)_
+
+## Decisions
+
+### AD-1 — Which code file does the stub worker touch? · slice-01 · 2026-10-15
+
+**Chose:** append one line to src/slice-01.txt (spawn 1)
+**Over:** a shared code file, which two lanes landing from one base would conflict on
+**Because:** the scenario step chooses the touched set; by default each slice owns its src/slice-NN.txt
+**Undo:** drop the appended line
+**Review:** no
+
+### AD-2 — Which code file does the stub worker touch? · slice-02 · 2026-10-15
+
+**Chose:** append one line to src/slice-02.txt (spawn 2)
+**Over:** a shared code file, which two lanes landing from one base would conflict on
+**Because:** the scenario step chooses the touched set; by default each slice owns its src/slice-NN.txt
+**Undo:** drop the appended line
+**Review:** no
+
+### AD-3 — Which code file does the stub worker touch? · slice-03 · 2026-10-15
+
+**Chose:** append one line to src/slice-03.txt (spawn 4)
+**Over:** a shared code file, which two lanes landing from one base would conflict on
+**Because:** the scenario step chooses the touched set; by default each slice owns its src/slice-NN.txt
+**Undo:** drop the appended line
+**Review:** no
+
+## Checkpoints
+
+### CP-1 — after slice-02 · 2026-10-15
+
+**Covers:** slices 01, 02
+**Gate:** 1 runs, 0 red, 0 min — caught: nothing (driver-run)
+**Prove:** FR-1 — evidence: none (stub)
+**Fixed:** none
+
+### CP-2 — after slice-03 · 2026-10-15
+
+**Covers:** slices 03
+**Gate:** 1 runs, 0 red, 0 min — caught: nothing (driver-run)
+**Prove:** FR-1 — evidence: none (stub)
+**Fixed:** none
+
+# Retro
+
+<!-- docs/features/001-fixture/retro.md -->
+
+Write the prose sections. After you return, the driver writes the `## Numbers` section and the feature's row in its store; put no number of its in the file. The template:
+
+````markdown
+# Retro — PRD-001
+
+Written by `/deliver` in the closeout commit, from the agent's side of the run.
+
+**The point is cost next to catch.** An agent asked only about friction votes to cut every check, because every check costs it time. A verdict with an empty Caught column is a preference, not evidence.
+
+## Cost vs catch
+
+| Step | Cost | Caught | Verdict |
+|---|---|---|---|
+| Inner loop, per slice | {runs × minutes} | {what a red run found, or "nothing"} | keep · tune · cut |
+| Checkpoints (full gate) | {runs × minutes} | {the real defects a red run found, or "nothing"} | keep · tune · cut |
+| Prove, at checkpoints | | | |
+| Polish — local review | | | |
+| Polish — security pass | | | |
+| Polish — UX pass | | | |
+| Polish — second opinion ({model}) | | | |
+| prune | | | |
+| {any other step, tier or lint rule that cost real time} | | | |
+
+**A "cut" or "tune" names what the step failed to catch.** A step that caught a real defect is never "cut" on cost alone — say "tune", and how.
+
+## Where I guessed
+
+Instructions that contradicted each other, or were silent where a decision was needed. File and section for each, and what was guessed.
+
+## What I wished existed
+
+## Project friction → `/gate audit`
+
+A gate tier, floor or lint rule that cost more than it caught *in this project*. Evidence, not preference.
+
+## Framework friction → skills repo
+
+A step, rule or template in the framework itself. Name the skill and the section.
+
+A comment or name the leaks check should have caught: `file:line` and the line.
+
+## Score
+
+One line on why.
+````
+
+# PR body
+
+<!-- write: /tmp/factory-quota-polish-collect-4MF4dR/data/runs/001-20261015-eba2/pr-body.md -->
+
+Write the PR body to `/tmp/factory-quota-polish-collect-4MF4dR/data/runs/001-20261015-eba2/pr-body.md` (outside the repo) in this shape:
+
+# PR body — the shape /deliver fills in
+
+GitHub does not resolve repository-relative links in a PR body, so paths go in backticks. Drop a section only when it would say nothing; keep **Needs your review** and **Human QA** even when empty, saying "none", so the owner knows they were checked.
+
+````markdown
+## PRD-{NNN} — {title}
+
+{One paragraph: what this makes true that was not true before.} PRD: `docs/features/{NNN}-{slug}/prd.md`
+
+> Opened by `/deliver`, unattended. **Not merged — that is yours.** If nothing is left after review, run `docs archive {NNN}` on this branch before merging.
+
+### Needs your review
+
+- **AD-{n}** · slice-{NN} — {the question} → {what was chosen}
+  *(entries marked `Review: decide`, then one line "+ {n} fyi entries"; every decision is in `factory docs log show {NNN}`. After the owner review in `/deliver` § 8, each reviewed entry ends in `— kept` or `— changed: {to what}`.)*
+- **DEC candidates** — {the question and the recommendation} · or none
+- **Rubric proposals** — {the line} · or none
+- **OPENs carried, parked by design** — OPEN-{n} · or omit
+
+### Human QA
+
+- [ ] {a Human row from § QA plan} — ~{minutes} min
+
+*(From `qa-guide.md`. Or: "None — every QA-plan row was proven by the run.")*
+
+### Slices
+
+| Slice | FRs | Gate | Proof |
+|---|---|---|---|
+| {NN} — {title} | FR-{n} | inner {runs}/{red} red · verified at CP-{n} | {evidence path, or "no Prove rows: why"} |
+
+Evidence lives on the machine that ran the build; harness artifacts are gitignored.
+
+### Review
+
+- **Reviewers**: local ✓ · security {✓ \| skipped — why} · UX {✓ \| skipped — why} · second opinion {model} {✓ \| unreviewed — why}
+- **Fixed**: {n} — see each slice's *Code-review fixes*
+- **Rebutted**: {the finding} — {why it is wrong}
+- **Parked → `docs/ideas/`**: {id}
+
+### Gate & CI
+
+- Gate `{command}`: {runs} runs, {red} red, {minutes} min in total
+- CI: {green first time \| green after {n} fix rounds \| no CI configured} · {flaky job re-run once: {name}}
+
+### Retro
+
+Score {n}/5. {The single biggest framework friction, one line.} Full: `docs/features/{NNN}-{slug}/retro.md`
+````
+
+# Contract
+
+You are the polish worker of PRD-001, unattended, inside a `factory` run. Nobody will answer a question. You run in a lane the driver reset to the feature tip, and nothing else is live: every slice is done and the last checkpoint is committed. The run dir named in the pack header is the driver's; you write one file there, the PR body.
+
+Read first, in order:
+1. the `# Autonomy` section below — what you decide, what you log, when you block, what you never do
+2. the `# Branch` section below — the default and feature branch names and the commits this branch adds; the review is of that diff
+3. the `# Collected` section below — the plan, the leaks verdict and the second opinion `factory review collect` wrote; polish §1 starts from it
+4. the `# Log` section below, its `## Notes` and `## Decisions` first, and `prd.md`
+
+The feature's `state.toml` and `log.jsonl` are written through the tool only, never by hand. Each command below is one shell line; a body goes on stdin (`--body-file -`).
+
+Do:
+- run `/polish` **Unattended** on this branch, in full: the local review, the security and UX passes where they apply, the second opinion, the fixes. The `# Autonomy` section below is the only copy of the unattended rules; no step waits for a human.
+- fix what the review finds in place, by the Autonomy § Tokens rules: batch lookups, read each file once, keep command output small. Run the inner-loop command when you change code; never background it.
+- in your last turn, before you return, do four things:
+  1. `docs/features/001-fixture/retro.md` — the prose sections of the template under `# Retro` (Cost vs catch, Where I guessed, What I wished existed, Project friction, Framework friction, Score). It has no frontmatter: the driver writes the numbers after you return.
+  2. the score, 1 to 5, through the store: `/home/emiliano/.local/share/factory/lanes/factory-65f79a66/lane-1/target/lane-1/debug/factory docs retro 001 --set score=4`, your own number in place of the 4. The `## Score` section of `retro.md` says why in one line.
+  3. the PR body, at the path named under `# PR body`, in the shape given there. It is outside the repo: write it with the Write tool at that absolute path.
+  4. `/home/emiliano/.local/share/factory/lanes/factory-65f79a66/lane-1/target/lane-1/debug/factory docs set 001 reviewed=2026-10-15`
+- a decision the skill does not settle → a decision in the log: `/home/emiliano/.local/share/factory/lanes/factory-65f79a66/lane-1/target/lane-1/debug/factory docs log add 001 --kind decision --phase polish --flag decide|fyi --title "{question}" --body-file -`, the body holding the `**Chose:**`, `**Over:**`, `**Because:**` and `**Undo:**` lines. `--flag` is the Autonomy `Review:` value: `decide` or `fyi`, left out for `no`.
+- do not commit: the driver commits everything not gitignored in the lane as `fix(001): polish review fixes` when you return, except `state.toml` and `log.jsonl`, which the tool writes, then ships, pushes and opens the draft PR itself. Leave the lane as the commit should be. Never run `docs ship`, `git push` or `gh`; never merge or mark a PR ready.
+
+Blocked → Autonomy § Blocker protocol steps 1-2: `/home/emiliano/.local/share/factory/lanes/factory-65f79a66/lane-1/target/lane-1/debug/factory docs log add 001 --kind block --phase polish --title "{what}" --body-file -`, the body holding `**Happened:**`, `**Options:**` and `**Recommended:**`, and return. Do not push and do not notify.
+
+`FINDINGS` counts the review's findings after dedupe and triage: by severity as found, then how many this pass fixed and how many it parked. The driver stores the five numbers as a trend; leave the line out and they stay blank.
+
+Return exactly:
+STATUS: done | blocked
+FIXED: {what the review changed, one line | nothing}
+FINDINGS high=<n> medium=<n> low=<n> fixed=<n> parked=<n>
+RETRO: written | not written: why
+PR_BODY: written | not written: why
+DECISIONS: {AD numbers added | none}
+BLOCK: {BLOCK-n — one line | none}
+
+# Autonomy
+
+# Autonomy — the contract for unattended runs
+
+`/deliver` builds an approved PRD all the way to a green pull request with nobody watching. Every skill it calls was written for a session with the owner at the keyboard, so each place one of them would stop and ask carries a line marked **`Unattended (/deliver):`** that points here. **This file is the only place the rule lives.**
+
+Read it when you are inside a `/deliver` run — the orchestrator, a slice subagent, or a skill it invoked. An attended run never reads it and never behaves differently because of it.
+
+> **Changing a rule?** Change it here, never by adding a variant inside one skill. The reasoning behind each call is in [MAINTAINING.md](MAINTAINING.md).
+
+## Who decides what
+
+**Sub-skills classify; `/deliver` applies the policy.** A skill that hits a blocker records it and hands it back. It never decides on its own whether the run stops — that is the run's mode, and the mode lives only in `/deliver`.
+
+Today there is one mode: **a blocker stops the run and notifies the owner.**
+
+## The test — decide, log, or block
+
+Ask it of every choice the work forces that nobody wrote down: **does the PRD, the slice, or a `DEC-n` already settle this?**
+
+| Answer | Do | Examples |
+|---|---|---|
+| **Yes** | decide, no log | the pattern the slice names; the status code the FR states; the test an acceptance criterion describes |
+| **No — and the choice is local and cheap to undo** | decide **and** write an `AD-n` | 404 vs 403 for a hidden row; extracting a helper; a test's shape; a retry count; a dev dependency |
+| **No — and it changes what the PRD promises** (an FR's scope or acceptance, a non-goal, a settled `OPEN-n` or `DEC-n`), **or it cannot be undone or reaches outside the repo** (a destructive migration, an external contract, a paid service), **or it needs a secret**, **or a cap below is hit** | **block** | the PRD says soft-delete and a unique index makes it impossible; CI needs a secret this branch cannot add |
+
+**Unsure between log and block → block.** A wrong `AD` costs the owner a revert. A silent scope change costs a feature.
+
+**Every `AD` carries a `Review:` line with one of three values.** `decide` — the owner must answer before this ships: a deviation from what the slice or an acceptance criterion said, a schema or public interface shape the PRD did not specify, a new runtime dependency. `fyi` — nothing waits on it, but a reviewer reading the diff would miss it: a new dev dependency, a lint or type suppression, a behaviour chosen where the slice was silent. `no` — the rest. The PR body lists `decide` first and `fyi` after. A run that flags forty `fyi` entries has buried the two that mattered; two real runs marked 22 of 46 `decide` and 40 of 70 `fyi`. A helper extracted, a test's shape, a 404 over a 403 the slice hinted at are all visible in the diff, so they are `no`. When unsure between `no` and `fyi`, choose `no`.
+
+## Mapping — the buckets skills already use
+
+| Where | Attended | Unattended |
+|---|---|---|
+| `/polish` **Fix** | fix without asking | same |
+| `/polish`, `/ux` **Ask** | one AskUserQuestion round | the test above: an `AD` when local and reversible — taste always lands here — otherwise **block** |
+| `/polish`, `/ux` **Park** | `factory docs idea add` or a new slice | `factory docs idea add` only; a new slice changes the plan the owner approved |
+| `prune`, "genuinely in doubt" | ask in-session | **keep the test** and write an `AD` — keeping never loses coverage |
+| `/harness` confirm round | one AskUserQuestion round | take what the code shows; an `AD` for each finding it had to choose between. A test-framework major upgrade the PRD does not name is a **block**: it touches the whole suite |
+| a `DEC-n` candidate | recommend, owner chooses | list it in the PR body; **never write `docs/decisions.md`** |
+| a proposed rubric line | owner approves it | list it in the PR body; **never write `docs/ux-rubric.md`** |
+
+## What an unattended run may write
+
+**May:** application code and tests · the feature's own folder — `prd.md` Status prose, the feature's and its slices' status through `factory docs set`, slices, the log through `factory docs log add`, `retro.md`, `qa-guide.md` · `factory docs idea add` · `.claude/skills/verify-*` whenever the app's surface moves under it: a harness slice, a feature-map entry, or a later slice that changes what the harness drives. Extend or repair a recipe, but never drop a step an earlier checkpoint drove.
+
+**Never:** `docs/decisions.md` · `docs/ux-rubric.md` · CI workflow files · `CLAUDE.md`, `AGENTS.md`, `.ai/guidelines/` · another feature's folder · anything under `docs/archive/` · the PRD's FRs, acceptance criteria, non-goals or decisions log. A change the run believes one of these needs is a **block**, or a proposal in the PR body when nothing waits on it.
+
+**The PRD outranks this list for a file it names.** An FR that orders a write here, such as installing a tool that rewrites `CLAUDE.md`, is done as written, with an `AD` marked `decide`. The owner approved that PRD; this list guards against what nobody approved.
+
+## Never, to get green
+
+An agent alone under pressure reaches for every one of these. All are forbidden. **The retro is the legitimate place to say a rule is too strict** — that is half of why it exists.
+
+- lower a floor or a threshold, or add an ignore, exclusion, baseline or allowlist entry to a gate tool
+- `--no-verify`, or any other way around a hook
+- skip, delete or weaken a test this run did not write
+- edit a CI workflow
+- record a checkpoint, or a Prove row, without an artifact that exists on disk
+- force-push, push to the default branch, merge, close the PR, delete a branch. In a `factory` run a worker runs no `git push` and no `gh` at all: the driver pushes and talks to GitHub, and the hook refuses both
+
+**Two narrow exceptions, each with an `AD` marked `Review: fyi`:** an inline suppression where the real fix is impossible (a third-party type, a generated file), naming why; and extending gate configuration to *cover* new code the feature adds, such as a new source path. Extending, never loosening. When that extension makes CI need a toolchain it lacks, adding the setup step to the workflow is part of the same extension, with the `AD` marked `decide`. Never remove, skip or weaken a CI step.
+
+## The plan stays in docs/
+Code is read for years by people and agents who never saw the PRD. Write it so it
+reads as if the plan never existed.
+- Never name a specific plan item in code: not in file or folder names, classes,
+  functions, tests, fixtures, strings or comments. No PRD-n, FR-n, AD-n, slice n,
+  checkpoint n. Name the behavior: seedUnbilledWorkspaces, not seedPre025Workspaces.
+- The QA plan maps each FR to its test. The test never names the FR.
+- Comments: default to none. One short line only for what the code cannot show: an
+  invariant no name or test expresses, a quirk of something we cannot change, or why
+  a choice is deliberate. No history, no narration, no TODOs.
+- A library crate's public API, an HTTP or CLI contract, and type annotations a
+  checker reads keep a doc comment. Every other docblock follows the line above.
+- Do not copy what is nearby when it breaks this. Fix it when you touch it.
+
+## Tokens — every call re-reads everything before it
+
+Two thirds of a run's cost is the model re-reading its own context on every call. At 300k of context, a `grep | head` costs about what reading a novel does. The call count is what you control:
+
+- **Batch independent lookups into one message.** Several Read, Grep or Bash calls side by side are one model call. One after another, they are N calls.
+- **Read a file once with Read**, whole when it fits and in a few large ranges when it does not, unless your pack already holds it: then read only the range you need, because a whole read of a file in your pack is refused and pointed at its section. Paging it through five `sed -n` calls pays for your context five times. Do not re-read a file only to confirm an edit landed; Edit fails loudly when it misses. The pre-commit re-read a skill requires is a different thing: keep it.
+- **Keep command output to what you act on**: each failing test's own output (the assertion and its diff) and the summary line, not the passing transcript. A log you may need later goes to a file in your scratchpad, outside the repository, searched with `grep`.
+- **Your map is the slice's Current code section plus `git log --stat` of the slices before yours**, which shows what moved since slicing. Re-verify the facts you rely on; do not re-explore the codebase to rebuild the map.
+
+## Caps
+
+Starting values. The retro records the numbers that will say whether they are right.
+
+- **Gate:** per slice, the inner loop (`docs gate --inner`); the full gate at a checkpoint. 3 fix attempts on the same failure, then block. A red checkpoint is fixed in place; when the cause is unclear, bisect over the slice commits first.
+- **Slice hand-back:** a subagent that reports done with a gap — no commit, inner loop not green, `docs check` errors — is sent back once, then blocked. A checkpoint that returns without evidence for a row it was asked to prove, same rule.
+- **CI:** 3 fix rounds, then block.
+- **Flaky:** a CI failure unrelated to the diff is re-run once (`gh run rerun <id> --failed`; in a `factory` run the driver does it, never a worker). Passes → name the job in the PR body's CI section, not in the log: a docs-only commit would start CI all over again. Fails again → block.
+- **Not this branch's:** CI red on something the branch did not touch, or an infrastructure fault (a missing secret, runner or quota) → block at once.
+
+## Blocker protocol
+
+1. **Write a `BLOCK-n` entry** with `factory docs log add NNN --kind block`: what happened, with the `file:line` or command output that proves it; 2-4 options, each with its cost; the recommendation. The tool numbers it and appends it under the feature's lock, so siblings running beside you lose nothing.
+2. **A slice's blocker → `--slice N` on the entry, and `factory docs set NNN slices.N.status=blocked`.** A blocker outside a slice names its phase instead, with `--phase`: `preflight`, `slicing`, `polish`, `pr`, `ci`.
+3. **Commit it** — `docs(NNN): block <where>` — and push the branch (`git push -u origin feat/{slug}`), so the entry is readable away from this machine. In a `factory` run the driver commits and pushes; a worker stops after step 2.
+4. **Notify** with the PushNotification tool. One line, under 200 characters, leading with what to act on: `PRD-013 blocked at slice-02: unique index prevents soft-delete. 3 options: factory docs log show 013 --open`.
+5. **Stop.** The final message says the same and gives the entry's path. Start nothing else.
+
+## The owner answers mid-run
+
+An unattended run can have the owner in the chat anyway. Nothing waits for them. An answer that arrives is applied like a blocker's resolution: as the owner's correction, dated and cited, from the next step on. A question you want answered goes in the chat once, with your recommendation, and you continue on that recommendation until they reply.
+
+## Resuming
+
+The owner answers in the conversation or by editing the entry. Then:
+
+1. Append the answer with `factory docs log add NNN --kind answer --ref BLOCK-n` (`factory answer` does it in a `factory` run); the block is resolved from then on.
+2. **If the answer changes the PRD, apply it as the owner's correction** — inline and visible, dated, citing `BLOCK-n`. This is the one time an unattended run edits FRs or non-goals, and only with the owner's words.
+3. A blocked slice goes back to `building` with `factory docs set`; commit.
+4. `/deliver NNN` again. It reads its position from `docs status NNN --json`, so nothing depends on the conversation that started the run.

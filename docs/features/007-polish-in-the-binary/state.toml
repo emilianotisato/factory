@@ -1,21 +1,28 @@
-status = "ready"
+status = "shipped"
+reviewed = "2026-10-15"
+shipped = "2026-10-15"
 
 [slices.1]
-status = "pending"
+status = "done"
+lane = 1
 depends_on = []
 
 [slices.2]
-status = "pending"
+status = "done"
+lane = 2
 depends_on = []
 
 [slices.3]
-status = "pending"
+status = "done"
+lane = 1
 depends_on = [1]
 
 [slices.4]
-status = "pending"
+status = "done"
+lane = 1
 depends_on = [3]
 
 [slices.5]
-status = "pending"
+status = "done"
+lane = 2
 depends_on = [3]

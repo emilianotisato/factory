@@ -3,7 +3,8 @@
 **Source**: [`prd.md`](prd.md) → §7 FR-5. **Depends on**: 03 (the driver calls the collect library slice 03 wrote, and reads back the file it writes)
 **Created**: 2026-10-15
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**: `polish()` now prepares the lane first, then `collected()` (`src/closeout.rs`) reuses `<run dir>/collect.md` when its head line names the lane's HEAD, or runs the collect against the default branch with `cfg.review`, writes the file and prints `polish: collected <path> against <base> in N.N s`. A failed collect prints `polish: collect failed in N.N s — <reason>` and the section is `collect failed: <reason>`; no file is written. `pack::collected` lifts the plan, the leaks `verdict:` line, the second opinion's lines above the first pass and each `### Pass … — counted|unreviewed` heading (as `- Pass …`), then the file's path; `for_polish` places `# Collected` second. Tests: `the_collected_section_keeps_the_status_lines_and_leaves_the_findings_in_the_file`, `a_collect_that_fails_is_the_section_and_writes_no_file`, and `polish_collects_once_and_a_rate_limited_respawn_reuses_the_file` (`tests/quota.rs`). Inner loop: 2 runs, 1 red (a `cargo fmt` diff), about 2 min. Deviation: none; AD-4 on the progress lines and the head-line match. FR-5's Prove row is left for the checkpoint.
+Checkpoint 2 (FR-5): `collect.md` written before the first polish spawn, the pack's `# Collected` section names it, the rate-limited respawn reuses it with no new reviewer call: `docs/features/007-polish-in-the-binary/evidence/cp-2-polish-collects.txt`; the first polish pack: `docs/features/007-polish-in-the-binary/evidence/cp-2-polish-pack-first.txt`.
 
 **Slice**: After this slice, the driver runs the collect in the polish lane against the default branch before the polish worker spawns, writing `<run dir>/collect.md`, and prints one line with how long it took. The polish pack gains a `# Collected` section: the plan, the leaks verdict, each second-opinion pass's status line, and the file's absolute path. A respawn reuses the file while its head line matches the lane's HEAD. A collect that fails never stops the run: the section says `collect failed: <reason>`. The skill and the contract learn about the section in slice 05.
 
@@ -62,3 +63,12 @@ Rows from [`prd.md`](prd.md) §11 this slice proves, below the UI:
 - **FR-5**: "run a stubbed feature to polish: `collect.md` exists before the polish spawn, the pack names it, a respawn reuses it" — task 3's test transcript, and the first polish pack's `# Collected` section.
 
 **Acceptance:** after the checkpoint, Progress holds the transcript and the section.
+
+**Code-review fixes (2026-10-15).**
+
+- A `factory stop` during the collect (up to a whole pass) was ignored: the polish worker spawned after it. The driver reloads the run state after the collect and stops there.
+- `collect.md` was written with `fs::write`, so a torn write left a head line on a partial file, and the next respawn reused it as finished (found only by the second opinion). It goes through `scheduler::write_atomic` now.
+- A file whose head matched was reused even when it owed a rerun: `fallback owed` after a `cursor-agent login`, or a leaks scan that did not run. Reuse now also needs neither line (AD-6, `Review: decide`).
+- The pack copied only the leaks `verdict:` line, so `verdict: 2 fix hits` reached the worker with no file:line to fix. A verdict other than `clean` now carries its hits into `# Collected`.
+- The collect's `review pass n/m` lines reached the driver log without the timestamp every other line has. A line-buffering writer stamps each whole line.
+- The respawn test counted the preflight's `--list-models` call as a collect call, so `collected_calls >= 1` held even with no review pass. It counts review calls only.
