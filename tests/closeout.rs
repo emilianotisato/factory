@@ -2051,7 +2051,7 @@ fn the_slice_contracts_commands_run_on_the_fixture() {
                 .replace("decide|fyi", "decide")
         })
         .collect();
-    assert_eq!(lines.len(), 7, "{lines:?}");
+    assert_eq!(lines.len(), 4, "{lines:?}");
     for line in &lines {
         let mut child = fx
             .command("sh")

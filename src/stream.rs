@@ -96,7 +96,8 @@ pub struct ResultEvent {
     pub rest: Map<String, Value>,
 }
 
-/// A hint the row keeps; the driver routes on the board, never on this.
+/// A hint the row keeps; the driver routes on the board. A build worker's `done` on a `building`
+/// slice is the one hint that writes it, once the lane passes `docs check`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatusHint {
     Done,

@@ -9,14 +9,12 @@ Read first, in order:
 The feature's `state.toml` and `log.jsonl` are written through the tool only, never by hand. Each command below is one shell line; a body goes on stdin (`--body-file -`).
 
 Do:
-- `{factory} docs set {NNN} slices.{N}.status=building`
 - the tasks, in order, working by the Autonomy § Tokens rules: batch lookups, read each file once, keep command output small
-- Verify: run the inner-loop command given under `# Inner loop` below **in the foreground, and time every run** — never background it and never end your turn while it runs. Red → fix and rerun; 3 attempts on the same failure → block.
+- Verify: run the inner-loop command given under `# Inner loop` below **in the foreground, and time every run** — never background it and never end your turn while it runs. A targeted test run uses the stack's quiet flag too, as the inner loop does, so only failures and the summary print. Red → fix and rerun; 3 attempts on the same failure → block.
 - Do not run the full gate and do not drive the harness: both happen at the checkpoint that covers this slice. Leave the Prove task's rows named for it.
 - **Progress**: what was built · inner-loop runs, red runs, minutes, and what a red run caught · deliberate deviations
 - anything the slice, the PRD or `docs/decisions.md` did not settle → a decision in the log: `{factory} docs log add {NNN} --kind decision --slice {N} --flag decide|fyi --title "{question}" --body-file -`, the body holding the `**Chose:**`, `**Over:**`, `**Because:**` and `**Undo:**` lines. `--flag` is the Autonomy `Review:` value: `decide` or `fyi`, left out for `no`. The tool numbers it and prints its `AD-n`.
 - a trap about this repo that cost you a run → `{factory} docs log add {NNN} --kind note --slice {N} --title "{the trap}" --body-file -`, one line with what works instead
-- `{factory} docs set {NNN} slices.{N}.status=done`, then `{factory} docs check` with no errors
 - do not commit: the driver commits everything not gitignored in your lane when you return, so leave the lane as the commit should be: a scratch file you leave lands with the slice.
 - touch nothing outside your slice's files. A file another slice owns is off limits even when it looks one line from right; put it in a decision instead.
 

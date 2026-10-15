@@ -260,15 +260,17 @@ fn pack_is_the_slice_the_cited_sections_the_contract_and_the_inner_loop() {
     assert!(!text.contains("## 2. Blast radius"), "{text}");
     assert!(!text.contains("## 3. FR-"), "{text}");
     assert!(
-        text.contains("docs set 001 slices.1.status=done`"),
-        "{text}"
+        !text.contains("status=done"),
+        "the driver sets done: {text}"
     );
     assert!(text.contains("--kind block --slice 1 "), "{text}");
     assert!(text.contains("one slice of PRD-001"), "{text}");
     assert!(
-        text.contains("`factory docs set 001 slices.1.status=building`"),
-        "{text}"
+        !text.contains("status=building"),
+        "the driver sets building: {text}"
     );
+    let contract = &text[at("\n# Contract\n")..at("\n# Autonomy\n")];
+    assert!(contract.contains("quiet flag"), "{contract}");
     for ph in ["{NNN}", "{NN}", "{N}", "{seed}", "{factory}"] {
         assert!(!text.contains(ph), "{ph} left in pack");
     }
@@ -1258,4 +1260,112 @@ fn a_preflight_answer_logs_one_ask_entry_and_a_retry_adds_none() {
         .filter(|e| e["kind"] == "ask_answered")
         .count();
     assert_eq!(answered, 1, "one `ask_answered` across both tries");
+}
+
+// ── a build worker's done hint: the driver checks the lane and writes the board ──
+
+fn board_free(extra: Value) -> Value {
+    let mut step = json!({"outcome": "done", "board": false});
+    step.as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    step
+}
+
+#[test]
+fn a_builder_that_leaves_the_board_alone_lands_done_and_one_that_sets_done_lands_as_before() {
+    let fx = Fixture::with_index("driver-done", &[("checkpoint_every", "10")]);
+    fx.chain();
+    fx.write_plan(&[board_free(json!({})), done(), done(), checkpoint()]);
+    let out = factory(&fx, &["run", "001", "--foreground"]);
+    let text = stdout(&out);
+    assert_eq!(out.status.code(), Some(0), "{text}");
+    let dir = only_run_dir(&fx);
+    assert_eq!(state(&dir)["phase"], "finished");
+    for n in 1..=3 {
+        assert_eq!(fx.slice_status(n), "done", "slice {n:02}");
+    }
+    assert_eq!(slices_of(&dir, "slice_done"), [1, 2, 3]);
+    assert_eq!(slices_of(&dir, "slice_committed"), [1, 2, 3]);
+    assert!(
+        fx.git(&["log", "--format=%s"]).contains("slice-01"),
+        "{}",
+        fx.git(&["log", "--format=%s"])
+    );
+    assert!(fx.log_of("block").is_empty());
+    let stream = fs::read_to_string(dir.join("workers").join(format!(
+        "{}.jsonl",
+        state(&dir)["workers"][0]["session_id"].as_str().unwrap()
+    )))
+    .unwrap();
+    assert!(!stream.contains("status=done"), "the stub left the board");
+}
+
+#[test]
+fn a_builder_whose_lane_fails_docs_check_blocks_its_slice_with_the_errors() {
+    let fx = Fixture::with_index("driver-check", &[("checkpoint_every", "10")]);
+    fx.chain();
+    fx.write_plan(&[board_free(
+        json!({"sh": "printf '[gone](missing.md)\\n' > docs/broken.md"}),
+    )]);
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let dir = only_run_dir(&fx);
+    wait_until("the run to park", 40, || {
+        state(&dir)["phase"] == "waiting-owner"
+    });
+    assert_eq!(fx.slice_status(1), "blocked");
+    assert_eq!(fx.calls().len(), 1, "no second worker on the slice");
+    let blocks = fx.log_of("block");
+    assert_eq!(blocks.len(), 1, "{blocks:?}");
+    assert_eq!(blocks[0]["slice"], 1);
+    assert_eq!(blocks[0]["title"], "docs check failed in slice 01's lane");
+    let body = blocks[0]["body"].as_str().unwrap();
+    assert!(body.contains("`E-LINK-BROKEN`"), "{body}");
+    assert!(body.contains("missing.md"), "{body}");
+    assert!(body.contains("**Options:**") && body.contains("**Recommended:**"));
+    assert_eq!(blocked_ids(&dir), ["BLOCK-1"]);
+    assert!(slices_of(&dir, "slice_committed").is_empty());
+    let log = fs::read_to_string(dir.join("driver.log")).unwrap();
+    assert!(log.contains("docs check in lane"), "{log}");
+    stop_and_wait(&fx, &dir);
+}
+
+#[test]
+fn a_driver_killed_while_a_board_free_builder_lingers_lands_it_on_restart() {
+    let fx = Fixture::with_index("driver-done-kill", &[("checkpoint_every", "10")]);
+    fx.chain();
+    fx.write_plan(&[
+        board_free(json!({"linger_ms": 3000})),
+        done(),
+        done(),
+        checkpoint(),
+    ]);
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let dir = only_run_dir(&fx);
+    wait_until("the builder to linger", 20, || {
+        fx.calls().len() == 1 && !decisions(&fx).is_empty()
+    });
+    let driver = state(&dir)["pid"].as_u64().unwrap() as u32;
+    let worker = state(&dir)["workers"][0]["pid"].as_u64().unwrap() as u32;
+    // SAFETY: a plain kill(2) on the test's own detached driver; its worker lives on.
+    assert_eq!(unsafe { libc::kill(driver as i32, libc::SIGKILL) }, 0);
+    wait_until("the driver to die", 5, || !pid_alive(driver));
+    wait_until("the builder to return", 20, || !pid_alive(worker));
+    assert_eq!(fx.slice_status(1), "building");
+
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    wait_until("the resumed run to finish", 40, || {
+        state(&dir)["phase"] == "finished"
+    });
+    for n in 1..=3 {
+        assert_eq!(fx.slice_status(n), "done", "slice {n:02}");
+    }
+    assert_eq!(slices_of(&dir, "slice_spawned"), [1, 2, 3], "no respawn");
+    assert_eq!(slices_of(&dir, "slice_committed"), [1, 2, 3]);
+    let k = kinds(&dir);
+    assert_eq!(count(&k, "worker_dead"), 0, "{k:?}");
+    assert!(fx.log_of("block").is_empty());
 }

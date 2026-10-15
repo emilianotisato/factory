@@ -3,7 +3,7 @@
 **Source**: [`prd.md`](prd.md) → §3 FR-8, and FR-10's contract line. **Depends on**: — (independent of every other slice: no other slice touches `assets/contract-slice.md`, `src/scheduler.rs` or `src/stream.rs`)
 **Created**: 2026-10-15
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**: built — the slice contract drops the building and done-and-check lines and its Verify line asks for the quiet flag on a targeted test run; `done_by_driver` (`src/scheduler.rs`) runs before routing in `reap` and in `settle_orphans`: a build worker's `done` hint on a `building` slice checks the lane, writes `done`, or writes a `docs check failed in slice NN's lane` BLOCK listing each error with its code (an open one is reused) and sets `blocked`; the module and `StatusHint` docs say so; the stub gains `board: false`; three stub-run tests in `tests/loop.rs` (board-free done lands, a broken link blocks with `E-LINK-BROKEN`, a driver kill while a board-free builder lingers lands on restart), the self-set-done case rides slices 02-03 of the first. Inner loop: 3 runs, 1 red, ~4 min — the red caught `the_slice_contracts_commands_run_on_the_fixture` (`tests/closeout.rs`) pinning 7 contract commands, now 4. Deviation: that pin in `tests/closeout.rs` is outside the files the slice names; it changes with the contract. Prove rows FR-8 and FR-10 (contract half) are left for the checkpoint.
 
 > **Highest risk in this PRD.** It changes how the driver routes every build worker's exit, live and after a restart. Task 2 carries the risk.
 

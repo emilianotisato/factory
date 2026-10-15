@@ -47,7 +47,9 @@
 //     canned answers (not run), a `refs` naming src/lib.txt followed by a Read
 //     of it and an `outline` naming src/other.rs that nothing reads;
 //     wait_sh: "<script>", a barrier polled until it exits 0; linger_ms, a
-//     sleep after `done` is on the board and before the stream.
+//     sleep after `done` is on the board and before the stream; board: false
+//     sets neither `building` nor `done` and carries no `docs set` call, so
+//     the slice is `done` only if the driver writes it.
 //   On a polish: slices: {"02": "building"} forces slice statuses first;
 //     skip: ["retro", "body", "findings"] leaves those out; friction: text is
 //     the retro's `## Framework friction → factory` section; subagents: n
@@ -450,7 +452,8 @@ const { nn, slicePath, featureDir, feature } = findSlice()
 
 // ── 4. side effects ──────────────────────────────────────────────────────────
 if (limited.includes(step.outcome)) rateLimited(step)
-setStatus(feature, nn, 'building')
+const ownsBoard = !(step.board === false && (step.outcome ?? 'done') === 'done')
+if (ownsBoard) setStatus(feature, nn, 'building')
 if (step.delay_ms) sleep(Number(step.delay_ms))
 if (step.wait_sh) waitFor(step.wait_sh)
 if (step.outcome === 'dead') {
@@ -521,7 +524,7 @@ const ad = docs(adAdd, [
   '**Review:** no',
 ].join('\n'))
 progress(slicePath, n, touchedRel, ad)
-setStatus(feature, nn, 'done')
+if (ownsBoard) setStatus(feature, nn, 'done')
 if (step.linger_ms) sleep(Number(step.linger_ms))
 
 // ── 5. the stream ────────────────────────────────────────────────────────────
@@ -541,7 +544,7 @@ if (step.git_add) tool('Bash', { command: `git add ${step.git_add}`, description
 shCall(step, sh)
 docsCall(adAdd, ad)
 innerRun(step)
-docsCall(['set', feature, `slices.${Number(nn)}.status=done`], '')
+if (ownsBoard) docsCall(['set', feature, `slices.${Number(nn)}.status=done`], '')
 emit(assistant([{ type: 'text', text: 'STATUS: done' }]))
 const resultText = [
   'STATUS: done',

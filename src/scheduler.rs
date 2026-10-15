@@ -1,4 +1,5 @@
 //! The board is the truth: every tick routes on it, and a worker's `STATUS:` line is a hint the row keeps.
+//! One hint writes the board: a build worker's `done` on a `building` slice, once its lane passes `docs check`.
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write;
@@ -18,7 +19,7 @@ use crate::land::{self, Landing};
 use crate::pack::{BlockSection, Pack};
 use crate::quota::{self, Hold, Limit};
 use crate::run::{GateCmds, Phase, Run, WorkerOutcome, WorkerRef};
-use crate::stream::Summary;
+use crate::stream::{StatusHint, Summary};
 use crate::worker::{self, Exit, Job, Worker};
 use crate::{Error, Result, clock, lanes, metrics, paths};
 
@@ -504,10 +505,25 @@ fn reap(
         if r.exit.is_none() {
             continue;
         }
-        let board = docs.status(feature)?;
+        let mut board = docs.status(feature)?;
         let mut r = table.remove(&slice).expect("key from the table");
         let exit = r.exit.take().expect("checked above");
-        if let Err(e) = route_exit(run, &board, &r, exit, out) {
+        let routed = done_by_driver(
+            run,
+            &board,
+            slice,
+            &r.worker.role,
+            Some(r.lane),
+            &exit.summary,
+            out,
+        )
+        .and_then(|status| {
+            if status != slice_status(&board, slice) {
+                board = docs.status(feature)?;
+            }
+            route_exit(run, &board, &r, exit, out)
+        });
+        if let Err(e) = routed {
             if !landing_owed(run, &board, slice) {
                 let summary = worker::summary_from_disk(run.dir(), &r.worker.session_id);
                 settle_failed(run, r.worker.row_id, &r.worker.session_id, &summary);
@@ -1625,7 +1641,9 @@ fn settle_orphans(
             }
             continue;
         }
-        match status {
+        // The board was read before this loop: route on what the driver just wrote.
+        let status = done_by_driver(run, board, slice, &w.role, w.lane, &summary, out)?;
+        match status.as_str() {
             "done" => {
                 if !done_logged(run, slice, &w.session_id)? {
                     run.emit(EventKind::SliceDone { slice })?;
@@ -2026,6 +2044,75 @@ fn block_dead_slice(
     )?;
     emit_blocked(run, slice, Some(&(block.clone(), title)))?;
     Ok(block)
+}
+
+fn check_title(slice: u32) -> String {
+    format!("docs check failed in slice {:02}'s lane", slice)
+}
+
+/// A build worker's `done` hint on a `building` slice: a clean check of its lane writes `done`, errors block it.
+/// Returns the status to route on; every other exit leaves the board as it was.
+fn done_by_driver(
+    run: &mut Run,
+    board: &Status,
+    slice: u32,
+    role: &str,
+    lane: Option<u32>,
+    summary: &Summary,
+    out: &mut dyn Write,
+) -> Result<String> {
+    let status = slice_status(board, slice);
+    if role != "build" || summary.status_hint != Some(StatusHint::Done) || status != "building" {
+        return Ok(status.to_string());
+    }
+    let row = board.slices.iter().find(|s| s.number == slice);
+    let Some(lane) = lane.or_else(|| row.and_then(|s| s.lane)) else {
+        return Ok(status.to_string());
+    };
+    let repo = run.state().repo.clone();
+    let feature_dir = repo.join(&board.dir);
+    let lane_dir = lanes::dir(&paths::data_dir(), &lanes::main_tree(&repo)?, lane);
+    let report = crate::docs::check::run(&lane_dir);
+    if report.errors.is_empty() {
+        crate::docs::state::set(&feature_dir, &[(&format!("slices.{slice}.status"), "done")])?;
+        return Ok("done".into());
+    }
+    let title = check_title(slice);
+    // A kill between the entry and the flip left it open: a restart writes no second one.
+    let open = answers::entries(&feature_dir)?
+        .into_iter()
+        .rfind(|e| !e.resolved && e.slice == Some(slice) && e.title == title);
+    if open.is_none() {
+        let errors: Vec<String> = report
+            .errors
+            .iter()
+            .map(|(code, msg)| format!("- `{code}` {msg}"))
+            .collect();
+        let body = format!(
+            "**Happened:** the build worker on slice {slice:02} returned `STATUS: done`, \
+             and `factory docs check` in its lane ({lane_dir}) found {n} error{s}:\n{errors}\n\
+             **Options:** 1. fix the docs in the lane by hand, then set the slice `done`; \
+             2. set the slice back to `pending` for a fresh worker.\n\
+             **Recommended:** 1 — the work is built and only its docs fail the check.\n",
+            lane_dir = lane_dir.display(),
+            n = report.errors.len(),
+            s = if report.errors.len() == 1 { "" } else { "s" },
+            errors = errors.join("\n"),
+        );
+        answers::add_block(&feature_dir, Some(slice), None, &title, &body)?;
+    }
+    crate::docs::state::set(
+        &feature_dir,
+        &[(&format!("slices.{slice}.status"), "blocked")],
+    )?;
+    say(
+        out,
+        &format!(
+            "slice {slice:02}: docs check in lane {lane} found {} — blocking",
+            report.counts()
+        ),
+    )?;
+    Ok("blocked".into())
 }
 
 fn find_ref(run: &Run, session_id: &str) -> WorkerRef {
