@@ -1,4 +1,4 @@
-//! A batch's lessons, read-only: each shipped feature's retro without its Numbers, then the ideas it spawned.
+//! A batch's lessons: each shipped feature's retro without its Numbers, then the ideas it spawned; `--done` archives the batch.
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -8,8 +8,8 @@ use super::ideas::{self, IdeaRow};
 use crate::error::io;
 use crate::{Error, Result};
 
-/// No references means every live shipped feature, in number order.
-pub fn harvest(root: &Path, references: &[String], out: &mut dyn Write) -> Result<()> {
+/// No references means every live shipped feature, in number order. `done` archives the batch instead of printing it.
+pub fn harvest(root: &Path, references: &[String], done: bool, out: &mut dyn Write) -> Result<()> {
     let board = board::scan(root)?;
     let batch: Vec<&Feature> = if references.is_empty() {
         let mut v: Vec<&Feature> = board
@@ -37,6 +37,10 @@ pub fn harvest(root: &Path, references: &[String], out: &mut dyn Write) -> Resul
     };
     if batch.is_empty() {
         return say(out, "no shipped feature to harvest\n");
+    }
+    if done {
+        let batch: Vec<Feature> = batch.into_iter().cloned().collect();
+        return super::ship::to_archive(root, &batch, out);
     }
     let (rows, _) = ideas::list(root);
     let mut text = String::new();

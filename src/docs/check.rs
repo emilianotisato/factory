@@ -523,7 +523,7 @@ fn state_rules(dir: &str, state_rel: &str, nnn: &str, f: &Feature, s: &State, r:
             Some(d) => r.warn(
                 "W-READY-TO-SHIP",
                 format!(
-                    "PRD-{nnn}: reviewed {d}, every slice done, status still \"{st}\" — run `factory docs ship {nnn}` before you merge (or `factory docs archive {nnn}` if nothing is left)"
+                    "PRD-{nnn}: reviewed {d}, every slice done, status still \"{st}\" — run `factory docs ship {nnn}` before you merge"
                 ),
             ),
         }

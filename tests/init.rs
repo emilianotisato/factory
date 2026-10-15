@@ -283,6 +283,10 @@ fn the_convention_block_lands_once_in_each_file() {
         let text = read(root, f);
         assert_eq!(text.matches(HEADING).count(), 1, "{f}");
         assert!(text.starts_with(HEADING), "{f}");
+        assert!(
+            text.contains("`docs/features` and `docs/archive` are history"),
+            "{f}"
+        );
     }
     let before = (read(root, "CLAUDE.md"), read(root, "AGENTS.md"));
     init(root);

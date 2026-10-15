@@ -7,7 +7,7 @@ GitHub does not resolve repository-relative links in a PR body, so paths go in b
 
 {One paragraph: what this makes true that was not true before.} PRD: `docs/features/{NNN}-{slug}/prd.md`
 
-> Opened by `/deliver`, unattended. **Not merged — that is yours.** If nothing is left after review, run `docs archive {NNN}` on this branch before merging.
+> Opened by `/deliver`, unattended. **Not merged — that is yours.**
 
 ### Needs your review
 

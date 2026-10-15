@@ -296,6 +296,7 @@ fn archive_moves_the_folder_and_leaves_the_index_alone() {
         "slices.2.status=done",
         "slices.3.status=done",
     ]);
+    commit(&fx);
     let index = fx.read("docs/index.md");
     fx.docs(&["archive", "001"]);
     assert!(!fx.path().join(FEATURE_DIR).exists());
@@ -529,4 +530,131 @@ fn harvest_refuses_a_named_feature_that_is_not_shipped() {
     assert_eq!(exit(&o), 2, "{}", stderr(&o));
     assert!(stderr(&o).contains("ready"), "{}", stderr(&o));
     assert!(stdout(&o).is_empty(), "{}", stdout(&o));
+}
+
+const BANNER: &str =
+    "> **History.** The code, `docs/reference` and `docs/decisions.md` win over this document.";
+
+/// The harvest fixture with a qa guide, an evidence file and a home path in 001's prd and log, committed.
+fn archive_fixture(name: &str) -> Fixture {
+    let (fx, _) = harvest_fixture(name);
+    let dir = fx.path().join(FEATURE_DIR);
+    fs::write(dir.join("qa-guide.md"), "# QA\n").unwrap();
+    fs::create_dir_all(dir.join("evidence")).unwrap();
+    fs::write(dir.join("evidence/run.txt"), "ok\n").unwrap();
+    let prd = dir.join("prd.md");
+    let text = fs::read_to_string(&prd).unwrap();
+    fs::write(&prd, text + "\nRan from /home/x/src/app.\n").unwrap();
+    let log = dir.join("log.jsonl");
+    let text = fs::read_to_string(&log).unwrap_or_default();
+    fs::write(&log, text + "{\"note\":\"/home/x/run\"}\n").unwrap();
+    commit(&fx);
+    fx
+}
+
+fn archived_files(fx: &Fixture, dir: &str) -> Vec<String> {
+    let mut v: Vec<String> = fx
+        .git(&["ls-files", "--", dir])
+        .lines()
+        .map(|l| l.trim_start_matches(&format!("{dir}/")).to_string())
+        .collect();
+    v.sort();
+    v
+}
+
+#[test]
+fn harvest_done_leaves_the_records_only_with_the_banner_staged_and_passing_the_hook() {
+    let fx = archive_fixture("v3-harvest-done");
+    let dir = "docs/archive/001-fixture";
+    let said = fx.docs(&["harvest", "001", "--done"]);
+
+    assert!(!fx.path().join(FEATURE_DIR).exists());
+    assert_eq!(
+        archived_files(&fx, dir),
+        ["log.jsonl", "prd.md", "retro.md", "state.toml"]
+    );
+    let prd = fx.read(&format!("{dir}/prd.md"));
+    let body = prd.strip_prefix("---\n").expect("frontmatter");
+    let after = &body[body.find("\n---\n").expect("closing ---") + 5..];
+    assert_eq!(after.lines().next(), Some(BANNER), "{prd}");
+    assert_eq!(prd.matches(BANNER).count(), 1, "{prd}");
+    assert!(prd.contains("Ran from ~/src/app."), "{prd}");
+    for f in ["prd.md", "state.toml", "log.jsonl", "retro.md"] {
+        let text = fx.read(&format!("{dir}/{f}"));
+        assert!(!text.contains("/home/"), "{f}: {text}");
+    }
+    let state = fx.read(&format!("{dir}/state.toml"));
+    assert!(state.contains("status = \"archived\""), "{state}");
+    for dropped in ["slice-01-a.md", "qa-guide.md", "evidence/run.txt"] {
+        assert!(
+            said.contains(&format!("dropped {FEATURE_DIR}/{dropped}")),
+            "{said}"
+        );
+    }
+    let porcelain = fx.git(&["status", "--porcelain", "--", "docs/archive"]);
+    assert!(
+        porcelain.lines().all(|l| !l[..2].contains('M')),
+        "{porcelain}"
+    );
+    assert!(fx.path().join("docs/features/002-second").exists());
+
+    let check = fx.docs_output(&["check"]);
+    let said = format!("{}{}", stdout(&check), stderr(&check));
+    assert!(!said.contains("E-ARCHIVE-MODIFIED"), "{said}");
+
+    fx.docs(&["hook"]);
+    let bin_dir = std::path::Path::new(env!("CARGO_BIN_EXE_factory"))
+        .parent()
+        .unwrap();
+    let path = format!("{}:{}", bin_dir.display(), fx.env()["PATH"]);
+    let out = fx
+        .command("git")
+        .args(["commit", "-q", "-m", "docs: harvest 001"])
+        .env("PATH", path)
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}{}",
+        stdout(&out),
+        stderr(&out)
+    );
+    assert!(fx.git(&["status", "--porcelain"]).is_empty());
+}
+
+#[test]
+fn harvest_done_refuses_an_uncommitted_folder_and_moves_nothing() {
+    let fx = archive_fixture("v3-harvest-dirty");
+    let retro = fx.path().join("docs/features/002-second/retro.md");
+    let text = fs::read_to_string(&retro).unwrap();
+    fs::write(&retro, text + "\nlate edit\n").unwrap();
+    let before = fx.git(&["status", "--porcelain"]);
+
+    let o = fx.docs_output(&["harvest", "001", "002", "--done"]);
+    assert_eq!(exit(&o), 2, "{}", stderr(&o));
+    assert!(stderr(&o).contains("002-second"), "{}", stderr(&o));
+    assert!(fx.path().join(FEATURE_DIR).exists());
+    assert!(!fx.path().join("docs/archive/002-second").exists());
+    assert_eq!(fx.git(&["status", "--porcelain"]), before);
+}
+
+#[test]
+fn archive_leaves_the_same_records_only_shape() {
+    let fx = archive_fixture("v3-archive-shape");
+    let o = fx.docs_output(&["archive", "001"]);
+    assert_eq!(exit(&o), 0, "{}", stderr(&o));
+    let dir = "docs/archive/001-fixture";
+    assert_eq!(
+        archived_files(&fx, dir),
+        ["log.jsonl", "prd.md", "retro.md", "state.toml"]
+    );
+    let prd = fx.read(&format!("{dir}/prd.md"));
+    assert_eq!(prd.matches(BANNER).count(), 1, "{prd}");
+    assert!(!prd.contains("/home/"), "{prd}");
+    assert!(
+        fx.read(&format!("{dir}/state.toml"))
+            .contains("status = \"archived\"")
+    );
+    assert!(stdout(&o).contains("dropped"), "{}", stdout(&o));
 }

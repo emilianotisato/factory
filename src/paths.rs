@@ -109,6 +109,20 @@ pub fn find_home_path(text: &[u8]) -> Option<usize> {
         .map(|m| m.start())
 }
 
+/// `text` with every `/home/<name>/` and `/Users/<name>/` that starts a path written as `~/`, whoever's home it is.
+pub fn home_paths_to_tilde(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
+    for c in HOME_PATH.captures_iter(text.as_bytes()) {
+        let m = c.get(1).expect("the pattern has one group");
+        out.push_str(&text[last..m.start()]);
+        out.push_str("~/");
+        last = m.end();
+    }
+    out.push_str(&text[last..]);
+    out
+}
+
 /// `text` with each path under `home` written as `~/…`; a home of `/` rewrites nothing.
 pub fn home_to_tilde(text: &str, home: &Path) -> String {
     let Some(home) = home.to_str().map(|h| h.trim_end_matches('/')) else {
@@ -214,6 +228,14 @@ mod tests {
             "/tmp/home/x/a ~/b"
         );
         assert_eq!(home_to_tilde("/Users/x/a", Path::new("/Users/x/")), "~/a");
+    }
+
+    #[test]
+    fn every_home_path_starting_a_path_becomes_a_tilde() {
+        assert_eq!(
+            home_paths_to_tilde("/home/x/a (`/Users/ana.b/c`)\n/home/y/d /tmp/home/z/e"),
+            "~/a (`~/c`)\n~/d /tmp/home/z/e"
+        );
     }
 
     #[test]
