@@ -1,4 +1,0 @@
-run A, 22 transcripts (orchestrator + 21 subagents)
-input 1,888 · cache write 3,759,673 · cache read 90,308,357 · output 671,386
-weighted_tokens(A) = 16,149,327   orchestrator alone = 2,178,976 (13%)
-run B target (0.6x) = 9,689,596

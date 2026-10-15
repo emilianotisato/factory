@@ -1,7 +1,0 @@
-$ ls ~/.config/factory/
-ls: cannot access '/home/emiliano/.config/factory/': No such file or directory
-$ /mnt/devcache/emiliano/cargo-target/debug/factory --version
-factory 0.2.0
-$ factory upgrade   (fresh debug binary, cwd /tmp)
-installed from source — curl --proto '=https' --tlsv1.2 -LsSf https://github.com/emilianotisato/factory/releases/latest/download/factory-installer.sh | sh
-exit 0

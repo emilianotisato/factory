@@ -1,6 +1,6 @@
 # PRD-006 research — Code comments and agents
 
-Collected 2026-10-13/14 for [PRD-006](../features/006-comment-discipline/prd.md). Three sources:
+Collected 2026-10-13/14 for [PRD-006](../archive/006-comment-discipline/prd.md). Three sources:
 
 1. **A research workflow** (`code-comments-for-agents`, run `wf_3d555c22-f8a`). Four sweeps (studies, vendor guidance, mechanics, this repo), a skeptic per sweep, one synthesis. 54 claims checked: **52 held, 2 refuted** (§ 7).
 2. **lauren's tweet** and pstack's open-source `/no-comments` skill (§ 6).
@@ -194,7 +194,7 @@ The workflow's synthesis was rerun with the tweet, the keep-list and both audits
   - A TODO that described a problem made Copilot reproduce the debt in 29 of 82 cases ([O'Brien et al., ICSE 2024](https://doi.org/10.1145/3597503.3639176)). This is the best support for lauren's "workaround virus".
 - **How agents read here.** 83% of mid-file reads in the owner's transcripts included a comment line. Comments are 21.8% of the characters in factory's `src/`, and agents pay for them on every read.
 - **Factory's own trend.** Density did not rise: 8.9% of lines on both `main` and this branch. The ids did carry over. 307 of 435 plan references name no PRD, and the wrong AD refs at `src/closeout.rs:2176` came from PRD-004.
-- **Factory's own specs ask for comments:** `docs/features/004-skills/slice-01-spine.md:79` "Write it in the doc comment."
+- **Factory's own specs ask for comments:** `docs/features/004-skills/slice-01-spine.md:79` (in git history) "Write it in the doc comment."
 - **A history note to fix:** `src/db.rs:257-258` "(slice 13)… before slice 13" should name the real condition.
 - **Keep "deliberately" notes**, which stop a well-meant fix. Examples: cody `routes/web.php:155`, factory `src/events.rs:539`. The latter also cites "PRD-005 FR-6", which should become the condition.
 - **Ban test and section headers** like "FR-n on surface X". They spread fastest. Ban TODOs too; `docs idea add` already parks the work.
@@ -262,7 +262,7 @@ A second workflow (`tracking-ids-in-code`, run `wf_f102f8d3-b03`) swept cody-age
 - **arca, in one harness era.** Drive specs arrived at 6f4f77b (2026-09-07). New specs with an id in the title: PRD-013 13 of 14, PRD-014 9 of 9, PRD-015 8 of 8, and every spec in PRD-018 to 020. All 19 Go FR names came from PRD-012, on one day.
 - **factory, the smallest, and a relapse.**
   - PRD-002 added plan-named tests (`prd_001_copy_migrates`, `this_repos_prds_get_the_seven_keys`) and a frozen copy of this repo's docs (`tests/fixture/repo-at-a7e89bf/`).
-  - The owner had them removed: 0d55577, 2026-10-13, 3,145 lines deleted. His review: "no test reads this repo's live or frozen docs" (`docs/features/002-docs-port/log.jsonl:82`).
+  - The owner had them removed: 0d55577, 2026-10-13, 3,145 lines deleted. His review: "no test reads this repo's live or frozen docs" (`docs/archive/002-docs-port/log.jsonl:82`).
   - The rule went nowhere a worker reads. PRD-005 slice 05 recreated the pattern that same evening as `tests/fixture/prd-004` (f35ed4c, 20:42).
 
 **Where it comes from.** No instruction asks for id names. Factory's shipped assets still model them:
@@ -292,7 +292,7 @@ The field repos model it directly:
   - cody aaf6706 renamed 22 titles and 8 files, and both patterns came back within two weeks.
   - In factory, 0d55577's cleanup was undone the same day.
 - **Archive cost.** cody `TestBrowserCommandTest.php:325-346` exists only to stop a plan-doc path cited in app code from rotting. Archiving PRD-023 still had to edit `app/Console/Commands/TestBrowserCommand.php:31` (3539026).
-- **Recorded confusion.** In factory, a removal grep in PRD-005 hit the prd-004 fixture (`docs/features/005-isolated-lanes/log.jsonl:31`, AD-18).
+- **Recorded confusion.** In factory, a removal grep in PRD-005 hit the prd-004 fixture (`docs/archive/005-isolated-lanes/log.jsonl:31`, AD-18).
 - **Collisions.**
   - In cody, AD-10002 means four different decisions, and one is cited at `tests/Browser/BillingPolishBrowserTest.php:134`. `tests/Feature/Knowledge/FaqInboxKindTest.php:131` "(DEC-8)" matches the wrong entry.
   - In arca, `[slice 10]` means offline episodes (`episode.spec.ts:70`) and also device minting (`device-minting.spec.ts:35`). Slice numbers 03-08, 10, 11 and 13 all repeat across PRDs.

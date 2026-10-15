@@ -1,7 +1,0 @@
-$ cargo test --test leaks a_seeded_branch_lists_each_leak_under_its_rule_and_skips_the_rest
-
-running 1 test
-test a_seeded_branch_lists_each_leak_under_its_rule_and_skips_the_rest ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.24s
-
