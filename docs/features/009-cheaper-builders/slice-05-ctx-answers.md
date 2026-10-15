@@ -3,7 +3,12 @@
 **Source**: [`prd.md`](prd.md) → §3 FR-5, FR-6. **Depends on**: 01 (the answer goes on the deny that slice 01 rewrites: the same arms of `bash()` in `src/cli/hook.rs`, and the same `assets/lookup.md`. Built after it, this diff is about the answer only)
 **Created**: 2026-10-15
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+- Built: `print::defs()` decides once whether a body prints (exactly one match) and uses it for the loop and the cut count; several matches print locations, signatures and one line naming `--kind` and `--in` (AD-4). `def` gained `--in`; `def` and `refs` take a file or a directory (`value_name = "PATH"`), `unreadable()` asks for metadata. `def::find()` takes a root. A grep or rg the hook denies carries `ctx refs` and `ctx def --no-body` output under the hint when either found a hit, decided on `refs::Found.total` and `def::Found.hits` (AD-5); the defaults come from `refs::MAX` and `refs::PER_FILE`, shared with the CLI. `def` help and the pack's `# Lookup` say a body comes when one definition matches.
+- Tests: `def_prints_a_body_only_when_one_definition_matches`, `refs_in_a_file_lists_only_that_file`, `def_help_says_when_a_body_comes` (tests/ctx.rs), `a_denied_grep_carries_what_ctx_finds` (src/cli/hook.rs), the `# Lookup` assertion in tests/loop.rs. Snapshots pass unblessed; the exact-hint tests pass unchanged.
+- Inner loop: 1 run, 0 red, 2 min. A live denial on this repo (debug build) took 0.3 s.
+- Deviation: `src/pack.rs` changed one call site for `def::find()`'s new root argument.
+- Prove: FR-5 and FR-6 rows left for the checkpoint.
 
 **Slice**: `ctx def` prints a body only when exactly one definition matches; with several it prints each location and signature, then one line naming `--kind` and `--in` to narrow. `--in` takes a file or a directory, for `def` and `refs`. A grep the hook denies carries ctx's answer under the hint: `refs <word>` and `def <word> --no-body`, run in-process from the worker's cwd. The worker gets in one turn what it would have fetched in the next.
 

@@ -20,7 +20,7 @@ pub mod walk;
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum Verb {
-    /// Where a symbol is defined, with its body
+    /// Where a symbol is defined, with its body when one definition matches
     Def(DefArgs),
     /// Where a symbol is used, capped and collapsed per file
     Refs(RefsArgs),
@@ -35,6 +35,9 @@ pub struct DefArgs {
     /// Only definitions of this kind (`fn` takes methods too)
     #[arg(long, value_parser = ["class", "fn", "method", "type"])]
     pub kind: Option<String>,
+    /// Search this file or directory only
+    #[arg(long = "in", value_name = "PATH")]
+    pub within: Option<PathBuf>,
     /// Location and signature only, no body
     #[arg(long)]
     pub no_body: bool,
@@ -47,14 +50,14 @@ pub struct DefArgs {
 pub struct RefsArgs {
     /// The symbol, matched as a whole word
     pub symbol: String,
-    /// Search this directory only
-    #[arg(long = "in", value_name = "DIR")]
-    pub dir: Option<PathBuf>,
+    /// Search this file or directory only
+    #[arg(long = "in", value_name = "PATH")]
+    pub within: Option<PathBuf>,
     /// The most hits printed
-    #[arg(long, default_value_t = 10)]
+    #[arg(long, default_value_t = refs::MAX)]
     pub max: usize,
     /// The most hits printed from one file
-    #[arg(long, default_value_t = 3)]
+    #[arg(long, default_value_t = refs::PER_FILE)]
     pub per_file: usize,
     /// Include test files (left out by default)
     #[arg(long)]
@@ -86,18 +89,16 @@ pub struct Searched {
 pub fn run(verb: &Verb, base: &Path, out: &mut dyn Write, err: &mut dyn Write) -> Result<i32> {
     let text = match verb {
         Verb::Def(a) => {
-            if let Some(code) = unreadable(base, base, err)? {
+            let root = root(base, a.within.as_deref());
+            if let Some(code) = unreadable(base, &root, err)? {
                 return Ok(code);
             }
             let opts = walk::WalkOpts { vendor: a.vendor };
-            let found = def::find(base, &a.symbol, a.kind.as_deref(), &opts)?;
+            let found = def::find(base, &root, &a.symbol, a.kind.as_deref(), &opts)?;
             print::defs(&a.symbol, &found, !a.no_body)
         }
         Verb::Refs(a) => {
-            let root = a
-                .dir
-                .as_ref()
-                .map_or_else(|| base.to_path_buf(), |d| base.join(d));
+            let root = root(base, a.within.as_deref());
             if let Some(code) = unreadable(base, &root, err)? {
                 return Ok(code);
             }
@@ -123,8 +124,12 @@ pub fn run(verb: &Verb, base: &Path, out: &mut dyn Write, err: &mut dyn Write) -
     Ok(0)
 }
 
+fn root(base: &Path, within: Option<&Path>) -> PathBuf {
+    within.map_or_else(|| base.to_path_buf(), |w| base.join(w))
+}
+
 fn unreadable(base: &Path, root: &Path, err: &mut dyn Write) -> Result<Option<i32>> {
-    match std::fs::read_dir(root) {
+    match std::fs::metadata(root) {
         Ok(_) => Ok(None),
         Err(e) => {
             writeln!(err, "factory ctx: cannot read {}: {e}", rel(base, root))

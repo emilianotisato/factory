@@ -1,11 +1,12 @@
-//! The worker's PreToolUse hook: no I/O beyond stdin, the pack's first line and a `stat`, so it answers in milliseconds.
+//! The worker's PreToolUse hook: stdin, the pack's first line and a `stat`, plus a ctx search of the tree when it denies a grep.
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 use serde_json::{Value, json};
 
 use crate::Result;
-use crate::ctx::walk::VENDOR_DIRS;
+use crate::ctx::walk::{VENDOR_DIRS, WalkOpts};
+use crate::ctx::{def, print, refs};
 use crate::error::io;
 use crate::paths;
 use crate::shell;
@@ -139,11 +140,16 @@ fn bash(command: &str, held: &Held, repo: &Path, cwd: &Path) -> Verdict {
         return Verdict::Allow;
     };
     let args = &words[1..];
-    match shell::program(first) {
-        "grep" | "egrep" | "fgrep" if bare_name(grep_search(args), &here, repo) => {
-            Verdict::Deny(grep_hint())
-        }
-        "rg" if bare_name(rg_search(args), &here, repo) => Verdict::Deny(grep_hint()),
+    let program = shell::program(first);
+    let search = match program {
+        "grep" | "egrep" | "fgrep" => grep_search(args),
+        "rg" => rg_search(args),
+        _ => None,
+    };
+    if let Some(name) = bare_name(search, &here, repo) {
+        return Verdict::Deny(answered(name, &here));
+    }
+    match program {
         // `cat f | head`: a range, not the whole file.
         "cat" if !matches!(end, Some("|" | "|&")) => {
             for a in args.iter().filter(|a| !a.starts_with('-')) {
@@ -625,34 +631,59 @@ impl<'a> Search<'a> {
     }
 }
 
-/// Only one bare identifier over repo code goes to ctx; literals, regex and vendor code are grep's.
-fn bare_name(search: Option<Search>, here: &Path, repo: &Path) -> bool {
-    let Some(s) = search else {
-        return false;
+/// The hint, then what `ctx refs` and `ctx def --no-body` print, so the worker skips the turn that runs them.
+fn answered(name: &str, here: &Path) -> String {
+    let hint = grep_hint();
+    let opts = WalkOpts { vendor: false };
+    let caps = refs::Caps {
+        max: refs::MAX,
+        per_file: refs::PER_FILE,
+        tests: false,
     };
+    let (Ok(r), Ok(d)) = (
+        refs::find(here, here, name, caps, &opts),
+        def::find(here, here, name, None, &opts),
+    ) else {
+        return hint;
+    };
+    if r.total == 0 && d.hits.is_empty() {
+        return hint;
+    }
+    let factory = paths::factory_command();
+    format!(
+        "{hint}\n\n$ {factory} ctx refs {name}\n{}\n$ {factory} ctx def {name} --no-body\n{}",
+        print::refs(name, &r),
+        print::defs(name, &d, false)
+    )
+}
+
+/// Only one bare identifier over repo code goes to ctx; literals, regex and vendor code are grep's.
+fn bare_name<'a>(search: Option<Search<'a>>, here: &Path, repo: &Path) -> Option<&'a str> {
+    let s = search?;
     let [Some(pattern)] = s.patterns[..] else {
-        return false;
+        return None;
     };
     let paths = if s.paths.is_empty() {
         vec!["."]
     } else {
         s.paths.clone()
     };
-    identifier(pattern)
-        && over_repo(&s.paths, here, repo)
-        && !paths.iter().any(|p| vendored(p, here, repo))
+    let name = identifier(pattern)?;
+    (over_repo(&s.paths, here, repo) && !paths.iter().any(|p| vendored(p, here, repo)))
+        .then_some(name)
 }
 
-fn identifier(pattern: &str) -> bool {
+fn identifier(pattern: &str) -> Option<&str> {
     let name = [("\\b", "\\b"), ("\\<", "\\>")]
         .iter()
         .find_map(|(l, r)| pattern.strip_prefix(l)?.strip_suffix(r))
         .unwrap_or(pattern);
     let mut chars = name.chars();
-    chars
+    let word = chars
         .next()
         .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
+    word.then_some(name)
 }
 
 fn vendored(p: &str, here: &Path, repo: &Path) -> bool {
@@ -1046,6 +1077,41 @@ mod tests {
         ] {
             assert_eq!(bash_in(cmd, root, root), Verdict::Allow, "{cmd}");
         }
+    }
+
+    #[test]
+    fn a_denied_grep_carries_what_ctx_finds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/lib.rs"),
+            "pub fn alpha() -> u8 {\n    1\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/main.rs"),
+            "fn main() {\n    let a = alpha();\n    let b = alpha();\n}\n",
+        )
+        .unwrap();
+
+        let Verdict::Deny(why) = bash_in("grep -rn alpha src", root, root) else {
+            panic!("a grep for a bare name is denied");
+        };
+        assert!(why.starts_with(&grep_hint()), "{why}");
+        for line in [
+            "src/lib.rs:1  fn  pub fn alpha() -> u8 {",
+            "src/main.rs:2  ref  let a = alpha();",
+            "src/main.rs:3  ref  let b = alpha();",
+        ] {
+            assert!(why.lines().any(|l| l == line), "{line}: {why}");
+        }
+        assert!(!why.contains("\n    1\n"), "no body: {why}");
+
+        assert_eq!(
+            bash_in("grep -rn nothing_here src", root, root),
+            Verdict::Deny(grep_hint())
+        );
     }
 
     #[test]

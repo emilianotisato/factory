@@ -126,7 +126,13 @@ struct InFile {
     unparsed: bool,
 }
 
-pub fn find(base: &Path, name: &str, want: Option<&str>, opts: &WalkOpts) -> Result<Found> {
+pub fn find(
+    base: &Path,
+    root: &Path,
+    name: &str,
+    want: Option<&str>,
+    opts: &WalkOpts,
+) -> Result<Found> {
     let escaped = escape(name);
     let matchers = Table::ALL
         .iter()
@@ -140,7 +146,7 @@ pub fn find(base: &Path, name: &str, want: Option<&str>, opts: &WalkOpts) -> Res
             matcher(&joined).map(|m| (*t, m))
         })
         .collect::<Result<Vec<_>>>()?;
-    let walked = walk::walk(base, opts);
+    let walked = walk::walk(root, opts);
     let (per_file, binary) = walk::scan(&walked.files, |path, lang, bytes| {
         let table = Table::of(lang);
         let (_, m) = matchers.iter().find(|(t, _)| *t == table)?;

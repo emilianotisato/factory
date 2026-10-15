@@ -741,7 +741,7 @@ impl Recon {
             if defs.len() >= DEF_CAP {
                 break;
             }
-            let found = def::find(repo, name, None, &opts)?;
+            let found = def::find(repo, repo, name, None, &opts)?;
             if found.hits.is_empty() {
                 continue;
             }

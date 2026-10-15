@@ -397,6 +397,10 @@ fn pack_outlines_the_cited_code_and_carries_the_lookup_verbs() {
     );
     assert!(lookup.contains("`--vendor`"), "{lookup}");
     assert!(
+        lookup.contains("with its body when one definition matches"),
+        "{lookup}"
+    );
+    assert!(
         !lookup.contains("grep only for literal strings and log output"),
         "{lookup}"
     );
