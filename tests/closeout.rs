@@ -2061,27 +2061,28 @@ fn the_slice_contracts_commands_run_on_the_fixture() {
     assert_eq!(fx.state().slices[&1].status, "blocked");
 }
 
-// ── the retro's friction section, filed as an idea ──────────────────────────
+// ── the retro's friction section stays in the retro ─────────────────────────
 
 const FRICTION: &str = "- /polish § Fix: the stub step one\n- /slice § Tasks: the stub step two";
-const PLACEHOLDER: &str = "A step, rule or template in the framework itself. Name the skill and the section.\n\n\
-     A comment or name the leaks check should have caught: `file:line` and the line.";
-const MISSED: &str = "- `src/order.rs:3` `// until slice 4`";
 
 fn source_repo(fx: &Fixture) -> PathBuf {
     let src = fx.path().parent().unwrap().join("skills");
     fs::create_dir_all(&src).unwrap();
-    let git = fx
-        .command("git")
-        .args(["init", "-q"])
-        .arg(&src)
-        .output()
-        .unwrap();
-    assert!(
-        git.status.success(),
-        "{}",
-        String::from_utf8_lossy(&git.stderr)
-    );
+    let git = |args: &[&str]| {
+        let out = fx
+            .command("git")
+            .current_dir(&src)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    git(&["init", "-q"]);
     let init = fx
         .command(BIN)
         .current_dir(&src)
@@ -2089,47 +2090,29 @@ fn source_repo(fx: &Fixture) -> PathBuf {
         .output()
         .unwrap();
     assert!(init.status.success(), "{}", stdout(&init));
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "init"]);
     let cfg = PathBuf::from(&fx.env()["FACTORY_CONFIG_DIR"]).join("config.toml");
     fs::write(&cfg, format!("[source]\npath = \"{}\"\n", src.display())).unwrap();
     src
 }
 
-fn ideas_in(root: &Path) -> Vec<String> {
-    let mut v: Vec<String> = fs::read_dir(root.join("docs/ideas"))
-        .unwrap()
-        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-        .filter(|n| n != "README.md" && !n.starts_with('.'))
-        .collect();
-    v.sort();
-    v
-}
-
-fn polish_with_friction(text: &str) -> Vec<Value> {
-    plan_with(&[json!({"outcome": "polish", "friction": text})])
-}
-
 #[test]
-fn a_friction_section_is_filed_as_an_untracked_idea_in_the_source() {
-    let fx = Fixture::new("friction-filed");
+fn a_filled_friction_section_leaves_the_source_checkout_untouched() {
+    let fx = Fixture::new("friction-stays");
     fx.chain();
     let src = source_repo(&fx);
-    fx.write_plan(&polish_with_friction(FRICTION));
-    let before = today();
+    fx.write_plan(&plan_with(&[
+        json!({"outcome": "polish", "friction": FRICTION}),
+    ]));
     let dir = start(&fx);
     wait_phase(&fx, &dir, "finished", 90);
 
     let retro = fs::read_to_string(fx.path().join(RETRO)).unwrap();
-    assert!(retro.contains(FRICTION), "{retro}");
-    let id = friction_id(&src, &before, "");
-    let idea = fs::read_to_string(src.join(format!("docs/ideas/{id}.md"))).unwrap();
-    for want in [
-        "title: \"friction: repo PRD-001\"",
-        &format!("origin: \"repo PRD-001 run {}\"", run_id(&dir)),
-        FRICTION,
-        &format!("From {}", fx.path().join(RETRO).display()),
-    ] {
-        assert!(idea.contains(want), "{want:?} not in\n{idea}");
-    }
+    assert!(
+        retro.contains(&format!("## Framework friction → factory\n\n{FRICTION}")),
+        "{retro}"
+    );
     let porcelain = fx
         .command("git")
         .current_dir(&src)
@@ -2137,90 +2120,20 @@ fn a_friction_section_is_filed_as_an_untracked_idea_in_the_source() {
         .output()
         .unwrap();
     let porcelain = stdout(&porcelain);
-    assert!(
-        porcelain.contains(&format!("?? docs/ideas/{id}.md")),
-        "{porcelain}"
+    assert_eq!(porcelain, "", "the source checkout changed");
+    println!(
+        "--- git status --porcelain --untracked-files=all in {}\n{porcelain}--- end",
+        src.display()
     );
-    assert_eq!(ideas_in(fx.path()), Vec::<String>::new(), "wrong root");
-    let log = driver_log(&dir);
-    assert!(
-        log.contains(&format!(
-            "friction: filed {}",
-            src.join(format!("docs/ideas/{id}.md")).display()
-        )),
-        "{log}"
-    );
-    println!("--- {id}.md\n{idea}--- git status --porcelain\n{porcelain}");
 }
 
 #[test]
-fn a_filled_leaks_line_is_filed_as_an_idea_in_the_source() {
-    let fx = Fixture::new("friction-leaks-line");
+fn a_polish_orphan_adopted_by_a_resumed_driver_lands_once() {
+    let fx = Fixture::new("closeout-polish-orphan");
     fx.chain();
-    let src = source_repo(&fx);
-    fx.write_plan(&polish_with_friction(&format!("{PLACEHOLDER}\n\n{MISSED}")));
-    let before = today();
-    let dir = start(&fx);
-    wait_phase(&fx, &dir, "finished", 90);
-
-    let id = friction_id(&src, &before, "");
-    let path = src.join(format!("docs/ideas/{id}.md"));
-    let idea = fs::read_to_string(&path).unwrap();
-    assert!(idea.contains(MISSED), "{idea}");
-    let log = driver_log(&dir);
-    assert!(
-        log.contains(&format!("friction: filed {}", path.display())),
-        "{log}"
-    );
-    println!("--- {id}.md\n{idea}");
-}
-
-#[test]
-fn no_source_files_no_friction_and_says_nothing() {
-    let fx = Fixture::new("friction-none");
-    fx.chain();
-    fx.write_plan(&polish_with_friction(FRICTION));
-    let dir = start(&fx);
-    wait_phase(&fx, &dir, "finished", 90);
-
-    assert!(
-        fs::read_to_string(fx.path().join(RETRO))
-            .unwrap()
-            .contains(FRICTION)
-    );
-    assert_eq!(ideas_in(fx.path()), Vec::<String>::new());
-    let log = driver_log(&dir);
-    assert!(!log.contains("friction:"), "{log}");
-}
-
-#[test]
-fn a_placeholder_only_friction_section_files_nothing() {
-    let fx = Fixture::new("friction-placeholder");
-    fx.chain();
-    let src = source_repo(&fx);
-    fx.write_plan(&polish_with_friction(PLACEHOLDER));
-    let dir = start(&fx);
-    wait_phase(&fx, &dir, "finished", 90);
-
-    assert!(
-        fs::read_to_string(fx.path().join(RETRO))
-            .unwrap()
-            .contains(PLACEHOLDER)
-    );
-    assert_eq!(ideas_in(&src), Vec::<String>::new());
-    assert_eq!(ideas_in(fx.path()), Vec::<String>::new());
-    assert!(!driver_log(&dir).contains("friction:"));
-}
-
-#[test]
-fn a_polish_orphan_adopted_by_a_resumed_driver_files_its_friction() {
-    let fx = Fixture::new("friction-orphan");
-    fx.chain();
-    let src = source_repo(&fx);
     fx.write_plan(&plan_with(&[
-        json!({"outcome": "polish", "friction": FRICTION, "delay_ms": 3000}),
+        json!({"outcome": "polish", "delay_ms": 3000}),
     ]));
-    let before = today();
     let dir = start(&fx);
     wait_until(&fx, &dir, "the polish worker", 90, || {
         state(&dir)["workers"]
@@ -2241,14 +2154,12 @@ fn a_polish_orphan_adopted_by_a_resumed_driver_files_its_friction() {
     wait_until(&fx, &dir, "the orphan polish worker to exit", 30, || {
         !factory::run::pid_alive(polish)
     });
-    assert_eq!(ideas_in(&src), Vec::<String>::new());
 
     let out = factory(&fx, &["run", "001"]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     wait_phase(&fx, &dir, "finished", 90);
     let log = driver_log(&dir);
     assert!(log.contains("of an earlier driver returned"), "{log}");
-    friction_id(&src, &before, &log);
     assert_eq!(count_subject(&fx, "fix(001): polish review fixes"), 1);
     let polish_sha = sha_of(&fx, "fix(001): polish review fixes");
     assert!(files_of(&fx, &polish_sha).contains(&"src/lib.txt".to_string()));
@@ -2291,18 +2202,4 @@ fn a_ci_fix_orphan_adopted_by_a_resumed_driver_lands_once() {
     let fix_sha = sha_of(&fx, "fix(001): CI test");
     assert_eq!(files_of(&fx, &fix_sha), ["src/lib.txt".to_string()]);
     assert_eq!(fx.git(&["status", "--porcelain"]).trim(), "", "tree dirty");
-}
-
-fn today() -> String {
-    factory::clock::now_rfc3339()[..10].to_string()
-}
-
-/// A run across midnight UTC files under either day.
-fn friction_id(src: &Path, before: &str, context: &str) -> String {
-    let ideas = ideas_in(src);
-    [before.to_string(), today()]
-        .iter()
-        .map(|d| format!("{d}-friction-repo-prd-001"))
-        .find(|id| ideas == [format!("{id}.md")])
-        .unwrap_or_else(|| panic!("{ideas:?}\n{context}"))
 }

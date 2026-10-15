@@ -1,19 +1,23 @@
 status = "ready"
 
 [slices.1]
-status = "pending"
+status = "done"
+lane = 1
 depends_on = []
 
 [slices.2]
-status = "pending"
+status = "building"
+lane = 2
 depends_on = []
 
 [slices.3]
-status = "pending"
+status = "building"
+lane = 3
 depends_on = []
 
 [slices.4]
-status = "pending"
+status = "building"
+lane = 4
 depends_on = []
 
 [slices.5]

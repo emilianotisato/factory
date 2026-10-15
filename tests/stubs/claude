@@ -50,7 +50,7 @@
 //     sleep after `done` is on the board and before the stream.
 //   On a polish: slices: {"02": "building"} forces slice statuses first;
 //     skip: ["retro", "body", "findings"] leaves those out; friction: text is
-//     the retro's `## Framework friction → skills repo` section; subagents: n
+//     the retro's `## Framework friction → factory` section; subagents: n
 //     replays polish-subagents.jsonl and writes `subagents/agent-<i>.jsonl`
 //     under the session's transcript dir in $CLAUDE_CONFIG_DIR, and
 //     subagents_unreadable: true then makes that dir mode 000.
@@ -363,7 +363,7 @@ if (role === 'polish') {
   const tplM = pack.match(/^# Retro\n[\s\S]*?\n````markdown\n([\s\S]*?)\n````/m)
   if (!tplM) fail(65, 'the polish pack has no ````markdown retro template under # Retro')
   if (!tplM[1].startsWith('# Retro — PRD-')) fail(65, 'the retro template in the pack does not open with its # Retro heading')
-  const friction = typeof step.friction === 'string' ? `## Framework friction → skills repo\n\n${step.friction}\n\n` : ''
+  const friction = typeof step.friction === 'string' ? `## Framework friction → factory\n\n${step.friction}\n\n` : ''
   const retroText = `# Retro — PRD-${dirM[1].match(/(\d{3})-/)[1]}\n\n## Cost vs catch\n\nStub retro (spawn ${n}).\n\n${friction}## Score\n\nThe owner's.\n`
   if (!skip.has('retro')) writeAtomic(retro, retroText)
   const reviewed = ['set', feature, `reviewed=${today}`]
