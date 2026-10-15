@@ -36,6 +36,7 @@ A slice is `pending → building → done`, or `blocked` while it waits on the o
 - [ctx-research.md](reference/ctx-research.md) — the 2026-10-09 recon behind `factory ctx`: transcript mining, a typed lookup layer weighed and left out.
 - [ctx-jev-research.md](reference/ctx-jev-research.md) — Jev System One weighed as a `ctx` picker, with the replays on real lookups. Parked.
 - [ab/](reference/ab/) — the A/B method: `runs.md` (setup, timeline, blind review of the icg-cloud and arca-api runs) and `worktrees.sh`, which cuts the two worktrees.
+- [ctx-replay-research.md](reference/ctx-replay-research.md) — 2026-10-15 replay of worker lookups over 14 runs: what `ctx` would have answered against grep, sed and cat, and why forcing it loses.
 - [builder-cost-research.md](reference/builder-cost-research.md) — where a builder's start context and turns go, over 91 builders, and the levers ranked by measured saving.
 - [leaks-research.md](reference/leaks-research.md) — code comments and agents: the studies, vendor guidance and field counts behind the leaks rules.
 
