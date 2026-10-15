@@ -1,5 +1,6 @@
-status = "ready"
+status = "shipped"
 reviewed = "2026-10-15"
+shipped = "2026-10-15"
 
 [slices.1]
 status = "done"
