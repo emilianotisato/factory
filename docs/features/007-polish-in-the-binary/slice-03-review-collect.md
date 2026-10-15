@@ -3,7 +3,10 @@
 **Source**: [`prd.md`](prd.md) → §5 FR-3. **Depends on**: 01 (the second opinion runs through the parallel pass runner slice 01 moved into the `review` library; both slices edit `src/cli/review.rs` and `tests/review.rs`)
 **Created**: 2026-10-15
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+- **Built**: `src/collect.rs` — `collect(root, base, cfg, progress)` returns the file: `<!-- head: <sha> -->`, then `## Plan` (`changed:` row, one `- file (n lines)` per file, `size:` and `second opinion:` rows), `## Leaks` (`verdict:` line, then the report under its fix lines), `## Second opinion` last (`exit:`, `log:`, one `### Pass n — … — counted|unreviewed` per pass, or `unreviewed: <reason>`, or `skipped by size: …`). Unreviewed reads `second opinion: fallback owed — unreviewed: <reason>` in the plan. HEAD and numstat git errors are the function's error; a leaks error is `verdict: did not run — …`; a log-dir, probe or runner failure is unreviewed. The size row is decided before any `cursor-agent` call. `body()`, the pass header and the per-pass diff prompt moved into `src/review.rs` (`pass_text`, `pass_header`, `diff_pass_prompt`, `head`), so `second` and the collect print the same pass header. `factory review collect --base <branch> [--out <file>]` in `src/cli/review.rs`, `--base` hand-checked (with `allow_hyphen_values`, so `--base -x` reaches the check and exits 1 instead of clap's 2).
+- **Inner loop**: 2 runs, 1 red, 2.8 min — caught: the reviewer's findings carry `## ` headings, so the second opinion must run to the end of the file (now in the module doc, and a note for slice 04); two test literals (the probe's reason prefix, the usage line's second row).
+- **Deviation**: no `--out` → stdout (AD-3).
 
 **Slice**: After this slice, `factory review collect --base <branch> [--out <file>]` does polish's three mechanical steps and writes one markdown file: the head line, the plan (changed files and lines, the size row), the leaks scan with its verdict, and the second opinion when the size row asks for it. It exits 0 when the file was written, whatever each part found, and 1 on a usage error. The work lives in the library, so slice 04's driver calls it in-process. Slice 05 points the skill at it.
 

@@ -1,4 +1,4 @@
-//! `factory review second` against a stub `cursor-agent` replaying `tests/stubs/cursor-review.jsonl`.
+//! `factory review second` and `factory review collect` against a stub `cursor-agent` replaying `tests/stubs/cursor-review.jsonl`.
 #[path = "harness/mod.rs"]
 mod harness;
 
@@ -15,14 +15,23 @@ const BIN: &str = env!("CARGO_BIN_EXE_factory");
 const STREAM: &str = include_str!("stubs/cursor-review.jsonl");
 
 fn fixture(name: &str, timeout: u64) -> Fixture {
+    branch(
+        name,
+        timeout,
+        &[("a", 300), ("b", 250), ("c", 700), ("d", 150), ("e", 100)],
+    )
+}
+
+/// `feat/review` off `main`, committing each file with its number of lines.
+fn branch(name: &str, timeout: u64, files: &[(&str, usize)]) -> Fixture {
     let fx = Fixture::new(name);
     fx.git(&["checkout", "-q", "-b", "feat/review"]);
-    for (f, n) in [("a", 300), ("b", 250), ("c", 700), ("d", 150), ("e", 100)] {
-        let body: String = (1..=n).map(|i| format!("{f} line {i}\n")).collect();
+    for (f, n) in files {
+        let body: String = (1..=*n).map(|i| format!("{f} line {i}\n")).collect();
         fs::write(fx.path().join(f), body).unwrap();
+        fx.git(&["add", f]);
     }
-    fx.git(&["add", "a", "b", "c", "d", "e"]);
-    fx.git(&["commit", "-q", "-m", "feat: five files"]);
+    fx.git(&["commit", "-q", "-m", "feat: the branch"]);
     let cfg = PathBuf::from(&fx.env()["FACTORY_CONFIG_DIR"]);
     fs::write(
         cfg.join("config.toml"),
@@ -450,4 +459,147 @@ fn a_signal_to_factory_kills_every_reviewer_too() {
         unsafe { libc::kill(p, libc::SIGKILL) };
     }
     assert!(left.is_empty(), "the reviewers {left:?} outlived factory");
+}
+
+fn collect(fx: &Fixture, args: &[&str]) -> Output {
+    fx.command(BIN)
+        .args(["review", "collect"])
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+/// Runs the collect into `f.md` and returns the file.
+fn collected(fx: &Fixture) -> String {
+    let o = collect(fx, &["--base", "main", "--out", "f.md"]);
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert!(stdout(&o).is_empty(), "{}", stdout(&o));
+    fx.read("f.md")
+}
+
+/// The second opinion is last and runs to the end: the findings hold headings of their own.
+fn part<'a>(file: &'a str, heading: &str) -> &'a str {
+    let start = file
+        .find(&format!("\n## {heading}\n"))
+        .unwrap_or_else(|| panic!("no {heading}: {file}"));
+    let rest = &file[start + 1..];
+    if heading == "Second opinion" {
+        return rest;
+    }
+    let end = rest.find("\n## ").map_or(rest.len(), |e| e + 1);
+    &rest[..end]
+}
+
+#[test]
+fn collect_writes_the_head_the_plan_the_leaks_and_one_section_per_pass() {
+    let fx = branch("collect-two", 20, &[("a", 400), ("b", 300)]);
+    let file = collected(&fx);
+    let head = fx.git(&["rev-parse", "HEAD"]);
+    assert_eq!(
+        file.lines().next(),
+        Some(format!("<!-- head: {} -->", head.trim()).as_str())
+    );
+    let plan = part(&file, "Plan");
+    assert!(
+        plan.contains("changed: 2 files, 700 lines against main...HEAD\n"),
+        "{plan}"
+    );
+    assert!(
+        plan.contains("\n- a (400 lines)\n- b (300 lines)\n"),
+        "{plan}"
+    );
+    assert!(
+        plan.contains("\nsize: local review and second opinion\n"),
+        "{plan}"
+    );
+    assert!(
+        plan.contains("\nsecond opinion: reviewed, 2 of 2 passes counted\n"),
+        "{plan}"
+    );
+    assert!(
+        part(&file, "Leaks").contains("\nverdict: clean\n"),
+        "{file}"
+    );
+    let second = part(&file, "Second opinion");
+    assert!(second.contains("\nexit: 0\n"), "{second}");
+    let passes: Vec<&str> = second
+        .lines()
+        .filter(|l| l.starts_with("### Pass"))
+        .collect();
+    assert_eq!(passes.len(), 2, "{second}");
+    assert!(
+        passes[0].starts_with("### Pass 1 — a (400 lines,"),
+        "{}",
+        passes[0]
+    );
+    assert!(
+        passes[1].starts_with("### Pass 2 — b (300 lines,"),
+        "{}",
+        passes[1]
+    );
+    assert!(
+        passes.iter().all(|p| p.ends_with(" — counted")),
+        "{passes:?}"
+    );
+    assert!(second.contains("(replayed for pass 2)"), "{second}");
+    assert_eq!(review_calls(&fx).len(), 2);
+}
+
+#[test]
+fn collect_logged_out_is_unreviewed_and_owes_the_fallback() {
+    let fx = branch("collect-auth", 20, &[("a", 400), ("b", 300)]);
+    scenario(&fx, json!({"list_models": "auth"}));
+    let file = collected(&fx);
+    let plan = part(&file, "Plan");
+    assert!(
+        plan.contains(
+            "\nsecond opinion: fallback owed — unreviewed: cursor-agent --list-models exited 1: Error: Authentication required."
+        ),
+        "{plan}"
+    );
+    let second = part(&file, "Second opinion");
+    assert!(
+        second.contains("\nexit: 2\nunreviewed: cursor-agent --list-models exited 1: Error: Authentication required."),
+        "{second}"
+    );
+    assert!(!second.contains("### Pass"), "{second}");
+    assert_eq!(calls(&fx), [vec!["--list-models".to_string()]]);
+}
+
+#[test]
+fn collect_skips_the_second_opinion_of_one_small_file_without_calling_the_reviewer() {
+    let fx = branch("collect-small", 20, &[("a", 49)]);
+    let file = collected(&fx);
+    let plan = part(&file, "Plan");
+    assert!(plan.contains("\n- a (49 lines)\n"), "{plan}");
+    assert!(
+        plan.contains("\nsize: local review only\nsecond opinion: skipped by size\n"),
+        "{plan}"
+    );
+    assert!(
+        part(&file, "Second opinion").contains("skipped by size: 1 file under 50 changed lines"),
+        "{file}"
+    );
+    assert!(calls(&fx).is_empty(), "{:?}", calls(&fx));
+}
+
+#[test]
+fn collect_without_a_base_or_with_a_dash_base_is_a_usage_error() {
+    let fx = branch("collect-usage", 20, &[("a", 400), ("b", 300)]);
+    for args in [&["--out", "f.md"][..], &["--base", "-x"], &[]] {
+        let o = collect(&fx, args);
+        assert_eq!(o.status.code(), Some(1), "{args:?}");
+        assert!(
+            String::from_utf8_lossy(&o.stderr)
+                .contains("factory review collect --base <branch> [--out <file>]"),
+            "{args:?}"
+        );
+    }
+    assert!(!fx.path().join("f.md").exists());
+    assert!(calls(&fx).is_empty());
 }

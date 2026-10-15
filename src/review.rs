@@ -429,6 +429,104 @@ pub fn run_passes(
     })
 }
 
+/// A pass's text and whether it counted; a pass that never ran is unreviewed with why.
+pub fn pass_text(ran: &Ran, timeout_secs: u64) -> (String, bool) {
+    match &ran.outcome {
+        Ok(o) => body(o, timeout_secs),
+        Err(e) => (format!("unreviewed (error: {e})\n"), false),
+    }
+}
+
+/// `Pass n — files (lines, seconds, model)`, the heading of a pass's findings.
+pub fn pass_header(n: usize, pass: &Pass, ran: &Ran, cfg: &Review) -> String {
+    let over = if pass.over {
+        format!(" (over {}, alone)", cfg.pass_lines)
+    } else {
+        String::new()
+    };
+    format!(
+        "Pass {n} — {}{over} ({} lines, {} s, {})",
+        pass.files.join(", "),
+        pass.lines,
+        ran.elapsed.as_secs(),
+        cfg.model
+    )
+}
+
+/// Writes the pass's slice of `<base>...HEAD` into the log dir and asks the reviewer to read it.
+pub fn diff_pass_prompt(
+    root: &Path,
+    base: &str,
+    dir: &Path,
+    n: usize,
+    pass: &Pass,
+) -> Result<String> {
+    let file = dir.join(format!("review-{n}.diff"));
+    fs::write(&file, diff(root, base, &pass.files)?)
+        .map_err(io(format!("write {}", file.display())))?;
+    Ok(diff_prompt(&pass.files, base, &file))
+}
+
+fn exit_words(code: Option<i32>) -> String {
+    code.map_or("killed by a signal".to_string(), |c| format!("exit {c}"))
+}
+
+/// A kill's partial counts (it had the whole timeout); an exit's does not, or an opening line stops the fallback.
+fn body(o: &Outcome, timeout_secs: u64) -> (String, bool) {
+    let p = &o.parsed;
+    if let Some(r) = p.result.as_deref().filter(|r| !r.trim().is_empty()) {
+        return (format!("{}\n", r.trim_end()), true);
+    }
+    let partial = Some(p.partial.trim_end()).filter(|t| !t.trim().is_empty());
+    let code = match o.ended {
+        Ended::Killed => {
+            return match partial {
+                Some(t) => (
+                    format!("(timed out after {timeout_secs} s, partial)\n\n{t}\n"),
+                    true,
+                ),
+                None => (
+                    format!("unreviewed (timed out after {timeout_secs} s with no text)\n"),
+                    false,
+                ),
+            };
+        }
+        Ended::Exited(code) => code,
+    };
+    let words = exit_words(code);
+    let mut text = match &p.error {
+        Some(e) if e.trim().is_empty() => format!("unreviewed ({words}, error result)\n"),
+        Some(e) => format!("unreviewed ({words}, error: {})\n", e.trim()),
+        None if code == Some(0) => match partial {
+            Some(t) => return (format!("{t}\n"), true),
+            None => String::new(),
+        },
+        None => String::new(),
+    };
+    match partial {
+        Some(t) => {
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(&format!("({words}, partial)\n\n{t}\n"));
+        }
+        None if text.is_empty() => {
+            let why = if o.stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {}", o.stderr)
+            };
+            text = format!("unreviewed ({words}, no text{why})\n");
+        }
+        None => {}
+    }
+    (text, false)
+}
+
+pub fn head(cwd: &Path) -> Result<String> {
+    Ok(git(cwd, &["rev-parse", "HEAD"])?.trim().to_string())
+}
+
 pub fn diff_prompt(files: &[String], base: &str, diff_file: &Path) -> String {
     format!(
         "Adversarial code review. The diff of {} against {base} is in {}: read it, and read any file in the repository you need for context. Report only defects you can point to at file:line with a failure scenario; no praise, no style. Do not edit anything.",
@@ -457,6 +555,89 @@ mod tests {
     use super::*;
 
     const STREAM: &str = include_str!("../tests/stubs/cursor-review.jsonl");
+
+    const OPENING: &str = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"I'll read the diff."}]}}"#;
+    const DONE: &str = r#"{"type":"result","is_error":false,"result":"a.rs:1 breaks"}"#;
+    const FAILED: &str = r#"{"type":"result","is_error":true,"result":"rate limited"}"#;
+
+    fn outcome(ended: Ended, stream: &[&str], stderr: &str) -> Outcome {
+        Outcome {
+            ended,
+            elapsed: Duration::ZERO,
+            parsed: parse_stream(&stream.join("\n")),
+            stderr: stderr.to_string(),
+        }
+    }
+
+    #[test]
+    fn each_ending_has_its_marker_and_only_text_that_finished_counts() {
+        let cases = [
+            (
+                Ended::Exited(Some(0)),
+                vec![OPENING, DONE],
+                "a.rs:1 breaks\n",
+                true,
+            ),
+            (
+                Ended::Exited(Some(1)),
+                vec![OPENING, DONE],
+                "a.rs:1 breaks\n",
+                true,
+            ),
+            (
+                Ended::Exited(Some(0)),
+                vec![OPENING],
+                "I'll read the diff.\n",
+                true,
+            ),
+            (
+                Ended::Killed,
+                vec![OPENING],
+                "(timed out after 9 s, partial)\n\nI'll read the diff.\n",
+                true,
+            ),
+            (
+                Ended::Exited(Some(1)),
+                vec![OPENING],
+                "(exit 1, partial)\n\nI'll read the diff.\n",
+                false,
+            ),
+            (
+                Ended::Exited(None),
+                vec![OPENING],
+                "(killed by a signal, partial)\n\nI'll read the diff.\n",
+                false,
+            ),
+            (
+                Ended::Exited(Some(1)),
+                vec![FAILED],
+                "unreviewed (exit 1, error: rate limited)\n",
+                false,
+            ),
+            (
+                Ended::Exited(Some(0)),
+                vec![OPENING, FAILED],
+                "unreviewed (exit 0, error: rate limited)\n\n(exit 0, partial)\n\nI'll read the diff.\n",
+                false,
+            ),
+            (
+                Ended::Exited(Some(2)),
+                vec![],
+                "unreviewed (exit 2, no text: boom)\n",
+                false,
+            ),
+            (
+                Ended::Killed,
+                vec![],
+                "unreviewed (timed out after 9 s with no text)\n",
+                false,
+            ),
+        ];
+        for (ended, stream, want, counts) in cases {
+            let got = body(&outcome(ended, &stream, "boom"), 9);
+            assert_eq!(got, (want.to_string(), counts), "{ended:?} {stream:?}");
+        }
+    }
 
     fn sized(ns: &[u64]) -> Vec<(String, u64)> {
         ns.iter()

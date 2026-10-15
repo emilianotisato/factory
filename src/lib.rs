@@ -6,6 +6,7 @@ pub mod cli;
 pub mod clock;
 pub mod closeout;
 pub mod cockpit;
+pub mod collect;
 pub mod commit;
 pub mod config;
 pub mod ctx;
