@@ -208,7 +208,22 @@ No OPENs. Settled at the interview, 2026-10-15:
 
 ## 6. Slices
 
-_(Not sliced yet. Run `/slice`, or write "No slices — build straight from this document" if it is small.)_
+Six slices, sliced 2026-10-15. `factory docs status 009` is the board.
+
+- **01, Hook judges scripts and greps** (FR-3, FR-4). The hook reads an interpreter's script, and a grep is denied only for a bare identifier outside vendor code. The hint and the pack's Lookup state the new rule.
+- **02, Driver owns done** (FR-8, FR-10's contract line). The contract drops the builder's building and done lines. On a build worker's `done` hint, the driver checks the lane and sets done, or blocks with the errors, live and after a restart. **The highest risk**: it changes how every build exit routes.
+- **03, Worker spawn per role** (FR-1, FR-2). Build, fix and merge workers get four tools, no MCP and no slash commands; every role gets its own settings file. The biggest saving, about 26k to 7k start tokens in the probe.
+- **04, Builder Autonomy** (FR-7, FR-1's wording). The slice pack carries Autonomy without the orchestrator's and the driver's parts, cut by markers.
+- **05, ctx answers** (FR-5, FR-6). `def` prints one body, `--in` takes a file, and a denied grep carries ctx's answer.
+- **06, Write-mode fmt and quiet tests** (FR-9, FR-10's inner loop and `/gate` halves). `/gate` and the stack table, the 0.7.0 bump and relock, and this repo's `inner`.
+
+**Order.** 01 goes first because it ends both denials the owner hit, and 05 waits on it. 01, 02, 03, 04 and 06 are independent: each owns its files, so four lanes start at once and the fifth slice takes the first free lane. 05 depends on 01 alone: it adds the answer to the same deny arms of `bash()` and edits the same `assets/lookup.md`. 02 is the riskiest, and as an independent slice it lands early, where the first checkpoints prove it.
+
+**Checkpoints** fall after every second done slice (`checkpoint_every = 2`): after the 2nd, the 4th and the 6th. Each runs the full gate and drives the Prove rows of the slices it covers, below the UI.
+
+**Workflow.** One branch, `feat/cheaper-builders`, one PR, one commit per slice, Prove at the checkpoints. Every `skills/` edit sits in 06, so one bump and one relock cover them (§3 FR-9).
+
+**No `qa-guide.md`.** The one Human row is After merge: the owner reads `factory report` after the first run on the new binary (§5).
 
 ## 7. Non-goals
 
