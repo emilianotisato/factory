@@ -1,0 +1,61 @@
+# A stubbed feature run to polish: the driver collects before the polish spawn, the pack names the file, a rate-limited respawn reuses it
+
+$ FACTORY_KEEP_FIXTURE=1 cargo test --test quota polish_collects_once_and_a_rate_limited_respawn_reuses_the_file
+fixture quota-polish-collect kept at /tmp/factory-quota-polish-collect-4MF4dR
+test polish_collects_once_and_a_rate_limited_respawn_reuses_the_file ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 3.58s
+
+## driver.log, closeout lines (collected before the first spawn; reused before the respawn)
+2026-10-15T00:55:32Z closeout — polish
+review pass 1/1: docs/features/001-fixture/log.jsonl, docs/features/001-fixture/slice-01-a.md, docs/features/001-fixture/slice-02-b.md, docs/features/001-fixture/slice-03-c.md, docs/features/001-fixture/state.toml, src/slice-01.txt, src/slice-02.txt, src/slice-03.txt (23 lines)
+2026-10-15T00:55:32Z polish: collected /tmp/factory-quota-polish-collect-4MF4dR/data/runs/001-20261015-eba2/collect.md against main in 0.1 s
+2026-10-15T00:55:32Z polish: worker 12c97638-e871-4b2b-af90-8e4d80ec72cc spawned in lane 1 (pid 214309, attempt 1, pack /tmp/factory-quota-polish-collect-4MF4dR/data/runs/001-20261015-eba2/packs/polish-6.md)
+2026-10-15T00:55:32Z paused: rejected — spawning resumes at 2026-10-15T00:57:32Z
+2026-10-15T00:55:32Z polish: worker 12c97638-e871-4b2b-af90-8e4d80ec72cc hit a usage limit (rejected) — paused until 2026-10-15T00:57:32Z, a fresh worker follows
+2026-10-15T00:57:32Z resumed from pause
+2026-10-15T00:57:32Z polish: reused /tmp/factory-quota-polish-collect-4MF4dR/data/runs/001-20261015-eba2/collect.md (head 830d094)
+2026-10-15T00:57:32Z polish: worker 85733523-7a61-440f-b2be-19aa58c99761 spawned in lane 1 (pid 214493, attempt 2, pack /tmp/factory-quota-polish-collect-4MF4dR/data/runs/001-20261015-eba2/packs/polish-7.md)
+2026-10-15T00:57:32Z polish: committed 3481015 — 3 file(s): docs/features/001-fixture/retro.md, docs/features/001-fixture/state.toml, src/lib.txt
+
+## collect.md written before the first polish pack (mtime)
+2026-10-14 18:54:33.628859595 -0600 collect.md
+2026-10-14 18:54:33.633859634 -0600 packs/polish-6.md
+2026-10-14 18:54:35.203871730 -0600 packs/polish-7.md
+collect.md line 1: <!-- head: 830d094ee0b2abf321ced634ea0b84e972838a0f -->
+
+## cursor-agent calls over the run (run-start probe, collect probe, one pass; none on the respawn)
+"--list-models"
+"--list-models"
+"-p"
+
+## the first polish pack's # Collected section (packs/polish-6.md; whole pack in cp-2-polish-pack-first.txt)
+# Collected
+
+## Plan
+
+changed: 8 files, 23 lines against main...HEAD
+- docs/features/001-fixture/log.jsonl (5 lines)
+- docs/features/001-fixture/slice-01-a.md (2 lines)
+- docs/features/001-fixture/slice-02-b.md (2 lines)
+- docs/features/001-fixture/slice-03-c.md (2 lines)
+- docs/features/001-fixture/state.toml (9 lines)
+- src/slice-01.txt (1 line)
+- src/slice-02.txt (1 line)
+- src/slice-03.txt (1 line)
+size: local review and second opinion
+second opinion: reviewed, 1 of 1 passes counted
+
+## Leaks
+
+verdict: 3 fix hits
+
+## Second opinion
+
+exit: 0
+log: /tmp/factory-quota-polish-collect-4MF4dR/data/reviews/20261015-005433
+- Pass 1 — docs/features/001-fixture/log.jsonl, docs/features/001-fixture/slice-01-a.md, docs/features/001-fixture/slice-02-b.md, docs/features/001-fixture/slice-03-c.md, docs/features/001-fixture/state.toml, src/slice-01.txt, src/slice-02.txt, src/slice-03.txt (23 lines, 0 s, grok-4.7-high) — counted
+
+The whole file, findings included: `/tmp/factory-quota-polish-collect-4MF4dR/data/runs/001-20261015-eba2/collect.md`
+
+## the respawn's pack (packs/polish-7.md) holds the same section:
+identical (diff empty)

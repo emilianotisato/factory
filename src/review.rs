@@ -557,7 +557,7 @@ mod tests {
     const STREAM: &str = include_str!("../tests/stubs/cursor-review.jsonl");
 
     const OPENING: &str = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"I'll read the diff."}]}}"#;
-    const DONE: &str = r#"{"type":"result","is_error":false,"result":"a.rs:1 breaks"}"#;
+    const DONE: &str = r#"{"type":"result","is_error":false,"result":"the parser breaks"}"#;
     const FAILED: &str = r#"{"type":"result","is_error":true,"result":"rate limited"}"#;
 
     fn outcome(ended: Ended, stream: &[&str], stderr: &str) -> Outcome {
@@ -575,13 +575,13 @@ mod tests {
             (
                 Ended::Exited(Some(0)),
                 vec![OPENING, DONE],
-                "a.rs:1 breaks\n",
+                "the parser breaks\n",
                 true,
             ),
             (
                 Ended::Exited(Some(1)),
                 vec![OPENING, DONE],
-                "a.rs:1 breaks\n",
+                "the parser breaks\n",
                 true,
             ),
             (
