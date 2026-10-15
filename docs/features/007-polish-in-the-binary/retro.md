@@ -47,3 +47,31 @@ A comment or name the leaks check should have caught: none found at polish. CP-2
 ## Score
 
 4 — the reviews earned their cost (a torn write, a stale reuse and a lost leak report all fixed before merge), but the feature could not polish itself with its own binary, and two Cursor passes spent 30 minutes producing nothing that still read as reviewed.
+
+## Numbers
+
+<!-- factory:numbers -->
+| role | workers | own | subagents | weighted | minutes | turns |
+|---|---:|---:|---:|---:|---:|---:|
+| build | 5 | 1513495 | 0 | 1513495 | 27 | 93 |
+| checkpoint | 2 | 467667 | 0 | 467667 | 5 | 43 |
+| polish | 1 | 1495043 | 1050255 | 2545298 | 50 | 93 |
+| total | 8 | 3476204 | 1050255 | 4526459 | 82 | 229 |
+
+Knobs: build opus/high default · fix opus/high default · checkpoint opus/high default · polish opus/high default · budget 30000000 default · lanes 4 · factory 0.4.0 · claude 2.1.296
+
+Hypothesis: none
+
+quality: gate_red 0 · worker_gate_red 0 · fix_commits 0 · ci_red_rounds 0 · ci_reruns 0 · findings high=3 medium=9 low=14 fixed=15 parked=1 · decisions 6 decide 1 blocks 0
+
+Pack (build): slice 8613 · prd_sections 2144 · log 1612 · outline 13027 · lookup 890 · contract 3180 · autonomy 11836 · inner_loop 91 · total 41393 · start_context 44046
+
+Compared with:
+
+| run | feature | weighted | slices | per slice | lines changed | per line | comment share | id hits |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 007-20261015-c8fa (this run) | 007 | 4526459 | 5 | 905292 | 3611 | 1254 | 4.0% | 0 |
+| 006-20261014-0643 | 006 | 5378450 | 5 | 1075690 | 6185 | 870 | — | — |
+| 005-20261014-d1ad | 005 | 16568730 | 10 | 1656873 | 9217 | 1798 | — | — |
+| 004-20261013-f6d3 | 004 | 7369085 | 7 | 1052726 | 9785 | 753 | — | — |
+<!-- /factory:numbers -->
