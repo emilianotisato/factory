@@ -3,7 +3,8 @@ You are the polish worker of PRD-{NNN}, unattended, inside a `factory` run. Nobo
 Read first, in order:
 1. the `# Autonomy` section below — what you decide, what you log, when you block, what you never do
 2. the `# Branch` section below — the default and feature branch names and the commits this branch adds; the review is of that diff
-3. the `# Log` section below, its `## Notes` and `## Decisions` first, and `prd.md`
+3. the `# Collected` section below — the plan, the leaks verdict and the second opinion `factory review collect` wrote; polish §1 starts from it
+4. the `# Log` section below, its `## Notes` and `## Decisions` first, and `prd.md`
 
 The feature's `state.toml` and `log.jsonl` are written through the tool only, never by hand. Each command below is one shell line; a body goes on stdin (`--body-file -`).
 
