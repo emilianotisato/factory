@@ -8,6 +8,7 @@
 - **Tests.** `the_passes_run_at_once_and_print_in_pass_order` (new); the pass-2 call found by its `review-2.diff` path; `a_signal_to_factory_kills_every_reviewer_too` runs three passes. Mutating the handler to kill only the first slot fails the signal test with two reviewers left alive.
 - **Inner loop.** 2 runs, 1 red (rustfmt on the new tests), about 2 min.
 - **Deviations.** None from the slice.
+- **Checkpoint 1 (FR-2).** Three 2 s passes took 2.11 s, headers in pass order: `docs/features/007-polish-in-the-binary/evidence/cp-1-review-passes-at-once.txt`.
 
 **Slice**: After this slice, `factory review second --diff` starts every pass at once, each in its own child process with its own log files, waits for all of them, then prints the `## Pass n` sections in pass order and the `log:` line. Exit codes stay as they are: 0 when any pass counted, 2 when none did. A Ctrl-C or SIGTERM to factory still kills every reviewer. The pass runner lives in the `review` library, so slice 03's `factory review collect` calls it instead of the CLI.
 

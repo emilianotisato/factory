@@ -22,6 +22,8 @@ $ factory docs preflight 001 --json   (stub list_models = "auth")
 exit=Some(0)
 ```
 
+Checkpoint 1 (FR-1): logged in → ok line with the model, logged out → judge line with `cursor-agent login`, exit 0 both ways, text and `--json`: `docs/features/007-polish-in-the-binary/evidence/cp-1-preflight-second-opinion.txt`.
+
 **Slice**: After this slice, `factory docs preflight` and `factory run` probe the second opinion with the user's `[review]` config. Ready → an ok line naming the agent and the model. Not ready → a judge line with the reason, the login command, and that polish will fall back to one Claude agent per pass of `pass_lines` lines. The line never refuses a run and never changes an exit code.
 
 ## Current code / environment
