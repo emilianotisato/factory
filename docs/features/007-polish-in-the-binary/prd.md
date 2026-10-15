@@ -6,7 +6,7 @@ type: feature
 created: 2026-10-14
 author: Emiliano Tisato
 summary: |
-  The mechanical half of polish moves into the binary. Preflight checks the Cursor login before a run, `factory review collect` runs leaks, the reviewer plan and the second opinion (passes in parallel) into one file, and the driver runs it before the polish worker. Path patterns as a reviewer floor and the per-slice fix rule were cut at the review. Agreed 2026-10-14.
+  The mechanical half of polish moves into the binary. Preflight checks the Cursor login before a run, `factory review collect` runs leaks, the reviewer plan and the second opinion (passes in parallel) into one file, and the driver runs it before the polish worker. Path patterns as a reviewer floor and the per-slice fix rule were cut at the review. Agreed 2026-10-14; sliced into five (§12), ready for `/deliver`.
 from_idea: "2026-10-13-polish-collect-in-the-binary-pick-reviewers-from-t"
 ---
 
@@ -147,7 +147,21 @@ None open. The interview settled every fork on 2026-10-14, and each FR records i
 
 ## 12. Slices
 
-_(Not sliced yet. Run `/slice`.)_
+Five slices on `feat/polish-in-the-binary`: one branch, one PR, one commit per slice, Prove at the checkpoints. `factory docs status` is the board.
+
+- **01, passes at once** (FR-2). `factory review second --diff` starts every pass in its own child, prints the sections in pass order, and every reviewer dies with factory. The pass runner moves into the `review` library. ⚠ The highest risk: the signal handler tracks one child today (`src/review.rs:162-171`), and a leaked reviewer runs on for up to 900 s.
+- **02, the Cursor line at preflight** (FR-1). `factory docs preflight` and `factory run` probe with the user's `[review]` config and print an ok or a judge line. The probe sits in those two paths, not in `preflight::run`, which the scheduler, the closeout and the tests call in-process.
+- **03, `factory review collect`** (FR-3). The plan, the leaks scan and the second opinion in one file, built in the library behind a new verb. Its fixed headings are what 04 lifts into the pack.
+- **04, the driver collects at polish** (FR-5). The polish loop prepares the lane, collects or reuses `collect.md`, then builds the pack with `# Collected`. A rate-limited respawn reuses the file.
+- **05, the skill, the contract and 0.5.0** (FR-7). Polish §1 starts from the file, with the attended path and the last resort. The contract gains its line, the crate goes to 0.5.0, and the lock is rewritten.
+
+**Order.** 01 and 02 start together: they share no file. 03 waits for 01, because the collect runs the second opinion through 01's runner and both edit `src/cli/review.rs` and `tests/review.rs`. 04 and 05 each wait for 03 only and run two wide after it: 04 edits the driver and the pack builder, 05 the skill, the contract asset and the version. Their one shared file is `tests/closeout.rs`, in different hunks. Width 2, then 1, then 2, within `lanes = 4`.
+
+**Checkpoints** (`checkpoint_every = 2`). The first covers the first two done, 01 and 02 unless 02 runs long, so the parallel runner and its signal handling are proven before the collect builds on them. The second covers the next two, 03 among them; the last covers the fifth. 03's file format is what 04 reads, so a checkpoint proves it together with a reader.
+
+**The installed 0.4.0 driver builds this run**, and it predates every part of this feature. Its preflight prints no Cursor line, and its polish pack has no `# Collected` section. This repo's `.claude/skills` link into `skills/`, so the polish worker reads slice 05's §1, takes the attended path, and calls `factory review collect` on the installed binary, which has no such verb. It lands on the last resort: this feature's own polish is that line's first live test. The checkpoints prove each row from the lane's build. 0.5.0 is tagged after the merge, not in the run; every repo then needs `factory skills update` (§9's accepted cost).
+
+**No `qa-guide.md`**: no row in §11 needs a human.
 
 ## 13. Non-goals
 
