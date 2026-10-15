@@ -6,4 +6,4 @@
 - **`docs/features` and `docs/archive` are history**: the code, `docs/reference` and `docs/decisions.md` win.
 - **Slice, don't fatten** one doc past an agent's context budget. Loose ideas go one file each in `docs/ideas/` (`factory docs idea add`).
 - **The gate is `gate` under `[docs]` in `docs/project.toml`** and `factory docs gate` prints it. It is the one command that proves a change is done. Every slice's Verify task runs it.
-- **The skills** `/prd`, `/slice`, `/deliver`, `/polish`, `/gate`, `/harness`, `/prune` and `/ux` live in `.claude/skills/`, written by `factory init`. `factory docs doctor` says whether they are current.
+- **The skills** `/prd`, `/slice`, `/deliver`, `/polish`, `/gate`, `/harness`, `/harvest`, `/prune` and `/ux` live in `.claude/skills/`, written by `factory init`. `factory docs doctor` says whether they are current.

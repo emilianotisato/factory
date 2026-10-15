@@ -4,6 +4,10 @@
 **Created**: 2026-10-15
 
 **Progress**:
+- Built: `skills/harvest/SKILL.md` (six steps, upstream draft → `check` → owner's yes → `post`, `docs check` after `--done`), its `.claude/skills/harvest` link, `NAMES`/`FILES`, the convention line, init counts 21 files / 10 links. Decisions are named entries cited as `docs/decisions.md#{slug}` across polish, ux, gate, autonomy, both contracts, the PR body and `skills-decisions.md:3`; polish's template is `## {Short name}`. Polish and slice close out with `docs ship` only; prune's evidence line names `$FACTORY_EVIDENCE`. `no_skill_or_asset_asks_for_a_numbered_decision` in `tests/skills_bundle.rs` (red on an appended `DEC-1` line, checked by hand and reverted). 0.6.0, lock rewritten once.
+- Inner loop: 3 runs (1 relock with `FACTORY_BUNDLE_WRITE=1`, 2 plain), 1 red, 4 min — caught: `cargo fmt` on the new test.
+- Deviation: `skills/README.md` gains a `harvest` row; it sits outside the bundle hash.
+- Prove (FR-7) left for the checkpoint.
 
 **Slice**: After this slice, the bundle holds a tenth skill, `/harvest`, which walks the owner through a batch's lessons, routes each one, converts `decisions.md`, and archives the batch. Polish writes decisions as named entries with no number, and no skill or asset asks for `DEC-n`. Polish and slice close out with `docs ship` only, and prune names the run dir for evidence. The crate is 0.6.0 with the bundle lock rewritten. Every `skills/` edit of this feature sits here, so one bump covers them. Converting this repo's own `decisions.md` is the owner's first `/harvest`, after the merge.
 

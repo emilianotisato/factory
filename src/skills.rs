@@ -18,8 +18,8 @@ pub const LINKS_DIR: &str = ".agents/skills";
 pub const MANIFEST: &str = ".claude/skills/factory.toml";
 
 /// `_shared` is not one: it has no `SKILL.md`.
-pub const NAMES: [&str; 9] = [
-    "prd", "slice", "deliver", "polish", "gate", "harness", "lanes", "prune", "ux",
+pub const NAMES: [&str; 10] = [
+    "prd", "slice", "deliver", "polish", "gate", "harness", "harvest", "lanes", "prune", "ux",
 ];
 
 pub const FILES: &[(&str, &str)] = &[
@@ -59,6 +59,10 @@ pub const FILES: &[(&str, &str)] = &[
     (
         "harness/references/skill-template.md",
         include_str!("../skills/harness/references/skill-template.md"),
+    ),
+    (
+        "harvest/SKILL.md",
+        include_str!("../skills/harvest/SKILL.md"),
     ),
     ("lanes/SKILL.md", include_str!("../skills/lanes/SKILL.md")),
     ("polish/SKILL.md", include_str!("../skills/polish/SKILL.md")),

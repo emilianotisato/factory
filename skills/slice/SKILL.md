@@ -152,4 +152,4 @@ Inside a `factory` run the builder's contract covers this. Attended, it is the b
 
 ## 9. Shipping
 
-**Every slice `done` and the checkpoints proved → `/polish`.** It owns the review, the fixes, the test cleanup and the closeout: `factory docs ship` or `archive`, inside the last commit of the PR. Nothing here duplicates it; `factory docs check` nudges with `W-NOT-REVIEWED`, then `W-READY-TO-SHIP`, until it has run.
+**Every slice `done` and the checkpoints proved → `/polish`.** It owns the review, the fixes, the test cleanup and the closeout: `factory docs ship`, inside the last commit of the PR. Archiving is `/harvest`'s, after the merge. Nothing here duplicates it; `factory docs check` nudges with `W-NOT-REVIEWED`, then `W-READY-TO-SHIP`, until it has run.

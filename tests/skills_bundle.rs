@@ -63,6 +63,37 @@ fn this_repos_claude_skills_link_into_the_source() {
     }
 }
 
+fn numbered_decisions(rel: &str, text: &str) -> Vec<String> {
+    text.lines()
+        .enumerate()
+        .filter(|(_, line)| line.contains("DEC-"))
+        .map(|(i, line)| format!("{rel}:{}: {line}", i + 1))
+        .collect()
+}
+
+// Decisions are cited by their slug; the old numbered anchors are lowercase `dec-n`.
+#[test]
+fn no_skill_or_asset_asks_for_a_numbered_decision() {
+    assert_eq!(numbered_decisions("x.md", "a\nsee DEC-1\n").len(), 1);
+    let mut hits = Vec::new();
+    for tree in ["skills", "assets"] {
+        let base = root().join(tree);
+        let mut files = BTreeSet::new();
+        walk(&base, &base, &mut files);
+        for rel in files {
+            let Ok(text) = fs::read_to_string(base.join(&rel)) else {
+                continue;
+            };
+            hits.extend(numbered_decisions(&format!("{tree}/{rel}"), &text));
+        }
+    }
+    assert!(
+        hits.is_empty(),
+        "cite docs/decisions.md#{{slug}}:\n{}",
+        hits.join("\n")
+    );
+}
+
 // `models.md` names roles, never a machine's setup.
 #[test]
 fn models_md_holds_no_invocation_and_the_skills_call_review_second() {

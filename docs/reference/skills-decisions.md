@@ -1,6 +1,6 @@
 # Skill family decisions, 2026-08 to 2026-10 (imported)
 
-Imported 2026-10-13 from the Dropbox skills repo `feature-docs/MAINTAINING.md` when `feature-docs` was eliminated. History only: new decisions about a skill go to `docs/decisions.md` as `DEC-n`, and the reasoning behind a binary change goes in its PRD. The standing instructions still hold where they do not name a v2 mechanism.
+Imported 2026-10-13 from the Dropbox skills repo `feature-docs/MAINTAINING.md` when `feature-docs` was eliminated. History only: new decisions about a skill go to `docs/decisions.md` as a named entry, and the reasoning behind a binary change goes in its PRD. The standing instructions still hold where they do not name a v2 mechanism.
 
 ---
 

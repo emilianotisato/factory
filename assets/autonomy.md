@@ -14,13 +14,13 @@ Today there is one mode: **a blocker stops the run and notifies the owner.**
 
 ## The test — decide, log, or block
 
-Ask it of every choice the work forces that nobody wrote down: **does the PRD, the slice, or a `DEC-n` already settle this?**
+Ask it of every choice the work forces that nobody wrote down: **does the PRD, the slice, or `docs/decisions.md` already settle this?**
 
 | Answer | Do | Examples |
 |---|---|---|
 | **Yes** | decide, no log | the pattern the slice names; the status code the FR states; the test an acceptance criterion describes |
 | **No — and the choice is local and cheap to undo** | decide **and** write an `AD-n` | 404 vs 403 for a hidden row; extracting a helper; a test's shape; a retry count; a dev dependency |
-| **No — and it changes what the PRD promises** (an FR's scope or acceptance, a non-goal, a settled `OPEN-n` or `DEC-n`), **or it cannot be undone or reaches outside the repo** (a destructive migration, an external contract, a paid service), **or it needs a secret**, **or a cap below is hit** | **block** | the PRD says soft-delete and a unique index makes it impossible; CI needs a secret this branch cannot add |
+| **No — and it changes what the PRD promises** (an FR's scope or acceptance, a non-goal, a settled `OPEN-n` or a decision in `docs/decisions.md`), **or it cannot be undone or reaches outside the repo** (a destructive migration, an external contract, a paid service), **or it needs a secret**, **or a cap below is hit** | **block** | the PRD says soft-delete and a unique index makes it impossible; CI needs a secret this branch cannot add |
 
 **Unsure between log and block → block.** A wrong `AD` costs the owner a revert. A silent scope change costs a feature.
 
@@ -35,7 +35,7 @@ Ask it of every choice the work forces that nobody wrote down: **does the PRD, t
 | `/polish`, `/ux` **Park** | `factory docs idea add` or a new slice | `factory docs idea add` only; a new slice changes the plan the owner approved |
 | `prune`, "genuinely in doubt" | ask in-session | **keep the test** and write an `AD` — keeping never loses coverage |
 | `/harness` confirm round | one AskUserQuestion round | take what the code shows; an `AD` for each finding it had to choose between. A test-framework major upgrade the PRD does not name is a **block**: it touches the whole suite |
-| a `DEC-n` candidate | recommend, owner chooses | list it in the PR body; **never write `docs/decisions.md`** |
+| a `docs/decisions.md` candidate | recommend, owner chooses | list it in the PR body; **never write `docs/decisions.md`** |
 | a proposed rubric line | owner approves it | list it in the PR body; **never write `docs/ux-rubric.md`** |
 
 ## What an unattended run may write

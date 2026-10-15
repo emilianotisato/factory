@@ -13,7 +13,7 @@ GitHub does not resolve repository-relative links in a PR body, so paths go in b
 
 - **AD-{n}** · slice-{NN} — {the question} → {what was chosen}
   *(entries marked `Review: decide`, then one line "+ {n} fyi entries"; every decision is in `factory docs log show {NNN}`. After the owner review in `/deliver` § 8, each reviewed entry ends in `— kept` or `— changed: {to what}`.)*
-- **DEC candidates** — {the question and the recommendation} · or none
+- **Decision candidates** — {the question and the recommendation} · or none
 - **Rubric proposals** — {the line} · or none
 - **OPENs carried, parked by design** — OPEN-{n} · or omit
 
