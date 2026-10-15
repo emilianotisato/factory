@@ -3,7 +3,12 @@
 **Source**: [`prd.md`](prd.md) → §3 FR-3, FR-4. **Depends on**: — (independent of every other slice; slice 05 waits on this one, because it adds the ctx answer to the same deny path and edits the same `assets/lookup.md`)
 **Created**: 2026-10-15
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+- **Built**: `interpreter()` takes the command's stdin and reads the script where it answered Unsure: the word after an inline flag (or its attached value, `-cCODE`, `--eval=CODE`), the first non-flag word after `deno eval`, and each stdin document for `-` or no script argument. `script()` is Forbidden only for a process call (`process_call()`, the FR-3 list as written) plus a gh/push mention, else Fine; an empty stdin or a bare inline flag stays Unsure. `grep_search()`/`rg_search()` return a `Search` of patterns (first positional, each `-e`/`--regexp` value attached or not, `None` for `-f`/`--file`) and paths; `bare_name()` denies one identifier, bare or in `\b…\b`/`\<…\>`, over the repo with no searched path under a `VENDOR_DIRS` component. The hint and `assets/lookup.md` say the new rule and name `--vendor`. Unit fixture `repo()` gains `vendor/acme/Recon.php`.
+- **Tests**: `only_a_bare_name_outside_vendor_code_goes_to_ctx` (unit); `rg -n 'a b' src` and `egrep -r 'a|b' ./` moved to the allowed list; `a_script_is_denied_only_when_it_runs_a_process_and_names_gh_or_push` (`tests/hook.rs`, through `guard` and `decide`); `tests/cli.rs` pins the new hint; `tests/loop.rs` asserts the new Lookup rule and the old one's absence. `doubt_is_denied_when_it_names_gh_or_push` and `the_rest_gets_no_decision` unchanged and green.
+- **Inner loop**: 1 run, 0 red, ~2 min.
+- **Deviations**: attached inline values are read too (AD in the log).
+- **Prove**: FR-3 and FR-4 transcripts are left for the checkpoint.
 
 **Slice**: The hook stops denying two kinds of call the owner's runs showed should run. An interpreter script that only mentions gh or push runs, unless it also makes a process call. A recursive grep or rg is denied only for a bare identifier outside vendor code, so literals, regex, several patterns and vendor paths pass. The hint and the pack's `# Lookup` state the new rule. The denial's text is still the hint alone: the ctx answer under it, the `def` trims and the header change are slice 05's.
 

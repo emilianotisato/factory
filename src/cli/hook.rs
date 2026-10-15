@@ -5,6 +5,7 @@ use std::path::{Component, Path, PathBuf};
 use serde_json::{Value, json};
 
 use crate::Result;
+use crate::ctx::walk::VENDOR_DIRS;
 use crate::error::io;
 use crate::paths;
 use crate::shell;
@@ -15,7 +16,7 @@ pub const NEVER_HINT: &str = "workers never run gh or git push: the driver pushe
 
 pub fn grep_hint() -> String {
     format!(
-        "use: {} ctx refs <word> (or ctx def <symbol>); grep only for literal strings and log output",
+        "use: {} ctx refs <word> (or ctx def <symbol>; --vendor for vendor code): a bare name goes to ctx, grep anything else",
         paths::factory_command()
     )
 }
@@ -139,10 +140,10 @@ fn bash(command: &str, held: &Held, repo: &Path, cwd: &Path) -> Verdict {
     };
     let args = &words[1..];
     match shell::program(first) {
-        "grep" | "egrep" | "fgrep" if over_repo(grep_paths(args), &here, repo) => {
+        "grep" | "egrep" | "fgrep" if bare_name(grep_search(args), &here, repo) => {
             Verdict::Deny(grep_hint())
         }
-        "rg" if over_repo(rg_paths(args), &here, repo) => Verdict::Deny(grep_hint()),
+        "rg" if bare_name(rg_search(args), &here, repo) => Verdict::Deny(grep_hint()),
         // `cat f | head`: a range, not the whole file.
         "cat" if !matches!(end, Some("|" | "|&")) => {
             for a in args.iter().filter(|a| !a.starts_with('-')) {
@@ -313,7 +314,7 @@ fn reach(w: &[&str], stdin: &[String], depth: u32) -> Reach {
             "bash" | "sh" | "zsh" | "dash" | "ksh" | "mksh" | "ash" | "yash" | "posh" | "fish" => {
                 return shell_call(args, stdin, depth);
             }
-            p => return interpreter(p, args),
+            p => return interpreter(p, args, stdin),
         };
     }
 }
@@ -511,7 +512,8 @@ fn shell_call(args: &[&str], stdin: &[String], depth: u32) -> Reach {
     }
 }
 
-fn interpreter(program: &str, args: &[&str]) -> Reach {
+/// A script file is out of sight; an inline or stdin script is read, never left unsure, or its mention denies the whole line.
+fn interpreter(program: &str, args: &[&str], stdin: &[String]) -> Reach {
     let inline: &[&str] = match program {
         p if p.starts_with("python") || p.starts_with("pypy") => &["c"],
         "node" | "nodejs" | "bun" => &["e", "p", "-eval", "-print"],
@@ -519,46 +521,158 @@ fn interpreter(program: &str, args: &[&str]) -> Reach {
         "ruby" | "lua" | "luajit" | "Rscript" | "osascript" => &["e"],
         "php" => &["r"],
         "deno" => {
-            return if args.first() == Some(&"eval") {
-                Reach::Unsure
-            } else {
-                Reach::Fine
+            return match args {
+                ["eval", rest @ ..] => match rest.iter().find(|a| !a.starts_with('-')) {
+                    Some(s) => script(s),
+                    None => Reach::Unsure,
+                },
+                _ => Reach::Fine,
             };
         }
         "tclsh" | "wish" => &[],
         _ => return Reach::Fine,
     };
-    for a in args {
+    for (i, a) in args.iter().enumerate() {
         let Some(cluster) = a.strip_prefix('-') else {
             return Reach::Fine;
         };
         if cluster.is_empty() {
-            return Reach::Unsure;
+            break;
         }
-        let long = cluster.starts_with('-');
-        let hit = inline.iter().any(|f| {
-            if f.starts_with('-') {
-                long && (cluster == *f || cluster.starts_with(&format!("{f}=")))
-            } else {
-                !long && cluster.contains(*f)
+        if let Some(long) = cluster.strip_prefix('-') {
+            for f in inline.iter().filter_map(|f| f.strip_prefix('-')) {
+                if long == f {
+                    return args.get(i + 1).map_or(Reach::Unsure, |s| script(s));
+                }
+                if let Some(s) = long.strip_prefix(f).and_then(|v| v.strip_prefix('=')) {
+                    return script(s);
+                }
             }
-        });
-        if hit {
-            return Reach::Unsure;
+            continue;
+        }
+        if let Some(at) = cluster.find(|c: char| {
+            inline
+                .iter()
+                .any(|f| !f.starts_with('-') && f.starts_with(c))
+        }) {
+            return match &cluster[at + 1..] {
+                "" => args.get(i + 1).map_or(Reach::Unsure, |s| script(s)),
+                s => script(s),
+            };
         }
     }
-    Reach::Unsure
+    if stdin.is_empty() {
+        return Reach::Unsure;
+    }
+    stdin
+        .iter()
+        .map(|doc| script(doc))
+        .find(|r| *r == Reach::Forbidden)
+        .unwrap_or(Reach::Fine)
 }
 
-fn over_repo(paths: Option<Vec<&str>>, here: &Path, repo: &Path) -> bool {
-    match paths {
-        None => false,
-        Some(p) if p.is_empty() => here.to_str().is_some_and(|h| under(h, repo)),
-        Some(p) => p.iter().any(|p| repo_dir(p, here, repo)),
+fn script(text: &str) -> Reach {
+    if process_call(text) && mentions(text) {
+        Reach::Forbidden
+    } else {
+        Reach::Fine
     }
 }
 
-fn grep_paths(args: &[String]) -> Option<Vec<&str>> {
+fn process_call(text: &str) -> bool {
+    const CALLS: [&str; 17] = [
+        "subprocess",
+        "os.system",
+        "os.popen",
+        "os.exec",
+        "os.spawn",
+        "pty.spawn",
+        "child_process",
+        "execSync",
+        "spawnSync",
+        "IO.popen",
+        "Open3",
+        "shell_exec",
+        "passthru",
+        "proc_open",
+        "`",
+        "%x",
+        "qx",
+    ];
+    CALLS.iter().any(|c| text.contains(c))
+        || ["system(", "exec(", "spawn(", "popen("].iter().any(|c| {
+            text.match_indices(c)
+                .any(|(i, _)| !text[..i].ends_with('.'))
+        })
+}
+
+/// A pattern read from a file (`-f`) is unknown: `None`.
+struct Search<'a> {
+    patterns: Vec<Option<&'a str>>,
+    paths: Vec<&'a str>,
+}
+
+impl<'a> Search<'a> {
+    fn new(patterns: Vec<Option<&'a str>>, mut positional: Vec<&'a str>) -> Search<'a> {
+        let mut patterns = patterns;
+        if patterns.is_empty() && !positional.is_empty() {
+            patterns.push(Some(positional.remove(0)));
+        }
+        Search {
+            patterns,
+            paths: positional,
+        }
+    }
+}
+
+/// Only one bare identifier over repo code goes to ctx; literals, regex and vendor code are grep's.
+fn bare_name(search: Option<Search>, here: &Path, repo: &Path) -> bool {
+    let Some(s) = search else {
+        return false;
+    };
+    let [Some(pattern)] = s.patterns[..] else {
+        return false;
+    };
+    let paths = if s.paths.is_empty() {
+        vec!["."]
+    } else {
+        s.paths.clone()
+    };
+    identifier(pattern)
+        && over_repo(&s.paths, here, repo)
+        && !paths.iter().any(|p| vendored(p, here, repo))
+}
+
+fn identifier(pattern: &str) -> bool {
+    let name = [("\\b", "\\b"), ("\\<", "\\>")]
+        .iter()
+        .find_map(|(l, r)| pattern.strip_prefix(l)?.strip_suffix(r))
+        .unwrap_or(pattern);
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn vendored(p: &str, here: &Path, repo: &Path) -> bool {
+    let (Some(full), Some(root)) = (absolute(p, here), repo.to_str()) else {
+        return false;
+    };
+    under(&full, repo)
+        && full[root.trim_end_matches('/').len()..]
+            .split('/')
+            .any(|c| VENDOR_DIRS.contains(&c))
+}
+
+fn over_repo(paths: &[&str], here: &Path, repo: &Path) -> bool {
+    if paths.is_empty() {
+        return here.to_str().is_some_and(|h| under(h, repo));
+    }
+    paths.iter().any(|p| repo_dir(p, here, repo))
+}
+
+fn grep_search(args: &[String]) -> Option<Search<'_>> {
     const WITH_ARG: &[&str] = &[
         "--regexp",
         "--file",
@@ -577,7 +691,7 @@ fn grep_paths(args: &[String]) -> Option<Vec<&str>> {
         "--group-separator",
     ];
     let mut recursive = false;
-    let mut pattern_given = false;
+    let mut patterns = Vec::new();
     let mut positional = Vec::new();
     let mut i = 0;
     while i < args.len() {
@@ -588,10 +702,11 @@ fn grep_paths(args: &[String]) -> Option<Vec<&str>> {
             break;
         }
         if let Some(long) = a.strip_prefix("--") {
-            let name = long.split('=').next().unwrap_or(long);
+            let (name, value) = long_value(long, args.get(i));
             match name {
                 "recursive" | "dereference-recursive" => recursive = true,
-                "regexp" | "file" => pattern_given = true,
+                "regexp" => patterns.push(value),
+                "file" => patterns.push(None),
                 _ => {}
             }
             if !long.contains('=') && WITH_ARG.contains(&format!("--{name}").as_str()) {
@@ -604,12 +719,7 @@ fn grep_paths(args: &[String]) -> Option<Vec<&str>> {
                 match c {
                     'r' | 'R' => recursive = true,
                     'e' | 'f' | 'm' | 'A' | 'B' | 'C' | 'd' | 'D' => {
-                        if matches!(c, 'e' | 'f') {
-                            pattern_given = true;
-                        }
-                        if k + c.len_utf8() == cluster.len() {
-                            i += 1;
-                        }
+                        i += short_value(cluster, k, args.get(i), c, &mut patterns);
                         break;
                     }
                     _ => {}
@@ -622,14 +732,41 @@ fn grep_paths(args: &[String]) -> Option<Vec<&str>> {
     if !recursive {
         return None;
     }
-    if !pattern_given && !positional.is_empty() {
-        positional.remove(0);
+    Some(Search::new(patterns, positional))
+}
+
+/// `--regexp=X` or `--regexp X`: the name and its value, if it takes one.
+fn long_value<'a>(long: &'a str, next: Option<&'a String>) -> (&'a str, Option<&'a str>) {
+    match long.split_once('=') {
+        Some((name, value)) => (name, Some(value)),
+        None => (long, next.map(String::as_str)),
     }
-    Some(positional)
+}
+
+/// A value-taking letter ends its cluster: the rest is its value, or the next word is. Returns the words it took.
+fn short_value<'a>(
+    cluster: &'a str,
+    at: usize,
+    next: Option<&'a String>,
+    flag: char,
+    patterns: &mut Vec<Option<&'a str>>,
+) -> usize {
+    let rest = &cluster[at + flag.len_utf8()..];
+    let (value, took) = if rest.is_empty() {
+        (next.map(String::as_str), 1)
+    } else {
+        (Some(rest), 0)
+    };
+    match flag {
+        'e' => patterns.push(value),
+        'f' => patterns.push(None),
+        _ => {}
+    }
+    took
 }
 
 /// `rg` always recurses; `--files` and `--type-list` list rather than search.
-fn rg_paths(args: &[String]) -> Option<Vec<&str>> {
+fn rg_search(args: &[String]) -> Option<Search<'_>> {
     const SHORT_ARG: &str = "efgtTmABCjMrEd";
     const WITH_ARG: &[&str] = &[
         "regexp",
@@ -660,7 +797,7 @@ fn rg_paths(args: &[String]) -> Option<Vec<&str>> {
         "context-separator",
         "engine",
     ];
-    let mut pattern_given = false;
+    let mut patterns = Vec::new();
     let mut positional = Vec::new();
     let mut i = 0;
     while i < args.len() {
@@ -671,10 +808,11 @@ fn rg_paths(args: &[String]) -> Option<Vec<&str>> {
             break;
         }
         if let Some(long) = a.strip_prefix("--") {
-            let name = long.split('=').next().unwrap_or(long);
+            let (name, value) = long_value(long, args.get(i));
             match name {
                 "files" | "type-list" => return None,
-                "regexp" | "file" => pattern_given = true,
+                "regexp" => patterns.push(value),
+                "file" => patterns.push(None),
                 _ => {}
             }
             if !long.contains('=') && WITH_ARG.contains(&name) {
@@ -683,25 +821,14 @@ fn rg_paths(args: &[String]) -> Option<Vec<&str>> {
             continue;
         }
         if let Some(cluster) = a.strip_prefix('-').filter(|c| !c.is_empty()) {
-            for (k, c) in cluster.char_indices() {
-                if SHORT_ARG.contains(c) {
-                    if matches!(c, 'e' | 'f') {
-                        pattern_given = true;
-                    }
-                    if k + c.len_utf8() == cluster.len() {
-                        i += 1;
-                    }
-                    break;
-                }
+            if let Some((k, c)) = cluster.char_indices().find(|(_, c)| SHORT_ARG.contains(*c)) {
+                i += short_value(cluster, k, args.get(i), c, &mut patterns);
             }
             continue;
         }
         positional.push(a);
     }
-    if !pattern_given && !positional.is_empty() {
-        positional.remove(0);
-    }
-    Some(positional)
+    Some(Search::new(patterns, positional))
 }
 
 /// A glob ending in `*` or `**` reaches directories; anything else is a directory only when the disk says so.
@@ -830,7 +957,13 @@ mod tests {
     /// On disk, so a grep operand can be asked whether it is a directory.
     fn repo() -> tempfile::TempDir {
         let tmp = tempfile::tempdir().unwrap();
-        for d in ["src/Http", "app", "storage/logs", "docs/features/001-x"] {
+        for d in [
+            "src/Http",
+            "app",
+            "storage/logs",
+            "docs/features/001-x",
+            "vendor/acme",
+        ] {
             std::fs::create_dir_all(tmp.path().join(d)).unwrap();
         }
         for f in [
@@ -841,6 +974,7 @@ mod tests {
             ".env",
             "Makefile",
             "artisan",
+            "vendor/acme/Recon.php",
         ] {
             std::fs::write(tmp.path().join(f), "x\n").unwrap();
         }
@@ -890,14 +1024,14 @@ mod tests {
             format!("cd {r} && grep -rni --include=*.php foo app/"),
             "grep --recursive -e foo src/Http".to_string(),
             "rg foo".to_string(),
-            "rg -n 'a b' src".to_string(),
             format!("rg foo {r}/src | head -20"),
-            "egrep -r 'a|b' ./".to_string(),
             "grep -r foo *".to_string(),
         ] {
             assert_eq!(bash_in(&cmd, root, root), hint, "{cmd}");
         }
         for cmd in [
+            "rg -n 'a b' src",
+            "egrep -r 'a|b' ./",
             "grep -n foo src/one.php",
             "grep -rn foo src/one.php",
             "cat src/x.php | grep foo",
@@ -909,6 +1043,40 @@ mod tests {
             "grep -m 3 foo storage/logs/laravel.log",
             "grep -A2 -r foo storage/app.log",
             "rg foo *.php",
+        ] {
+            assert_eq!(bash_in(cmd, root, root), Verdict::Allow, "{cmd}");
+        }
+    }
+
+    #[test]
+    fn only_a_bare_name_outside_vendor_code_goes_to_ctx() {
+        let tmp = repo();
+        let root = tmp.path();
+        let hint = Verdict::Deny(grep_hint());
+        for cmd in [
+            "grep -rn Recon src",
+            "grep -rnw Recon src",
+            "rg -n '\\bRecon\\b' src",
+            "grep -rn '\\<Recon\\>' src",
+            "grep -rn -eRecon src",
+            "grep -rn --regexp=Recon src",
+            "rg --regexp Recon src",
+            "rg -n -e _recon2",
+        ] {
+            assert_eq!(bash_in(cmd, root, root), hint, "{cmd}");
+        }
+        for cmd in [
+            "grep -rn \"fn main\" src",
+            "grep -rn 'foo\\|bar' src",
+            "grep -rn Recon vendor/",
+            "rg Recon vendor/acme",
+            "grep -rn Recon src vendor",
+            "cd vendor && rg Recon",
+            "grep -rn -e Recon -e Other src",
+            "grep -rn -f patterns.txt src",
+            "rg --file=patterns.txt src",
+            "rg -n 'Recon\\(' src",
+            "grep -rn 2fa src",
         ] {
             assert_eq!(bash_in(cmd, root, root), Verdict::Allow, "{cmd}");
         }

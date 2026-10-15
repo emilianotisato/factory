@@ -163,6 +163,31 @@ fn doubt_is_denied_when_it_names_gh_or_push() {
 }
 
 #[test]
+fn a_script_is_denied_only_when_it_runs_a_process_and_names_gh_or_push() {
+    for cmd in [
+        "python3 - <<'EOF'\nfrom pathlib import Path\np = Path('src/git.rs')\nlines = []\nfor line in p.read_text().splitlines():\n    lines.append(line.replace('line.push(', 'out.push('))\np.write_text('\\n'.join(lines))\nEOF",
+        "python3 -c \"print('push')\"",
+        "node -e \"const a = []; a.push(1); console.log(a)\"",
+        "deno eval \"console.log('gh')\"",
+        "ruby -e 'puts \"git push\"'",
+        "python3 <<'EOF'\nimport subprocess\nsubprocess.run(['cargo', 'test'])\nEOF",
+    ] {
+        assert!(!guard(cmd), "guard denies: {cmd}");
+        assert_eq!(decide(cmd), None, "{cmd}");
+    }
+    assert_denied(&[
+        "python3 - <<'EOF'\nimport subprocess\nsubprocess.run([\"gh\", \"pr\", \"view\"])\nEOF",
+        "python3 -c \"import os; os.system('git push')\"",
+        "node -e \"require('child_process').execSync('gh pr list')\"",
+        "node --eval=\"require('child_process').execSync('gh pr list')\"",
+        "perl -e 'system(\"git push\")'",
+        "deno eval \"Deno.Command; spawn('gh')\"",
+        "printf 'import os; os.system(\"git push\")' | python3",
+        "python3 -c # gh",
+    ]);
+}
+
+#[test]
 fn the_rest_gets_no_decision() {
     for cmd in [
         "git status && git log -1",

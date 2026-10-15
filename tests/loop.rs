@@ -390,7 +390,12 @@ fn pack_outlines_the_cited_code_and_carries_the_lookup_verbs() {
         assert!(lookup.contains(verb), "{verb}: {lookup}");
     }
     assert!(
-        lookup.contains("grep only for literal strings and log output"),
+        lookup.contains("a bare name goes to ctx, grep anything else"),
+        "{lookup}"
+    );
+    assert!(lookup.contains("`--vendor`"), "{lookup}");
+    assert!(
+        !lookup.contains("grep only for literal strings and log output"),
         "{lookup}"
     );
     let again = Pack::for_slice(&docs, &board, 1, &packs, 2).unwrap();
