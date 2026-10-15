@@ -211,7 +211,7 @@ fn a_repo_with_no_docs_is_off_the_framework_until_init() {
     }
     assert_eq!(
         fs::read_to_string(dir.path().join("docs/.gitignore")).unwrap(),
-        "docs.lock\n"
+        "docs.lock\n__pycache__/\n"
     );
     let snapshot = |root: &Path| -> Vec<(String, String)> {
         ["project.toml", "index.md", ".gitignore"]

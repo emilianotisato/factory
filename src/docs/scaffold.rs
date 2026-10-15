@@ -19,8 +19,9 @@ pub const IDEAS_README: &str = include_str!("../../assets/docs/ideas-README.md")
 /// No backtick span in it may hold "verify": `docs gate` reads those as gate hints.
 pub const CONVENTION: &str = include_str!("../../assets/docs/convention.md");
 
-/// Keeps `docs.lock` out of `git status`, so the clean-tree check and folder commits ignore it.
-const GITIGNORE_LINE: &str = "docs.lock";
+/// `docs.lock` stays out of `git status`, so the clean-tree check and folder commits ignore it;
+/// `__pycache__/` keeps a script's bytecode, which holds home paths, out of the tracked docs.
+const GITIGNORE_LINES: [&str; 2] = ["docs.lock", "__pycache__/"];
 
 pub fn today() -> String {
     clock::now_rfc3339()[..10].to_string()
@@ -77,13 +78,18 @@ pub fn init(root: &Path, out: &mut dyn Write) -> Result<()> {
     }
     let ignore = docs.join(".gitignore");
     let text = fs::read_to_string(&ignore).unwrap_or_default();
-    if !text.lines().any(|l| l.trim() == GITIGNORE_LINE) {
+    let missing: Vec<&str> = GITIGNORE_LINES
+        .into_iter()
+        .filter(|want| !text.lines().any(|l| l.trim() == *want))
+        .collect();
+    if !missing.is_empty() {
         let sep = if text.is_empty() || text.ends_with('\n') {
             ""
         } else {
             "\n"
         };
-        fs::write(&ignore, format!("{text}{sep}{GITIGNORE_LINE}\n"))
+        let add: String = missing.iter().map(|l| format!("{l}\n")).collect();
+        fs::write(&ignore, format!("{text}{sep}{add}"))
             .map_err(io(format!("write {}", ignore.display())))?;
         made.push("docs/.gitignore".into());
     }

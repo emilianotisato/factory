@@ -1235,6 +1235,34 @@ fn three_reds_block_the_run_and_the_answer_reruns_the_gate() {
     assert_two_checkpoints(&fx, &dir);
 }
 
+#[test]
+fn a_block_body_names_the_run_dir_under_the_home_as_tilde() {
+    let fx = Fixture::new("cp-block-home");
+    fx.chain();
+    fx.script_gate(&["red", "red", "red"]);
+    fx.write_plan(&[done(), done(), step("fix"), step("fix")]);
+    let base = fx.data_dir().parent().unwrap().to_path_buf();
+    let out = fx
+        .command(BIN)
+        .env("HOME", &base)
+        .args(["run", "001"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let dir = only_run_dir(&fx);
+    assert!(dir.starts_with(&base), "{dir:?}");
+    wait_phase(&fx, &dir, "waiting-owner", 90);
+
+    let b = block(&fx, "BLOCK-1");
+    let text = body(&b);
+    assert!(text.contains("transcript (~/data/runs/"), "{text}");
+    let log = fx.read(LOG);
+    assert!(!log.contains("/home/"), "{log}");
+    assert!(!log.contains(base.to_str().unwrap()), "{log}");
+    let out = factory(&fx, &["stop", &run_id(&dir)]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+}
+
 // ── a run killed under the checkpoint worker resumes there ──────────────────
 
 #[test]
