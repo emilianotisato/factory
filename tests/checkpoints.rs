@@ -649,6 +649,49 @@ fn the_driver_runs_the_gate_at_each_checkpoint_and_commits_the_cp_entries() {
     );
 }
 
+#[test]
+fn checkpoint_evidence_lands_in_the_run_dir_and_never_in_the_branch() {
+    let fx = Fixture::new("cp-evidence");
+    fx.chain();
+    fx.write_plan(&[
+        done(),
+        done(),
+        step("checkpoint"),
+        done(),
+        step("checkpoint"),
+    ]);
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "finished", 60);
+
+    let calls = fx.calls();
+    assert_eq!(calls[2]["prompt"], checkpoint(1));
+    let canon = |p: &Path| fs::canonicalize(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+    let evidence = canon(&dir.join("evidence"));
+    for call in &calls {
+        let named = call["env"]["FACTORY_EVIDENCE"]
+            .as_str()
+            .unwrap_or_else(|| panic!("no FACTORY_EVIDENCE: {}", call["env"]));
+        assert_eq!(canon(Path::new(named)), evidence, "{}", call["prompt"]);
+    }
+    let row = evidence.join("cp-1/row.txt");
+    assert!(row.is_file(), "{} missing", row.display());
+
+    let tree = fx.git(&["ls-tree", "-r", "--name-only", "feat/fixture"]);
+    assert!(
+        !tree.lines().any(|p| p.split('/').any(|s| s == "evidence")),
+        "{tree}"
+    );
+    let shown = fx.docs(&["log", "show", "001"]);
+    let cp1 = &shown[shown
+        .find("CP-1")
+        .unwrap_or_else(|| panic!("no CP-1:\n{shown}"))..];
+    let cp1 = &cp1[..cp1.find("CP-2").unwrap_or(cp1.len())];
+    assert!(
+        cp1.contains("**Prove:** FR-1 — evidence: cp-1/row.txt"),
+        "{shown}"
+    );
+}
+
 // ── leaks at the checkpoint ─────────────────────────────────────────────────
 
 /// A rule's heading, its fix line and its hits, up to the blank line.

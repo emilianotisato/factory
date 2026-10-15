@@ -54,6 +54,9 @@ pub const REPO_ENV: &str = "FACTORY_REPO";
 /// Always the run's main tree: a lane worker writes that board, not its lane's copy.
 pub const BOARD_ENV: &str = "FACTORY_BOARD";
 
+/// The run dir's evidence folder: proof a worker saves stays on this machine, out of every commit.
+pub const EVIDENCE_ENV: &str = "FACTORY_EVIDENCE";
+
 pub const GIT_CONFIG_COUNT: &str = "GIT_CONFIG_COUNT";
 
 /// A transport git has no `git-remote-*` helper for, so a push fails before any connection opens.
@@ -241,6 +244,7 @@ impl Worker {
         cmd.env(crate::cli::hook::PACK_ENV, &pack_path);
         cmd.env(REPO_ENV, &cwd);
         cmd.env(BOARD_ENV, &repo);
+        cmd.env(EVIDENCE_ENV, run_dir.join("evidence"));
         let mut child = cmd.spawn().map_err(|e| Error::Tool {
             cmd: format!("claude -p … --session-id {session_id}"),
             detail: format!("could not start claude: {e}"),

@@ -27,9 +27,9 @@ GitHub does not resolve repository-relative links in a PR body, so paths go in b
 
 | Slice | FRs | Gate | Proof |
 |---|---|---|---|
-| {NN} — {title} | FR-{n} | inner {runs}/{red} red · verified at CP-{n} | {evidence path, or "no Prove rows: why"} |
+| {NN} — {title} | FR-{n} | inner {runs}/{red} red · verified at CP-{n} | {CP-{n}: {rows}, or "no Prove rows: why"} |
 
-Evidence lives on the machine that ran the build; harness artifacts are gitignored.
+Evidence stays in the run dir of the machine that ran the build, under `evidence/cp-{n}/`; none of it is committed.
 
 ### Review
 
