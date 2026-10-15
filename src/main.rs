@@ -38,6 +38,11 @@ enum Command {
         #[command(subcommand)]
         verb: cli::review::ReviewVerb,
     },
+    /// Check a draft for leaks, then file it on the factory repo
+    Upstream {
+        #[command(subcommand)]
+        verb: cli::upstream::UpstreamVerb,
+    },
     /// Code lookups for workers: definitions, references, outlines
     Ctx {
         #[command(subcommand)]
@@ -83,6 +88,7 @@ fn main() -> ExitCode {
         Command::Wait(a) => cli::wait::wait(&a, &mut stdout(), &mut stderr()),
         Command::Status(a) => cli::status::status(&a, &mut stdout(), &mut stderr()),
         Command::Review { verb } => cli::review::review(&verb, &mut stdout(), &mut stderr()),
+        Command::Upstream { verb } => cli::upstream::upstream(&verb, &mut stdout(), &mut stderr()),
         Command::Ctx { verb } => ctx::run(&verb, Path::new("."), &mut stdout(), &mut stderr()),
         Command::Hook => cli::hook::hook(&mut stdin(), &mut stdout(), &mut stderr()),
         Command::Init => cli::docs::docs(&["init".to_string()], &mut stdout(), &mut stderr()),

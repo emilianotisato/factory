@@ -4,6 +4,10 @@
 **Created**: 2026-10-15
 
 **Progress**:
+- Built: `src/upstream.rs` (draft parse; hits for a home path, the repo's dir name and its origin's owner and name as whole words, an email; the `gh issue list` search), `src/cli/upstream.rs` (`factory upstream check|post`, both refusing when `FACTORY_BOARD` is set), `tests/upstream.rs` (the five cases plus `post` refusing a hit).
+- Inner loop: 3 runs, 2 red, 3 min. Red 1: clippy's `cloned_ref_to_slice_refs`. Red 2: the stub `gh` logs quoted argv, and the fixture's git has no author, so the test sets one.
+- Deviation: `post` reruns the leak check but not the issue search (AD in the log).
+- Prove: FR-8 left for the checkpoint.
 
 **Slice**: After this slice, `factory upstream check <draft>` reports what would leak from a client repo into the public `emilianotisato/factory`: a home path, the repo's name or its origin's owner or name, an email. It then lists up to five open issues matching the draft's title. `factory upstream post <draft>` checks again, then commits the draft as an idea in the `[source]` checkout when one is set, or opens an issue with `gh`. Both refuse inside a run. The skill that writes the draft in general terms and shows it to the person is slice 08's `/harvest`.
 
