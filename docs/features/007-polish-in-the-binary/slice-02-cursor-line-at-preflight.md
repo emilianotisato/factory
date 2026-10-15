@@ -3,7 +3,24 @@
 **Source**: [`prd.md`](prd.md) → §3 FR-1; §11 Live proof ("`factory run` prints the Cursor line as it starts"). **Depends on**: — (independent: no file in common with slices 01, 03, 04 or 05)
 **Created**: 2026-10-15
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**: `preflight::second_opinion(cfg, pf)` (`src/docs/preflight.rs`) probes into a fresh review log dir and adds an ok line ("second opinion: {agent} with {model} ready") or a judge line (the reason, "run `{agent} login`", the fallback per `pass_lines`-line pass). `preflight::cli` calls it before printing or serializing; `factory run` calls it after the refuse check with its loaded config, so the judge line prints as `  · …` and lands as `judge_noted`. `preflight::run` stays probe-free. Tests: `tests/preflight.rs` (logged in/out, text and `--json`, equal exit codes; `pass_lines` from config; a logged-out `factory run --foreground` notes the line). Inner loop: 2 runs, 1 red (fmt on the new test file), ~2.5 min. Deviation: AD-1 (probe after the refuse check; a broken config is a judge line).
+
+Task 2's transcript (`cargo test --test preflight preflight_names -- --nocapture`):
+
+```
+$ factory docs preflight 001
+  ✓ second opinion: cursor-agent with grok-4.7-high ready
+exit=Some(0)
+$ factory docs preflight 001 --json
+    "second opinion: cursor-agent with grok-4.7-high ready"
+exit=Some(0)
+$ factory docs preflight 001          (stub list_models = "auth")
+  ? second opinion not ready: cursor-agent --list-models exited 1: Error: Authentication required. Run 'agent login' first, or set CURSOR_API_KEY. — run `cursor-agent login`; polish falls back to one Claude agent per 600-line pass
+exit=Some(0)
+$ factory docs preflight 001 --json   (stub list_models = "auth")
+    "second opinion not ready: cursor-agent --list-models exited 1: Error: Authentication required. Run 'agent login' first, or set CURSOR_API_KEY. — run `cursor-agent login`; polish falls back to one Claude agent per 600-line pass"
+exit=Some(0)
+```
 
 **Slice**: After this slice, `factory docs preflight` and `factory run` probe the second opinion with the user's `[review]` config. Ready → an ok line naming the agent and the model. Not ready → a judge line with the reason, the login command, and that polish will fall back to one Claude agent per pass of `pass_lines` lines. The line never refuses a run and never changes an exit code.
 
