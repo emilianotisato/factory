@@ -1152,12 +1152,18 @@ fn a_resumed_run_does_not_run_a_lanes_setup_again() {
 fn a_failing_driver_kills_and_settles_its_live_worker() {
     let fx = Fixture::with_index("lanes-abandon", &[("checkpoint_every", "10")]);
     fx.chain();
-    fx.write_plan(&[json!({"outcome": "done", "delay_ms": 20000})]);
+    // The worker writes state.toml itself before it parks: break the file only after that write.
+    let parked = fx.data_dir().join("worker-parked");
+    fx.write_plan(&[json!({
+        "outcome": "done",
+        "wait_sh": format!("touch '{}' && sleep 20", parked.display()),
+    })]);
     let out = factory(&fx, &["run", "001"]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     let dir = only_run_dir(&fx);
     wait_until(&fx, &dir, "slice 01's worker", 20, || {
-        fx.calls().len() == 1
+        parked.exists()
+            && fx.calls().len() == 1
             && state(&dir)["workers"]
                 .as_array()
                 .is_some_and(|w| w.len() == 1)
