@@ -93,6 +93,8 @@ enum Verb {
     Ship { feature: String },
     /// Move a feature whose slices are all done into docs/archive/
     Archive { feature: String },
+    /// Print shipped features' retro lessons and the ideas they spawned; changes nothing
+    Harvest { features: Vec<String> },
     /// The lanes; `set N --env K=V` writes the lane files
     Lanes {
         args: Vec<String>,
@@ -377,6 +379,7 @@ fn dispatch(root: &Path, verb: Verb, out: &mut dyn Write, err: &mut dyn Write) -
         }
         Verb::Ship { feature } => crate::docs::ship::ship(root, &feature, out),
         Verb::Archive { feature } => crate::docs::ship::archive(root, &feature, out),
+        Verb::Harvest { features } => crate::docs::harvest::harvest(root, &features, out),
         Verb::Lanes { args, env, setup } => {
             crate::docs::lanes::run(root, &args, env.as_deref(), setup.as_deref(), out)
         }

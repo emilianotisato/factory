@@ -3,7 +3,11 @@
 **Source**: [`prd.md`](prd.md) → §3 FR-5 (the read). **Depends on**: — (independent; slice 05 adds `--done` to the verb this slice creates)
 **Created**: 2026-10-15
 
-**Progress**:
+**Progress**: built 2026-10-15.
+- **Built**: `src/docs/harvest.rs` (the read: frontmatter and H1 dropped, `## Numbers` cut to the next `## `, ideas matched on a whole `PRD-NNN` token; a feature with no `retro.md` gets one line), the `harvest` verb in `src/cli/docs.rs`, the help test at nineteen verbs, three tests in `tests/docs_lifecycle.rs` on a fixture with 001 and 002 shipped and 003 ready.
+- **Inner loop**: 2 runs, 1 red, about 2.5 min. The red run caught a `cargo fmt` miss in `harvest.rs`.
+- **Deviations**: none. AD-1 (fyi): an origin naming another repo's `PRD-NNN` still matches.
+- **Prove** (left for the checkpoint): FR-5 read half. `factory docs harvest 007` on this repo printed 007's retro without the Numbers block and its 5 ideas; `harvest 008` exits 2, "PRD-008 is ready, not shipped".
 
 **Slice**: After this slice, `factory docs harvest [NNN…]` prints a batch's lessons and changes nothing: each feature's retro sections without the Numbers block, then the ideas whose origin names that feature. With no numbers the batch is every shipped feature. The moves (`--done`, and `docs archive` sharing them) are slice 05's; the routing is slice 08's `/harvest` skill.
 

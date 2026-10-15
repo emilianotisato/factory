@@ -419,3 +419,114 @@ fn renumber_rewrites_live_docs_and_leaves_the_archive_alone() {
         stderr(&o)
     );
 }
+
+// ── harvest ──────────────────────────────────────────────────────────────────
+
+fn retro(lesson: &str) -> String {
+    format!(
+        "# Retro\n\n## Cost vs catch\n\n{lesson}\n\n## Numbers\n\n<!-- factory:numbers -->\n| tokens | 1 |\n<!-- /factory:numbers -->\n"
+    )
+}
+
+fn idea(fx: &Fixture, title: &str, origin: Option<&str>, body: &str) -> String {
+    let file = fx.path().join("idea-body.md");
+    fs::write(&file, body).unwrap();
+    let file = file.to_string_lossy().into_owned();
+    let mut args = vec!["idea", "add", "--title", title, "--body-file", &file];
+    if let Some(o) = origin {
+        args.extend(["--origin", o]);
+    }
+    let id = fx.docs(&args).trim().to_string();
+    fs::remove_file(&file).unwrap();
+    id
+}
+
+/// 001 and 002 shipped with retros, 003 left ready; one idea each from 001, from 0012, from nowhere.
+fn harvest_fixture(name: &str) -> (Fixture, String) {
+    let fx = Fixture::new(name);
+    fx.docs(&[
+        "set",
+        "001",
+        "slices.1.status=done",
+        "slices.2.status=done",
+        "slices.3.status=done",
+    ]);
+    fx.docs(&["ship", "001"]);
+    fs::write(
+        fx.path().join(FEATURE_DIR).join("retro.md"),
+        retro("the fixture lesson"),
+    )
+    .unwrap();
+    commit(&fx);
+    fx.docs(&["new", "second"]);
+    fx.docs(&["set", "002", "status=ready"]);
+    fx.docs(&["ship", "002"]);
+    fs::write(
+        fx.path().join("docs/features/002-second/retro.md"),
+        "---\nscore: 4\n---\n\n".to_string() + &retro("the second lesson"),
+    )
+    .unwrap();
+    fx.docs(&["new", "third"]);
+    fx.docs(&["set", "003", "status=ready"]);
+    let from_001 = idea(
+        &fx,
+        "Spawned by the fixture",
+        Some("PRD-001 polish"),
+        "The fixture spawned this. More after.",
+    );
+    idea(
+        &fx,
+        "Spawned by a longer number",
+        Some("factory PRD-0012 run 012-x"),
+        "Not the fixture's.",
+    );
+    idea(&fx, "Nobody's", None, "No origin at all.");
+    commit(&fx);
+    (fx, from_001)
+}
+
+#[test]
+fn harvest_prints_every_shipped_retro_without_numbers_and_the_ideas_each_spawned() {
+    let (fx, from_001) = harvest_fixture("v3-harvest-all");
+    let before = fx.git(&["status", "--porcelain"]);
+    let said = fx.docs(&["harvest"]);
+    assert_eq!(fx.git(&["status", "--porcelain"]), before, "harvest wrote");
+
+    assert!(said.contains("the fixture lesson"), "{said}");
+    assert!(said.contains("the second lesson"), "{said}");
+    assert!(!said.contains("score: 4"), "{said}");
+    assert!(!said.contains("factory:numbers"), "{said}");
+    assert!(!said.contains("| tokens |"), "{said}");
+    assert!(!said.contains("003-third"), "{said}");
+
+    let (first, second) = said.split_at(said.find("PRD-002").expect("002 harvested"));
+    assert!(first.contains("PRD-001"), "{said}");
+    assert!(
+        first.contains(&format!("{from_001} · The fixture spawned this.")),
+        "{said}"
+    );
+    assert!(!first.contains("More after"), "{said}");
+    assert!(!second.contains(&from_001), "{said}");
+    assert!(!said.contains("longer number"), "{said}");
+    assert!(!said.contains("Not the fixture's"), "{said}");
+    assert!(!said.contains("No origin"), "{said}");
+}
+
+#[test]
+fn harvest_of_a_named_feature_prints_that_feature_alone() {
+    let (fx, from_001) = harvest_fixture("v3-harvest-one");
+    let said = fx.docs(&["harvest", "002"]);
+    assert!(said.contains("the second lesson"), "{said}");
+    assert!(!said.contains("PRD-001"), "{said}");
+    assert!(!said.contains("the fixture lesson"), "{said}");
+    assert!(!said.contains(&from_001), "{said}");
+}
+
+#[test]
+fn harvest_refuses_a_named_feature_that_is_not_shipped() {
+    let (fx, _) = harvest_fixture("v3-harvest-ready");
+    let o = fx.docs_output(&["harvest", "001", "003"]);
+    assert_eq!(exit(&o), 2, "{}", stderr(&o));
+    assert!(stderr(&o).contains("ready"), "{}", stderr(&o));
+    assert!(stdout(&o).is_empty(), "{}", stdout(&o));
+}
