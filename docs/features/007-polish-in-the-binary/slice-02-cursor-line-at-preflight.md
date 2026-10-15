@@ -69,3 +69,7 @@ Rows from [`prd.md`](prd.md) §11 this slice proves, below the UI:
 - **FR-1**: "run `factory docs preflight 001` against the stub logged out, then logged in: a judge line with the login command, then an ok line with the model, same exit code" — task 2's test transcript, with both outputs and both exit codes.
 
 **Acceptance:** after the checkpoint, Progress holds task 2's transcript.
+
+**Code-review fixes (2026-10-15).**
+
+- Each preflight probe left a fresh log dir under the data dir's `reviews/`, one per `factory run` and `factory docs preflight`, which only piled up. Preflight deletes it once the line is printed (AD-5); `preflight_leaves_no_probe_log_behind` holds it.

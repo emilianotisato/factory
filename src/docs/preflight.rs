@@ -356,7 +356,12 @@ fn feature(
 pub fn second_opinion(cfg: &Review, pf: &mut Preflight) {
     let probed = review::new_log_dir(&paths::data_dir())
         .map_err(|e| e.to_string())
-        .and_then(|dir| review::probe(cfg, &dir));
+        .and_then(|dir| {
+            let probed = review::probe(cfg, &dir);
+            // The line carries the verdict; a log dir per preflight would only pile up.
+            let _ = std::fs::remove_dir_all(&dir);
+            probed
+        });
     match probed {
         Ok(()) => pf.ok.push(format!(
             "second opinion: {} with {} ready",

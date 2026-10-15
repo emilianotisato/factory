@@ -85,7 +85,7 @@ fn assemble(header: String, sections: Vec<String>) -> (String, Vec<Part>) {
     (text, parts)
 }
 
-/// The `# Collected` body from a collect file: its plan, the leaks verdict, the second opinion's status
+/// The `# Collected` body from a collect file: its plan, the leaks verdict (with its hits, when any), the second opinion's status
 /// and pass lines, then the file's path. The findings stay in the file, so they do not anchor the local review.
 pub fn collected(text: &str, file: &Path) -> String {
     let part = |heading: &str| {
@@ -96,9 +96,15 @@ pub fn collected(text: &str, file: &Path) -> String {
         })
     };
     let plan = part("Plan").unwrap_or("(no plan in the file)");
-    let verdict = part("Leaks")
+    let leaks = part("Leaks");
+    let verdict = leaks
         .and_then(|l| l.lines().find(|l| l.starts_with("verdict:")))
         .unwrap_or("verdict: (none in the file)");
+    // Hits are fixes, not opinions that could anchor the review, so they travel with the verdict.
+    let verdict = match leaks {
+        Some(l) if verdict != "verdict: clean" => l,
+        _ => verdict,
+    };
     let marker = "\n## Second opinion\n";
     let opinion = text.find(marker).map_or("", |i| &text[i + marker.len()..]);
     let mut status: Vec<String> = Vec::new();
@@ -1228,6 +1234,30 @@ mod tests {
         assert!(
             text.contains("# Log\n\n<!-- factory docs log show 001 -->\n\nnone yet\n\n# Outline"),
             "{text}"
+        );
+    }
+
+    #[test]
+    fn leaks_hits_travel_with_their_verdict_and_a_clean_scan_is_one_line() {
+        let file = Path::new("/runs/r1/collect.md");
+        let with = |leaks: &str| {
+            format!(
+                "<!-- head: abc -->\n\n## Plan\n\nsize: local review only\n\n## Leaks\n\n{leaks}\n## Second opinion\n\nskipped by size\n"
+            )
+        };
+        let hits = "verdict: 1 fix hit\n\nfix: name the behaviour\n  src/a.rs:3 // slice 2\n";
+        let section = collected(&with(hits), file);
+        assert!(
+            section.contains(&format!(
+                "## Leaks\n\n{}\n\n## Second opinion",
+                hits.trim_end()
+            )),
+            "{section}"
+        );
+        let section = collected(&with("verdict: clean\n\nno hits\n"), file);
+        assert!(
+            section.contains("## Leaks\n\nverdict: clean\n\n## Second opinion"),
+            "{section}"
         );
     }
 

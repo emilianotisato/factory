@@ -173,7 +173,8 @@ fn a_diff_is_three_passes_and_the_oversized_file_is_alone() {
 #[test]
 fn the_passes_run_at_once_and_print_in_pass_order() {
     let fx = fixture("review-parallel", 20);
-    scenario(&fx, json!({"sleep_secs": 2}));
+    // Pass 1 finishes last, so printing in finishing order would break the order below.
+    scenario(&fx, json!({"sleep_secs": {"1": 2, "2": 1, "3": 1}}));
     let started = Instant::now();
     let o = review(&fx, &["--diff", "main"]);
     let took = started.elapsed();
@@ -546,7 +547,18 @@ fn collect_writes_the_head_the_plan_the_leaks_and_one_section_per_pass() {
         passes.iter().all(|p| p.ends_with(" — counted")),
         "{passes:?}"
     );
-    assert!(second.contains("(replayed for pass 2)"), "{second}");
+    let bodies: Vec<&str> = second.split("\n### Pass ").skip(1).collect();
+    for (i, body) in bodies.iter().enumerate() {
+        for m in 1..=2 {
+            let tag = format!("(replayed for pass {m})");
+            assert_eq!(
+                body.contains(&tag),
+                m == i + 1,
+                "pass {} holding {tag}: {body}",
+                i + 1
+            );
+        }
+    }
     assert_eq!(review_calls(&fx).len(), 2);
 }
 

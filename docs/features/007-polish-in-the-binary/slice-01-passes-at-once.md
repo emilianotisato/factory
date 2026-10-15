@@ -79,3 +79,11 @@ Rows from [`prd.md`](prd.md) §11 this slice proves, below the UI:
 - **FR-2**: "run `factory review second --diff` over three passes with a slow stub: the passes overlap in time, the output order holds" — task 3's timing test, its transcript with the wall-clock figure and the three section headers.
 
 **Acceptance:** after the checkpoint, Progress holds the timing test's transcript.
+
+**Code-review fixes (2026-10-15).**
+
+- The `--list-models` probe waited the whole pass timeout (900 s by default), so a hung agent held `factory run` and preflight for 15 minutes before any judge line. It is capped at 60 s now (AD-5).
+- A progress line that failed to write returned an error after earlier passes had spawned, and the scope still waited up to a pass timeout for reviewers whose output was then thrown away. All progress lines are written before the first spawn now.
+- A changed path holding a newline went raw into the `Pass n — files` heading and the progress line, so it could forge a heading in the collected file. `review::one_line` escapes control characters in both.
+- The progress write error was labelled `review pass` and now reads `review progress`.
+- The timing test slept 2 s in every pass, so passes finished in pass order anyway and the order check could not fail. Pass 1 now sleeps 2 s and the others 1 s (the stub takes a sleep per pass), so it finishes last; a serial run still breaks the 4 s bound.

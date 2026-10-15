@@ -94,6 +94,19 @@ fn the_pass_size_in_the_line_comes_from_the_config() {
     assert!(out.contains("per 250-line pass"), "{out}");
 }
 
+#[test]
+fn preflight_leaves_no_probe_log_behind() {
+    let fx = Fixture::new("preflight-no-probe-log");
+    preflight(&fx, &[]);
+    logged_out(&fx);
+    preflight(&fx, &[]);
+    let reviews = PathBuf::from(&fx.env()["FACTORY_DATA_DIR"]).join("reviews");
+    let left: Vec<PathBuf> = fs::read_dir(&reviews)
+        .map(|d| d.map(|e| e.unwrap().path()).collect())
+        .unwrap_or_default();
+    assert!(left.is_empty(), "{left:?}");
+}
+
 fn events(fx: &Fixture) -> Vec<Value> {
     let runs = PathBuf::from(&fx.env()["FACTORY_DATA_DIR"]).join("runs");
     let dirs: Vec<PathBuf> = fs::read_dir(runs)

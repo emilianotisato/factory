@@ -67,3 +67,7 @@ Rows from [`prd.md`](prd.md) §11 this slice proves, below the UI:
 - **FR-7**: "run the gate: bundle lock green at 0.5.0, the polish pack's contract starts §1 from `# Collected`" — the checkpoint's gate transcript, with `bundle_lock_matches`, the new §1 test and `a_finished_board_polishes_ships_pushes_and_opens_the_draft_pr` named in it.
 
 **Acceptance:** after the checkpoint, Progress holds the gate transcript.
+
+**Code-review fixes (2026-10-15).**
+
+- The contract line said `factory review collect` wrote the `# Collected` section, which reads as a command the worker runs. It now says the driver collected it before the spawn.

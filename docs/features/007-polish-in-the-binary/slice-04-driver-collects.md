@@ -63,3 +63,12 @@ Rows from [`prd.md`](prd.md) §11 this slice proves, below the UI:
 - **FR-5**: "run a stubbed feature to polish: `collect.md` exists before the polish spawn, the pack names it, a respawn reuses it" — task 3's test transcript, and the first polish pack's `# Collected` section.
 
 **Acceptance:** after the checkpoint, Progress holds the transcript and the section.
+
+**Code-review fixes (2026-10-15).**
+
+- A `factory stop` during the collect (up to a whole pass) was ignored: the polish worker spawned after it. The driver reloads the run state after the collect and stops there.
+- `collect.md` was written with `fs::write`, so a torn write left a head line on a partial file, and the next respawn reused it as finished (found only by the second opinion). It goes through `scheduler::write_atomic` now.
+- A file whose head matched was reused even when it owed a rerun: `fallback owed` after a `cursor-agent login`, or a leaks scan that did not run. Reuse now also needs neither line (AD-6, `Review: decide`).
+- The pack copied only the leaks `verdict:` line, so `verdict: 2 fix hits` reached the worker with no file:line to fix. A verdict other than `clean` now carries its hits into `# Collected`.
+- The collect's `review pass n/m` lines reached the driver log without the timestamp every other line has. A line-buffering writer stamps each whole line.
+- The respawn test counted the preflight's `--list-models` call as a collect call, so `collected_calls >= 1` held even with no review pass. It counts review calls only.

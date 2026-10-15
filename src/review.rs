@@ -258,12 +258,20 @@ fn run_logged(
     }
 }
 
+/// Listing the models takes about a second; a hung agent must not hold preflight for a whole pass's timeout.
+const PROBE_SECS: u64 = 60;
+
 pub fn probe(cfg: &Review, dir: &Path) -> std::result::Result<(), String> {
     let out = dir.join("list-models.txt");
     let mut cmd = Command::new(&cfg.agent);
     cmd.arg("--list-models");
-    let timeout = Duration::from_secs(cfg.timeout_secs);
-    let ended = match run_logged(cmd, &out, &out.with_extension("err"), timeout) {
+    let secs = cfg.timeout_secs.min(PROBE_SECS);
+    let ended = match run_logged(
+        cmd,
+        &out,
+        &out.with_extension("err"),
+        Duration::from_secs(secs),
+    ) {
         Ok((ended, _)) => ended,
         Err(e) => return Err(e.to_string()),
     };
@@ -280,8 +288,8 @@ pub fn probe(cfg: &Review, dir: &Path) -> std::result::Result<(), String> {
         .to_string();
     match ended {
         Ended::Killed => Err(format!(
-            "{} --list-models timed out after {} s",
-            cfg.agent, cfg.timeout_secs
+            "{} --list-models timed out after {secs} s",
+            cfg.agent
         )),
         Ended::Exited(code) if code != Some(0) => Err(format!(
             "{} --list-models exited {}: {first}",
@@ -402,18 +410,22 @@ pub fn run_passes(
     prompt: impl Fn(usize, &Pass) -> Result<String> + Sync,
     progress: &mut dyn Write,
 ) -> Result<Vec<Ran>> {
-    std::thread::scope(|s| {
+    // Written before any spawn: a failed write must not leave reviewers running for nothing.
+    for (i, pass) in passes.iter().enumerate() {
+        writeln!(
+            progress,
+            "review pass {}/{}: {} ({} lines)",
+            i + 1,
+            passes.len(),
+            file_list(&pass.files),
+            pass.lines
+        )
+        .map_err(io("review progress"))?;
+    }
+    let ran = std::thread::scope(|s| {
         let mut running = Vec::with_capacity(passes.len());
         for (i, pass) in passes.iter().enumerate() {
             let n = i + 1;
-            writeln!(
-                progress,
-                "review pass {n}/{}: {} ({} lines)",
-                passes.len(),
-                pass.files.join(", "),
-                pass.lines
-            )
-            .map_err(io("stderr"))?;
             let prompt = &prompt;
             running.push(s.spawn(move || {
                 let started = Instant::now();
@@ -422,11 +434,33 @@ pub fn run_passes(
                 Ran { outcome, elapsed }
             }));
         }
-        Ok(running
+        running
             .into_iter()
             .map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)))
-            .collect())
-    })
+            .collect()
+    });
+    Ok(ran)
+}
+
+/// Git allows a newline in a path; written raw, one could forge the headings that follow.
+pub fn one_line(path: &str) -> String {
+    let mut line = String::with_capacity(path.len());
+    for c in path.chars() {
+        if c.is_control() {
+            line.extend(c.escape_default());
+        } else {
+            line.push(c);
+        }
+    }
+    line
+}
+
+fn file_list(files: &[String]) -> String {
+    files
+        .iter()
+        .map(|f| one_line(f))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// A pass's text and whether it counted; a pass that never ran is unreviewed with why.
@@ -446,7 +480,7 @@ pub fn pass_header(n: usize, pass: &Pass, ran: &Ran, cfg: &Review) -> String {
     };
     format!(
         "Pass {n} — {}{over} ({} lines, {} s, {})",
-        pass.files.join(", "),
+        file_list(&pass.files),
         pass.lines,
         ran.elapsed.as_secs(),
         cfg.model
@@ -523,10 +557,6 @@ fn body(o: &Outcome, timeout_secs: u64) -> (String, bool) {
     (text, false)
 }
 
-pub fn head(cwd: &Path) -> Result<String> {
-    Ok(git(cwd, &["rev-parse", "HEAD"])?.trim().to_string())
-}
-
 pub fn diff_prompt(files: &[String], base: &str, diff_file: &Path) -> String {
     format!(
         "Adversarial code review. The diff of {} against {base} is in {}: read it, and read any file in the repository you need for context. Report only defects you can point to at file:line with a failure scenario; no praise, no style. Do not edit anything.",
@@ -553,6 +583,12 @@ pub fn with_others(prompt: &str, others: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_path_stays_on_its_own_line() {
+        assert_eq!(one_line("a\n## Leaks\tb.rs"), "a\\n## Leaks\\tb.rs");
+        assert_eq!(one_line("dir/é.rs"), "dir/é.rs");
+    }
 
     const STREAM: &str = include_str!("../tests/stubs/cursor-review.jsonl");
 

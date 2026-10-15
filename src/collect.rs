@@ -3,14 +3,14 @@
 //! The file starts with `<!-- head: <sha> -->`. Each part sits under a fixed `## Plan`, `## Leaks` or
 //! `## Second opinion` heading, in that order; the second opinion is last and runs to the end, because
 //! the findings hold headings of their own. The plan's `size:` and `second opinion:` rows, the leaks
-//! `verdict:` and the second opinion's `exit:` are lines of their own, and each pass is a
+//! `verdict:` and, when the second opinion ran, its `exit:` are lines of their own, and each pass is a
 //! `### Pass n — … — counted` (or `— unreviewed`) heading above its findings.
 use std::io::Write;
 use std::path::Path;
 
 use crate::config::Review;
 use crate::leaks::{self, Input};
-use crate::{Result, paths, review};
+use crate::{Result, ci, paths, review};
 
 /// One file under this many changed lines needs the local review only.
 pub const LOCAL_ONLY_LINES: u64 = 50;
@@ -24,7 +24,7 @@ pub fn needs_second_opinion(files: &[(String, u64)]) -> bool {
 /// The collected file for `<base>...HEAD` in `root`, the second opinion's progress lines going to `progress`.
 /// Only a git error reading HEAD or the changed files is the error: every later part writes its own failure into the file.
 pub fn collect(root: &Path, base: &str, cfg: &Review, progress: &mut dyn Write) -> Result<String> {
-    let head = review::head(root)?;
+    let head = ci::head(root)?;
     let files = review::numstat(root, base, &[])?;
     let lines: u64 = files.iter().map(|(_, n)| n).sum();
     let leaks = leaks_part(root, base);
@@ -52,7 +52,11 @@ pub fn collect(root: &Path, base: &str, cfg: &Review, progress: &mut dyn Write) 
         count(lines as usize, "line")
     );
     for (file, n) in &files {
-        plan.push_str(&format!("- {file} ({})\n", count(*n as usize, "line")));
+        plan.push_str(&format!(
+            "- {} ({})\n",
+            review::one_line(file),
+            count(*n as usize, "line")
+        ));
     }
     Ok(format!(
         "<!-- head: {head} -->\n\n## Plan\n\n{plan}size: {size}\nsecond opinion: {state}\n\n## Leaks\n\n{leaks}\n## Second opinion\n\n{opinion}"

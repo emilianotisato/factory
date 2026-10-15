@@ -24,7 +24,7 @@ use crate::run::{Phase, Run, WorkerOutcome, WorkerRef};
 use crate::scheduler::{self, DEATH_CAP, say, short};
 use crate::stream::{Findings, Summary};
 use crate::worker::{self, Exit, Job, Worker};
-use crate::{Result, clock, collect, lanes, metrics, paths, retro, review};
+use crate::{Result, clock, collect, lanes, metrics, paths, retro};
 
 /// The phases a closeout block names in its heading.
 pub const PHASES: [&str; 3] = ["polish", "pr", "ci"];
@@ -201,6 +201,11 @@ fn polish(
             &collect_path(run.dir()),
             out,
         )?;
+        // The collect can outlast a stop by a whole pass; no worker spawns after one.
+        run.reload()?;
+        if run.state().stop_requested {
+            return Ok(Some(Outcome::Stopped));
+        }
         let packs = scheduler::packs_dir(run.dir());
         let pack = Pack::for_polish(
             docs,
@@ -327,7 +332,8 @@ fn polish(
     }
 }
 
-/// The `# Collected` body. The file is reused while its head line names the lane's HEAD; a failed collect is the body, never the error.
+/// The `# Collected` body. The file is reused while its head line names the lane's HEAD and nothing in it owes a
+/// rerun (a fallback, a leaks scan that did not run); a failed collect is the body, never the error.
 fn collected(
     lane_dir: &Path,
     base: &str,
@@ -335,9 +341,11 @@ fn collected(
     file: &Path,
     out: &mut dyn Write,
 ) -> Result<String> {
-    if let Ok(head) = review::head(lane_dir)
+    if let Ok(head) = ci::head(lane_dir)
         && let Ok(text) = fs::read_to_string(file)
         && text.lines().next() == Some(format!("<!-- head: {head} -->").as_str())
+        && !text.contains("\nsecond opinion: fallback owed")
+        && !text.contains("\nverdict: did not run")
     {
         say(
             out,
@@ -346,10 +354,12 @@ fn collected(
         return Ok(pack::collected(&text, file));
     }
     let started = Instant::now();
-    let written = collect::collect(lane_dir, base, review, out).and_then(|text| {
-        fs::write(file, &text).map_err(io(format!("write {}", file.display())))?;
-        Ok(text)
-    });
+    let written =
+        collect::collect(lane_dir, base, review, &mut Stamped::new(out)).and_then(|text| {
+            // A torn file would carry a head line and be reused as finished.
+            scheduler::write_atomic(file, &text)?;
+            Ok(text)
+        });
     let secs = started.elapsed().as_secs_f64();
     match written {
         Ok(text) => {
@@ -370,6 +380,37 @@ fn collected(
             )?;
             Ok(format!("collect failed: {reason}"))
         }
+    }
+}
+
+/// Prefixes each whole line with the time, as `say` does, so progress written by the library reads like the rest of the driver log.
+struct Stamped<'a> {
+    out: &'a mut dyn Write,
+    line: Vec<u8>,
+}
+
+impl<'a> Stamped<'a> {
+    fn new(out: &'a mut dyn Write) -> Self {
+        Stamped {
+            out,
+            line: Vec::new(),
+        }
+    }
+}
+
+impl Write for Stamped<'_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.line.extend_from_slice(buf);
+        while let Some(end) = self.line.iter().position(|&b| b == b'\n') {
+            let line: Vec<u8> = self.line.drain(..=end).collect();
+            write!(self.out, "{} ", clock::now_rfc3339())?;
+            self.out.write_all(&line)?;
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.out.flush()
     }
 }
 
@@ -2518,6 +2559,90 @@ mod tests {
         assert!(!only_placeholder(&format!(
             "{first}\n\n- `src/a.rs:3` // FR-2 slipped past"
         )));
+    }
+
+    #[test]
+    fn progress_lines_are_stamped_like_the_driver_log_whole_lines_only() {
+        let mut log = Vec::new();
+        {
+            let mut w = Stamped::new(&mut log);
+            write!(w, "review pass 1/2: a.rs").unwrap();
+            writeln!(w, " (10 lines)").unwrap();
+            writeln!(w, "review pass 2/2: b.rs (5 lines)").unwrap();
+        }
+        let log = String::from_utf8(log).unwrap();
+        let lines: Vec<&str> = log.lines().collect();
+        assert_eq!(lines.len(), 2, "{log}");
+        for (line, want) in lines.iter().zip([
+            " review pass 1/2: a.rs (10 lines)",
+            " review pass 2/2: b.rs (5 lines)",
+        ]) {
+            let (stamp, rest) = line.split_at(line.find(' ').unwrap());
+            assert!(stamp.starts_with(&clock::now_rfc3339()[..4]), "{line}");
+            assert!(stamp.contains('T'), "{line}");
+            assert_eq!(rest, want);
+        }
+    }
+
+    fn repo_on_main(dir: &Path) -> String {
+        let git = |args: &[&str]| {
+            let o = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .unwrap();
+            assert!(o.status.success(), "{args:?}: {o:?}");
+            String::from_utf8(o.stdout).unwrap()
+        };
+        git(&["init", "-q", "-b", "main"]);
+        fs::write(dir.join("a.txt"), "a\n").unwrap();
+        git(&["add", "a.txt"]);
+        git(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-qm",
+            "a",
+        ]);
+        git(&["rev-parse", "HEAD"]).trim().to_string()
+    }
+
+    #[test]
+    fn a_file_at_the_same_head_is_reused_unless_it_owes_a_rerun() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lane = tmp.path().join("lane");
+        fs::create_dir_all(&lane).unwrap();
+        let head = repo_on_main(&lane);
+        let file = tmp.path().join(COLLECT_FILE);
+        let cfg = config::Review::default();
+        for (plan, reused) in [
+            (
+                "second opinion: reviewed, 1 of 1 passes counted\n\n## Leaks\n\nverdict: clean\n",
+                true,
+            ),
+            (
+                "second opinion: fallback owed — unreviewed: logged out\n\n## Leaks\n\nverdict: clean\n",
+                false,
+            ),
+            (
+                "second opinion: reviewed, 1 of 1 passes counted\n\n## Leaks\n\nverdict: did not run — x\n",
+                false,
+            ),
+        ] {
+            fs::write(&file, format!("<!-- head: {head} -->\n\n## Plan\n\n{plan}")).unwrap();
+            let mut out = Vec::new();
+            collected(&lane, "main", &cfg, &file, &mut out).unwrap();
+            let log = String::from_utf8(out).unwrap();
+            assert_eq!(log.contains("polish: reused "), reused, "{plan}\n{log}");
+            assert_eq!(log.contains("polish: collected "), !reused, "{plan}\n{log}");
+        }
+        assert!(
+            fs::read_to_string(&file)
+                .unwrap()
+                .contains("skipped by size")
+        );
     }
 
     #[test]

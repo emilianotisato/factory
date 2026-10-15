@@ -14,9 +14,9 @@
 //     a review call replays up to and including the n-th `assistant` event,
 //     writes a `result` event with `is_error` and `text` when error_result is
 //     set, then exits c.
-//   sleep_secs: n
-//     a review call sleeps n seconds, then replays and exits as it would
-//     without this key.
+//   sleep_secs: n | {"<pass>": n}
+//     a review call sleeps n seconds (or its own pass's n), then replays and
+//     exits as it would without this key.
 //   unlink_stream_on_call: n
 //     the review call for pass n deletes its own stream file (under
 //     $FACTORY_DATA_DIR/reviews/) and exits 1, so reading it back fails.
@@ -99,5 +99,7 @@ function replay() {
   process.exit(0)
 }
 
-if (scenario.sleep_secs) setTimeout(replay, scenario.sleep_secs * 1000)
+const sleepSecs =
+  typeof scenario.sleep_secs === 'object' ? scenario.sleep_secs[pass] : scenario.sleep_secs
+if (sleepSecs) setTimeout(replay, sleepSecs * 1000)
 else replay()

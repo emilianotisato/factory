@@ -418,7 +418,7 @@ fn a_finished_board_polishes_ships_pushes_and_opens_the_draft_pr() {
         "# Contract",
         "You are the polish worker of PRD-001",
         "run `/polish` **Unattended**",
-        "the `# Collected` section below — the plan, the leaks verdict and the second opinion `factory review collect` wrote; polish §1 starts from it",
+        "the `# Collected` section below — the plan, the leaks verdict and the second opinion the driver collected before you spawned; polish §1 starts from it",
         "docs retro 001 --set score=4`",
         "--kind block --phase polish",
         "# Autonomy",

@@ -1,6 +1,6 @@
 //! `second` exits 0 when a pass's text counted, 2 when none did or clap refused a flag (the skills' fallback), 1 on a bad combination.
 //! Once the probe passed, a failing pass is its own `unreviewed` line, never the command's error: the other passes keep their findings.
-//! `collect` exits 0 when the file was written, whatever each part found, and 1 on a usage error or when HEAD or the diff cannot be read.
+//! `collect` exits 0 when the file was written (or printed, without `--out`), whatever each part found, and 1 on a usage error or when HEAD or the diff cannot be read.
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};

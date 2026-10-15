@@ -484,10 +484,11 @@ fn collected_section(pack: &str) -> &str {
     &pack[from..from + to]
 }
 
-fn cursor_calls(fx: &Fixture) -> usize {
+fn review_calls(fx: &Fixture) -> usize {
     fs::read_to_string(fx.stub_dir().join("cursor-agent.log"))
         .unwrap_or_default()
         .lines()
+        .filter(|l| !l.contains("--list-models"))
         .count()
 }
 
@@ -509,11 +510,8 @@ fn polish_collects_once_and_a_rate_limited_respawn_reuses_the_file() {
     wait_until(&fx, &dir, "the polish collect", 60, || {
         driver_log(&dir).contains("polish: collected ")
     });
-    let collected_calls = cursor_calls(&fx);
-    assert!(
-        collected_calls >= 1,
-        "the collect never called cursor-agent"
-    );
+    let collected_calls = review_calls(&fx);
+    assert!(collected_calls >= 1, "the collect never ran a review pass");
     wait_phase(&fx, &dir, "finished", 120);
 
     let file = dir.join("collect.md");
@@ -546,7 +544,7 @@ fn polish_collects_once_and_a_rate_limited_respawn_reuses_the_file() {
     assert!(section.contains("\nverdict: "), "{section}");
     assert!(section.contains("\nsecond opinion: "), "{section}");
     assert_eq!(collected_section(&respawn), section);
-    assert_eq!(cursor_calls(&fx), collected_calls);
+    assert_eq!(review_calls(&fx), collected_calls);
     assert_eq!(outcomes(&fx, &dir, "polish"), ["rate_limited", "done"]);
 }
 

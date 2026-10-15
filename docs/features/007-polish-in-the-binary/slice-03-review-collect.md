@@ -71,3 +71,10 @@ Rows from [`prd.md`](prd.md) §11 this slice proves, below the UI:
 - **FR-3**: "run `factory review collect` on a fixture branch: one file with the head line, plan, leaks and second opinion; logged out, `fallback owed`; a small one-file branch never calls the stub" — task 3's test transcript, and the written file of the two-file case.
 
 **Acceptance:** after the checkpoint, Progress holds the transcript and the two-file case's file.
+
+**Code-review fixes (2026-10-15).**
+
+- Plan paths went into `collect.md` unescaped: a path with a newline followed by `## Leaks` and `verdict: clean` made the pack report clean while the real hits sat lower in the file (found by the second opinion). Paths go through `review::one_line` now.
+- The module doc said each status was a heading; the leaks `verdict:` and the second opinion's `exit:` are lines of their own, and the doc says so. The `collect` CLI doc now names the stdout case.
+- `review::head` duplicated `ci::head`; collect uses `ci::head` and the copy is gone.
+- The collect test checked that pass 2's replay was somewhere in the section, so a heading paired with the wrong pass's text passed. Each `### Pass n` block must now hold its own replay and no other.
