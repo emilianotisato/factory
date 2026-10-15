@@ -74,7 +74,8 @@ fn numbered_decisions(rel: &str, text: &str) -> Vec<String> {
 // Decisions are cited by their slug; the old numbered anchors are lowercase `dec-n`.
 #[test]
 fn no_skill_or_asset_asks_for_a_numbered_decision() {
-    assert_eq!(numbered_decisions("x.md", "a\nsee DEC-1\n").len(), 1);
+    let cited = format!("a\nsee {}-1\n", "DEC");
+    assert_eq!(numbered_decisions("x.md", &cited).len(), 1);
     let mut hits = Vec::new();
     for tree in ["skills", "assets"] {
         let base = root().join(tree);

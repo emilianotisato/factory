@@ -8,6 +8,8 @@
 - Inner loop: 3 runs (1 relock with `FACTORY_BUNDLE_WRITE=1`, 2 plain), 1 red, 4 min — caught: `cargo fmt` on the new test.
 - Deviation: `skills/README.md` gains a `harvest` row; it sits outside the bundle hash.
 - Prove (FR-7) left for the checkpoint.
+- Prove FR-7 (CP-3): `evidence/cp-3-fr7-numbered-decisions.txt` — the bundle test green, 0 `DEC-n` in `skills/` and `assets/`, red on an appended `DEC-3` line and green again once restored.
+- Prove FR-6: Human row, the owner's first `/harvest` after the merge (`qa-guide.md`); no checkpoint drives it.
 
 **Slice**: After this slice, the bundle holds a tenth skill, `/harvest`, which walks the owner through a batch's lessons, routes each one, converts `decisions.md`, and archives the batch. Polish writes decisions as named entries with no number, and no skill or asset asks for `DEC-n`. Polish and slice close out with `docs ship` only, and prune names the run dir for evidence. The crate is 0.6.0 with the bundle lock rewritten. Every `skills/` edit of this feature sits here, so one bump covers them. Converting this repo's own `decisions.md` is the owner's first `/harvest`, after the merge.
 
