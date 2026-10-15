@@ -9,6 +9,8 @@
 - **Inner loop.** 2 runs, 0 red, about 4 min (657 tests). The second run followed making the role predicate private.
 - **Deviations.** None from the slice; the test shape is AD-1.
 - **Prove.** FR-1 and FR-2 rows left for the checkpoint.
+- **Checkpoint 1, FR-1**: build, fix, CI-fix and merge argv hold `--tools Bash,Read,Edit,Write`, `--strict-mcp-config`, `--disable-slash-commands`; checkpoint and polish argv hold none — cp-1/fr1-argv.txt
+- **Checkpoint 1, FR-2**: every settings file holds `outputStyle` `default` and the same deny rules and hook; `autoMemoryEnabled` `false` for build, fix and merge only — cp-1/fr2-settings.txt
 
 **Slice**: Each worker's `claude` command and settings file follow its role. Build, fix and merge workers get four tools, no MCP servers and no slash commands; every role gets the default output style; build, fix and merge also run without the owner's auto memory. Checkpoint and polish keep today's tools and memory. This is the start-context cut, from about 26k to about 7k tokens in the probe.
 

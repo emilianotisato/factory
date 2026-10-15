@@ -8,6 +8,7 @@
 - **Inner loop**: 1 run, 0 red, ~2 min (a second `cargo test` pass to confirm no truncated failure: 37 binaries ok).
 - **Deviations**: none. Marker shape is AD-3.
 - **Prove**: FR-7 row left for the checkpoint.
+- **Checkpoint 1, FR-7**: the slice pack's Autonomy is the checkpoint pack's minus the cut sections, 3,283 bytes shorter, no marker in either — cp-1/fr7-autonomy-diff.txt
 
 **Slice**: The slice pack carries a builder's Autonomy: the whole file minus the parts that are the orchestrator's or the driver's job, about 800 tokens per builder start. Markers in `assets/autonomy.md` delimit the cut, and no pack carries a marker. Every other pack carries the file whole. § Tokens stops naming the Grep tool, which build, fix and merge workers lose in slice 03.
 

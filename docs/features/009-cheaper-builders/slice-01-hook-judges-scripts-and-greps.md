@@ -9,6 +9,8 @@
 - **Inner loop**: 1 run, 0 red, ~2 min.
 - **Deviations**: attached inline values are read too (AD in the log).
 - **Prove**: FR-3 and FR-4 transcripts are left for the checkpoint.
+- **Checkpoint 1, FR-3**: `factory hook` allows the `line.push(` heredoc and `print('push')`, denies the subprocess, `os.system` and `execSync` scripts with the never-hint — cp-1/fr3-hook-scripts.txt
+- **Checkpoint 1, FR-4**: `factory hook` in a fixture repo with `vendor/` allows the literal, regex and vendor greps, denies the three bare-`Recon` greps with the hint naming `--vendor` — cp-1/fr4-hook-greps.txt
 
 **Slice**: The hook stops denying two kinds of call the owner's runs showed should run. An interpreter script that only mentions gh or push runs, unless it also makes a process call. A recursive grep or rg is denied only for a bare identifier outside vendor code, so literals, regex, several patterns and vendor paths pass. The hint and the pack's `# Lookup` state the new rule. The denial's text is still the hint alone: the ctx answer under it, the `def` trims and the header change are slice 05's.
 
