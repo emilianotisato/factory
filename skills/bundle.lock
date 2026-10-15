@@ -1,3 +1,3 @@
 # Written by FACTORY_BUNDLE_WRITE=1 cargo test. Do not edit by hand.
-version = "0.6.0"
-sha256 = "ef1c7dac98ebe065d4cd94b9ab85f5f26ac998ddfdedee9499bb57fad449c704"
+version = "0.7.0"
+sha256 = "03005b8b8e597c43601bdd8b66e871f0b38facb962135514e1741c67eac5d57d"

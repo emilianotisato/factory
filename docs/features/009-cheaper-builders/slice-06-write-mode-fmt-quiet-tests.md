@@ -3,7 +3,11 @@
 **Source**: [`prd.md`](prd.md) → §3 FR-9, and FR-10's inner loop and `/gate` halves. **Depends on**: — (independent of every other slice: only this one touches `skills/`, `Cargo.toml` and `docs/project.toml`. FR-10's contract line is slice 02's, which owns `assets/contract-slice.md`)
 **Created**: 2026-10-15
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+- **Built.** `/gate` round 3: the inner loop formats in write mode and the gate keeps check mode; a one-minute gate's inner loop is the gate's own tiers, formatter in write mode, tests quiet. A new round-3 bullet names the quiet flags: Rust `cargo test -q`, Python `pytest -q`, Kotlin `./gradlew test -q`, Pest `--compact`, Vitest `--reporter=dot`, Go quiet by default. The audit's inner-loop bullet checks the same rule. Every `| format |` row of `references/stacks.md` gives write / check. Bundle test `gate_inner_loop_formats_in_write_mode_and_runs_tests_quiet` pins both. `Cargo.toml` 0.7.0, `skills/bundle.lock` relocked at 0.7.0, `Cargo.lock` moved with it. `docs/project.toml` `inner` set through `factory docs gate set --inner`; `gate` untouched.
+- **Inner loop:** 2 runs, 1 red, ~1.7 min. The red was `cargo fmt --check` on the new test's iterator chain.
+- **Deviations:** none. The relock ran as `FACTORY_BUNDLE_WRITE=1 cargo test -q --test skills_bundle`, the one test target that writes the lock.
+- **Left for the checkpoint:** the FR-9 and FR-10 (inner-loop half) transcripts.
 
 **Slice**: The inner loop formats in write mode and runs tests quiet; the gate keeps check mode. `/gate` round 3 and its audit say so, round 3 names each stack's quiet test flag, and the stack table gives each stack's write form beside its check form. This repo's `inner` becomes `cargo fmt && cargo clippy --all-targets -- -D warnings && cargo test -q`, and its `gate` stays byte-identical. The skill edit changes the bundle's hash, so this slice bumps to 0.7.0 and relocks.
 

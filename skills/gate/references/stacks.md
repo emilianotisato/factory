@@ -37,7 +37,7 @@ Verify every command against the versions actually installed before writing it i
 | Tier | Command | Install |
 |---|---|---|
 | deps | `npm audit --audit-level=high` | built in |
-| format | `prettier --check .` | `prettier` |
+| format | `prettier --write .` / `prettier --check .` | `prettier` |
 | lint | `eslint .` | `eslint` |
 | types | `tsc --noEmit` (`vue-tsc --noEmit` for Vue) | built in |
 | type coverage | `type-coverage --at-least <n>` | `type-coverage` |
@@ -60,7 +60,7 @@ Verify every command against the versions actually installed before writing it i
 | Tier | Command | Install |
 |---|---|---|
 | deps | `govulncheck ./...` | `golang.org/x/vuln/cmd/govulncheck` |
-| format | `gofmt -l .` (non-empty output is a failure) or `gofumpt -l .` | built in / `mvdan.cc/gofumpt` |
+| format | `gofmt -w .` / `gofmt -l .` (non-empty output is a failure), or `gofumpt -w .` / `gofumpt -l .` | built in / `mvdan.cc/gofumpt` |
 | lint | `golangci-lint run` (bundles `vet`, `staticcheck`, `errcheck`) | `golangci-lint` |
 | tests + coverage | `go test -race -coverprofile=cover.out ./...` then a threshold check on `go tool cover -func=cover.out` | built in |
 | mutation | `gremlins run` | `gremlins` |
@@ -79,7 +79,7 @@ Verify every command against the versions actually installed before writing it i
 | Tier | Command | Install |
 |---|---|---|
 | deps | `./gradlew dependencyCheckAnalyze` | OWASP dependency-check plugin |
-| format | `./gradlew spotlessCheck` (ktlint underneath) | `spotless` |
+| format | `./gradlew spotlessApply` / `./gradlew spotlessCheck` (ktlint underneath) | `spotless` |
 | lint | `./gradlew detekt` and `./gradlew lint` (Android lint) | `detekt` |
 | tests + coverage | `./gradlew test jacocoTestCoverageVerification` with a `violationRules` minimum | `jacoco` |
 | e2e | `./gradlew connectedAndroidTest`, or a Maestro flow | built in / `maestro` |
@@ -100,7 +100,7 @@ Verify every command against the versions actually installed before writing it i
 | Tier | Command | Install |
 |---|---|---|
 | deps | `pip-audit` | `pip-audit` |
-| format | `ruff format --check .` | `ruff` |
+| format | `ruff format .` / `ruff format --check .` | `ruff` |
 | lint | `ruff check .` | `ruff` |
 | types | `mypy .` or `pyright` | either |
 | tests + coverage | `pytest --cov --cov-branch --cov-fail-under=<n>` | `pytest-cov` |
@@ -120,7 +120,7 @@ Verify every command against the versions actually installed before writing it i
 | Tier | Command | Install |
 |---|---|---|
 | deps | `cargo audit` or `cargo deny check` | `cargo-audit` / `cargo-deny` |
-| format | `cargo fmt --check` | built in |
+| format | `cargo fmt` / `cargo fmt --check` | built in |
 | lint | `cargo clippy --all-targets -- -D warnings` | built in |
 | tests + coverage | `cargo llvm-cov --fail-under-lines <n>` | `cargo-llvm-cov` |
 | mutation | `cargo mutants` | `cargo-mutants` |
