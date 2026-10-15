@@ -111,7 +111,6 @@ fn strip_frontmatter(text: &str) -> &str {
     }
 }
 
-/// `PRD-007` as a whole token: not `PRD-0070`, not `PRD-007x`.
 fn names(origin: &str, nnn: &str) -> bool {
     let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
     origin.match_indices(nnn).any(|(i, m)| {
@@ -131,16 +130,16 @@ mod tests {
 
     #[test]
     fn an_origin_names_a_feature_only_as_a_whole_token() {
-        assert!(names("PRD-007 polish", "PRD-007"));
-        assert!(names("factory PRD-007 run 007-20261015-c8fa", "PRD-007"));
-        assert!(!names("PRD-0070 polish", "PRD-007"));
-        assert!(!names("PRD-007x", "PRD-007"));
-        assert!(!names("XPRD-007", "PRD-007"));
+        assert!(names("TKT-007 polish", "TKT-007"));
+        assert!(names("factory TKT-007 run 007-20261015-c8fa", "TKT-007"));
+        assert!(!names("TKT-0070 polish", "TKT-007"));
+        assert!(!names("TKT-007x", "TKT-007"));
+        assert!(!names("XTKT-007", "TKT-007"));
     }
 
     #[test]
     fn lessons_drop_the_frontmatter_the_heading_and_the_numbers_section() {
-        let retro = "---\nscore: 4\n---\n\n# Retro — PRD-001\n\nprose\n\n## Cost vs catch\n\nlesson\n\n## Numbers\n\n<!-- factory:numbers -->\nrows\n<!-- /factory:numbers -->\n\n## After\n\n### Numbers\n\nkept\n";
+        let retro = "---\nscore: 4\n---\n\n# Retro — sample\n\nprose\n\n## Cost vs catch\n\nlesson\n\n## Numbers\n\n<!-- factory:numbers -->\nrows\n<!-- /factory:numbers -->\n\n## After\n\n### Numbers\n\nkept\n";
         let got = lessons(retro);
         assert!(got.starts_with("prose"), "{got}");
         assert!(got.contains("## Cost vs catch\n\nlesson"), "{got}");

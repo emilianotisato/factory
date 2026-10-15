@@ -4,6 +4,7 @@
 **Created**: 2026-10-15
 
 **Progress**: built: `file_friction`, `only_placeholder`, `friction()`, both calls (the orphan path's config load with it), their two unit tests and the unused `ideas`/`scaffold` imports are gone; the template and stub heading read `## Framework friction → factory`; `tests/closeout.rs` holds `a_filled_friction_section_leaves_the_source_checkout_untouched` (source repo committed after `docs init`, so `--untracked-files=all` porcelain must stay empty) and `a_polish_orphan_adopted_by_a_resumed_driver_lands_once`, the other friction tests and helpers deleted. The new test failed against the old `src/closeout.rs` (`?? docs/ideas/2026-10-15-friction-repo-prd-001.md`). · inner loop: 1 run, 0 red, ~3 min · deviations: none. Prove (FR-1) left for the checkpoint.
+Prove FR-1 (checkpoint 1): `evidence/cp-1-fr1-friction.txt` (the source-checkout test green, `grep -rn file_friction src/` empty).
 
 **Slice**: After this slice, no closeout writes anything into the `[source] path` checkout. `file_friction`, its two calls and its helpers are gone, and the retro template's heading reads `## Framework friction → factory`. The section stays in every retro as the only home of a run's friction until a harvest reads it. Reading that section again is slice 04's job; routing it to factory is slice 06's.
 

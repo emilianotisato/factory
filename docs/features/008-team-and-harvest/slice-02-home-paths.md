@@ -4,6 +4,7 @@
 **Created**: 2026-10-15
 
 **Progress**:
+Prove FR-3 (checkpoint 1): `evidence/cp-1-fr3-home-paths.txt` (the `docs check` unit test, the red-gate block-body test, and `factory docs check` on this repo: 45 `W-HOME-PATH` warnings, 0 errors).
 - Built: `paths::find_home_path` (bytes, first `/home/<name>/` or `/Users/<name>/` that starts a path) and `paths::home_to_tilde` (rewrites `<home>/` at a path start; a home of `/` rewrites nothing), with unit tests. `answers::add_block`, `add_note` and `resolve` rewrite title and body before `log::add`. `check::home_paths` warns `W-HOME-PATH` as `path:line` per tracked `docs/` file, skipping `docs/archive/` and non-work-trees. `init` appends each missing ignore line (`docs.lock`, `__pycache__/`); this repo's `docs/.gitignore` has both.
 - Tests: `a_tracked_doc_holding_a_home_path_warns_once_with_its_first_line` (`src/docs/check.rs`); `a_block_body_names_the_run_dir_under_the_home_as_tilde` (`tests/checkpoints.rs`), seen failing on its `~/` assert with the rewrite disabled.
 - Inner loop: 3 runs, 1 red, ~3 min. The red run caught `cargo fmt` diffs only. A `docs check` on this repo from the lane build then showed 43 hits where `git grep` finds 45 files: two `.pyc` files hold the path right after a length byte. Fixed by AD-2 (binary files skip the path-start rule); it now shows 45.

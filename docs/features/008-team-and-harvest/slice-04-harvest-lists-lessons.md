@@ -4,6 +4,7 @@
 **Created**: 2026-10-15
 
 **Progress**: built 2026-10-15.
+Prove FR-5, read half (checkpoint 1): `evidence/cp-1-fr5-harvest.txt` (the three harvest tests green, and `factory docs harvest 007` on this repo).
 - **Built**: `src/docs/harvest.rs` (the read: frontmatter and H1 dropped, `## Numbers` cut to the next `## `, ideas matched on a whole `PRD-NNN` token; a feature with no `retro.md` gets one line), the `harvest` verb in `src/cli/docs.rs`, the help test at nineteen verbs, three tests in `tests/docs_lifecycle.rs` on a fixture with 001 and 002 shipped and 003 ready.
 - **Inner loop**: 2 runs, 1 red, about 2.5 min. The red run caught a `cargo fmt` miss in `harvest.rs`.
 - **Deviations**: none. AD-1 (fyi): an origin naming another repo's `PRD-NNN` still matches.

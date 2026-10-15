@@ -4,6 +4,7 @@
 **Created**: 2026-10-15
 
 **Progress**:
+Prove FR-4 (checkpoint 1): `evidence/cp-1-fr4-retro.txt` (the tracked-retros test green, and `factory retro` on this repo over a copy of the store) with the table read back in `evidence/cp-1-fr4-retro.md` (007 nine cells, 006 and 005 seven cells).
 - Built: `numbers(db, run_id, root)` reads the `(this run)` row between the markers of every `docs/features/*/retro.md` and `docs/archive/*/retro.md` under `root`, skips the run's own feature by number, pads a 7-cell row with `— | — |`, sorts by the run id's date then feature number, newest first, and keeps 3 (`tracked_rows`, `this_run_row` in `src/retro.rs`). `NO_EARLIER` reads "No earlier retro in this repo." The closeout passes `repo`; `factory retro` passes `row.repo`, or the file's repo root with `--file` (AD-3). `compare_row` lost its `this` flag: it only prints this run's row now.
 - Removed: `Db::earlier_runs`, its block in the db leaks test (renamed `the_leaks_figures_read_back_from_the_run_row`), the two store-cohort retro tests and `insert`, and `a_second_run_of_the_repo_compares_with_the_first`. Its exact check of this run's row (weighted, per slice, per line, `66.7% | 1`) moved into the new test.
 - Tests: `the_retro_compares_with_the_three_newest_tracked_retros` (tests/closeout.rs), and unit tests for padding, the rowless and outside-the-markers skip, the tie, the cut and the own-feature skip.

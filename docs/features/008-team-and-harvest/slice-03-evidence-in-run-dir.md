@@ -4,6 +4,7 @@
 **Created**: 2026-10-15
 
 **Progress**: `FACTORY_EVIDENCE` set for every worker beside `FACTORY_BOARD`; checkpoint contract and PR body name `cp-{n}/<file>`; the stub checkpoint writes `cp-{n}/row.txt` when the variable is set; `checkpoint_evidence_lands_in_the_run_dir_and_never_in_the_branch` · inner loop 1 run, 0 red, 3 min (one targeted test run before it) · no deviations · Prove FR-2 left for the checkpoint
+Prove FR-2 (checkpoint 1): `evidence/cp-1-fr2-evidence.txt` (the run-dir evidence test green).
 
 **Slice**: After this slice, every worker gets `FACTORY_EVIDENCE=<run dir>/evidence`, the checkpoint contract saves evidence under `$FACTORY_EVIDENCE/cp-{n}/`, and Progress lines and checkpoint entries name each file as `cp-{n}/<file>`. Nothing the checkpoint saves lands in the lane commit, and the PR body's Proof cell names the checkpoint. The skill lines that still name the feature folder (prune) change in slice 08, with the other skill edits.
 
