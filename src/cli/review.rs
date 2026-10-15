@@ -1,13 +1,11 @@
 //! Exit 0: a pass's text counted. 2: none did, or clap refused a flag (the skills' fallback). 1: a bad combination.
-//! Once the probe passed, a failing pass is its own `unreviewed` line, never the command's error: earlier passes keep their findings.
+//! Once the probe passed, a failing pass is its own `unreviewed` line, never the command's error: the other passes keep their findings.
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
 
 use clap::{Args, Subcommand};
 
-use crate::config::Review;
 use crate::error::io;
 use crate::review::{self, Ended, Outcome, Pass};
 use crate::{Result, config, paths};
@@ -94,21 +92,18 @@ pub fn review(verb: &ReviewVerb, out: &mut dyn Write, err: &mut dyn Write) -> Re
         return Ok(2);
     }
 
+    let ran = review::run_passes(
+        &cfg,
+        &root,
+        &dir,
+        &passes,
+        |n, pass| prompt(&mode, &root, &dir, others.as_deref(), n, pass),
+        err,
+    )?;
     let mut reviewed = 0;
-    for (i, pass) in passes.iter().enumerate() {
+    for (i, (pass, ran)) in passes.iter().zip(&ran).enumerate() {
         let n = i + 1;
-        writeln!(
-            err,
-            "review pass {n}/{}: {} ({} lines)",
-            passes.len(),
-            pass.files.join(", "),
-            pass.lines
-        )
-        .map_err(io("stderr"))?;
-        let started = Instant::now();
-        let ran = run_one(&mode, &cfg, &root, &dir, others.as_deref(), n, pass);
-        let elapsed = ran.as_ref().map_or(started.elapsed(), |o| o.elapsed);
-        let (text, counts) = match &ran {
+        let (text, counts) = match &ran.outcome {
             Ok(o) => body(o, cfg.timeout_secs),
             Err(e) => (format!("unreviewed (error: {e})\n"), false),
         };
@@ -123,7 +118,7 @@ pub fn review(verb: &ReviewVerb, out: &mut dyn Write, err: &mut dyn Write) -> Re
             "## Pass {n} — {}{over} ({} lines, {} s, {})\n\n{text}",
             pass.files.join(", "),
             pass.lines,
-            elapsed.as_secs(),
+            ran.elapsed.as_secs(),
             cfg.model
         )
         .map_err(io("stdout"))?;
@@ -133,15 +128,14 @@ pub fn review(verb: &ReviewVerb, out: &mut dyn Write, err: &mut dyn Write) -> Re
     Ok(if reviewed > 0 { 0 } else { 2 })
 }
 
-fn run_one(
+fn prompt(
     mode: &Mode,
-    cfg: &Review,
     root: &Path,
     dir: &Path,
     others: Option<&str>,
     n: usize,
     pass: &Pass,
-) -> Result<Outcome> {
+) -> Result<String> {
     let prompt = match mode {
         Mode::Diff(base) => {
             let file = dir.join(format!("review-{n}.diff"));
@@ -154,11 +148,10 @@ fn run_one(
             review::doc_prompt(text, &abs)
         }
     };
-    let prompt = match others {
+    Ok(match others {
         Some(o) => review::with_others(&prompt, o),
         None => prompt,
-    };
-    review::run_pass(cfg, root, dir, n, &prompt)
+    })
 }
 
 fn exit_words(code: Option<i32>) -> String {

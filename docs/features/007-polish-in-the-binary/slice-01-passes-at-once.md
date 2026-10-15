@@ -3,7 +3,11 @@
 **Source**: [`prd.md`](prd.md) → §4 FR-2. **Depends on**: — (independent; slice 03's collect calls the runner this slice writes)
 **Created**: 2026-10-15
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+- **Built.** `review::run_passes` starts every pass in its own scoped thread, writes each progress line as it starts, and returns a `Ran` (outcome or error, elapsed) per pass in pass order. The CLI builds each prompt in a closure, keeps `body()`, the section format and the exit rule, and prints once every pass returned. The signal handler now kills every non-empty slot of `CHILD_GROUPS` (256 atomics, AD-2); each `run_logged` claims a slot as `-1` before the spawn and clears it on drop. The stub reads its pass number from the `review-N.diff` in its prompt: its result ends with `(replayed for pass N)`, `unlink_stream_on_call` and the pid file (`cursor-agent-N.pid`) key on it, and `sleep_secs` sleeps then replays normally.
+- **Tests.** `the_passes_run_at_once_and_print_in_pass_order` (new); the pass-2 call found by its `review-2.diff` path; `a_signal_to_factory_kills_every_reviewer_too` runs three passes. Mutating the handler to kill only the first slot fails the signal test with two reviewers left alive.
+- **Inner loop.** 2 runs, 1 red (rustfmt on the new tests), about 2 min.
+- **Deviations.** None from the slice.
 
 **Slice**: After this slice, `factory review second --diff` starts every pass at once, each in its own child process with its own log files, waits for all of them, then prints the `## Pass n` sections in pass order and the `log:` line. Exit codes stay as they are: 0 when any pass counted, 2 when none did. A Ctrl-C or SIGTERM to factory still kills every reviewer. The pass runner lives in the `review` library, so slice 03's `factory review collect` calls it instead of the CLI.
 

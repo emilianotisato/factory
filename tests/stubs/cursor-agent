@@ -14,13 +14,18 @@
 //     a review call replays up to and including the n-th `assistant` event,
 //     writes a `result` event with `is_error` and `text` when error_result is
 //     set, then exits c.
+//   sleep_secs: n
+//     a review call sleeps n seconds, then replays and exits as it would
+//     without this key.
 //   unlink_stream_on_call: n
-//     the n-th review call deletes its own stream file (under
+//     the review call for pass n deletes its own stream file (under
 //     $FACTORY_DATA_DIR/reviews/) and exits 1, so reading it back fails.
 //
 // Otherwise a review call replays cursor-review.jsonl, a recorded stream,
-// to stdout line by line and exits 0. Every review call writes its pid to
-// $FACTORY_STUB_DIR/cursor-agent.pid.
+// to stdout line by line and exits 0. A review call's pass number is the n
+// of the `review-n.diff` its prompt names: its replayed result ends with
+// `(replayed for pass n)`, and it writes its pid to
+// $FACTORY_STUB_DIR/cursor-agent-n.pid (cursor-agent.pid with no pass).
 const fs = require('node:fs')
 const path = require('node:path')
 
@@ -48,40 +53,51 @@ if (argv.includes('--list-models')) {
   process.exit(0)
 }
 
-if (stubDir) fs.writeFileSync(path.join(stubDir, 'cursor-agent.pid'), `${process.pid}\n`)
+const named = /review-(\d+)\.diff/.exec(argv[argv.length - 1] ?? '')
+const pass = named ? Number(named[1]) : undefined
+if (stubDir) {
+  const pidFile = pass === undefined ? 'cursor-agent.pid' : `cursor-agent-${pass}.pid`
+  fs.writeFileSync(path.join(stubDir, pidFile), `${process.pid}\n`)
+}
 
 const unlinkOn = scenario.unlink_stream_on_call
-if (unlinkOn && stubDir) {
-  const log = fs.readFileSync(path.join(stubDir, 'cursor-agent.log'), 'utf8')
-  const call = log.split('\n').filter((l) => l.startsWith('["-p"')).length
-  if (call === unlinkOn) {
-    const reviews = path.join(process.env.FACTORY_DATA_DIR, 'reviews')
-    for (const d of fs.readdirSync(reviews)) {
-      fs.rmSync(path.join(reviews, d, `review-${call}.jsonl`), { force: true })
-    }
-    process.exit(1)
+if (unlinkOn && pass === unlinkOn) {
+  const reviews = path.join(process.env.FACTORY_DATA_DIR, 'reviews')
+  for (const d of fs.readdirSync(reviews)) {
+    fs.rmSync(path.join(reviews, d, `review-${pass}.jsonl`), { force: true })
   }
+  process.exit(1)
 }
 
-const lines = fs.readFileSync(path.join(__dirname, 'cursor-review.jsonl'), 'utf8').split('\n')
-if (lines[lines.length - 1] === '') lines.pop()
-const stop = scenario.sleep_after_assistant
-const quit = scenario.exit_after_assistant
-let seen = 0
-for (const line of lines) {
-  fs.writeSync(1, `${line}\n`)
-  if (JSON.parse(line).type !== 'assistant') continue
-  seen++
-  if (stop && seen === stop) {
-    setTimeout(() => process.exit(0), 60_000)
-    return
-  }
-  if (quit && seen === quit) {
-    if (scenario.error_result !== undefined) {
-      const ev = { type: 'result', subtype: 'error', is_error: true, result: scenario.error_result }
-      fs.writeSync(1, `${JSON.stringify(ev)}\n`)
+function replay() {
+  const lines = fs.readFileSync(path.join(__dirname, 'cursor-review.jsonl'), 'utf8').split('\n')
+  if (lines[lines.length - 1] === '') lines.pop()
+  const stop = scenario.sleep_after_assistant
+  const quit = scenario.exit_after_assistant
+  let seen = 0
+  for (let line of lines) {
+    const ev = JSON.parse(line)
+    if (ev.type === 'result' && pass !== undefined) {
+      ev.result = `${ev.result}\n\n(replayed for pass ${pass})`
+      line = JSON.stringify(ev)
     }
-    process.exit(scenario.exit_code ?? 1)
+    fs.writeSync(1, `${line}\n`)
+    if (ev.type !== 'assistant') continue
+    seen++
+    if (stop && seen === stop) {
+      setTimeout(() => process.exit(0), 60_000)
+      return
+    }
+    if (quit && seen === quit) {
+      if (scenario.error_result !== undefined) {
+        const err = { type: 'result', subtype: 'error', is_error: true, result: scenario.error_result }
+        fs.writeSync(1, `${JSON.stringify(err)}\n`)
+      }
+      process.exit(scenario.exit_code ?? 1)
+    }
   }
+  process.exit(0)
 }
-process.exit(0)
+
+if (scenario.sleep_secs) setTimeout(replay, scenario.sleep_secs * 1000)
+else replay()

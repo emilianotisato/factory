@@ -150,11 +150,50 @@ fn a_diff_is_three_passes_and_the_oversized_file_is_alone() {
     }
     let d2 = fs::read_to_string(dir.join("review-2.diff")).unwrap();
     assert!(d2.contains("+++ b/c") && !d2.contains("+++ b/a"), "{d2}");
-    assert!(
-        reviews[1]
-            .last()
-            .unwrap()
-            .contains(&dir.join("review-2.diff").display().to_string())
+    let d2_path = dir.join("review-2.diff").display().to_string();
+    assert_eq!(
+        reviews
+            .iter()
+            .filter(|a| a.last().unwrap().contains(&d2_path))
+            .count(),
+        1,
+        "{reviews:?}"
+    );
+}
+
+#[test]
+fn the_passes_run_at_once_and_print_in_pass_order() {
+    let fx = fixture("review-parallel", 20);
+    scenario(&fx, json!({"sleep_secs": 2}));
+    let started = Instant::now();
+    let o = review(&fx, &["--diff", "main"]);
+    let took = started.elapsed();
+    let out = stdout(&o);
+    assert_eq!(o.status.code(), Some(0), "{out}");
+    assert!(took < Duration::from_secs(4), "took {took:?}");
+    let at = |s: &str| out.find(s).unwrap_or_else(|| panic!("no {s:?}: {out}"));
+    let order = [
+        at("## Pass 1 "),
+        at("## Pass 2 "),
+        at("## Pass 3 "),
+        at("\nlog: "),
+    ];
+    assert!(order.is_sorted(), "{out}");
+    for n in 1..=3 {
+        let s = section(&out, n);
+        for m in 1..=3 {
+            let tag = format!("(replayed for pass {m})");
+            assert_eq!(s.contains(&tag), m == n, "pass {n} holding {tag}: {s}");
+        }
+    }
+    let err = String::from_utf8_lossy(&o.stderr);
+    for n in 1..=3 {
+        assert!(err.contains(&format!("review pass {n}/3: ")), "{err}");
+    }
+    let headers: Vec<&str> = out.lines().filter(|l| l.starts_with("## Pass")).collect();
+    println!(
+        "three passes of 2 s each took {took:?}\n{}",
+        headers.join("\n")
     );
 }
 
@@ -368,39 +407,47 @@ fn alive(pid: i32) -> bool {
 }
 
 #[test]
-fn a_signal_to_factory_kills_the_reviewer_too() {
+fn a_signal_to_factory_kills_every_reviewer_too() {
     let fx = fixture("review-signal", 60);
     scenario(&fx, json!({"sleep_after_assistant": 1}));
     let mut child = fx
         .command(BIN)
-        .args(["review", "second", "--diff", "main", "--", "a", "b"])
+        .args(["review", "second", "--diff", "main"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    let pid_file = fx.stub_dir().join("cursor-agent.pid");
     let deadline = Instant::now() + Duration::from_secs(10);
-    let pid = loop {
-        if let Ok(t) = fs::read_to_string(&pid_file)
-            && let Ok(p) = t.trim().parse::<i32>()
-        {
-            break p;
-        }
-        assert!(Instant::now() < deadline, "the stub never started");
-        std::thread::sleep(Duration::from_millis(20));
-    };
+    let pids: Vec<i32> = (1..=3)
+        .map(|n| {
+            let pid_file = fx.stub_dir().join(format!("cursor-agent-{n}.pid"));
+            loop {
+                if let Ok(t) = fs::read_to_string(&pid_file)
+                    && let Ok(p) = t.trim().parse::<i32>()
+                {
+                    break p;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "the stub for pass {n} never started"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        })
+        .collect();
     std::thread::sleep(Duration::from_millis(200));
     // SAFETY: a plain syscall on the child this test spawned.
     unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
     let status = child.wait().unwrap();
     assert_eq!(status.signal(), Some(libc::SIGTERM), "{status:?}");
     let deadline = Instant::now() + Duration::from_secs(5);
-    while alive(pid) && Instant::now() < deadline {
+    while pids.iter().any(|&p| alive(p)) && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
     }
-    if alive(pid) {
-        // SAFETY: as above; the stray stub must not outlive the test.
-        unsafe { libc::kill(pid, libc::SIGKILL) };
-        panic!("the reviewer {pid} outlived factory");
+    let left: Vec<i32> = pids.into_iter().filter(|&p| alive(p)).collect();
+    for &p in &left {
+        // SAFETY: as above; a stray stub must not outlive the test.
+        unsafe { libc::kill(p, libc::SIGKILL) };
     }
+    assert!(left.is_empty(), "the reviewers {left:?} outlived factory");
 }

@@ -1,5 +1,6 @@
 //! Every child writes to files, never a pipe: an undrained 34 KB stream blocks the reviewer.
 use std::fs::{self, File};
+use std::io::Write;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -159,23 +160,40 @@ pub enum Ended {
     Killed,
 }
 
-/// The reviewer's own process group: a Ctrl-C reaches factory alone, so the handler must kill it.
-static CHILD_GROUP: AtomicI32 = AtomicI32::new(0);
+/// Each running reviewer's own process group: a Ctrl-C reaches factory alone, so the handler must kill them.
+const SLOTS: usize = 256;
+static CHILD_GROUPS: [AtomicI32; SLOTS] = [const { AtomicI32::new(0) }; SLOTS];
 
-struct Watched;
+/// Holds a slot from before the spawn (as -1, which the handler skips) until the child is done.
+struct Watched(&'static AtomicI32);
+
+impl Watched {
+    fn claim() -> Result<Watched> {
+        CHILD_GROUPS
+            .iter()
+            .find(|s| {
+                s.compare_exchange(0, -1, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+            })
+            .map(Watched)
+            .ok_or_else(|| Error::Msg(format!("more than {SLOTS} reviewers at once")))
+    }
+}
 
 impl Drop for Watched {
     fn drop(&mut self) {
-        CHILD_GROUP.store(0, Ordering::SeqCst);
+        self.0.store(0, Ordering::SeqCst);
     }
 }
 
 extern "C" fn forward(sig: libc::c_int) {
-    let group = CHILD_GROUP.load(Ordering::SeqCst);
-    // SAFETY: async-signal-safe calls only; the re-raise under SIG_DFL ends factory as the signal would.
+    // SAFETY: atomics and async-signal-safe calls only; the re-raise under SIG_DFL ends factory as the signal would.
     unsafe {
-        if group > 0 {
-            libc::kill(-group, libc::SIGKILL);
+        for slot in &CHILD_GROUPS {
+            let group = slot.load(Ordering::SeqCst);
+            if group > 0 {
+                libc::kill(-group, libc::SIGKILL);
+            }
         }
         libc::signal(sig, libc::SIG_DFL);
         libc::raise(sig);
@@ -216,6 +234,7 @@ fn run_logged(
         // Its own group: a wrapper script's children die with it.
         .process_group(0);
     forward_signals();
+    let watched = Watched::claim()?;
     let started = Instant::now();
     let mut child = cmd.spawn().map_err(|e| {
         Error::Msg(format!(
@@ -223,8 +242,7 @@ fn run_logged(
             cmd.get_program().to_string_lossy()
         ))
     })?;
-    let _watched = Watched;
-    CHILD_GROUP.store(child.id() as i32, Ordering::SeqCst);
+    watched.0.store(child.id() as i32, Ordering::SeqCst);
     loop {
         if let Some(status) = child.try_wait().map_err(io("poll the reviewer"))? {
             return Ok((Ended::Exited(status.code()), started.elapsed()));
@@ -365,6 +383,49 @@ pub fn run_pass(cfg: &Review, cwd: &Path, dir: &Path, n: usize, prompt: &str) ->
         elapsed,
         parsed: parse_stream(&String::from_utf8_lossy(&text)),
         stderr,
+    })
+}
+
+/// One pass's outcome, or why it never ran, and how long it took.
+#[derive(Debug)]
+pub struct Ran {
+    pub outcome: Result<Outcome>,
+    pub elapsed: Duration,
+}
+
+/// Starts every pass at once, writing each one's progress line to `progress` as it starts; returns in pass order.
+pub fn run_passes(
+    cfg: &Review,
+    cwd: &Path,
+    dir: &Path,
+    passes: &[Pass],
+    prompt: impl Fn(usize, &Pass) -> Result<String> + Sync,
+    progress: &mut dyn Write,
+) -> Result<Vec<Ran>> {
+    std::thread::scope(|s| {
+        let mut running = Vec::with_capacity(passes.len());
+        for (i, pass) in passes.iter().enumerate() {
+            let n = i + 1;
+            writeln!(
+                progress,
+                "review pass {n}/{}: {} ({} lines)",
+                passes.len(),
+                pass.files.join(", "),
+                pass.lines
+            )
+            .map_err(io("stderr"))?;
+            let prompt = &prompt;
+            running.push(s.spawn(move || {
+                let started = Instant::now();
+                let outcome = prompt(n, pass).and_then(|p| run_pass(cfg, cwd, dir, n, &p));
+                let elapsed = outcome.as_ref().map_or(started.elapsed(), |o| o.elapsed);
+                Ran { outcome, elapsed }
+            }));
+        }
+        Ok(running
+            .into_iter()
+            .map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)))
+            .collect())
     })
 }
 
