@@ -129,8 +129,15 @@ fn root(base: &Path, within: Option<&Path>) -> PathBuf {
 }
 
 fn unreadable(base: &Path, root: &Path, err: &mut dyn Write) -> Result<Option<i32>> {
-    match std::fs::metadata(root) {
-        Ok(_) => Ok(None),
+    let read = std::fs::metadata(root).and_then(|m| {
+        if m.is_dir() {
+            std::fs::read_dir(root).map(drop)
+        } else {
+            std::fs::File::open(root).map(drop)
+        }
+    });
+    match read {
+        Ok(()) => Ok(None),
         Err(e) => {
             writeln!(err, "factory ctx: cannot read {}: {e}", rel(base, root))
                 .map_err(io("write stderr"))?;

@@ -1,5 +1,5 @@
 //! The board is the truth: every tick routes on it, and a worker's `STATUS:` line is a hint the row keeps.
-//! One hint writes the board: a build worker's `done` on a `building` slice, once its lane passes `docs check`.
+//! One hint writes the board: a build worker's `done` on a `building` slice, `done` when its lane passes `docs check`, `blocked` when it fails.
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write;
@@ -2091,7 +2091,8 @@ fn done_by_driver(
         let body = format!(
             "**Happened:** the build worker on slice {slice:02} returned `STATUS: done`, \
              and `factory docs check` in its lane ({lane_dir}) found {n} error{s}:\n{errors}\n\
-             **Options:** 1. fix the docs in the lane by hand, then set the slice `done`; \
+             **Options:** 1. answer this block naming what to fix: a worker respawns on the lane as it is, \
+             and its `done` lands the slice once the check passes; \
              2. set the slice back to `pending` for a fresh worker.\n\
              **Recommended:** 1 — the work is built and only its docs fail the check.\n",
             lane_dir = lane_dir.display(),

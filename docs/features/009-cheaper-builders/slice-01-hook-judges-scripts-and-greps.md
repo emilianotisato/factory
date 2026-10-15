@@ -77,3 +77,6 @@ A process call is, from FR-3: `subprocess`, `os.system`, `os.popen`, `os.exec…
 - **FR-4**: run `factory hook` fed the greps of §3 FR-4 in a fixture repo with a `vendor/` dir; keep the transcript.
 
 **Acceptance:** after the checkpoint, each row has its transcript in this slice's **Progress**.
+
+**Code-review fixes (2026-10-15).**
+- An interpreter's inline script was judged by the flag's own word alone, so a script that runs a process could take gh or push from beside it: an argument (`os.system(sys.argv[1])`), an env var, stdin read by `exec`, `"$S"`, a second `-e`, or a flag's value read as the script (`node -pe`, `perl -MFile::Copy -e`, `ruby -ropen3 -e`). Each was denied on main and allowed here. Now the script is every word from its flag on, a process call with no mention defers to the line's own mention check, and a bare expansion as the script is unsure (AD-6). Tested in `a_script_that_gets_gh_or_push_from_around_it_is_denied`.

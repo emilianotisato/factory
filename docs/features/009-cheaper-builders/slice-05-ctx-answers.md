@@ -74,3 +74,7 @@
 - **FR-6**: run `factory ctx def` on a twice-defined name, with and without `--in <file>`, and `factory ctx refs planted --in <file>` on the ctx fixture; keep the transcript.
 
 **Acceptance:** after the checkpoint, each row has its transcript in this slice's **Progress**.
+
+**Code-review fixes (2026-10-15).**
+- The denial's ctx answer walked from the cwd even when it lay outside the repo: `cd / && grep -rn main <repo>/src` walked the whole filesystem (39 s, a 1.15 MB reason in the security pass). A cwd outside the repo now searches the repo; tested in `a_denied_grep_carries_what_ctx_finds`.
+- `--in` taking a file switched the root check from `read_dir` to `metadata`, so an unreadable directory searched nothing and exited 0. A directory is read again and a file opened, so it exits 2 as the help says; tested in `a_bad_flag_or_an_unreadable_root_exits_2`.

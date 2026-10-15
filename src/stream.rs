@@ -97,7 +97,7 @@ pub struct ResultEvent {
 }
 
 /// A hint the row keeps; the driver routes on the board. A build worker's `done` on a `building`
-/// slice is the one hint that writes it, once the lane passes `docs check`.
+/// slice is the one hint that writes it: `done` when the lane passes `docs check`, `blocked` when it fails.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatusHint {
     Done,

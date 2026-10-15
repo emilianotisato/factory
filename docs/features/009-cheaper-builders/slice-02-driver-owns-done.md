@@ -73,3 +73,7 @@ The rule at `src/scheduler.rs:1` and `src/stream.rs:99` changes with it, "and bo
 - **FR-10**, its contract half: build a slice pack and show its `# Contract`'s quiet-flag line; keep the transcript. The `docs gate --inner` half is slice 06's.
 
 **Acceptance:** after the checkpoint, each row has its transcript in this slice's **Progress**.
+
+**Code-review fixes (2026-10-15).**
+- The docs-check BLOCK recommended fixing the lane by hand and setting the slice `done`, but a `done` set by hand lands nothing: the worker row is already settled, so the lane's work never reached the branch and a later spawn reset the lane. The option now says to answer the block, which respawns a worker on the lane as it is; its `done` lands the slice once the check passes.
+- The module docs in `src/scheduler.rs` and `src/stream.rs` said the `done` hint writes the board only on a clean check; they now say it writes `blocked` when the check fails.

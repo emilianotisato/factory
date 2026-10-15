@@ -570,6 +570,23 @@ fn a_bad_flag_or_an_unreadable_root_exits_2() {
         err.starts_with("factory ctx: cannot read nowhere: "),
         "{err}"
     );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let locked = tmp.path().join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read_dir(&locked).is_err() {
+            let (code, _, err) = ctx_in(tmp.path(), &["refs", "planted", "--in", "locked"]);
+            assert_eq!(code, 2);
+            assert!(
+                err.starts_with("factory ctx: cannot read locked: "),
+                "{err}"
+            );
+        }
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
     let (code, _, _) = ctx_in(&fixture(), &["refs", "planted", "--max", "ten"]);
     assert_eq!(code, 2);
     let (code, _, _) = ctx_in(&fixture(), &["def", "Config", "--kind", "struct"]);

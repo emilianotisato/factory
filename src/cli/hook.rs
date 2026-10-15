@@ -147,7 +147,7 @@ fn bash(command: &str, held: &Held, repo: &Path, cwd: &Path) -> Verdict {
         _ => None,
     };
     if let Some(name) = bare_name(search, &here, repo) {
-        return Verdict::Deny(answered(name, &here));
+        return Verdict::Deny(answered(name, &here, repo));
     }
     match program {
         // `cat f | head`: a range, not the whole file.
@@ -518,7 +518,8 @@ fn shell_call(args: &[&str], stdin: &[String], depth: u32) -> Reach {
     }
 }
 
-/// A script file is out of sight; an inline or stdin script is read, never left unsure, or its mention denies the whole line.
+/// A script file is out of sight. An inline script is read with every word from its flag on, so a
+/// second `-e`, an option's value or an argument the script runs is read with it.
 fn interpreter(program: &str, args: &[&str], stdin: &[String]) -> Reach {
     let inline: &[&str] = match program {
         p if p.starts_with("python") || p.starts_with("pypy") => &["c"],
@@ -528,10 +529,8 @@ fn interpreter(program: &str, args: &[&str], stdin: &[String]) -> Reach {
         "php" => &["r"],
         "deno" => {
             return match args {
-                ["eval", rest @ ..] => match rest.iter().find(|a| !a.starts_with('-')) {
-                    Some(s) => script(s),
-                    None => Reach::Unsure,
-                },
+                ["eval", rest @ ..] if rest.iter().all(|a| a.starts_with('-')) => Reach::Unsure,
+                ["eval", rest @ ..] => inline_script(rest),
                 _ => Reach::Fine,
             };
         }
@@ -547,11 +546,11 @@ fn interpreter(program: &str, args: &[&str], stdin: &[String]) -> Reach {
         }
         if let Some(long) = cluster.strip_prefix('-') {
             for f in inline.iter().filter_map(|f| f.strip_prefix('-')) {
-                if long == f {
-                    return args.get(i + 1).map_or(Reach::Unsure, |s| script(s));
+                if long == f && i + 1 == args.len() {
+                    return Reach::Unsure;
                 }
-                if let Some(s) = long.strip_prefix(f).and_then(|v| v.strip_prefix('=')) {
-                    return script(s);
+                if long == f || long.strip_prefix(f).is_some_and(|v| v.starts_with('=')) {
+                    return inline_script(&args[i..]);
                 }
             }
             continue;
@@ -561,27 +560,43 @@ fn interpreter(program: &str, args: &[&str], stdin: &[String]) -> Reach {
                 .iter()
                 .any(|f| !f.starts_with('-') && f.starts_with(c))
         }) {
-            return match &cluster[at + 1..] {
-                "" => args.get(i + 1).map_or(Reach::Unsure, |s| script(s)),
-                s => script(s),
-            };
+            if at + 1 == cluster.len() && i + 1 == args.len() {
+                return Reach::Unsure;
+            }
+            return inline_script(&args[i..]);
         }
     }
     if stdin.is_empty() {
         return Reach::Unsure;
     }
-    stdin
-        .iter()
-        .map(|doc| script(doc))
-        .find(|r| *r == Reach::Forbidden)
+    let read: Vec<Reach> = stdin.iter().map(|doc| script(doc)).collect();
+    [Reach::Forbidden, Reach::Unsure]
+        .into_iter()
+        .find(|r| read.contains(r))
         .unwrap_or(Reach::Fine)
 }
 
+fn inline_script(words: &[&str]) -> Reach {
+    if words.iter().any(|w| opaque(w)) {
+        return Reach::Unsure;
+    }
+    script(&words.join(" "))
+}
+
+/// `$S`, `${S}` or `$(…)`: the shell hands the interpreter text the hook never sees.
+fn opaque(word: &str) -> bool {
+    word.strip_prefix('$').is_some_and(|v| {
+        v.starts_with(['(', '{'])
+            || (!v.is_empty() && v.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+    })
+}
+
+/// A process call that names neither gh nor push is unsure: an argument, a variable or stdin may hand it one.
 fn script(text: &str) -> Reach {
-    if process_call(text) && mentions(text) {
-        Reach::Forbidden
-    } else {
-        Reach::Fine
+    match (process_call(text), mentions(text)) {
+        (true, true) => Reach::Forbidden,
+        (true, false) => Reach::Unsure,
+        _ => Reach::Fine,
     }
 }
 
@@ -612,8 +627,8 @@ fn process_call(text: &str) -> bool {
         })
 }
 
-/// A pattern read from a file (`-f`) is unknown: `None`.
 struct Search<'a> {
+    /// A pattern read from a file (`-f`) is unknown: `None`.
     patterns: Vec<Option<&'a str>>,
     paths: Vec<&'a str>,
 }
@@ -632,8 +647,14 @@ impl<'a> Search<'a> {
 }
 
 /// The hint, then what `ctx refs` and `ctx def --no-body` print, so the worker skips the turn that runs them.
-fn answered(name: &str, here: &Path) -> String {
+/// A cwd outside the repo searches the repo: the walk never leaves it.
+fn answered(name: &str, here: &Path, repo: &Path) -> String {
     let hint = grep_hint();
+    let here = if here.to_str().is_some_and(|h| under(h, repo)) {
+        here
+    } else {
+        repo
+    };
     let opts = WalkOpts { vendor: false };
     let caps = refs::Caps {
         max: refs::MAX,
@@ -1107,6 +1128,15 @@ mod tests {
             assert!(why.lines().any(|l| l == line), "{line}: {why}");
         }
         assert!(!why.contains("\n    1\n"), "no body: {why}");
+
+        let elsewhere = tempfile::tempdir().unwrap();
+        std::fs::write(elsewhere.path().join("stray.rs"), "fn alpha() {}\n").unwrap();
+        let cmd = format!("grep -rn alpha {}/src", root.display());
+        let Verdict::Deny(why) = bash_in(&cmd, root, elsewhere.path()) else {
+            panic!("a grep for a bare name in the repo is denied from anywhere");
+        };
+        assert!(why.lines().any(|l| l.starts_with("src/lib.rs:1")), "{why}");
+        assert!(!why.contains("stray.rs"), "the walk left the repo: {why}");
 
         assert_eq!(
             bash_in("grep -rn nothing_here src", root, root),

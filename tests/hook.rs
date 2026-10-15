@@ -188,6 +188,29 @@ fn a_script_is_denied_only_when_it_runs_a_process_and_names_gh_or_push() {
 }
 
 #[test]
+fn a_script_that_gets_gh_or_push_from_around_it_is_denied() {
+    assert_denied(&[
+        "python3 -c 'import os,sys; os.system(sys.argv[1])' 'gh pr list'",
+        "C=\"gh pr list\" python3 <<'EOF'\nimport os\nos.system(os.environ['C'])\nEOF",
+        "python3 -c 'import sys; exec(sys.stdin.read())' <<'EOF'\nimport os\nos.system(\"gh pr list\")\nEOF",
+        "S='import os; os.system(\"gh pr list\")'; python3 -c \"$S\"",
+        "node -pe \"require('child_process').execSync('gh pr list')\"",
+        "perl -MFile::Copy -e 'system(\"gh pr list\")'",
+        "ruby -ropen3 -e 'Open3.capture2(\"gh pr list\")'",
+        "php -derror_reporting=E_ALL -r 'system(\"gh pr list\");'",
+        "perl -e 'print 1' -e 'system(\"git push\")'",
+        "deno eval --ext ts \"spawn('gh')\"",
+    ]);
+    for cmd in [
+        "php -r '$c->push(1); print_r($c);'",
+        "python3 -Wignore::DeprecationWarning -c \"print('push')\"",
+    ] {
+        assert!(!guard(cmd), "guard denies: {cmd}");
+        assert_eq!(decide(cmd), None, "{cmd}");
+    }
+}
+
+#[test]
 fn the_rest_gets_no_decision() {
     for cmd in [
         "git status && git log -1",
