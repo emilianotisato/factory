@@ -144,6 +144,8 @@ This reverses the brief's "the driver copies it into the PR" and the team-repo i
 **Decision, 2026-10-14.**
 - **`factory docs harvest [NNN…]`** prints the batch's lessons, read-only. For each feature: its retro's sections under `# Retro`, without the Numbers block, then each idea in `docs/ideas/` whose `origin` names `PRD-NNN` (`"PRD-007 polish"`, `"factory PRD-007 run …"`), as its id and first sentence. With no numbers, the batch is every `shipped` feature; there is no threshold or nudge, the batch is the owner's call. A named feature that is not `shipped` is refused with its status.
 - **`--done`** archives the batch. For each feature it refuses when the folder has uncommitted changes or `docs/archive/<dir>` exists. Then it puts one banner under `prd.md`'s frontmatter: `> **History.** The code, \`docs/reference\` and \`docs/decisions.md\` win over this document.` It rewrites `/home/<name>/` and `/Users/<name>/` to `~/` in the files it keeps. It `git rm`s every tracked file except `prd.md`, `state.toml`, `log.jsonl` and `retro.md`, git-mvs the folder to `docs/archive/`, sets `status = "archived"` and stages everything, so each kept file shows `R`, never `M`: `archive_frozen` (`src/docs/check.rs:694-719`) and the pre-commit hook (`src/docs/hook.rs:18-21`) refuse an `M` under `docs/archive/`. It prints what it dropped and leaves the commit to its caller.
+
+  > *Corrected 2026-10-15, slice recon:* "each kept file shows `R`" is wrong for the check. `archive_frozen` runs `git status --porcelain -- docs/archive`, and under that pathspec a moved and edited file shows `A`, never `R`; without it, a small edited file can show `D` plus `A`. It is never `M` as long as staging comes after every edit, which is what the check and the hook need.
 - **`factory docs archive NNN`** runs the same moves as `harvest NNN --done`, so an archived folder has one shape.
 - **The closeout ships, never archives.** `skills/polish/SKILL.md:197` and `skills/slice/SKILL.md:155` say `factory docs ship`. `assets/pr-body.md:10` loses its archive sentence. `docs/index.md` and `assets/docs/index.md` define archived by what the folder holds: moved, records only, history banner on. The definition adds that `/harvest` routes the lessons first. No verb can check that the routing happened, so the definition does not promise it.
 
@@ -249,7 +251,26 @@ The owner's call at the cut, 2026-10-14: no pain asks for it, because the repo h
 
 ## 6. Slices
 
-_(Not sliced yet. Run `/slice`, or write "No slices — build straight from this document" if it is small.)_
+Eight slices on `feat/team-and-harvest`: one branch, one PR, one commit per slice, Prove at the checkpoints. `factory docs status` is the board.
+
+- **01, no friction filing** (FR-1). The closeout writes nothing into the `[source]` checkout. The retro's Framework friction section, renamed `→ factory`, is where a run's friction waits for a harvest. First because the owner wants FR-1 fixed first (§1).
+- **02, home paths** (FR-3). One matcher for `/home/<name>/` and `/Users/<name>/`. The driver writes `~/` in the log entries it adds, `factory docs check` warns `W-HOME-PATH`, and `docs/.gitignore` ignores `__pycache__/`.
+- **03, evidence in the run dir** (FR-2). `FACTORY_EVIDENCE` for every worker, the checkpoint contract saving under it, and the PR body's Proof cell naming the checkpoint.
+- **04, `factory docs harvest` lists a batch's lessons** (FR-5, the read). The verb, read-only: retro sections without the Numbers block, then the ideas whose origin names the feature.
+- **05, `--done` and `docs archive`** (FR-5, the moves and texts). One function moves a batch to its archived shape, staged and uncommitted. The closeout ships, never archives, and the convention gains its history line. ⚠ The highest risk: the order of the moves. One edit after the staging and the hook refuses the commit.
+- **06, `factory upstream`** (FR-8). `check` and `post`, the last gate before anything leaves a client repo for the public `emilianotisato/factory`.
+- **07, the retro compares tracked retros** (FR-4). The Compared-with rows come from the tree, not this machine's store; `earlier_runs` goes.
+- **08, the skills and 0.6.0** (FR-6, FR-7, and the skill lines of FR-2 and FR-5). The `/harvest` skill, decisions without numbers, the closeout and prune lines, the `DEC-` bundle test, and the bump. Every `skills/` edit of this feature sits here, so one bump and one relock cover them.
+
+**Order.** The spine is 02 and 04: 02's matcher is what 05 rewrites kept files with and what 06 reports hits with, and 04's verb is what 05 adds `--done` to. 01, 02, 03, 04 and 07 depend on nothing; with `lanes = 4`, 01 to 04 start together and 07 takes the first free lane. 06 waits for 02 only, 05 for 02 and 04, and they run side by side. 08 waits for 05 and 06, because the skill runs both verbs, and goes last. Width 4, then 2 or 3, then 1.
+
+**Shared files, in different hunks.** `tests/stubs/claude`: 01 at `:52-53,366`, 03 at `:241-290`. `src/closeout.rs` and `tests/closeout.rs`: 01 in the friction code and `source_repo`, 07 at `:996` and the Compared-with tests. `tests/checkpoints.rs`: 02 and 03 each add a test. `tests/docs_v3.rs`: 02 at `:212-215`, 04 at `:318-356`. `assets/pr-body.md`: 03 at `:30,32`, 05 at `:10`, 08 at `:16`. The rest is sequential by the graph: `src/docs/check.rs` 02 then 05, `src/cli/docs.rs` and `tests/docs_lifecycle.rs` 04 then 05, `assets/docs/convention.md` 05 then 08.
+
+**Checkpoints** (`checkpoint_every = 2`). Four, each covering the next two slices to finish, the last after 08. 02 and 04 land early among the first four, so the matcher and the verb are proven before 05 and 06 build on them.
+
+**The installed driver builds this run**, and it predates every part of this feature. Install the current `main` first (`cargo install --path .`, 0.5.0), for 007's polish. So this run still commits its checkpoint evidence under this folder's `evidence/` (§5 Build order). With `[source]` set on this machine, its closeout files one last friction idea into this checkout's `docs/ideas/`, untracked: the first `/harvest` routes or drops it. This repo's `.claude/skills` link into `skills/`, so the polish worker reads 08's polish text once 08 has landed. 0.6.0 is tagged after the merge, not in the run; every repo then needs `factory skills update`.
+
+**`qa-guide.md`** holds the one Human row, FR-6: the owner's first `/harvest` here, after the merge, with the 0.6.0 binary.
 
 ## 7. Non-goals
 
