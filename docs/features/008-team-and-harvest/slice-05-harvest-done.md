@@ -8,7 +8,7 @@
 - Tests: `harvest_done_leaves_the_records_only_with_the_banner_staged_and_passing_the_hook`, `harvest_done_refuses_an_uncommitted_folder_and_moves_nothing`, `archive_leaves_the_same_records_only_shape` (`tests/docs_lifecycle.rs`); the old archive test commits its fixture first.
 - Inner loop: 2 runs, 1 red (cargo fmt), 2 min.
 - Deviations: the dirty-folder test runs `harvest 001 002 --done` with 002 dirty, so it also proves 001 is left in place; the archive-verb test archives a fresh fixture's 001, which has slices, a QA guide and evidence to drop.
-- Prove (FR-5 `--done`, check, hook): left for the checkpoint.
+- Prove (CP-2) FR-5: `evidence/cp-2-fr5-harvest-done.txt`, the tests' transcript, then the branch binary on a scratch repo with two shipped features: `harvest`; `harvest 001 --done` (`git ls-files` lists the four files, banner after the frontmatter, home paths as `~/`, status archived); `docs check` 0 errors; `git commit` through the installed hook exit 0; a dirty 002 refused with exit 2; then `docs archive 002` leaves the same shape.
 
 **Slice**: After this slice, `factory docs harvest NNN… --done` and `factory docs archive NNN` leave one archived shape: the folder under `docs/archive/` holding exactly `prd.md` with a history banner, `state.toml` set to archived, `log.jsonl` and `retro.md`, home paths written `~/`, everything staged, nothing committed. The texts follow: the closeout ships and never archives, `docs/index.md` defines archived by what the folder holds, and the convention block says feature docs are history. The skill lines (polish, slice) are slice 08's.
 
