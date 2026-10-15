@@ -44,3 +44,31 @@ Leaks: nothing the leaks check should have caught.
 ## Score
 
 4 — every slice landed green with no red gate, and the run delivered what it promised; polish then found a real guard bypass that the PRD, the builder and the checkpoints had all missed.
+
+## Numbers
+
+<!-- factory:numbers -->
+| role | workers | own | subagents | weighted | minutes | turns |
+|---|---:|---:|---:|---:|---:|---:|
+| build | 6 | 1846389 | 0 | 1846389 | 39 | 128 |
+| checkpoint | 2 | 639682 | 0 | 639682 | 7 | 49 |
+| polish | 1 | 759119 | 901651 | 1660770 | 16 | 37 |
+| total | 9 | 3245189 | 901651 | 4146840 | 61 | 214 |
+
+Knobs: build opus/high default · fix opus/high default · checkpoint opus/high default · polish opus/high default · budget 30000000 default · lanes 4 · factory 0.6.0 · claude 2.1.296
+
+Hypothesis: none
+
+quality: gate_red 0 · worker_gate_red 0 · fix_commits 0 · ci_red_rounds 0 · ci_reruns 0 · findings high=1 medium=4 low=7 fixed=5 parked=4 · decisions 6 decide 1 blocks 0
+
+Pack (build): slice 8025 · prd_sections 1912 · log 1179 · outline 11491 · lookup 890 · contract 3194 · autonomy 11884 · inner_loop 91 · total 38665 · start_context 43813
+
+Compared with:
+
+| run | feature | weighted | slices | per slice | lines changed | per line | comment share | id hits |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 009-20261015-81ca (this run) | 009 | 4146840 | 6 | 691140 | 1748 | 2372 | 3.3% | 0 |
+| 008-20261015-b926 | 008 | 7304873 | 8 | 913109 | 4053 | 1802 | 3.3% | 0 |
+| 007-20261015-c8fa | 007 | 4526459 | 5 | 905292 | 3611 | 1254 | 4.0% | 0 |
+| 006-20261014-0643 | 006 | 5378450 | 5 | 1075690 | 6185 | 870 | — | — |
+<!-- /factory:numbers -->
