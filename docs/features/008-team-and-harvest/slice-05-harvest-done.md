@@ -92,3 +92,13 @@ Rows from [`prd.md`](prd.md) §5 this slice proves, below the UI:
 - **FR-5**: "run: `factory docs harvest`, then `--done`, on a fixture with two shipped features; `factory docs check`; `git commit` through the installed hook" — task 3's test transcript, with the `git ls-files` listing of the archived folder.
 
 **Acceptance:** after the checkpoint, Progress names the transcript.
+
+**Code-review fixes (2026-10-15).**
+- `harvest 001 001 --done` took the feature twice, and the summary printed once at the end, so a failure on the second feature hid the first one's success. The batch is deduped by number and each feature prints its line as it lands.
+- `git rm` read the dropped paths as pathspecs: a tracked file named `*` widened it to the files the archive keeps. Every git call in the archive now sets `GIT_LITERAL_PATHSPECS=1`.
+- The banner and the `~/` rewrite followed a symlinked `prd.md` or `retro.md`, so a cloned repo could make the archive write outside itself. A symlinked feature folder or kept file is refused, exit 2, nothing moved.
+- `docs/index.md` still carried the old archived definition and "When done" bullet; this repo's copy now matches `assets/docs/index.md`, as FR-5 orders. The QA guide's step 5 and 6 greps were rewritten so they find bare home paths and allow 008's fixtures.
+- `docs archive`'s help text still said it kept the slices.
+- A kept file that was not UTF-8 failed `--done` after earlier features had moved and this one's banner was written, leaving a half-archived batch that a rerun refused. The preflight now reads every kept file before anything moves.
+- The banner looked for an exact `\n---\n`, so an empty frontmatter or a closing `--- ` put it above the frontmatter or into the body. It now goes after the line where the frontmatter parser closes the block.
+- `git mv` carried ignored files into the archive, so an `evidence/__pycache__/*.pyc` with a home path survived the records-only shape on disk. `--done` refuses a folder holding an ignored file other than `docs.lock` (AD-7).

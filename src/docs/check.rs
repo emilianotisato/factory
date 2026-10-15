@@ -707,7 +707,12 @@ fn home_paths(root: &Path, r: &mut Report) {
         if rel.starts_with("docs/archive/") {
             continue;
         }
-        let Ok(bytes) = fs::read(root.join(rel)) else {
+        let path = root.join(rel);
+        // A tracked symlink can point at `/dev/zero` or a FIFO, and reading it would hang the check.
+        if !fs::symlink_metadata(&path).is_ok_and(|m| m.is_file()) {
+            continue;
+        }
+        let Ok(bytes) = fs::read(&path) else {
             continue;
         };
         if let Some(at) = crate::paths::find_home_path(&bytes) {
@@ -1112,6 +1117,12 @@ mod tests {
             "docs/archive/005-old/prd.md",
             "---\nnumber: 5\nslug: old\nstatus: archived\n---\n/home/x/a\n",
         );
+        write(root, "outside.txt", "/home/x/a\n");
+        std::os::unix::fs::symlink(
+            "../../../outside.txt",
+            root.join("docs/features/001-fixture/link.md"),
+        )
+        .unwrap();
         let home_paths = |root: &Path| -> Vec<String> {
             run(root)
                 .warnings

@@ -62,3 +62,6 @@ Rows from [`prd.md`](prd.md) §5 this slice proves, below the UI:
 - **FR-1**: "run: a stub run with a filled Framework friction section and `[source] path` set to a second checkout; `git status --porcelain` in that checkout" — task 3's test transcript, and `grep -rn file_friction src/`.
 
 **Acceptance:** after the checkpoint, Progress names the transcript.
+
+**Code-review fixes (2026-10-15).**
+- The friction test lost the check that no idea lands in the project's own `docs/ideas`; it is back.

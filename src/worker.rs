@@ -244,7 +244,9 @@ impl Worker {
         cmd.env(crate::cli::hook::PACK_ENV, &pack_path);
         cmd.env(REPO_ENV, &cwd);
         cmd.env(BOARD_ENV, &repo);
-        cmd.env(EVIDENCE_ENV, run_dir.join("evidence"));
+        let evidence = run_dir.join("evidence");
+        let _ = std::fs::create_dir_all(&evidence);
+        cmd.env(EVIDENCE_ENV, evidence);
         let mut child = cmd.spawn().map_err(|e| Error::Tool {
             cmd: format!("claude -p … --session-id {session_id}"),
             detail: format!("could not start claude: {e}"),

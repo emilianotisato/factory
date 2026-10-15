@@ -91,7 +91,7 @@ enum Verb {
     },
     /// Mark a feature shipped once every slice is done
     Ship { feature: String },
-    /// Move a feature whose slices are all done into docs/archive/
+    /// Move a feature whose slices are all done into docs/archive/, records only: slices and evidence are dropped
     Archive { feature: String },
     /// Print shipped features' retro lessons and the ideas they spawned; `--done` archives them
     Harvest {

@@ -145,7 +145,7 @@ fn compare_row(db: &Db, run: &RunRow) -> Result<String> {
     ))
 }
 
-/// Deterministic on the same store: no time, no version but the run's own.
+/// Deterministic on the same store and tree: no time, no version but the run's own.
 pub fn numbers(db: &Db, run_id: &str, root: &Path) -> Result<String> {
     let run = db
         .run_row(run_id)?
@@ -217,35 +217,42 @@ pub fn numbers(db: &Db, run_id: &str, root: &Path) -> Result<String> {
     Ok(s)
 }
 
-/// The `(this run)` row of each retro under `root`'s features and archive but `feature`'s own,
+/// The `(this run)` row of each retro git tracks under `root`'s features and archive but `feature`'s own,
 /// newest run date first, then the higher feature number; copied, not recounted.
 fn tracked_rows(root: &Path, feature: &str) -> Result<Vec<String>> {
     let number = |name: &str| name.split('-').next().and_then(|n| n.parse::<u32>().ok());
     let own = number(feature);
+    let listed = crate::docs::preflight::git(
+        root,
+        &[
+            "ls-files",
+            "-z",
+            "--",
+            "docs/features/*/retro.md",
+            "docs/archive/*/retro.md",
+        ],
+    )
+    .unwrap_or_default();
     let mut rows = Vec::new();
-    for base in ["docs/features", "docs/archive"] {
-        let Ok(entries) = fs::read_dir(root.join(base)) else {
+    for rel in listed.split('\0') {
+        let ["docs", _, folder, "retro.md"] = rel.split('/').collect::<Vec<_>>()[..] else {
             continue;
         };
-        for entry in entries.filter_map(|e| e.ok()) {
-            let Some(n) = number(&entry.file_name().to_string_lossy()) else {
-                continue;
-            };
-            let retro = entry.path().join("retro.md");
-            if Some(n) == own || !retro.is_file() {
-                continue;
-            }
-            let text =
-                fs::read_to_string(&retro).map_err(io(format!("read {}", retro.display())))?;
-            if let Some(row) = this_run_row(&text) {
-                let date = row
-                    .trim_start_matches(['|', ' '])
-                    .split(['-', ' '])
-                    .nth(1)
-                    .unwrap_or("")
-                    .to_string();
-                rows.push((date, n, row));
-            }
+        let Some(n) = number(folder).filter(|n| Some(*n) != own) else {
+            continue;
+        };
+        // Another feature's unreadable retro must not cost this one its Numbers.
+        let Ok(text) = fs::read_to_string(root.join(rel)) else {
+            continue;
+        };
+        if let Some(row) = this_run_row(&text) {
+            let date = row
+                .trim_start_matches(['|', ' '])
+                .split(['-', ' '])
+                .nth(1)
+                .unwrap_or("")
+                .to_string();
+            rows.push((date, n, row));
         }
     }
     rows.sort_by(|a, b| (&b.0, b.1).cmp(&(&a.0, a.1)));
@@ -396,10 +403,19 @@ mod tests {
         }
     }
 
-    fn tracked(root: &Path, dir: &str, body: &str) {
+    fn tracked(root: &Path, dir: &str, body: impl AsRef<[u8]>) {
         let d = root.join(dir);
         fs::create_dir_all(&d).unwrap();
         fs::write(d.join("retro.md"), body).unwrap();
+        for args in [&["init", "-q"][..], &["add", "--", dir]] {
+            let ok = std::process::Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "git {args:?}");
+        }
     }
 
     fn numbers_block(rows: &str) -> String {
@@ -412,12 +428,12 @@ mod tests {
         tracked(
             dir.path(),
             "docs/features/002-old",
-            &numbers_block("| 002-20261013-e729 (this run) | 002 | 15 | 11 | 1 | 24 | 6 |\n"),
+            numbers_block("| 002-20261013-e729 (this run) | 002 | 15 | 11 | 1 | 24 | 6 |\n"),
         );
         tracked(
             dir.path(),
             "docs/archive/007-new",
-            &numbers_block(
+            numbers_block(
                 "| 007-20261015-c8fa (this run) | 007 | 4 | 5 | 1 | 3 | 1 | 4.0% | 0 |\n| 002-20261013-e729 | 002 | 15 | 11 | 1 | 24 | 6 | — | — |\n",
             ),
         );
@@ -436,11 +452,23 @@ mod tests {
         tracked(
             dir.path(),
             "docs/features/001-prose",
-            &format!(
+            format!(
                 "| 001-20261010-aaaa (this run) | report |\n\n{OPEN}\nCompared with: {NO_EARLIER}\n{CLOSE}\n"
             ),
         );
         tracked(dir.path(), "docs/features/003-none", "# Retro\n");
+        tracked(
+            dir.path(),
+            "docs/features/004-latin1",
+            b"# Retro\n\ncaf\xe9\n",
+        );
+        let draft = dir.path().join("docs/features/009-draft");
+        fs::create_dir_all(&draft).unwrap();
+        fs::write(
+            draft.join("retro.md"),
+            numbers_block("| 009-20261020-dddd (this run) | 009 | 1 | 1 | 1 | 1 | 1 | — | — |\n"),
+        )
+        .unwrap();
         assert!(tracked_rows(dir.path(), "008").unwrap().is_empty());
         assert!(
             tracked_rows(&dir.path().join("missing"), "008")
@@ -462,7 +490,7 @@ mod tests {
             tracked(
                 dir.path(),
                 &format!("docs/features/{dir_name}"),
-                &numbers_block(&format!(
+                numbers_block(&format!(
                     "| {id} (this run) | x | 1 | 1 | 1 | 1 | 1 | 1% | 0 |\n"
                 )),
             );

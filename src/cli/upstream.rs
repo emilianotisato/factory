@@ -53,7 +53,7 @@ fn say(out: &mut dyn Write, text: &str) -> Result<()> {
 fn screen(repo: &Path, file: &Path, out: &mut dyn Write) -> Result<(Draft, bool)> {
     let text = fs::read_to_string(file).map_err(io(format!("read {}", file.display())))?;
     let draft = upstream::parse(&text)?;
-    let hits = upstream::hits(&text, &upstream::names(repo));
+    let hits = upstream::hits(&text, &upstream::names(repo), &upstream::homes());
     for h in &hits {
         say(out, &format!("{}:{}: {}", file.display(), h.line, h.what))?;
     }
@@ -103,15 +103,28 @@ fn add_idea(checkout: &Path, draft: Draft, out: &mut dyn Write) -> Result<i32> {
     };
     let id = ideas::add(checkout, &idea)?;
     let rel = format!("{}/{id}.md", ideas::DIR);
-    commit::commit(
+    let file = checkout.join(&rel);
+    let committed = match commit::commit(
         checkout,
         std::slice::from_ref(&rel),
         &format!("docs: add idea {id}"),
-    )?;
-    say(
-        out,
-        &format!("added {} and committed it", checkout.join(&rel).display()),
-    )?;
+    ) {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = fs::remove_file(&file);
+            return Err(e);
+        }
+    };
+    match committed {
+        Some(_) => say(out, &format!("added {} and committed it", file.display()))?,
+        None => say(
+            out,
+            &format!(
+                "added {}, not committed: git in that checkout ignores it",
+                file.display()
+            ),
+        )?,
+    }
     Ok(0)
 }
 

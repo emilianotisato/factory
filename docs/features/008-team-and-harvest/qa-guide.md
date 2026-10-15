@@ -13,11 +13,12 @@ It runs **after the merge**, on `main`, with the 0.6.0 binary. Budget: **about 6
 5. ★ **The first-harvest edits** *(5 min)*.
    - `grep -n 'are history' CLAUDE.md AGENTS.md` prints one line in each.
    - `docs/index.md` already carries the new archived definition from slice 05: the skill leaves it alone.
-   - `factory docs check 2>&1 | grep W-HOME-PATH` prints nothing. The four friction ideas' `From` lines are relative.
+   - `factory docs check 2>&1 | grep W-HOME-PATH` prints nothing, except under `docs/features/008-team-and-harvest/` when 008 is not in the batch: its PRD and evidence quote `/home/x/…` fixtures. The four friction ideas' `From` lines are relative.
+   - ★ `W-HOME-PATH` and the `--done` rewrite only know a home followed by `/`. Before the skill runs `--done`, `git grep -nE '(^|[^A-Za-z0-9._~-])/(home|Users)/[A-Za-z0-9._-]+([^/A-Za-z0-9._-]|$)' -- docs/features` lists the bare ones, such as the `find` over the home dir at `002-docs-port/prd.md:287`. Rewrite each by hand first, and commit it: once archived, the file is frozen, and `--done` refuses a folder with uncommitted changes.
 6. ★ **The archive** *(5 min)*.
    - `git ls-files docs/archive | cut -d/ -f3 | sort | uniq -c` shows **4** for every archived folder.
    - Each archived `prd.md` has the `> **History.**` banner right after its frontmatter.
-   - `git grep -n /home/ -- docs/archive` prints nothing.
+   - `git grep -nE '(^|[^A-Za-z0-9._~-])/(home|Users)/[A-Za-z0-9._-]+' -- docs/archive` prints nothing. A plain `/home/` grep also finds `/tmp/home/x/` and `/home/<name>/` in prose, which are not paths.
    - `docs/features/` holds only what you left out of the batch.
 7. ★ **The commit** *(4 min)*. **Pass:** `git branch --show-current` says `harvest/<date>`, and the commit went through the docs hook, no `--no-verify`. `factory docs check` exits 0. Nothing is pushed.
 8. **Record** *(5 min)*. The evidence is the branch: `git diff --stat main...harvest/<date>`. A step that failed becomes an idea (`factory docs idea add`), naming the step.

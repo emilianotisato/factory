@@ -70,3 +70,9 @@ Rows from [`prd.md`](prd.md) §5 this slice proves, below the UI:
 - **FR-4**: "run: `factory retro <run>` on a fixture whose store holds only that run, with three tracked retros (7 and 9 cells); read back the Compared-with table in `retro.md`" — task 3's test transcript, with the table it read back.
 
 **Acceptance:** after the checkpoint, Progress names the transcript.
+
+**Code-review fixes (2026-10-15).**
+- `factory retro --file retro.md` with a bare file name looked for the repo from an empty path and compared with the wrong tree. An empty parent now means the current folder.
+- The doc on the Numbers builder still said "deterministic on the same store"; it now names the tree too.
+- One unreadable `retro.md` in another feature's folder failed the read and cost the shipping feature its Numbers. An unreadable retro is skipped now.
+- The comparison read every `retro.md` on disk, so another feature's uncommitted draft could land in a shipped table. It reads only the retros git tracks, as FR-4 says.

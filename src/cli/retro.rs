@@ -39,7 +39,10 @@ pub fn retro(args: &RetroArgs, out: &mut dyn Write) -> Result<i32> {
     // The earlier retros compared with are the ones in the tree the file is written in.
     let root = match &args.file {
         Some(_) => {
-            let dir = path.parent().unwrap_or(Path::new("."));
+            let dir = path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or(Path::new("."));
             paths::repo_root(dir).unwrap_or_else(|_| dir.to_path_buf())
         }
         None => PathBuf::from(&row.repo),

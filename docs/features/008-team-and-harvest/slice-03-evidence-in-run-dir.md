@@ -71,3 +71,6 @@ Rows from [`prd.md`](prd.md) §5 this slice proves, below the UI:
 - **FR-2**: "run: a stub run whose checkpoint writes `$FACTORY_EVIDENCE/cp-1/row.txt`; `ls` the run dir, `git ls-tree -r` the feature branch, `factory docs log show`" — task 4's test transcript.
 
 **Acceptance:** after the checkpoint, Progress names the transcript.
+
+**Code-review fixes (2026-10-15).**
+- Nothing created `<run dir>/evidence`; the stub made it, a real worker writing a file straight into it would fail. The driver creates it before it starts the worker.

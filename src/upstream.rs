@@ -95,23 +95,46 @@ static EMAIL: LazyLock<regex::Regex> = LazyLock::new(|| {
         .expect("email pattern compiles")
 });
 
+/// The person's own home, as `$HOME` names it and as it resolves: one outside `/home` or `/Users`, such as `/var/home/x`, names them too.
+pub fn homes() -> Vec<String> {
+    let home = paths::home();
+    let mut out: Vec<String> = [Some(home.clone()), home.canonicalize().ok()]
+        .into_iter()
+        .flatten()
+        .filter_map(|p| p.to_str().map(|s| s.trim_end_matches('/').to_string()))
+        .filter(|s| !s.is_empty())
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
 fn word_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
-/// Case-insensitive, and only where no letter, digit or `_` touches either end.
-fn holds_word(line: &str, word: &str) -> bool {
-    let (hay, needle) = (line.to_ascii_lowercase(), word.to_ascii_lowercase());
+/// No `.`: a home that ends a sentence still hits, and `/home/x.bak` hitting costs a rewrite, not a leak.
+fn path_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'~')
+}
+
+/// `needle` in `hay` where no `inner` byte touches either end.
+fn bounded(hay: &str, needle: &str, inner: fn(u8) -> bool) -> bool {
     let bytes = hay.as_bytes();
-    hay.match_indices(&needle).any(|(at, m)| {
+    hay.match_indices(needle).any(|(at, m)| {
         let before = at.checked_sub(1).map(|i| bytes[i]);
         let after = bytes.get(at + m.len()).copied();
-        !before.is_some_and(word_byte) && !after.is_some_and(word_byte)
+        !before.is_some_and(inner) && !after.is_some_and(inner)
     })
 }
 
-/// Every home path, repo name and email in `text`, in line order.
-pub fn hits(text: &str, names: &[String]) -> Vec<Hit> {
+/// Case-insensitive, and only where no letter, digit or `_` touches either end.
+fn holds_word(line: &str, word: &str) -> bool {
+    bounded(&line.to_lowercase(), &word.to_lowercase(), word_byte)
+}
+
+/// Per line: the first home path, else the person's own home wherever it lives; then every repo name and email.
+pub fn hits(text: &str, names: &[String], homes: &[String]) -> Vec<Hit> {
     let mut out = Vec::new();
     for (i, line) in text.lines().enumerate() {
         let mut add = |what: String| out.push(Hit { line: i + 1, what });
@@ -121,6 +144,8 @@ pub fn hits(text: &str, names: &[String]) -> Vec<Hit> {
                 .take_while(|c| !c.is_whitespace() && !"`'\"()<>[]".contains(*c))
                 .collect();
             add(format!("a home path: {path}"));
+        } else if let Some(home) = homes.iter().find(|h| bounded(line, h, path_byte)) {
+            add(format!("a home path: {home}"));
         }
         for name in names {
             if holds_word(line, name) {
@@ -184,7 +209,7 @@ mod tests {
     }
 
     fn whats(text: &str, words: &[&str]) -> Vec<(usize, String)> {
-        hits(text, &names(words))
+        hits(text, &names(words), &[])
             .into_iter()
             .map(|h| (h.line, h.what))
             .collect()
@@ -198,10 +223,31 @@ mod tests {
     }
 
     #[test]
+    fn the_persons_own_home_hits_wherever_it_lives() {
+        let homes = ["/var/home/jdoe".to_string()];
+        let got: Vec<String> = hits(
+            "ran in /var/home/jdoe/acme\ncwd was /var/home/jdoe.\n/var/home/jdoex/a",
+            &[],
+            &homes,
+        )
+        .into_iter()
+        .map(|h| format!("{}: {}", h.line, h.what))
+        .collect();
+        assert_eq!(
+            got,
+            [
+                "1: a home path: /var/home/jdoe",
+                "2: a home path: /var/home/jdoe"
+            ]
+        );
+    }
+
+    #[test]
     fn the_repo_name_hits_as_a_whole_word_in_any_case() {
         let got = whats("one\nthe Acme-Api broke", &["acme-api"]);
         assert_eq!(got, [(2, "this repo's name: acme-api".to_string())]);
         assert_eq!(whats("in arca, again", &["arca"]).len(), 1);
+        assert_eq!(whats("el ÑANDÚ corre", &["ñandú"]).len(), 1);
     }
 
     #[test]
@@ -275,7 +321,7 @@ mod tests {
         git(&["remote", "add", "origin", "git@github.com:acme/widgets.git"]);
         let found = super::names(&repo);
         assert_eq!(found, ["acme", "client", "widgets"]);
-        assert_eq!(hits("Acme ships widgets", &found).len(), 2);
+        assert_eq!(hits("Acme ships widgets", &found, &[]).len(), 2);
     }
 
     #[test]

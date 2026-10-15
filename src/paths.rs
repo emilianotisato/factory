@@ -88,7 +88,7 @@ fn in_segment(b: u8) -> bool {
 }
 
 static HOME_PATH: LazyLock<regex::bytes::Regex> = LazyLock::new(|| {
-    regex::bytes::Regex::new(r"(?:^|[^A-Za-z0-9._~-])(/(?:home|Users)/[A-Za-z0-9._-]+/)")
+    regex::bytes::Regex::new(r"(?:^|(?-u:[^A-Za-z0-9._~-]))(/(?:home|Users)/[A-Za-z0-9._-]+/)")
         .expect("home path pattern compiles")
 });
 
@@ -203,6 +203,7 @@ mod tests {
         assert_eq!(find_home_path(b"/tmp/home/x/ and ~/home/y/"), None);
         assert_eq!(find_home_path(b"/home/x and /home/ and /Users"), None);
         assert_eq!(find_home_path(b"/tmp/home/x/ then /home/y/"), Some(18));
+        assert_eq!(find_home_path(b"caf\xe9/home/x/a"), Some(4));
     }
 
     #[test]

@@ -71,3 +71,8 @@ Rows from [`prd.md`](prd.md) §5 this slice proves, below the UI:
 - **FR-8**: "run: `factory upstream check` and `post` against the stub `gh`, with and without `[source]`, and with `FACTORY_BOARD` set" — task 3's test transcript.
 
 **Acceptance:** after the checkpoint, Progress names the transcript.
+
+**Code-review fixes (2026-10-15).**
+- The scrub knew only `/home/<name>/` and `/Users/<name>/`: a home at `/var/home/<name>` reached the public draft. It now also hits the person's own `$HOME`, as named and as it resolves (AD-5).
+- `post` into a `[source]` checkout said "committed it" when git ignored the file, and left the file behind when the commit failed. It now says which, and removes the file on a failed commit.
+- The name match folded ASCII case only, so `ÑANDÚ` in a draft passed a repo named `ñandú`. It folds Unicode case now.

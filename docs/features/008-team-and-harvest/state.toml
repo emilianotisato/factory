@@ -1,4 +1,5 @@
 status = "ready"
+reviewed = "2026-10-15"
 
 [slices.1]
 status = "done"

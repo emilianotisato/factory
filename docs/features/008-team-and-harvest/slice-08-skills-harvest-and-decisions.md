@@ -102,3 +102,9 @@ Rows from [`prd.md`](prd.md) §5 this slice proves, below the UI:
 FR-6 is the Human row: the owner's first `/harvest` after the merge, in [`qa-guide.md`](qa-guide.md). No checkpoint drives it.
 
 **Acceptance:** after the checkpoint, Progress names the transcript.
+
+**Code-review fixes (2026-10-15).**
+- `/harvest` moved a keeper to `docs/reference`, then ran `--done`, then committed. `--done` refuses a folder with uncommitted changes, and the move is one, so the first harvest here would stop at § 5. The skill now commits the routing on the harvest branch before `--done` (AD-6), and says `--done` stages only what it moved.
+- § 4 told the owner to rewrite home paths in a research note `--done` drops anyway; it now names only the files that stay, and the bare-home case the matcher misses.
+- § 3 asked for the `decisions.md` diff "before anything else is written", after § 2 had already edited; it now asks for it on its own, before § 4.
+- `/prune` named the evidence only as `$FACTORY_EVIDENCE`, unset outside a run; it now names the run dir too. The bundle lock was rewritten at the untagged 0.6.0 from main's 0.5.0 lock.

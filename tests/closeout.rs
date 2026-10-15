@@ -2129,9 +2129,12 @@ fn a_filled_friction_section_leaves_the_source_checkout_untouched() {
     fx.write_plan(&plan_with(&[
         json!({"outcome": "polish", "friction": FRICTION}),
     ]));
+    let ideas = |p: &Path| fs::read_dir(p.join("docs/ideas")).map_or(0, |d| d.count());
+    let before = ideas(fx.path());
     let dir = start(&fx);
     wait_phase(&fx, &dir, "finished", 90);
 
+    assert_eq!(ideas(fx.path()), before, "an idea was filed in the project");
     let retro = fs::read_to_string(fx.path().join(RETRO)).unwrap();
     assert!(
         retro.contains(&format!("## Framework friction → factory\n\n{FRICTION}")),

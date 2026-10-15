@@ -53,9 +53,11 @@ fn git(root: &Path, args: &[&str]) -> bool {
 }
 
 fn git_out(root: &Path, args: &[&str]) -> Result<String> {
+    // A tracked file named `*` must not widen `git rm` to the files the archive keeps.
     let o = Command::new("git")
         .args(args)
         .current_dir(root)
+        .env("GIT_LITERAL_PATHSPECS", "1")
         .stdin(Stdio::null())
         .output()
         .map_err(io("run git"))?;
@@ -119,20 +121,43 @@ const BANNER: &str =
 /// and an `M` under `docs/archive/` fails the check the hook runs.
 pub fn to_archive(root: &Path, batch: &[Feature], out: &mut dyn Write) -> Result<()> {
     let base = root.join("docs/archive");
-    for f in batch {
+    let mut seen = std::collections::HashSet::new();
+    let batch: Vec<&Feature> = batch.iter().filter(|f| seen.insert(f.number)).collect();
+    for f in &batch {
         let dir = rel(root, &f.dir);
-        if !git_out(root, &["status", "--porcelain", "--", &dir])?.is_empty() {
+        // A cloned repo can point one of these outside itself; the banner and the `~/` rewrite would follow it.
+        for p in std::iter::once(f.dir.clone()).chain(KEPT.iter().map(|k| f.dir.join(k))) {
+            if fs::symlink_metadata(&p).is_ok_and(|m| m.file_type().is_symlink()) {
+                return Err(Error::Msg(format!(
+                    "refusing: {} is a symlink",
+                    rel(root, &p)
+                )));
+            }
+        }
+        let status = git_out(root, &["status", "--porcelain", "--ignored", "--", &dir])?;
+        if status.lines().any(|l| !l.starts_with("!! ")) {
             return Err(Error::Msg(format!(
                 "refusing: {dir} has uncommitted changes; commit them first"
+            )));
+        }
+        // `git mv` carries ignored files along, and a `.pyc` holds a home path.
+        let own_lock = format!("!! {dir}/{}", state::LOCK);
+        if let Some(l) = status.lines().find(|l| *l != own_lock) {
+            return Err(Error::Msg(format!(
+                "refusing: {dir} holds ignored files the archive would keep, such as {}; remove them first (git clean -ndX -- {dir} lists them)",
+                &l[3..]
             )));
         }
         let to = base.join(&f.dir_name);
         if to.exists() {
             return Err(Error::Msg(format!("{} already exists", rel(root, &to))));
         }
+        for p in KEPT.iter().map(|k| f.dir.join(k)).filter(|p| p.is_file()) {
+            read(&p)?;
+        }
     }
-    let mut text = String::new();
     for f in batch {
+        let mut text = String::new();
         let dir = rel(root, &f.dir);
         let to = base.join(&f.dir_name);
         let prd = f.dir.join("prd.md");
@@ -184,22 +209,33 @@ pub fn to_archive(root: &Path, batch: &[Feature], out: &mut dyn Write) -> Result
         for p in dropped {
             text.push_str(&format!("  dropped {p}\n"));
         }
+        say(out, &text)?;
     }
-    say(out, &text)
+    Ok(())
 }
 
-/// The banner goes right after the frontmatter's closing `---`, or on top without one; never twice.
+/// The banner goes right after the line where the frontmatter parser closes the block, or on top without one; never twice.
 fn with_banner(prd: &str) -> String {
     if prd.contains(BANNER) {
         return prd.to_string();
     }
     let at = prd
-        .strip_prefix("---\n")
-        .and_then(|rest| rest.find("\n---\n").map(|i| 4 + i + 5))
+        .starts_with("---\n")
+        .then(|| prd[3..].find("\n---"))
+        .flatten()
+        .map(|i| {
+            let close = i + 4;
+            prd[close..].find('\n').map_or(prd.len(), |j| close + j + 1)
+        })
         .unwrap_or(0);
+    let head = &prd[..at];
+    let sep = if head.is_empty() || head.ends_with('\n') {
+        ""
+    } else {
+        "\n"
+    };
     format!(
-        "{}{BANNER}\n\n{}",
-        &prd[..at],
+        "{head}{sep}{BANNER}\n\n{}",
         prd[at..].trim_start_matches('\n')
     )
 }
@@ -226,5 +262,17 @@ mod tests {
         );
         assert_eq!(with_banner(&once), once);
         assert_eq!(with_banner("# Title\n"), format!("{BANNER}\n\n# Title\n"));
+    }
+
+    #[test]
+    fn the_banner_follows_an_empty_or_loosely_closed_frontmatter() {
+        assert_eq!(
+            with_banner("---\n---\n# Title\n"),
+            format!("---\n---\n{BANNER}\n\n# Title\n")
+        );
+        assert_eq!(
+            with_banner("---\nnumber: 001\n--- \n# Title\n\n---\nmore\n"),
+            format!("---\nnumber: 001\n--- \n{BANNER}\n\n# Title\n\n---\nmore\n")
+        );
     }
 }

@@ -41,7 +41,7 @@ An idea the batch spawned is a lesson too. Routed to the project, it becomes the
 
 ## 3. Compact `docs/decisions.md`
 
-One diff the owner reviews before anything else is written. Skip it when the file does not exist.
+One diff the owner reviews on its own, `git diff -- docs/decisions.md`, before §4. Skip it when the file does not exist.
 
 - **An entry** is `## {Short name}`, then **Chose**, **Over**, **Because** and **Applies when**. No number, no date, no origin in the heading or the body. Its link is the heading's own anchor: the slug GitHub makes from it (`## Who talks to GitHub?` → `decisions.md#who-talks-to-github`).
 - **Old links keep resolving.** An entry from the numbered form keeps its old anchor as a line above its heading: the first numbered entry gets `<a id="dec-1"></a>`, and so on. A renamed or merged entry keeps every old slug the same way, one `<a id="…"></a>` line each.
@@ -58,17 +58,19 @@ The first harvest is also the migration. Check each; do the ones still missing:
 
 - **The convention line** in `CLAUDE.md` and in `AGENTS.md`, inside the factory convention block: "`docs/features` and `docs/archive` are history: the code, `docs/reference` and `docs/decisions.md` win." A new repo gets it from `factory init`; an existing one gets it here.
 - **The archived definition** in `docs/index.md`: an archived folder is moved under `docs/archive/`, holds its records only (`prd.md`, `state.toml`, `log.jsonl`, `retro.md`) and carries the history banner. `/harvest` routes the lessons first; no verb checks that, so the definition does not promise it.
-- **Home paths outside the batch.** `factory docs check` reports each tracked doc holding `/home/<name>/` or `/Users/<name>/` as `W-HOME-PATH`. `--done` rewrites the ones it keeps; rewrite the rest by hand to `~/`, such as an idea's From line or a research note.
+- **Home paths outside the batch.** `factory docs check` reports each tracked doc holding `/home/<name>/` or `/Users/<name>/` as `W-HOME-PATH`. `--done` rewrites the ones it keeps; rewrite the rest by hand to `~/`, such as an idea's From line or a research note §5 keeps. A file `--done` drops needs none. Neither the check nor `--done` sees a home with no `/` after the name (`find /home/<name> …`): grep the kept files for one.
 
 ## 5. Archive
 
 **Keep what is worth keeping first.** `--done` keeps only the four records and drops the rest of each folder to git history: slices, qa-guides, research notes, evidence. A file a future feature should read moves to `docs/reference` now, with the owner's yes.
 
+**Then commit what you have.** The verb refuses a folder with uncommitted changes, and a keeper moved out or a home path rewritten inside a batch folder is one. On the default branch, create `harvest/<yyyy-mm-dd>` first; on any other branch, stay. Commit every edit §2 to §5 made: `docs: route harvest NNN…`.
+
 ```
 factory docs harvest NNN… --done
 ```
 
-Name the batch you routed, never the bare form: a feature shipped since step 1 would be archived unread. The verb refuses a folder with uncommitted changes and a folder already in `docs/archive/`. It stages everything and commits nothing.
+Name the batch you routed, never the bare form: a feature shipped since step 1 would be archived unread. The verb refuses a folder with uncommitted changes and a folder already in `docs/archive/`. It stages what it moved and dropped, and commits nothing.
 
 **Then check the links.** The commit hook runs `factory docs check` on any staged `docs/` path, and a live doc linking into a moved folder fails it:
 
@@ -80,7 +82,7 @@ Fix each `E-LINK-BROKEN`: point the link into `docs/archive/`, or at the file's 
 
 ## 6. Commit
 
-On the default branch, create `harvest/<yyyy-mm-dd>` first; on any other branch, stay. One commit with every edit §2 to §5 made: `docs: harvest NNN…`. **Never push.** Never `--no-verify`: a hook that refuses is §5's check, not in the way.
+On the branch §5 committed to, one commit with what `--done` staged and the link fixes: `docs: harvest NNN…`. **Never push.** Never `--no-verify`: a hook that refuses is §5's check, not in the way.
 
 ## Report
 

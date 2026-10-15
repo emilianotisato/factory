@@ -81,3 +81,7 @@ Rows from [`prd.md`](prd.md) §5 this slice proves, below the UI:
 - **FR-3**: "run: `factory docs check` on a fixture with a home path under `docs/features` and under `docs/archive`; a stub run blocked by a red gate, then `grep /home/` its log" — tasks 3 and 4's test transcripts, and `factory docs check` on this repo showing the warnings.
 
 **Acceptance:** after the checkpoint, Progress names the transcripts.
+
+**Code-review fixes (2026-10-15).**
+- `W-HOME-PATH` read every tracked path under `docs/`, symlinks included. A cloned repo could point one at `/dev/zero` or a FIFO and hang `docs check`. It now reads regular files only; the check test adds a symlink to an outside file holding a home path and still expects one hit.
+- The byte-regex class before a home path ran in Unicode mode, so a home path after a Latin-1 byte went unreported. The class is byte-wise now.

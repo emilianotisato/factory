@@ -640,6 +640,70 @@ fn harvest_done_refuses_an_uncommitted_folder_and_moves_nothing() {
 }
 
 #[test]
+fn harvest_done_takes_a_feature_named_twice_once_and_a_file_named_star_literally() {
+    let fx = archive_fixture("v3-harvest-star");
+    fs::write(fx.path().join(FEATURE_DIR).join("*"), "stray\n").unwrap();
+    commit(&fx);
+
+    let o = fx.docs_output(&["harvest", "001", "001", "--done"]);
+    assert_eq!(exit(&o), 0, "{}", stderr(&o));
+    assert_eq!(
+        archived_files(&fx, "docs/archive/001-fixture"),
+        ["log.jsonl", "prd.md", "retro.md", "state.toml"]
+    );
+    assert_eq!(stdout(&o).matches("PRD-001 →").count(), 1, "{}", stdout(&o));
+}
+
+#[test]
+fn harvest_done_refuses_a_kept_file_that_is_a_symlink() {
+    let fx = archive_fixture("v3-harvest-symlink");
+    let outside = fx.path().join("outside.md");
+    fs::write(&outside, "kept at /home/x/notes\n").unwrap();
+    let retro = fx.path().join(FEATURE_DIR).join("retro.md");
+    fs::remove_file(&retro).unwrap();
+    std::os::unix::fs::symlink("../../../outside.md", &retro).unwrap();
+    commit(&fx);
+
+    let o = fx.docs_output(&["harvest", "001", "--done"]);
+    assert_eq!(exit(&o), 2, "{}", stderr(&o));
+    assert!(stderr(&o).contains("is a symlink"), "{}", stderr(&o));
+    assert_eq!(
+        fs::read_to_string(&outside).unwrap(),
+        "kept at /home/x/notes\n"
+    );
+    assert!(fx.path().join(FEATURE_DIR).exists());
+}
+
+#[test]
+fn harvest_done_refuses_a_folder_holding_ignored_files() {
+    let fx = archive_fixture("v3-harvest-ignored");
+    fs::write(fx.path().join(".git/info/exclude"), "*.pyc\n").unwrap();
+    let cache = fx.path().join(FEATURE_DIR).join("evidence/__pycache__");
+    fs::create_dir_all(&cache).unwrap();
+    fs::write(cache.join("s.pyc"), b"\x00/home/x/a").unwrap();
+
+    let o = fx.docs_output(&["harvest", "001", "--done"]);
+    assert_eq!(exit(&o), 2, "{}", stderr(&o));
+    assert!(stderr(&o).contains("ignored files"), "{}", stderr(&o));
+    assert!(cache.join("s.pyc").exists());
+    assert!(!fx.path().join("docs/archive/001-fixture").exists());
+}
+
+#[test]
+fn harvest_done_writes_nothing_when_a_kept_file_is_not_utf8() {
+    let fx = archive_fixture("v3-harvest-latin1");
+    let dir = fx.path().join(FEATURE_DIR);
+    fs::write(dir.join("retro.md"), b"# Retro\n\ncaf\xe9\n").unwrap();
+    commit(&fx);
+    let prd = fs::read_to_string(dir.join("prd.md")).unwrap();
+
+    let o = fx.docs_output(&["harvest", "001", "--done"]);
+    assert_ne!(exit(&o), 0, "{}", stdout(&o));
+    assert_eq!(fs::read_to_string(dir.join("prd.md")).unwrap(), prd);
+    assert!(!fx.path().join("docs/archive/001-fixture").exists());
+}
+
+#[test]
 fn archive_leaves_the_same_records_only_shape() {
     let fx = archive_fixture("v3-archive-shape");
     let o = fx.docs_output(&["archive", "001"]);
