@@ -102,7 +102,7 @@ fn hook_denies_repo_greps_and_whole_reads_of_held_files() {
     assert_eq!(
         why,
         format!(
-            "use: {} ctx refs <word> (or ctx def <symbol>); grep only for literal strings and log output",
+            "use: {} ctx refs <word> (or ctx def <symbol>; --vendor for vendor code): a bare name goes to ctx, grep anything else",
             factory::paths::shell_word(BIN)
         )
     );

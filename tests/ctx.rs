@@ -570,6 +570,23 @@ fn a_bad_flag_or_an_unreadable_root_exits_2() {
         err.starts_with("factory ctx: cannot read nowhere: "),
         "{err}"
     );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let locked = tmp.path().join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read_dir(&locked).is_err() {
+            let (code, _, err) = ctx_in(tmp.path(), &["refs", "planted", "--in", "locked"]);
+            assert_eq!(code, 2);
+            assert!(
+                err.starts_with("factory ctx: cannot read locked: "),
+                "{err}"
+            );
+        }
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
     let (code, _, _) = ctx_in(&fixture(), &["refs", "planted", "--max", "ten"]);
     assert_eq!(code, 2);
     let (code, _, _) = ctx_in(&fixture(), &["def", "Config", "--kind", "struct"]);
@@ -577,6 +594,82 @@ fn a_bad_flag_or_an_unreadable_root_exits_2() {
     let (code, out, _) = ctx_in(&fixture(), &["def", "Config", "--kind", "class"]);
     assert_eq!(code, 0, "--kind class is a valid kind");
     assert!(out.contains("rs/config.rs:4  class"), "{out}");
+}
+
+#[test]
+fn def_prints_a_body_only_when_one_definition_matches() {
+    let tmp = tempfile::tempdir().unwrap();
+    fs::create_dir_all(tmp.path().join("a")).unwrap();
+    fs::write(
+        tmp.path().join("a/one.rs"),
+        "pub fn twice() -> u8 {\n    1\n}\n",
+    )
+    .unwrap();
+    fs::write(tmp.path().join("two.rs"), "fn twice() {\n    2;\n}\n").unwrap();
+
+    let (code, out, _) = ctx_in(tmp.path(), &["def", "twice"]);
+    assert_eq!(code, 0);
+    assert_eq!(
+        hits(&out),
+        [
+            "a/one.rs:1  fn  pub fn twice() -> u8 {",
+            "two.rs:1  fn  fn twice() {"
+        ]
+    );
+    assert!(!out.lines().any(|l| l.starts_with("    ")), "{out}");
+    assert!(!out.contains("cut at"), "{out}");
+    assert!(
+        out.lines()
+            .any(|l| l.contains("--kind") && l.contains("--in")),
+        "{out}"
+    );
+
+    for within in ["a/one.rs", "a"] {
+        let (code, out, _) = ctx_in(tmp.path(), &["def", "twice", "--in", within]);
+        assert_eq!(
+            (code, out.as_str()),
+            (
+                0,
+                "a/one.rs:1  fn  pub fn twice() -> u8 {\n        1\n    }\n\n1 definition (searched 1 file)\n"
+            ),
+            "{within}"
+        );
+    }
+    let (code, _, err) = ctx_in(tmp.path(), &["def", "twice", "--in", "nowhere.rs"]);
+    assert_eq!(code, 2);
+    assert!(
+        err.starts_with("factory ctx: cannot read nowhere.rs: "),
+        "{err}"
+    );
+}
+
+#[test]
+fn refs_in_a_file_lists_only_that_file() {
+    let out = ctx(&[
+        "refs",
+        "planted",
+        "--in",
+        "refs/caller02.php",
+        "--max",
+        "30",
+    ]);
+    let hits = hits(&out);
+    assert!(!hits.is_empty(), "{out}");
+    assert!(
+        hits.iter().all(|h| h.starts_with("refs/caller02.php:")),
+        "{out}"
+    );
+}
+
+#[test]
+fn def_help_says_when_a_body_comes() {
+    let (code, out, _) = ctx_in(&fixture(), &["def", "--help"]);
+    assert_eq!(code, 0);
+    assert!(
+        out.contains("with its body when one definition matches"),
+        "{out}"
+    );
+    assert!(out.contains("--in <PATH>"), "{out}");
 }
 
 fn copy_tree(from: &Path, to: &Path) {

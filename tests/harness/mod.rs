@@ -36,6 +36,76 @@ pub fn assert_v3_contract(pack: &str) {
     }
 }
 
+/// Checks a worker call's tools, MCP, slash commands, output style and memory against its role,
+/// read from its pack's file name, and returns that role.
+pub fn assert_role_scope(call: &Value) -> &'static str {
+    let argv: Vec<&str> = call["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    let flag = |name: &str| {
+        let i = argv
+            .iter()
+            .position(|a| *a == name)
+            .unwrap_or_else(|| panic!("{name} missing in {argv:?}"));
+        argv[i + 1]
+    };
+    let pack = Path::new(flag("--append-system-prompt-file"));
+    let name = pack.file_name().unwrap().to_str().unwrap();
+    let role = [
+        ("slice-", "build"),
+        ("merge-", "merge"),
+        ("fix-", "fix"),
+        ("ci-fix-", "fix"),
+        ("checkpoint-", "checkpoint"),
+        ("polish-", "polish"),
+    ]
+    .iter()
+    .find(|(prefix, _)| name.starts_with(prefix))
+    .map(|(_, role)| *role)
+    .unwrap_or_else(|| panic!("no role for pack {name}"));
+    let narrowed = matches!(role, "build" | "fix" | "merge");
+    for f in ["--strict-mcp-config", "--disable-slash-commands", "--tools"] {
+        assert_eq!(argv.contains(&f), narrowed, "{role}: {f} in {argv:?}");
+    }
+    if narrowed {
+        assert_eq!(flag("--tools"), "Bash,Read,Edit,Write", "{argv:?}");
+    }
+    let settings = check_settings(Path::new(flag("--settings")));
+    assert_eq!(settings["outputStyle"], "default", "{role}: {settings}");
+    let memory = settings.get("autoMemoryEnabled");
+    if narrowed {
+        assert_eq!(memory, Some(&Value::Bool(false)), "{role}: {settings}");
+    } else {
+        assert_eq!(memory, None, "{role}: {settings}");
+    }
+    role
+}
+
+/// The deny rules and the hook every worker's settings carry; returns the whole file.
+pub fn check_settings(path: &Path) -> Value {
+    let v: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    let deny: Vec<&str> = v["permissions"]["deny"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d.as_str().unwrap())
+        .collect();
+    assert_eq!(deny, ["Bash(gh)", "Bash(gh *)", "Bash(git push*)"]);
+    let pre = &v["hooks"]["PreToolUse"];
+    assert_eq!(pre.as_array().map(Vec::len), Some(1), "{v}");
+    assert_eq!(pre[0]["matcher"], "Bash|Read");
+    let hook = &pre[0]["hooks"][0];
+    assert_eq!(hook["type"], "command");
+    let cmd = hook["command"].as_str().unwrap();
+    let bin = env!("CARGO_BIN_EXE_factory");
+    assert_eq!(cmd, format!("{} hook", factory::paths::shell_word(bin)));
+    assert_eq!(hook["timeout"], 5);
+    v
+}
+
 pub fn stubs_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/stubs")
 }

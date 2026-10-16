@@ -153,6 +153,29 @@ fn polish_fixers_run_one_after_another_with_no_lane_rule() {
     }
 }
 
+#[test]
+fn gate_inner_loop_formats_in_write_mode_and_runs_tests_quiet() {
+    let text = fs::read_to_string(root().join("skills/gate/SKILL.md")).unwrap();
+    let start = text.find("**Round 3").expect("round 3");
+    let end = start + text[start..].find("## 4.").expect("§4");
+    let round = &text[start..end];
+    for keep in ["write mode", "check mode", "`cargo test -q`"] {
+        assert!(round.contains(keep), "{keep:?} left gate round 3");
+    }
+    assert!(!round.contains("same string"), "gate round 3:\n{round}");
+
+    let stacks = fs::read_to_string(root().join("skills/gate/references/stacks.md")).unwrap();
+    let rows: Vec<&str> = stacks
+        .lines()
+        .filter(|l| l.starts_with("| format |"))
+        .collect();
+    assert!(rows.len() >= 6, "{rows:?}");
+    for row in rows {
+        let forms = row.split('|').nth(2).unwrap();
+        assert!(forms.contains("` / `"), "one format form only: {row}");
+    }
+}
+
 /// One `OnceLock` so a `FACTORY_BUNDLE_WRITE` rewrite happens once and no reader races it.
 fn lock() -> &'static Result<Lock, String> {
     static LOCKED: OnceLock<Result<Lock, String>> = OnceLock::new();

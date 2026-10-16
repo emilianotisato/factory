@@ -15,6 +15,9 @@ pub struct Ref {
     pub next: Option<String>,
 }
 
+pub const MAX: usize = 10;
+pub const PER_FILE: usize = 3;
+
 #[derive(Debug, Clone, Copy)]
 pub struct Caps {
     pub max: usize,

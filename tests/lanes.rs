@@ -841,6 +841,8 @@ fn answer_takes_the_open_block_and_prefers_the_parked_feature() {
     );
     assert_eq!(log_text(&one), one_before);
     reseed(true);
+    let one_before = log_text(&one);
+    let two_before = log_text(&two);
 
     fx.set_slice_status(1, "blocked");
     let run = parked_run(&fx);

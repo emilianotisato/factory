@@ -5,7 +5,11 @@ use super::Searched;
 use super::def::{self, BODY_LINES};
 use super::{outline, refs};
 
+/// A body comes only with a single match: several bodies cost more than the narrowed call.
 pub fn defs(name: &str, found: &def::Found, body: bool) -> String {
+    let n = found.hits.len();
+    let withheld = body && n > 1;
+    let body = body && n == 1;
     let mut out = String::new();
     for d in &found.hits {
         block(&mut out, &d.path, d.line, d.kind, &d.signature);
@@ -15,7 +19,12 @@ pub fn defs(name: &str, found: &def::Found, body: bool) -> String {
             }
         }
     }
-    let n = found.hits.len();
+    if withheld {
+        let _ = writeln!(
+            out,
+            "\nno body with {n} definitions: --kind or --in <file or dir> narrows to one"
+        );
+    }
     let mut trailer = if n == 0 {
         format!("no definition of {name} found")
     } else {
