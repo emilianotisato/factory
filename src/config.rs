@@ -68,7 +68,7 @@ impl Default for Review {
         Review {
             agent: "cursor-agent".into(),
             model: "grok-4.7-high".into(),
-            timeout_secs: 900,
+            timeout_secs: 1800,
             pass_lines: 600,
         }
     }
@@ -525,7 +525,7 @@ mod tests {
                 d.timeout_secs,
                 d.pass_lines
             ),
-            ("cursor-agent", "grok-4.7-high", 900, 600)
+            ("cursor-agent", "grok-4.7-high", 1800, 600)
         );
         let (cfg, _) = dirs(Some("[review]\ntimeout_secs = 2\n"), None);
         let l = load(cfg.path()).unwrap();
