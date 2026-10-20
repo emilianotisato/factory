@@ -11,6 +11,7 @@ summary: |
   Agreed 2026-10-15: FR-1 to FR-10, nothing cut. The first run after the merge is compared with the 002–008 baseline before this is archived.
 from_idea: "2026-10-15-cut-the-builder-s-start-context-and-its-one-call-t"
 ---
+> **History.** The code, `docs/reference` and `docs/decisions.md` win over this document.
 
 # PRD-009 — Cheaper builders
 
