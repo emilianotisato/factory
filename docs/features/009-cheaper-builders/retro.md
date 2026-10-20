@@ -74,3 +74,25 @@ Compared with:
 <!-- /factory:numbers -->
 
 **Owner review (2026-10-15):** 3 kept, 0 changed (AD-4, AD-6, AD-7)
+
+## After merge
+
+Read 2026-10-20 against the four runs on 0.7.0. No run of this repo has used 0.7.0 yet, so the bar is the PRD's other half: at least 18,000 below the same repo's previous run. Build `start_context` is the pack-by-role figure from `factory report`.
+
+| run | repo | build start | previous run | builder W | turns per builder | gate_red | fix_commits | ci_red_rounds | blocks |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 010-20261016-61d1 | nycase | 25,591 | 49,058 (009-85db) | 274k (was 444k) | 26.8 (was 27.7) | 0 | 0 | 0 | 0 |
+| 026-20261017-f6ac | arca-api | 30,834 | 52,494 (025-a235) | 390k (was 845k) | 26.3 (was 43.6) | 0 | 0 | 0 | 0 |
+| 012-20261017-3bb0 | prokeycloud_onprem | 26,024 | none | 586k | 42.8 | 0 | 0 | 0 | 0 |
+| 016-20261020-0bba | prokeycloud | 30,217 | none | 319k | 27.5 | 1 | 1 | 0 | 0 |
+
+Before, over 002–008 and the 0.4–0.6 runs elsewhere: 43,334–64,982.
+
+- **Start context: pass.** nycase dropped 23.5k and arca-api 21.7k. Every build, fix and merge stream's init lists 4 tools, no MCP server, no slash command, and `output_style` `default`. Checkpoint and polish keep their tools, also on the default style.
+- **Quality: pass.** Every run is inside the 002–008 bounds.
+- **Cost per turn fell:** nycase 16.0k to 10.2k weighted, arca-api 19.4k to 14.8k. Turns per builder did not clearly fall on nycase; arca-api's lower count is a different PRD.
+- **False push denials: gone.** 0 in the 16 builders (002–009 had 1–8 per run).
+- **ctx denials:** 3, each a grep for one bare identifier, which FR-4 still sends to ctx.
+- **Bookkeeping: gone.** No builder ran `docs set` or `docs check` (6–23 per run before). They still run `docs log add` and `log show`, as the contract keeps.
+- **New top denial:** "that file is in your pack under # Outline", 9 of the 12, mostly a `cat` of several Outline files in one call. The hook denies the whole call for one listed file.
+- **Not measured:** fmt reds on their own; worker gate reds were 0–2 per run.
