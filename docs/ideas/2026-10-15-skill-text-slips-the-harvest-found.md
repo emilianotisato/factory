@@ -12,3 +12,4 @@ Five line-level fixes. Each was a guess a worker had to make, and they ship toge
 - **polish §9 in a factory run** (PRD-007). The contract replaces every closeout step. Fix: one line at the top of §9, "In a factory run, skip to Report."
 - **prune §5, names the log quotes** (PRD-004). It protects test names in evidence and Progress lines, not in a log entry's Undo line. Fix: extend the rule to the feature's `log.jsonl`.
 - **/slice, a file two FRs both write** (PRD-008). FR-5 and FR-6 both changed `docs/index.md`, so the slice built one half and the QA guide claimed both. Fix: /slice flags a file two FRs write, and puts both edits in one slice or names their order.
+- **polish §8, no Progress section** (PRD-009). The `**Code-review fixes ({date}).**` section was placed "near Progress", but Progress now lives in the log and slices have none. Fix: say "at the end of the slice file".

@@ -14,3 +14,5 @@ PRD-009 left out the builder levers no probe or run has measured yet. Each needs
 5. **Optional: `dontAsk` instead of `bypassPermissions`.** It drops the bypass-mode reminder that tells workers to read with `cat` and `sed -n`. A probe on 2026-10-15 showed it denies writes into `.claude/` and `.git/`, and builders edit `.claude/skills/verify-*`. Revisit if Claude Code lets an allow rule cover those paths.
 
 Method: one factory run per lever against the first run after PRD-009, on a PRD of the same kind. Read `pack_by_role`, `weighted_by_role` and `quality:` from `factory report`.
+
+**Harvest 2026-10-20: the baseline is in.** PRD-009's retro § After merge has the four 0.7.0 runs. Start context fell about 22k and cost per turn by a quarter to a third, but turns per builder did not clearly fall (nycase 27.7 to 26.8). Levers 1 to 3 here are the turn levers.
