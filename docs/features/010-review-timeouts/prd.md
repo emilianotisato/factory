@@ -77,7 +77,7 @@ No open questions.
 
 ## 7. Slices
 
-_(Filled by `/slice`.)_
+No slices: built straight from this document.
 
 ## 8. Non-goals
 

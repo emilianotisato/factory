@@ -50,7 +50,7 @@ Two rules override the table. **Anything security-sensitive gets the security pa
 
 Its prompt carries a reader's questions, because a rule table cannot ask them. One per surviving added comment, security claims first: does it still match the code beside it, does it sit on the item it describes, does it name only what the tree defines, and would a reader miss it? One per added name: does it point at the plan without a number, like `weights_match_the_prd_formula` or cody's `seedPre025Workspaces`?
 
-**Then the leaks verdict, on every polish, whatever the diff size.** The `## Leaks` part checked the branch's added lines and paths against one rule table and prints each hit under its rule's fix line. **Read its `verdict:` line.** `clean` is clean. `n fix hits` is hits. `did not run` means the check did not run: say so out loud, and never report it as *no hits*. Its hits are findings like any reviewer's: step 2 verifies them and they land in the **Fix** bucket, with no question to the owner. Each hit's fix line is its instruction.
+**Then the leaks verdict, on every polish, whatever the diff size.** The `## Leaks` part checked the branch's added lines and paths against one rule table and prints each hit under its rule's fix line. **Read its `verdict:` line.** `clean` is clean. `n fix hit(s)` is hits. `did not run` means the check did not run: say so out loud, and never report it as *no hits*. Its hits are findings like any reviewer's: step 2 verifies them and they land in the **Fix** bucket, with no question to the owner. Each hit's fix line is its instruction.
 
 **Then `security-review`, when the diff touches security-sensitive code** — authentication or authorization, a permission or tenancy check, parsing or validating outside input, raw queries, file paths or shell commands built from input, a read, write or delete through a path the repo itself controls (a symlink in a cloned repo can redirect it outside), deserialization, crypto, secrets or config, CORS, headers or cookies, or logging that could carry user data. The general review does not look through that lens. Skip it only when none of that changed, and say so. Its findings join the same triage. **Run it as its own subagent**: its contract ends the turn on a report, which is right for a standalone review and wrong for a collector in the middle of a ritual.
 
@@ -70,6 +70,8 @@ Skip it only when nothing user-visible changed, and say so. No harness (`.claude
 The file says `fallback owed`, or the last resort's run fails → a fresh agent on the judgment model with **no inherited context**, never a `fork`, **one per pass of about 600 changed lines** (`[review] pass_lines`), the same passes the command would have run: one agent over a whole feature diff skims. Either way its findings are claims to verify in step 2, and you say which reviewer produced them.
 
 ## 2. Verify and dedup — one pass over every set
+
+A leaks verdict with hits → read the `## Leaks` part too: each hit sits under its fix line.
 
 **Now read the second opinion's findings**: the `### Pass` sections under the collected file's `## Second opinion`, or the last resort's output.
 
@@ -145,7 +147,7 @@ Invoke the `prune` skill in **`pr` mode** (only tests added or changed on this b
 
 ## 8. Distil — three destinations, then the scratchpad dies
 
-- **Fixed** → the slice's `**Code-review fixes ({date}).**` section, one bullet each: what was wrong, why it mattered, what it is now. Feature-wide fixes go in the last slice touched, or the PRD's Status prose if they belong to no single slice.
+- **Fixed** → a `**Code-review fixes ({date}).**` section at the end of the slice file, one bullet each: what was wrong, why it mattered, what it is now. Each fix goes to the slice that owns the code it changes, so one review can write to several slices. Feature-wide fixes go in the last slice touched, or the PRD's Status prose if they belong to no single slice.
 - **Decided** → candidate entries in `docs/decisions.md` (see below).
 - **Parked** → already handled in step 6.
 - **Rebutted** → keep the one-line rebuttals in your report to the user. They do not need a permanent home, but the user must see them.
@@ -188,6 +190,8 @@ Entry shape:
 No number, date or origin: the heading is the name, and its link is the heading's own anchor, the slug GitHub makes from it (`## Cache at the query level` → `docs/decisions.md#cache-at-the-query-level`). Cite an entry by that link. Renaming an entry keeps its old slug as an `<a id="old-slug"></a>` line above the heading, so every link to it still resolves. A reversed decision folds into the winner's **Over**, with the reason it lost, and its anchors move above the winner's heading.
 
 ## 9. Close out
+
+In a factory run, skip to Report.
 
 **Commit as you go — do not leave any of this staged-but-uncommitted for the user to finish.** Fixes commit separately from the `/prune` pass, so the diff for each stays readable.
 
