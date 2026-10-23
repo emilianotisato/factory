@@ -83,7 +83,9 @@ pub const RULES: [Rule; 9] = [
         id: "line-cite",
         title: "a file:line cite",
         looks: &[Look::Comment, Look::String],
-        detector: Detector::Pattern(r"\w[\w.-]*\.(?:md|mjs|js|ts|rs|go|php|py):\d+(?:-\d+)?"),
+        detector: Detector::Pattern(
+            r"\w[\w.-]*\.(?:md|mjs|js|ts|rs|go|php|py|kts?|java|gradle|groovy):\d+(?:-\d+)?",
+        ),
         severity: Severity::Fix,
         fix: "Drop the cite; in a string, rewrite it after a grep of tests/ and src/. Keep the fact as one short line only if the code cannot show it.",
     },
@@ -175,9 +177,13 @@ fn matches(rule: usize, text: &str) -> bool {
     }
     match &COMPILED[rule] {
         Some(re) => re.is_match(&text),
-        None => name_hit(&text),
+        None => name_hit(&text) || (text.contains(' ') && SPACED_ID.is_match(&text)),
     }
 }
+
+/// A name with a space in it, a Kotlin backtick name or a path, reads like prose, so `slice 4` is an id there too.
+static SPACED_ID: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(concat!("(?i)", ids!())).expect("id pattern"));
 
 /// Go code names its slice variables by number, so there a whole identifier of that shape is a variable.
 fn go_slice(path: &str, word: &str) -> bool {
@@ -233,6 +239,8 @@ struct Syntax {
     char_literals: bool,
     /// `r"…"` and `r#"…"#`.
     raw_strings: bool,
+    /// `` `…` `` is a name, spaces and all: how Kotlin names its tests.
+    backtick_names: bool,
 }
 
 const C_LIKE: Syntax = Syntax {
@@ -242,6 +250,7 @@ const C_LIKE: Syntax = Syntax {
     quotes: "\"'`",
     char_literals: false,
     raw_strings: false,
+    backtick_names: false,
 };
 const HASH: Syntax = Syntax {
     slashes: false,
@@ -250,6 +259,7 @@ const HASH: Syntax = Syntax {
     quotes: "\"'",
     char_literals: false,
     raw_strings: false,
+    backtick_names: false,
 };
 
 fn syntax(path: &str) -> Option<Syntax> {
@@ -264,6 +274,21 @@ fn syntax(path: &str) -> Option<Syntax> {
         "go" => Syntax {
             quotes: "\"`",
             char_literals: true,
+            ..C_LIKE
+        },
+        "kt" | "kts" => Syntax {
+            quotes: "\"",
+            char_literals: true,
+            backtick_names: true,
+            ..C_LIKE
+        },
+        "java" => Syntax {
+            quotes: "\"",
+            char_literals: true,
+            ..C_LIKE
+        },
+        "gradle" | "groovy" => Syntax {
+            quotes: "\"'",
             ..C_LIKE
         },
         "js" | "mjs" | "cjs" | "jsx" | "ts" | "mts" | "cts" | "tsx" | "vue" => C_LIKE,
@@ -287,12 +312,16 @@ fn syntax(path: &str) -> Option<Syntax> {
 struct Parts {
     code: String,
     strings: Vec<String>,
+    names: Vec<String>,
     comment: Option<String>,
 }
 
 impl Parts {
     fn is_comment(&self) -> bool {
-        self.comment.is_some() && self.code.trim().is_empty() && self.strings.is_empty()
+        self.comment.is_some()
+            && self.code.trim().is_empty()
+            && self.strings.is_empty()
+            && self.names.is_empty()
     }
 }
 
@@ -356,6 +385,13 @@ fn split(line: &str, syn: Syntax) -> Parts {
                 i += 3;
                 continue;
             }
+        }
+        if syn.backtick_names && ch == '`' {
+            let end = (i + 1..c.len()).find(|&k| c[k] == '`').unwrap_or(c.len());
+            parts.names.push(c[i + 1..end].iter().collect());
+            parts.code.push(' ');
+            i = end + 1;
+            continue;
         }
         if syn.quotes.contains(ch) {
             let mut s = String::new();
@@ -579,10 +615,13 @@ pub fn check(allow: &[Allow], lines: &[Added], paths: &[String]) -> Report {
             let hit = r.looks.iter().any(|look| match look {
                 Look::Comment => parts.comment.as_deref().is_some_and(|t| matches(i, t)),
                 Look::String => strings && parts.strings.iter().any(|s| matches(i, s)),
-                Look::Name => IDENT
-                    .find_iter(&parts.code)
-                    .filter(|w| !go_slice(&a.path, w.as_str()))
-                    .any(|w| matches(i, w.as_str())),
+                Look::Name => {
+                    IDENT
+                        .find_iter(&parts.code)
+                        .filter(|w| !go_slice(&a.path, w.as_str()))
+                        .any(|w| matches(i, w.as_str()))
+                        || parts.names.iter().any(|n| matches(i, n))
+                }
                 Look::Path => false,
             });
             if hit {
@@ -884,6 +923,46 @@ mod tests {
             .is_empty()
         );
         assert_eq!(hits("a.ts", "const t = 'see FR-1.2';"), ["id-string"]);
+    }
+
+    #[test]
+    fn kotlin_java_and_groovy_are_read() {
+        assert_eq!(hits("A.kt", "    // FR-3: guard"), ["id-comment"]);
+        assert_eq!(hits("A.kt", "     * Implements FR-24."), ["id-comment"]);
+        assert_eq!(hits("A.java", "    // FR-3: guard"), ["id-comment"]);
+        assert_eq!(hits("b.gradle.kts", "// FR-24: java.time"), ["id-comment"]);
+        assert_eq!(hits("A.kt", r#"val t = "FR-157: switches""#), ["id-string"]);
+        assert_eq!(hits("A.kt", r#"val q = '"' // FR-3"#), ["id-comment"]);
+        assert_eq!(hits("build.gradle", "def t = 'see FR-1.2'"), ["id-string"]);
+        assert_eq!(hits("A.kt", "// see CartService.kt:42"), ["line-cite"]);
+        assert_eq!(hits("A.kt", "// build.gradle.kts:12-14"), ["line-cite"]);
+        assert_eq!(hits("A.java", "// Mirrors Legacy.java:88"), ["line-cite"]);
+    }
+
+    #[test]
+    fn a_kotlin_backtick_name_is_a_name() {
+        for line in [
+            "    fun `FR-3 rejects an empty cart`() {}",
+            "    fun `slice 4 keeps the total`() {}",
+            "    fun `prd_003 totals`() {}",
+        ] {
+            assert_eq!(hits("A.kt", line), ["id-name"], "{line}");
+        }
+        assert!(hits("A.kt", "    fun `opens 3 tabs and blocks 2 rows`() {}").is_empty());
+        assert!(hits("A.kt", "    val ok = `in`(3)").is_empty());
+        let allow = [Allow {
+            path: "A.kt".into(),
+            scope: Scope::Strings,
+        }];
+        assert_eq!(
+            hits_with(&allow, "A.kt", "fun `FR-3 rejects`() {}"),
+            ["id-name"]
+        );
+        let kt = syntax("A.kt").unwrap();
+        let p = split("fun `keeps the total`() = check(\"x\") // y", kt);
+        assert_eq!(p.names, ["keeps the total"]);
+        assert_eq!(p.strings, ["x"]);
+        assert_eq!(p.comment.as_deref(), Some("// y"));
     }
 
     #[test]
