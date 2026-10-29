@@ -6,7 +6,7 @@ type: enhancement
 created: 2026-10-29
 author: Emiliano Tisato
 summary: |
-  The worker hook stops denying a whole read of a file the pack only outlines; it denies a whole read of the slice file alone, which the pack carries in full. Agreed; no slices, built attended from this document, shipped as 0.10.0 and measured by hand on the next runs.
+  The worker hook no longer denies a whole read of a file the pack only outlines; it denies a whole read of the slice file alone, which the pack carries in full. Built attended as 0.10.0, no slices; the after-merge read of denials and builder turns is still to do.
 from_idea: "2026-10-20-the-outline-deny-costs-a-turn-and-the-builder-read"
 ---
 
@@ -48,6 +48,10 @@ This is a bug the runs hit, not an improvement. It leaves alone the ctx grep den
 - The checkpoint pack still holds nothing (`src/cli/hook.rs:1270-1280` unchanged).
 - The `# Lookup` section of a slice pack names only the slice file as denied whole.
 - The gate is green with the flipped asserts.
+
+> *Corrected 2026-10-29 (build): the list above missed `tests/cli.rs:142-150`, a whole read from a subdirectory that pinned the Outline deny. It moved to the slice path like the unit test.*
+
+**Built 2026-10-29** in `fix(hook): deny whole reads of the slice file only, 0.10.0`. Proof, the 0.10.0 debug binary as `factory hook` on a slice pack listing a slice and `src/helper.rs`: a whole `Read` of the slice and a `cat src/helper.rs <slice>` each print the `# Slice` deny; a whole `Read` and a `cat` of `src/helper.rs` print nothing (exit 0 all four).
 
 ## 4. Decisions log
 
