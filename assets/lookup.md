@@ -6,4 +6,4 @@ Three verbs answer "where is it" in fewer characters than grep and a whole-file 
 
 The one rule: a bare name goes to ctx, grep anything else: a literal string, a regex, several patterns, log output. `--vendor` takes `refs` and `def` into vendor code.
 
-A recursive `grep` or an `rg` for one bare name over the repo's own code is answered with a hint naming the verb, and a whole-file read of a file this pack holds with the section it is under: read a range instead.
+A recursive `grep` or an `rg` for one bare name over the repo's own code is answered with a hint naming the verb, and a whole-file read of the slice file with a hint: the pack carries it in full under `# Slice`, so read a range if you need more. Any other file reads whole.

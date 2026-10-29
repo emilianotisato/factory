@@ -128,11 +128,8 @@ fn hook_denies_repo_greps_and_whole_reads_of_held_files() {
     assert_eq!(hook(&partial.to_string(), &pack).1, "");
     let prd_read = read(format!("{cwd}/{prd}"), json!({}));
     assert_eq!(hook(&prd_read.to_string(), &pack).1, "");
-    let (_, d, why, _) = hook(
-        &read(format!("{cwd}/src/helper.rs"), json!({})).to_string(),
-        &pack,
-    );
-    assert_eq!((d.as_str(), why.contains("\"# Outline\"")), ("deny", true));
+    let outlined = read(format!("{cwd}/src/helper.rs"), json!({}));
+    assert_eq!(hook(&outlined.to_string(), &pack).1, "");
     let (code, d, why, err) = hook("{not json", &pack);
     assert_eq!((code, d.as_str(), why.as_str()), (Some(0), "", ""));
     assert!(err.contains("factory hook: cannot parse stdin"), "{err}");
@@ -144,7 +141,7 @@ fn hook_denies_repo_greps_and_whole_reads_of_held_files() {
 
     let sub = repo.join("src");
     let from_sub = json!({"tool_name": "Read",
-        "tool_input": {"file_path": format!("{cwd}/src/helper.rs")},
+        "tool_input": {"file_path": format!("{cwd}/{slice}")},
         "cwd": sub.to_str().unwrap()});
     assert_eq!(
         hook_in(&from_sub.to_string(), &pack, Some(&repo)).1,

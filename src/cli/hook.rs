@@ -67,27 +67,15 @@ impl Held {
         Held::parse(name, &line)
     }
 
-    /// `prd.md` and `log.jsonl` are never held: the pack carries cuts of them, not the files.
+    /// Only the slice, the header's first file, is held: the pack carries cuts of the others, so a whole read of one is the builder wanting the rest.
     pub fn section(&self, path: &str, repo: &Path) -> Option<&'static str> {
         if !self.slice_pack {
             return None;
         }
         let repo = repo.to_str()?.trim_end_matches('/');
-        let at = self
-            .files
-            .iter()
-            .position(|f| path.strip_prefix(repo).and_then(|r| r.strip_prefix('/')) == Some(f))?;
-        let name = shell::program(&self.files[at]);
-        if name == "prd.md" {
-            return None;
-        }
-        if at == 0 {
-            return Some("Slice");
-        }
-        if name == "log.jsonl" {
-            return None;
-        }
-        Some("Outline")
+        let slice = self.files.first()?;
+        (path.strip_prefix(repo).and_then(|r| r.strip_prefix('/')) == Some(slice.as_str()))
+            .then_some("Slice")
     }
 }
 
@@ -1238,7 +1226,7 @@ mod tests {
         let want = |s: &str| Verdict::Deny(pack_hint(s));
         assert_eq!(read(&format!("/repo/{SLICE}"), json!({})), want("Slice"));
         assert_eq!(read(SLICE, json!({"offset": null})), want("Slice"));
-        assert_eq!(read("/repo/src/helper.rs", json!({})), want("Outline"));
+        assert_eq!(read("/repo/src/helper.rs", json!({})), Verdict::Allow);
         assert_eq!(
             read(
                 &format!("/repo/{SLICE}"),
@@ -1260,11 +1248,12 @@ mod tests {
         );
         assert_eq!(
             read("/repo/docs/features/001-x/agent-log.md", json!({})),
-            want("Outline")
+            Verdict::Allow
         );
         assert_eq!(read("/repo/src/other.rs", json!({})), Verdict::Allow);
         assert_eq!(bash(&format!("cat {SLICE}")), want("Slice"));
-        assert_eq!(bash("cd /repo && cat src/helper.rs"), want("Outline"));
+        assert_eq!(bash("cd /repo && cat src/helper.rs"), Verdict::Allow);
+        assert_eq!(bash(&format!("cat src/helper.rs {SLICE}")), want("Slice"));
         assert!(!denied(bash(&format!("cat {SLICE} | head -40"))));
         assert!(!denied(bash(&format!("sed -n 1,40p {SLICE}"))));
         let cp = Held::parse(
@@ -1284,28 +1273,28 @@ mod tests {
     fn only_the_repo_copy_of_a_held_file_is_held() {
         let h = held();
         let repo = Path::new("/repo");
-        assert_eq!(h.section("/repo/src/helper.rs", repo), Some("Outline"));
+        assert_eq!(h.section(&format!("/repo/{SLICE}"), repo), Some("Slice"));
         assert_eq!(
-            h.section("/repo/src/helper.rs", Path::new("/repo/")),
-            Some("Outline")
+            h.section(&format!("/repo/{SLICE}"), Path::new("/repo/")),
+            Some("Slice")
         );
         for other in [
-            "/tmp/src/helper.rs",
-            "/repo/vendor/x/src/helper.rs",
-            "/repo-old/src/helper.rs",
-            "src/helper.rs",
+            format!("/tmp/{SLICE}"),
+            format!("/repo/vendor/x/{SLICE}"),
+            format!("/repo-old/{SLICE}"),
+            SLICE.to_string(),
         ] {
-            assert_eq!(h.section(other, repo), None, "{other}");
+            assert_eq!(h.section(&other, repo), None, "{other}");
         }
         let v = decide(
-            &json!({"tool_name": "Read", "tool_input": {"file_path": "../src/helper.rs"}}),
+            &json!({"tool_name": "Read", "tool_input": {"file_path": format!("../{SLICE}")}}),
             &h,
             repo,
             Path::new("/repo/app"),
         );
-        assert_eq!(v, Verdict::Deny(pack_hint("Outline")));
+        assert_eq!(v, Verdict::Deny(pack_hint("Slice")));
         let v = decide(
-            &json!({"tool_name": "Read", "tool_input": {"file_path": "src/helper.rs"}}),
+            &json!({"tool_name": "Read", "tool_input": {"file_path": SLICE}}),
             &h,
             repo,
             Path::new("/repo/vendor/x"),
