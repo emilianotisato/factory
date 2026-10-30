@@ -9,6 +9,9 @@
 - Inner loop: 1 run, green, ~3 min (the test suite ran twice in it). One red targeted run of the cockpit tests: my JSON test called `wait` with a cursor of 0, which relayed the BLOCK instead of the finish. It now waits on the phase.
 - Deviations: none from the FRs. AD-1 (fyi) covers how the flags combine.
 - Prove: left for the checkpoint, rows FR-1, FR-2 (plus `factory status <id> --line` on a fixture run), FR-3.
+- Prove FR-1 (checkpoint 1): `cp-1/fr1-status-json.txt`: `status_json_carries_the_board_and_what_the_owner_owes` green; `status <id> --json` owes BLOCK-1 before `factory answer` and nothing after, and an unknown id exits 1 with empty stdout.
+- Prove FR-2 (checkpoint 1): `cp-1/fr2-glance-line.txt`: `the_glance_line_names_the_first_state_that_applies` green; `status <id> --line` on the fixture run printed `001 · BLOCK-1 open`, then `001 · finished · 3/3 done · 0m` (in `cp-1/fr1-status-json.txt`).
+- Prove FR-3 (checkpoint 1): `cp-1/fr3-status-here.txt`: `here_keeps_this_repos_runs_and_a_listing_exits_zero` green; with two live runs, `--here --json` keeps only this repo's from a subdirectory and is empty outside, and every listing exits 0.
 
 **Slice**: Makes `factory status` a data source. `--json` prints the versioned envelope, `--line` prints one glance line per run, `--here` keeps this repo's runs, and the no-id listing exits 0. Plain `factory status [RUN]` prints exactly what it prints today. The mod that reads this JSON is slice 02's; it is built against the envelope §3 defines, so both slices can run at once.
 

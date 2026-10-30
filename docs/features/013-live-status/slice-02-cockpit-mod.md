@@ -10,6 +10,9 @@
 - **Inner loop**: 1 run, 0 red, 2 min. The mod's own loop (`claude plugin test`) went red twice while the tests were being written. Both were test-side: the kit wants every hook beneath the plugin registered before the first `$` call, and a refused `process.run` is `{ deny }`, not a throw. `tsc` against the 2.1.312 types (scratch tsconfig outside the mod) caught that the kit's `$.command.run` takes a full `CommandRunInput`.
 - **Red on purpose**: `the_mod_carries_the_crates_version` failed with the constant at `0.10.0`, with the constant line deleted, and with `plugin.json` at `0.10.0`. A `register.tsx` with a syntax error made `claude plugin validate` and `claude plugin test` each exit 1 ("hooks module did not load … does not parse"). The full gate's red run is left for the checkpoint.
 - **Deviations**: AD-2 (CI workflow edited, as §8 orders), AD-3 (the first poll runs at start; the pane shows a failed poll's error).
+- **Prove FR-4** (checkpoint 1): `cp-1/fr4-plugin-test.txt`: `claude plugin test mods/cockpit` (2.1.312), 14 pass, 0 fail.
+- **Prove FR-6** (checkpoint 1): `cp-1/fr6-gate-red.txt`: the full gate, run with a syntax error appended to `register.tsx`, went red at `claude plugin validate` ("register.tsx does not parse"), exit 1; the file was restored. The CI-log half is read at polish.
+- **Prove FR-4, Human** (checkpoint 1): not reached; the owner looks at it in a live cockpit at review, after slice 03's install.
 
 **Slice**: Adds the Claude Code mod at `mods/cockpit/` and puts it under the gate. In a cockpit session it polls `factory status --here --json` every 10 s and draws the status line, the band when the owner is needed, and the `/factory-board` pane. In a worker it does nothing. The gate gains `claude plugin validate` and `claude plugin test`, CI installs a pinned `claude`, and a cargo test pins the mod's version to the crate's. Embedding the mod in the binary and installing it is slice 03's.
 
