@@ -1,6 +1,6 @@
 [docs]
 framework = 3
-gate = "cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test"
+gate = "cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test && claude plugin validate mods/cockpit && claude plugin test mods/cockpit"
 inner = "cargo fmt && cargo clippy --all-targets -- -D warnings && cargo test -q"
 lanes = 4
 checkpoint_every = 2

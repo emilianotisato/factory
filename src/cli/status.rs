@@ -1,13 +1,15 @@
 //! Slices and lanes come from the board, the truth; everything else from the run's own files.
 use std::io::Write;
+use std::path::Path;
 
 use clap::Args;
+use serde::Serialize;
 
 use crate::cockpit::{self, tokens};
 use crate::docs::{Docs, Status};
-use crate::error::io;
+use crate::error::{io, json};
 use crate::events::{self, Event, EventKind};
-use crate::run::Run;
+use crate::run::{Phase, Run, RunState};
 use crate::scheduler::pad_list;
 use crate::stream::RateLimit;
 use crate::{Result, clock, paths, quota, worker};
@@ -16,24 +18,206 @@ use crate::{Result, clock, paths, quota, worker};
 pub struct StatusArgs {
     /// The run id (`001-20261009-1a2b`); none lists the live runs
     pub run: Option<String>,
+    /// One JSON object: `{"schema":1,"factory":…,"runs":[…]}`, each run with its line, what the owner owes and its board
+    #[arg(long, conflicts_with = "line")]
+    pub json: bool,
+    /// One short line per run, and nothing when there is none
+    #[arg(long)]
+    pub line: bool,
+    /// Only the live runs of the git repository this directory is in
+    #[arg(long, conflicts_with = "run")]
+    pub here: bool,
+}
+
+/// The `schema` of `--json`; bumped when a field changes meaning or goes away.
+const SCHEMA: u32 = 1;
+
+#[derive(Serialize)]
+struct Envelope {
+    schema: u32,
+    factory: &'static str,
+    runs: Vec<RunJson>,
+}
+
+#[derive(Serialize)]
+struct RunJson {
+    id: String,
+    feature: String,
+    phase: &'static str,
+    line: String,
+    owner: Vec<String>,
+    board: Vec<String>,
 }
 
 pub fn status(args: &StatusArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i32> {
     let data_dir = paths::data_dir();
-    let Some(id) = &args.run else {
-        cockpit::list_live(&data_dir, out)?;
-        return Ok(1);
+    let plain = !args.json && !args.line;
+    let runs = match &args.run {
+        Some(id) if plain => {
+            let Some(run) = cockpit::resolve(&data_dir, id, out)? else {
+                return Ok(1);
+            };
+            vec![run]
+        }
+        Some(id) => {
+            if !Run::runs_dir(&data_dir)
+                .join(id)
+                .join(crate::run::STATE_FILE)
+                .is_file()
+            {
+                writeln!(err, "no run {id}").map_err(io("stderr"))?;
+                return Ok(1);
+            }
+            vec![Run::open(&data_dir, id)?]
+        }
+        None => {
+            let mut live = cockpit::live_runs(&data_dir)?;
+            if args.here {
+                let here = paths::repo_root(Path::new(".")).ok();
+                live.retain(|s| here.as_deref().is_some_and(|h| same_repo(&s.repo, h)));
+            }
+            if plain && args.here && live.is_empty() {
+                writeln!(out, "no live runs in this repository").map_err(io("stdout"))?;
+                return Ok(0);
+            }
+            if plain {
+                cockpit::print_live(&data_dir, &live, out)?;
+                return Ok(0);
+            }
+            live.iter()
+                .map(|s| Run::open(&data_dir, s.id.as_str()))
+                .collect::<Result<_>>()?
+        }
     };
-    let Some(run) = cockpit::resolve(&data_dir, id, out)? else {
-        return Ok(1);
-    };
-    for l in board(&run)?.iter().take(10) {
-        writeln!(out, "{l}").map_err(io("stdout"))?;
+    if args.json {
+        let runs = runs.iter().map(run_json).collect::<Result<_>>()?;
+        let env = Envelope {
+            schema: SCHEMA,
+            factory: env!("CARGO_PKG_VERSION"),
+            runs,
+        };
+        let text = serde_json::to_string(&env).map_err(json("serialize status"))?;
+        writeln!(out, "{text}").map_err(io("stdout"))?;
+    } else if args.line {
+        for run in &runs {
+            writeln!(out, "{}", line_of(run.state(), &run.events()?)).map_err(io("stdout"))?;
+        }
+    } else {
+        for l in board(&runs[0])?.iter().take(10) {
+            writeln!(out, "{l}").map_err(io("stdout"))?;
+        }
     }
-    if let Some(note) = events::skip_note(run.dir(), &events::scan(run.dir())?.1) {
-        writeln!(err, "{note}").map_err(io("stderr"))?;
+    if args.run.is_some() {
+        let run = &runs[0];
+        if let Some(note) = events::skip_note(run.dir(), &events::scan(run.dir())?.1) {
+            writeln!(err, "{note}").map_err(io("stderr"))?;
+        }
     }
     Ok(0)
+}
+
+fn same_repo(repo: &Path, top: &Path) -> bool {
+    repo.canonicalize().is_ok_and(|r| r == top)
+}
+
+fn run_json(run: &Run) -> Result<RunJson> {
+    let s = run.state();
+    let events = run.events()?;
+    Ok(RunJson {
+        id: s.id.to_string(),
+        feature: s.feature.clone(),
+        phase: s.phase.as_str(),
+        line: line_of(s, &events),
+        owner: cockpit::owner(s, &events),
+        board: board(run)?.into_iter().take(10).collect(),
+    })
+}
+
+/// What the glance line is drawn from; the pause is already local `HH:MM`.
+#[derive(Debug, Clone)]
+pub struct Glance<'a> {
+    pub feature: &'a str,
+    pub phase: Phase,
+    pub open: &'a [String],
+    pub parked: Option<&'a str>,
+    pub paused_until: Option<&'a str>,
+    pub driver_dead: bool,
+    pub slices: Option<(usize, usize)>,
+    pub elapsed: u64,
+}
+
+/// The first state that applies; a run that is over shows only its progress.
+pub fn glance(g: &Glance) -> String {
+    let f = g.feature;
+    if !g.phase.is_over() {
+        if !g.open.is_empty() {
+            return format!("{f} · {} open", g.open.join(", "));
+        }
+        if let Some(reason) = g.parked {
+            return format!("{f} · parked: {reason}");
+        }
+        if let Some(at) = g.paused_until {
+            return format!("{f} · paused until {at}");
+        }
+        if g.driver_dead {
+            return format!("{f} · driver dead");
+        }
+    }
+    let done = g
+        .slices
+        .map_or(String::new(), |(n, m)| format!(" · {n}/{m} done"));
+    format!("{f} · {}{done} · {}", g.phase, short_elapsed(g.elapsed))
+}
+
+fn line_of(s: &RunState, events: &[Event]) -> String {
+    let open = cockpit::open_questions(events);
+    let parked = cockpit::park(s, events).and_then(|e| match &e.kind {
+        EventKind::RunParked { reason, .. } => Some(reason.as_str()),
+        _ => None,
+    });
+    let now = clock::unix_now();
+    let paused = s.paused_until.filter(|u| *u > now).map(clock::local_hhmm);
+    let slices = Docs::open(&s.repo)
+        .and_then(|d| d.status(&s.feature))
+        .ok()
+        .map(|b| {
+            let done = b
+                .slices
+                .iter()
+                .filter(|x| x.status.as_deref() == Some("done"))
+                .count();
+            (done, b.slices.len())
+        });
+    glance(&Glance {
+        feature: &s.feature,
+        phase: s.phase,
+        open: &open,
+        parked,
+        paused_until: paused.as_deref(),
+        driver_dead: cockpit::driver_dead(s, events),
+        slices,
+        elapsed: span(s),
+    })
+}
+
+/// Start to now, or to the last update for a run that is over.
+fn span(s: &RunState) -> u64 {
+    let started = clock::from_rfc3339(&s.started_at).unwrap_or_else(clock::unix_now);
+    let end = if s.phase.is_over() {
+        clock::from_rfc3339(&s.updated_at).unwrap_or_else(clock::unix_now)
+    } else {
+        clock::unix_now()
+    };
+    end.saturating_sub(started)
+}
+
+fn short_elapsed(secs: u64) -> String {
+    let (h, m) = (secs / 3600, secs % 3600 / 60);
+    if h > 0 {
+        format!("{h}h {m:02}m")
+    } else {
+        format!("{m}m")
+    }
 }
 
 pub fn board(run: &Run) -> Result<Vec<String>> {
@@ -41,18 +225,12 @@ pub fn board(run: &Run) -> Result<Vec<String>> {
     let events = run.events()?;
     let mut lines = Vec::with_capacity(10);
 
-    let started = clock::from_rfc3339(&s.started_at).unwrap_or_else(clock::unix_now);
-    let end = if s.phase.is_over() {
-        clock::from_rfc3339(&s.updated_at).unwrap_or_else(clock::unix_now)
-    } else {
-        clock::unix_now()
-    };
     lines.push(format!(
         "run {} · {}{} · {} elapsed",
         s.id,
         s.phase,
         if s.stopped { " (stopped)" } else { "" },
-        elapsed(end.saturating_sub(started))
+        elapsed(span(s))
     ));
 
     match Docs::open(&s.repo).and_then(|d| d.status(&s.feature)) {
@@ -301,6 +479,126 @@ mod tests {
         assert_eq!(elapsed(0), "0m 00s");
         assert_eq!(elapsed(754), "12m 34s");
         assert_eq!(elapsed(3 * 3600 + 7 * 60), "3h 07m");
+    }
+
+    #[test]
+    fn the_glance_line_names_the_first_state_that_applies() {
+        let base = Glance {
+            feature: "013",
+            phase: Phase::Building,
+            open: &[],
+            parked: None,
+            paused_until: None,
+            driver_dead: false,
+            slices: Some((1, 3)),
+            elapsed: 12 * 60 + 34,
+        };
+        assert_eq!(glance(&base), "013 · building · 1/3 done · 12m");
+        let one = ["BLOCK-1".to_string()];
+        let two = ["BLOCK-1".to_string(), "ASK-2".to_string()];
+        assert_eq!(
+            glance(&Glance {
+                open: &one,
+                ..base.clone()
+            }),
+            "013 · BLOCK-1 open",
+            "an open block wins over the building phase"
+        );
+        assert_eq!(
+            glance(&Glance {
+                open: &two,
+                driver_dead: true,
+                ..base.clone()
+            }),
+            "013 · BLOCK-1, ASK-2 open"
+        );
+        assert_eq!(
+            glance(&Glance {
+                phase: Phase::WaitingOwner,
+                parked: Some("budget"),
+                ..base.clone()
+            }),
+            "013 · parked: budget"
+        );
+        assert_eq!(
+            glance(&Glance {
+                phase: Phase::Paused,
+                paused_until: Some("14:30"),
+                driver_dead: true,
+                ..base.clone()
+            }),
+            "013 · paused until 14:30"
+        );
+        assert_eq!(
+            glance(&Glance {
+                driver_dead: true,
+                ..base.clone()
+            }),
+            "013 · driver dead",
+            "a dead driver wins over the building phase"
+        );
+        assert_eq!(
+            glance(&Glance {
+                phase: Phase::Finished,
+                open: &one,
+                driver_dead: true,
+                slices: Some((3, 3)),
+                elapsed: 3600 + 2 * 60 + 59,
+                ..base.clone()
+            }),
+            "013 · finished · 3/3 done · 1h 02m",
+            "a run that is over shows only its progress"
+        );
+        assert_eq!(
+            glance(&Glance {
+                phase: Phase::Checkpoint,
+                slices: None,
+                elapsed: 0,
+                ..base.clone()
+            }),
+            "013 · checkpoint · 0m",
+            "no board, no slice count"
+        );
+
+        let three = [
+            "BLOCK-101".to_string(),
+            "BLOCK-102".to_string(),
+            "ASK-103".to_string(),
+        ];
+        let widest = [
+            Glance {
+                feature: "999",
+                open: &three,
+                ..base.clone()
+            },
+            Glance {
+                feature: "999",
+                phase: Phase::WaitingOwner,
+                parked: Some("budget"),
+                ..base.clone()
+            },
+            Glance {
+                feature: "999",
+                paused_until: Some("23:59"),
+                ..base.clone()
+            },
+            Glance {
+                feature: "999",
+                driver_dead: true,
+                ..base.clone()
+            },
+            Glance {
+                feature: "999",
+                phase: Phase::WaitingOwner,
+                slices: Some((99, 99)),
+                elapsed: 999 * 3600 + 59 * 60,
+                ..base.clone()
+            },
+        ];
+        for g in &widest {
+            let l = glance(g);
+            assert!(l.chars().count() <= 60, "{} chars: {l}", l.chars().count());
+        }
     }
 
     #[test]

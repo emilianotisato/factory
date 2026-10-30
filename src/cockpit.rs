@@ -175,6 +175,13 @@ pub fn owed<'a>(state: &RunState, events: &'a [Event], cursor: u64) -> Vec<&'a E
 }
 
 fn owed_from(events: &[Event], cursor: u64, parked: bool) -> Vec<&Event> {
+    let mut owed = needed(events, parked);
+    owed.retain(|e| e.seq <= cursor);
+    owed
+}
+
+/// Every open question from its latest opening event, then the park, in seq order.
+fn needed(events: &[Event], parked: bool) -> Vec<&Event> {
     let open = open_questions(events);
     let mut owed: Vec<&Event> = open
         .iter()
@@ -188,10 +195,28 @@ fn owed_from(events: &[Event], cursor: u64, parked: bool) -> Vec<&Event> {
                 .find(|e| matches!(e.kind, EventKind::RunParked { .. })),
         );
     }
-    owed.retain(|e| e.seq <= cursor);
     owed.sort_by_key(|e| e.seq);
     owed.dedup_by_key(|e| e.seq);
     owed
+}
+
+/// What the owner must act on now, whatever the cursor: the questions, the park, then a dead driver.
+pub fn owner(state: &RunState, events: &[Event]) -> Vec<String> {
+    if state.phase.is_over() {
+        return Vec::new();
+    }
+    let mut owner: Vec<String> = needed(events, parked_on(state, events).is_some())
+        .into_iter()
+        .filter_map(|e| line(e, &state.feature))
+        .collect();
+    if driver_dead(state, events) {
+        owner.push(driver_dead_line(&state.feature));
+    }
+    owner
+}
+
+pub fn driver_dead_line(feature: &str) -> String {
+    format!("driver dead; run: factory run {feature}")
 }
 
 pub fn status_line(state: &RunState, events: &[Event]) -> String {
@@ -220,11 +245,16 @@ pub fn in_flight(state: &RunState) -> usize {
 }
 
 pub fn parked_on(state: &RunState, events: &[Event]) -> Option<String> {
+    line(park(state, events)?, &state.feature)
+}
+
+/// The `RunParked` event a waiting run is parked on, if no start or resume came after it.
+pub fn park<'a>(state: &RunState, events: &'a [Event]) -> Option<&'a Event> {
     if state.phase != run::Phase::WaitingOwner {
         return None;
     }
     events.iter().rev().find_map(|e| match &e.kind {
-        EventKind::RunParked { .. } => Some(line(e, &state.feature)),
+        EventKind::RunParked { .. } => Some(Some(e)),
         EventKind::RunStarted | EventKind::RunResumed => Some(None),
         _ => None,
     })?
@@ -275,10 +305,17 @@ pub fn resolve(data_dir: &Path, id: &str, out: &mut dyn Write) -> Result<Option<
 }
 
 pub fn list_live(data_dir: &Path, out: &mut dyn Write) -> Result<()> {
-    let live: Vec<RunState> = run::list_runs(data_dir)?
+    print_live(data_dir, &live_runs(data_dir)?, out)
+}
+
+pub fn live_runs(data_dir: &Path) -> Result<Vec<RunState>> {
+    Ok(run::list_runs(data_dir)?
         .into_iter()
         .filter(|s| !s.phase.is_over())
-        .collect();
+        .collect())
+}
+
+pub fn print_live(data_dir: &Path, live: &[RunState], out: &mut dyn Write) -> Result<()> {
     if live.is_empty() {
         writeln!(
             out,

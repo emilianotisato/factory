@@ -65,6 +65,11 @@
 // the GIT_CONFIG_* variables with values, prompt, pack, session id, model,
 // effort and settings. `claude --version` alone prints a fixed string and
 // records no call; every assistant line's `message.model` is `init.model`.
+//
+// A `claude plugin …` call is recorded, then answered from
+// $FACTORY_STUB_DIR/plugins.json and never starts a worker stream: the two
+// `list --json` calls print what `marketplace add` (the name in the folder's
+// .claude-plugin/marketplace.json) and `install` marked present.
 const fs = require('node:fs')
 const path = require('node:path')
 const crypto = require('node:crypto')
@@ -129,6 +134,7 @@ writeAtomic(path.join(callsDir, `${n}.json`), JSON.stringify({
   effort: flags['--effort'] ?? null,
   settings: flags['--settings'] ?? null,
 }, null, 2))
+if (argv[0] === 'plugin') plugin(argv.slice(1))
 
 // ── 2. pick the step ─────────────────────────────────────────────────────────
 let step = { outcome: 'done' }
@@ -769,4 +775,29 @@ function emit(event) {
 function fail(code, msg) {
   console.error(`stub claude: ${msg}`)
   process.exit(code)
+}
+
+function plugin(args) {
+  const file = path.join(stubDir, 'plugins.json')
+  const state = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : { marketplaces: [], plugins: [] }
+  const words = args.filter((a) => !a.startsWith('--'))
+  const verb = words.slice(0, words[0] === 'marketplace' ? 2 : 1).join(' ')
+  if (verb === 'marketplace list' && args.includes('--json')) {
+    process.stdout.write(JSON.stringify(state.marketplaces) + '\n')
+  } else if (verb === 'list' && args.includes('--json')) {
+    process.stdout.write(JSON.stringify(state.plugins) + '\n')
+  } else if (verb === 'marketplace add' && words[2]) {
+    const manifest = path.join(words[2], '.claude-plugin', 'marketplace.json')
+    if (!fs.existsSync(manifest)) fail(1, `${manifest} does not exist`)
+    const name = JSON.parse(fs.readFileSync(manifest, 'utf8')).name
+    state.marketplaces = [...state.marketplaces, { name, source: 'directory', path: words[2] }]
+    writeAtomic(file, JSON.stringify(state, null, 2))
+  } else if (verb === 'install' && words[1]) {
+    const scope = args.includes('--scope') ? args[args.indexOf('--scope') + 1] : 'user'
+    state.plugins = [...state.plugins, { id: words[1], version: '0.0.0', scope, enabled: true }]
+    writeAtomic(file, JSON.stringify(state, null, 2))
+  } else {
+    fail(64, `claude plugin ${args.join(' ')}: not a call the stub answers`)
+  }
+  process.exit(0)
 }

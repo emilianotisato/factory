@@ -55,6 +55,18 @@ pub fn rfc3339(secs: u64) -> String {
     )
 }
 
+/// `HH:MM` in the machine's own time zone; UTC when the zone cannot be read.
+pub fn local_hhmm(secs: u64) -> String {
+    let t = secs as libc::time_t;
+    // SAFETY: `tm` is plain data that `localtime_r` fills; both pointers outlive the call.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    if unsafe { libc::localtime_r(&t, &mut tm) }.is_null() {
+        let rem = secs % 86_400;
+        return format!("{:02}:{:02}", rem / 3600, rem % 3600 / 60);
+    }
+    format!("{:02}:{:02}", tm.tm_hour, tm.tm_min)
+}
+
 pub fn yyyymmdd(secs: u64) -> String {
     let (y, m, d) = civil((secs / 86_400) as i64);
     format!("{y:04}{m:02}{d:02}")

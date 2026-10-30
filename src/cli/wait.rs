@@ -80,7 +80,7 @@ pub fn wait(args: &WaitArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result
                 std::thread::sleep(SETTLE);
                 continue;
             }
-            writeln!(out, "driver dead; run: factory run {feature}").map_err(io("stdout"))?;
+            writeln!(out, "{}", cockpit::driver_dead_line(&feature)).map_err(io("stdout"))?;
             return Ok(4);
         }
         rereads = 0;

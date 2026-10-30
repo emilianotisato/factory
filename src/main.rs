@@ -57,6 +57,11 @@ enum Command {
         #[command(subcommand)]
         verb: cli::skills::SkillsVerb,
     },
+    /// Put the cockpit mod into Claude Code
+    Cockpit {
+        #[command(subcommand)]
+        verb: cli::cockpit::CockpitVerb,
+    },
     /// Create, seed and set up this repo's lanes
     Lanes {
         #[command(subcommand)]
@@ -93,6 +98,7 @@ fn main() -> ExitCode {
         Command::Hook => cli::hook::hook(&mut stdin(), &mut stdout(), &mut stderr()),
         Command::Init => cli::docs::docs(&["init".to_string()], &mut stdout(), &mut stderr()),
         Command::Skills { verb } => cli::skills::skills(&verb, &mut stdout()),
+        Command::Cockpit { verb } => cli::cockpit::cockpit(&verb, &mut stdout()),
         Command::Lanes { verb } => cli::lanes::lanes(&verb, &mut stdout()),
         Command::Upgrade(a) => cli::upgrade::upgrade(&a, &mut stdout()),
         Command::Docs { args } => cli::docs::docs(&args, &mut stdout(), &mut stderr()),
