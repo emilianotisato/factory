@@ -19,9 +19,9 @@ The inversion is the whole idea. **The binary orchestrates; the model only build
 ## The loop
 
 1. **Idea.** One file under `docs/ideas/`. Ideas have a state, an origin and a re-trigger ("look again when X happens"). A cross-repo scanner shows the open ideas of every project you own.
-2. **PRD.** `/prd` interviews you, checks every claim against the real code, and writes `docs/features/NNN-slug/prd.md`: why now, blast radius, one section per functional requirement with the decisions taken and the alternatives rejected, a QA plan, what is not handled. An adversarial pass from a second vendor hunts for holes before you agree to it.
-3. **Slices.** The PRD is cut into vertical slices, each one buildable and provable on its own, with a dependency graph so independent slices build in parallel.
-4. **`factory run NNN`.** A detached driver takes the feature. For each ready slice it builds a context pack (the slice, the PRD sections it cites, a code outline, the contract) and spawns a worker, `claude -p` today. Workers run in lanes: isolated working copies with their own database, ports and env, so parallel builds never collide. Every slice ends with a commit the driver makes.
+2. **PRD.** `/prd` interviews you, checks every claim against the real code, and writes `docs/features/NNN-slug/prd.md`: why now, blast radius, one section per functional requirement with the decisions taken and the alternatives rejected, a QA plan, what is not handled. An adversarial pass from a second vendor hunts for holes before you agree to it. Agreeing ends in one question, and **Build it now** goes straight to the run in the same session.
+3. **Slices.** The PRD is cut into vertical slices, each one buildable and provable on its own, with a dependency graph so independent slices build in parallel. A run started on an unsliced PRD cuts them itself; `/slice` typed by hand still asks before it writes.
+4. **`factory run NNN`.** Preflight refusals the cockpit can fix alone, such as the feature's own uncommitted docs, it fixes and retries; the rest become questions. Then a detached driver takes the feature. For each ready slice it builds a context pack (the slice, the PRD sections it cites, a code outline, the contract) and spawns a worker, `claude -p` today. Workers run in lanes: isolated working copies with their own database, ports and env, so parallel builds never collide. Every slice ends with a commit the driver makes.
 5. **Checkpoints.** Every N slices the driver runs the full gate on what HEAD actually holds, spawns a fix worker on red, and a checkpoint worker that proves the requirements covered so far against the real app.
 6. **Blocks.** A worker that hits a real fork stops and asks. The lane parks, the other lanes keep going, and the question reaches you as a notification. `factory answer BLOCK-n "..."` resumes it. No work is lost when the session that started the run dies: the driver is a process, not a chat.
 7. **Polish.** A local code review, a security pass, a UX pass over the changed screens, a second opinion from a different vendor, then test cleanup. Findings are triaged into fix, ask or park, and the fixes are made.
@@ -33,7 +33,7 @@ The inversion is the whole idea. **The binary orchestrates; the model only build
 
 **The docs framework.** `docs/project.toml` holds the project's knobs: the gate, the inner loop, lane count, model and effort per role, a per-run token budget. Each feature folder has `prd.md`, its slices, a `state.toml` written only by the binary under a lock, an append-only `log.jsonl` of decisions, blocks and notes, and a `retro.md`. `factory docs check` validates the board and runs as a pre-commit hook. `factory docs migrate` moves a repo from the previous format in one reviewable diff.
 
-**The skills.** The judgment calls stay in Claude Code as thin skills, shipped from this repo and installed by `factory` into each project: `/prd`, `/slice`, `/deliver` (the cockpit), `/polish`, `/gate`, `/harness`, `/prune`, `/ux`, and `/lanes`. They live in `skills/` and ship inside the binary. `factory init` writes byte-identical copies into each repo's `.claude/skills/`, with a manifest of their hashes, so `factory docs doctor` says when a repo's copy is behind, ahead or hand-edited, and `factory skills update` brings it current.
+**The skills.** The judgment calls stay in Claude Code as thin skills, shipped from this repo and installed by `factory` into each project: `/prd`, `/slice`, `/deliver` (the cockpit), `/polish`, `/gate`, `/harness`, `/prune`, `/ux`, and `/lanes`. They live in `skills/` and ship inside the binary. `factory init` writes byte-identical copies into each repo's `.claude/skills/`, with a manifest of their hashes, so `factory docs doctor` says when a repo's copy is behind, ahead or hand-edited, and `factory skills update` brings it current. The skills do that themselves: when `doctor` reports them behind, `/prd`, `/slice`, `/deliver` and `/lanes` update them and commit the change on the current branch. Only a hand-edited copy gets a question.
 
 **The gate.** `/gate` interviews a project into one command that proves a change is done: tiered checks for lint, types, coverage floors, complexity, mutation, size budgets and architecture rules, measured against reality and proven to fail before they are declared. Every slice's Verify task, every checkpoint and the polish pass run that one command. A fast subset is the inner loop.
 
@@ -45,7 +45,7 @@ The inversion is the whole idea. **The binary orchestrates; the model only build
 
 **`factory ctx`.** Code lookups for workers: definitions, references and outlines over ripgrep and tree-sitter, no language server. Lookups were 56 to 74% of a worker's tool calls and 92% of the bytes it read; a precomputed outline in the pack and a cheap `def` cut both.
 
-**The cockpit.** `factory wait`, `status`, `answer`, `stop`. A thin Claude Code session, phone-sized output, that relays blocks and runs the closing review. If the session dies, `factory wait` replays what it missed.
+**The cockpit.** `factory wait`, `status`, `answer`, `stop`. A Claude Code session, phone-sized output, that relays blocks and runs the closing review. It is the session that wrote the PRD, or a fresh one after `/clear` and `/deliver NNN`. It wakes on an event or every 55 minutes, and if it dies, `factory wait` replays what it missed.
 
 **The observatory.** SQLite in the user data dir. `factory report` per run and per worker, `factory retro` writes the numbers into the feature's retro. Experiments are knob changes in `project.toml`, one variable per feature, with a stated hypothesis, measured here. No A/B against anything else.
 
@@ -90,7 +90,7 @@ Then, in Claude Code, the setups a run relies on. Each is an interview, never un
 2. `/lanes` sets up each lane's database, ports and env, and proves they run side by side.
 3. `/harness`, when the app has a UI or an API to drive, writes the skill that drives it, so checkpoints can see it working.
 
-Then `/prd` to write the first feature, `/slice` to cut it, and `/deliver NNN` to build it. `factory docs preflight NNN` says what a run would refuse before it starts.
+Then `/prd` to write the first feature. When you agree it, **Build it now** slices it and starts the run in the same session. `/slice` and `/deliver NNN` still work by hand. `factory docs preflight NNN` says what a run would refuse before it starts.
 
 To move an existing repo instead, from older skills or from no board at all, point a Claude Code session at [docs/reference/adopt-a-repo.md](docs/reference/adopt-a-repo.md). It migrates the docs, installs the skills, runs the setups and stops for you at every judgment call.
 
