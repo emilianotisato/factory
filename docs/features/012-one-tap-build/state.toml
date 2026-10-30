@@ -1,1 +1,9 @@
 status = "ready"
+
+[slices.1]
+status = "pending"
+depends_on = []
+
+[slices.2]
+status = "pending"
+depends_on = []

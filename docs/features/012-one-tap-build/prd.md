@@ -155,7 +155,18 @@ From idea 2026-10-15 "Fill a PRD's author from git", cut from PRD-008 FR-9 when 
 
 ## 12. Slices
 
-_(Not sliced yet. Run `/slice`.)_
+Two slices, independent, one checkpoint ▲ after 02.
+
+- **01 — CLI: unsliced refusal, author, Blast radius.** The Rust and scaffold half: preflight refuses a feature with no slices (FR-2's defensive line), `author` comes from `git config user.name` (FR-7), and the scaffold's §2 says it may go (FR-6). No skill text and no version bump.
+- **02 — Skills: the one-tap flow, 0.11.0.** Every skill edit of this PRD: `/prd` offers Build / Slice / Stop (FR-1) and says Blast radius is optional (FR-6), `/slice` writes with no question when `/deliver` calls it (FR-2), `/deliver` slices, clears mechanical refusals and waits 55 minutes (FR-2, FR-3, FR-5), and a shared stale-tooling rule is linked from every doctor step (FR-4). Then the one bump to 0.11.0 and the relock.
+
+**Why this cut.** All skill text sits in one slice because `relock` refuses a second bundle change under the same version (`src/skills.rs:161-178`), so two slices that both edit skills would need two bumps. The two slices share no file: 01 cites `not sliced — /slice NNN` only as a string the skills relay, so they build in parallel.
+
+**Checkpoint.** With `checkpoint_every = 2` the one checkpoint falls after 02 and runs the full gate. FR-2's preflight half, FR-6 and FR-7 are proven there by their tests. FR-1, FR-3, FR-4, FR-5 and FR-2's `/deliver` half need a live session driving `/prd` and `/deliver`, so the checkpoint reads each passage against its acceptance, and the real proof is the owner's next feature after the merge. That is why the feature ships as `shipped`, not archived.
+
+**Workflow.** One branch (`feat/one-tap-build`), one PR, one commit per slice, Prove at the checkpoint.
+
+**QA guide.** [`qa-guide.md`](qa-guide.md) holds FR-1, the one Human row.
 
 ## 13. Non-goals
 
