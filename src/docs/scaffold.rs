@@ -260,16 +260,10 @@ fn name_ok(what: &str, s: &str) -> Result<()> {
 
 /// `git config user.name` as a frontmatter value that reads back as the name: bare, else quoted.
 fn author(root: &Path) -> Option<String> {
-    let name = preflight::git(root, &["config", "user.name"])?;
-    let name = name.trim();
-    if name.is_empty() {
-        return None;
-    }
-    [name.to_string(), format!("\"{name}\"")]
-        .into_iter()
-        .find(|v| {
-            frontmatter::parse(&format!("---\nauthor: {v}\n---\n")).str("author") == Some(name)
-        })
+    let name = preflight::git_line(root, &["config", "user.name"]).filter(|n| !n.is_empty())?;
+    [name.clone(), format!("\"{name}\"")].into_iter().find(|v| {
+        frontmatter::parse(&format!("---\nauthor: {v}\n---\n")).str("author") == Some(name.as_str())
+    })
 }
 
 /// No `log.jsonl`: the first append makes it.
@@ -316,7 +310,7 @@ pub fn new_from(
         .replace("{{DATE}}", &today())
         .replace("{{GATE}}", &gate);
     if let Some(author) = author(root) {
-        body = body.replacen("author: _(name)_", &format!("author: {author}"), 1);
+        body = body.replacen("\nauthor: _(name)_\n", &format!("\nauthor: {author}\n"), 1);
     }
     if let Some((id, _, i)) = &idea {
         body = with_idea(&body, id, &i.body);

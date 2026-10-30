@@ -284,8 +284,8 @@ fn new_scaffolds_the_prd_and_draft_state_and_worktrees_never_share_a_number() {
     assert!(!main.join("docs/features/001-fixture/agent-log.md").exists());
 }
 
-fn new_prd(dir: &Path, slug: &str) -> String {
-    let out = docs_in(dir, &["new", slug]);
+fn new_prd(dir: &Path, slug: &str, flags: &[&str]) -> String {
+    let out = docs_in(dir, &[&["new", slug], flags].concat());
     assert!(out.status.success(), "{}", stderr(&out));
     let folder = fs::read_dir(dir.join("docs/features"))
         .unwrap()
@@ -302,17 +302,25 @@ fn the_author_comes_from_git_user_name() {
     assert!(docs_in(dir.path(), &["init"]).status.success());
 
     git_in(dir.path(), &["config", "user.name", "Ada"]);
-    let prd = new_prd(dir.path(), "x");
+    let prd = new_prd(dir.path(), "x", &[]);
     assert!(prd.contains("\nauthor: Ada\n"), "{prd}");
     assert_eq!(
         factory::docs::frontmatter::parse(&prd).str("author"),
         Some("Ada")
     );
 
+    let fm = factory::docs::frontmatter::parse(&new_prd(
+        dir.path(),
+        "z",
+        &["--title", "author: _(name)_"],
+    ));
+    assert_eq!(fm.str("title"), Some("author: _(name)_"));
+    assert_eq!(fm.str("author"), Some("Ada"));
+
     for name in ["[Ada]", "1984", "\"Ada\" L", "  "] {
         git_in(dir.path(), &["config", "user.name", name]);
         let slug = format!("y{}", name.len());
-        let fm = factory::docs::frontmatter::parse(&new_prd(dir.path(), &slug));
+        let fm = factory::docs::frontmatter::parse(&new_prd(dir.path(), &slug, &[]));
         let want = match name.trim() {
             "" => "_(name)_",
             n => n,
@@ -326,7 +334,7 @@ fn the_scaffold_says_blast_radius_may_go() {
     let dir = tempfile::tempdir().unwrap();
     git_in(dir.path(), &["init", "-q", "-b", "main"]);
     assert!(docs_in(dir.path(), &["init"]).status.success());
-    let prd = new_prd(dir.path(), "x");
+    let prd = new_prd(dir.path(), "x", &[]);
     let start = prd.find("\n## 2. Blast radius\n").expect("a §2");
     let section = &prd[start + 1..];
     let section = &section[..section.find("\n## 3.").expect("a §3")];

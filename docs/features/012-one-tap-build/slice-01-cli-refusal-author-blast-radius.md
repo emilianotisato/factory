@@ -63,3 +63,9 @@
 - FR-7: `factory docs new x` in a scratch repo with `user.name = Ada`, the frontmatter read back; and one with no `user.name`, still `_(name)_`.
 
 **Acceptance:** after the checkpoint, each of the three rows has its transcript in **Progress**.
+
+**Code-review fixes (2026-10-30).**
+
+- The `not sliced` refusal also fired on a `shipped` feature with a log, the case preflight lets through so a run resumes at the PR. It now skips that case (`src/docs/preflight.rs`), pinned by `a_shipped_feature_with_a_log_resumes_without_slices`.
+- The author replacement matched the first `author: _(name)_` in the rendered body, so a title holding that text took the author instead. It now matches the whole frontmatter line, pinned by a titled case in `the_author_comes_from_git_user_name`.
+- `author()` re-did `git_line`'s trim by hand; it calls `preflight::git_line` now.

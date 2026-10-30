@@ -9,14 +9,14 @@ You are the cockpit of one `factory` run, not its builder. Never read the board,
 
 ## 1. Start
 
-0. `factory docs doctor`, and its `skills` line per [_shared/stale-tooling.md](../_shared/stale-tooling.md). Then `factory docs status NNN`: `not sliced` → invoke `/slice NNN from /deliver` with the Skill tool first.
+0. `factory docs status NNN`. On the default branch → `git switch` to the `branch` it names (`-c` when it does not exist yet), so nothing below commits on the default branch. Then `factory docs doctor`, its `skills` line per [_shared/stale-tooling.md](../_shared/stale-tooling.md). `not sliced` → invoke `/slice NNN from /deliver` with the Skill tool, then commit what it wrote by pathspec, `docs(NNN): slice PRD-NNN`.
 1. `factory run NNN` (add `--budget <weighted tokens>` or `--hypothesis "<one line>"` only when the owner gave one). It prints the run id; tell the owner the id — it is the handle for `factory wait <id>`, `factory status <id>` and `factory stop <id>`.
 2. If it reports a live or resumed run, that run id is the one to drive. So the owner may `/clear` and type `/deliver NNN` at any time: this line picks the run up.
 3. Exit 1 is a preflight refusal: read each `✗` line, fix the ones below, then `factory run NNN` again.
-   - `working tree not clean` with every dirty path under `docs/features/NNN-*` → commit them by pathspec, `docs(NNN): …`. Any other dirty path → ask.
+   - `working tree not clean` with every dirty path under `docs/features/NNN-*` → `git add` them and commit by pathspec, `docs(NNN): …`. Any other dirty path → ask.
    - `docs check` errors in this feature's own files → fix them and commit.
    - `not sliced — /slice NNN` → slice as in step 0.
-   - Every other `✗` line → one `AskUserQuestion` each, its fix as option 1. Never run `/gate` or `/lanes` unasked.
+   - Every other `✗` line → one `AskUserQuestion` each, its fix as option 1; do what the answer says before the retry. Never run `/gate` or `/lanes` unasked.
 
 ## 2. Loop until the run ends
 

@@ -104,3 +104,10 @@
 - Record in **Progress** that the session rows are proven on the owner's next feature after the merge. FR-1 is the one Human row. The feature ships as `shipped`, not archived, because these proofs outlive the merge.
 
 **Acceptance:** Progress holds the gate result, one quoted line per FR, and the post-merge line.
+
+**Code-review fixes (2026-10-30).**
+
+- The stale-tooling hand-edit bullet said to run the `git checkout` lines `factory skills update` prints, which it never prints on `ahead`. It now names the command per file and says which bullet follows. `none` and `unreadable` verdicts now route to the skill's own step 0, and a skill whose own file the update rewrote re-invokes itself (AD-3).
+- `/deliver` started from the default branch would commit the slices, docs fixes and chore update there before `ensure_branch` switched. Step 0 now switches to the feature branch first and commits what `/slice` wrote (AD-2). Step 3 `git add`s the feature's untracked docs before the pathspec commit and applies each answer before retrying.
+- `/prd` said to commit on `feat/{slug}` only after the Build hand-off, and gave a false reason (the run switches from the default branch itself). The branch rule now sits on §7's commit.
+- The three skill-text tests matched needles that other lines also held; they now match the passage each rule lives in, and the `/prd` test's name says what it checks. The bundle was relocked under 0.11.0 (AD-1).

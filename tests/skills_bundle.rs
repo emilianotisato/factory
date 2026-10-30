@@ -224,13 +224,13 @@ fn the_lock_records_what_a_manifest_carries() {
 }
 
 #[test]
-fn the_prd_skill_offers_the_build_and_never_says_clear() {
+fn the_prd_skill_offers_the_build_and_drops_the_clear_advice() {
     let text = fs::read_to_string(root().join("skills/prd/SKILL.md")).unwrap();
     for needle in [
         "Build it now (Recommended)",
         "Slice only",
         "Stop here",
-        "/deliver NNN",
+        "invoke `/deliver NNN` with the Skill tool, in this session",
     ] {
         assert!(text.contains(needle), "{needle:?} missing");
     }
@@ -240,7 +240,12 @@ fn the_prd_skill_offers_the_build_and_never_says_clear() {
 #[test]
 fn the_slice_skill_skips_the_write_question_only_for_deliver() {
     let text = fs::read_to_string(root().join("skills/slice/SKILL.md")).unwrap();
-    for needle in ["Write these? [Y/n]", "from /deliver"] {
+    for needle in [
+        "Write these? [Y/n]",
+        "`NNN from /deliver`",
+        "**From `/deliver`** → print the board without the `Write these?` line",
+        "**Typed by the owner** → ask",
+    ] {
         assert!(text.contains(needle), "{needle:?} missing");
     }
     assert!(!text.contains("/factory-deliver"));
@@ -257,7 +262,12 @@ fn every_doctor_step_links_the_stale_tooling_rule() {
         );
     }
     let rule = read("_shared/stale-tooling.md");
-    for needle in ["hand-edited", "factory skills update", "source checkout"] {
+    for needle in [
+        "**Any `hand-edited:` line** → ask first",
+        "**`ahead (…) → <hint>`**",
+        "**`behind`, `differs` or `missing`**, no hand edit → `factory skills update`",
+        "**`source checkout`**",
+    ] {
         assert!(rule.contains(needle), "{needle:?} missing");
     }
 }

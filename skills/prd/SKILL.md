@@ -153,7 +153,7 @@ Not done until the board agrees and the check is clean:
 factory docs check
 ```
 
-6. **Agreed → `factory docs set NNN status=ready`.** Still open → it stays `draft`, and the summary says which OPENs hold it. Commit: `docs(NNN): PRD-NNN <title>`.
+6. **Agreed → `factory docs set NNN status=ready`.** Still open → it stays `draft`, and the summary says which OPENs hold it. Commit on `feat/{slug}`, never the default branch (`git switch -c feat/{slug}` first when HEAD is there): `docs(NNN): PRD-NNN <title>`.
 
 ## 8. Hand off
 
@@ -167,7 +167,7 @@ End with one recommendation:
   - **Slice only** → invoke `/slice NNN`, attended.
   - **Stop here** → end with the recommendation above that fits.
 
-  Commit the PRD on `feat/{slug}`, because the run refuses the default branch and any branch HEAD is not on. The owner may still `/clear` and type `/deliver NNN` at any time.
+  The owner may still `/clear` and type `/deliver NNN` at any time.
 
 And, whichever of those applies:
 

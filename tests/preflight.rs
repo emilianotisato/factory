@@ -186,3 +186,14 @@ fn an_unsliced_feature_is_refused_before_a_run_starts() {
     let refusal = format!("  ✗ not sliced — /slice {}\n", harness::FEATURE);
     assert!(out.contains(&refusal), "{out}");
 }
+
+#[test]
+fn a_shipped_feature_with_a_log_resumes_without_slices() {
+    let fx = Fixture::new("preflight-unsliced-shipped");
+    strip_slices(&fx);
+    fx.docs(&["set", "001", "status=shipped"]);
+    fx.docs(&["log", "add", "001", "--kind", "note", "--title", "built"]);
+    let (_, out) = preflight(&fx, &[]);
+    assert!(out.contains("resumes at the PR"), "{out}");
+    assert!(!out.contains("not sliced"), "{out}");
+}
