@@ -45,3 +45,31 @@ A comment or name the leaks check should have caught: none found.
 ## Score
 
 4 — the feature landed as the PRD drew it with no red gate, and the review stopped an install that would have reported success while loading a stale mod; one point off for the plugin API being reachable only by carving it out of the binary.
+
+## Numbers
+
+<!-- factory:numbers -->
+| role | workers | own | subagents | weighted | minutes | turns |
+|---|---:|---:|---:|---:|---:|---:|
+| build | 3 | 1478384 | 0 | 1478384 | 22 | 116 |
+| checkpoint | 2 | 234673 | 0 | 234673 | 3 | 21 |
+| polish | 1 | 689273 | 179748 | 869021 | 10 | 34 |
+| total | 6 | 2402330 | 179748 | 2582078 | 35 | 171 |
+
+Knobs: build opus/high default · fix opus/high default · checkpoint opus/high default · polish opus/high default · budget 30000000 default · lanes 4 · factory 0.11.0 · claude 2.1.312
+
+Hypothesis: none
+
+quality: gate_red 0 · worker_gate_red 0 · fix_commits 0 · ci_red_rounds 0 · ci_reruns 0 · findings high=1 medium=5 low=18 fixed=13 parked=2 · decisions 4 decide 1 blocks 0
+
+Pack (build): slice 7389 · prd_sections 5061 · log 1120 · outline 8143 · lookup 1115 · contract 3095 · autonomy 8610 · inner_loop 86 · total 34618 · start_context 21519
+
+Compared with:
+
+| run | feature | weighted | slices | per slice | lines changed | per line | comment share | id hits |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 013-20261030-bf19 (this run) | 013 | 2582078 | 3 | 860693 | 2072 | 1246 | 1.7% | 0 |
+| 012-20261030-59d9 | 012 | 1464096 | 2 | 732048 | 745 | 1965 | 2.2% | 0 |
+| 009-20261015-81ca | 009 | 4146840 | 6 | 691140 | 1748 | 2372 | 3.3% | 0 |
+| 008-20261015-b926 | 008 | 7304873 | 8 | 913109 | 4053 | 1802 | 3.3% | 0 |
+<!-- /factory:numbers -->
