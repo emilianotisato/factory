@@ -1,9 +1,11 @@
 status = "ready"
 
 [slices.1]
-status = "pending"
+status = "done"
+lane = 1
 depends_on = []
 
 [slices.2]
-status = "pending"
+status = "building"
+lane = 2
 depends_on = []

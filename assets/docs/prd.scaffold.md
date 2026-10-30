@@ -18,6 +18,8 @@ _(The pressure. Name the bugs someone actually hit, separately from the improvem
 
 ## 2. Blast radius
 
+_(Delete this section and renumber when nothing outside the FRs can break.)_
+
 - _(not personas: who uses the surface being changed, which FRs touch them, what they would notice)_
 - _(external contracts — API, webhooks, URLs — untouched and decided, or what breaks and how it is versioned)_
 

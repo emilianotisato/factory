@@ -3,7 +3,11 @@
 **Source**: [`prd.md`](prd.md) → §4 FR-2 (decision 5), §8 FR-6 (the scaffold half), §9 FR-7, §11 QA plan. **Depends on**: — (independent of slice 02: this slice touches Rust, the scaffold and tests; 02 touches `skills/`, `Cargo.toml` and the bundle lock)
 **Created**: 2026-10-30
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+- Built: `feature()` in `src/docs/preflight.rs` refuses `not sliced — /slice NNN` when the board has no slices. `scaffold::new_from` fills `author:` from `git config user.name` (trimmed; bare when `frontmatter::parse` reads it back unchanged, else double-quoted; placeholder kept when empty, unreadable or git fails). The scaffold's §2 carries `_(Delete this section and renumber when nothing outside the FRs can break.)_`.
+- Tests: `an_unsliced_feature_is_refused_before_a_run_starts` (`tests/preflight.rs`), `the_author_comes_from_git_user_name` (also `[Ada]`, `1984`, a quote-led name, a blank name) and `the_scaffold_says_blast_radius_may_go` (`tests/docs_v3.rs`); `new_scaffolds_…` now pins `author` as `_(name)_`.
+- Inner loop: 1 run, 0 red, ~2.5 min.
+- Prove (FR-2 preflight half, FR-6, FR-7): left for the checkpoint.
 
 **Slice**: After this slice, `factory docs preflight` (and so `factory run`) refuses a live feature with no slices, instead of starting a run that ends `nothing ready`. `factory docs new` writes the author from `git config user.name`, and the scaffold says §2 Blast radius may be deleted. The skill text for all three is slice 02's. **No version bump here**: slice 02 bumps to 0.11.0 once for the whole PR, because a second bump is refused (`src/skills.rs:161-178`).
 

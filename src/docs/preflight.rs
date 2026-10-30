@@ -277,6 +277,9 @@ fn feature(
             "reviewed {r} is set but nothing is built — it marks the code's /polish pass, not a PRD review; clear it with `factory docs set {nnn} reviewed=`"
         ));
     }
+    if slices.is_empty() {
+        refuse.push(format!("not sliced — /slice {nnn}"));
+    }
     let text = f.prd.as_ref().map(|(_, t)| t.as_str()).unwrap_or("");
     if board::has_qa_plan(text) {
         ok.push("QA plan present".into());
