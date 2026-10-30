@@ -183,5 +183,6 @@ fn an_unsliced_feature_is_refused_before_a_run_starts() {
     assert!(fx.state().slices.is_empty());
     let (code, out) = preflight(&fx, &[]);
     assert_eq!(code, Some(1), "{out}");
-    assert!(out.contains("  ✗ not sliced — /slice 001\n"), "{out}");
+    let refusal = format!("  ✗ not sliced — /slice {}\n", harness::FEATURE);
+    assert!(out.contains(&refusal), "{out}");
 }

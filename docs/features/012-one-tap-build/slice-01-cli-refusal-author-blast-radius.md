@@ -8,6 +8,10 @@
 - Tests: `an_unsliced_feature_is_refused_before_a_run_starts` (`tests/preflight.rs`), `the_author_comes_from_git_user_name` (also `[Ada]`, `1984`, a quote-led name, a blank name) and `the_scaffold_says_blast_radius_may_go` (`tests/docs_v3.rs`); `new_scaffolds_…` now pins `author` as `_(name)_`.
 - Inner loop: 1 run, 0 red, ~2.5 min.
 - Prove (FR-2 preflight half, FR-6, FR-7): left for the checkpoint.
+- **Checkpoint 1 (2026-10-30), run with the lane's 0.11.0 build in scratch repos made by `factory init`:**
+  - FR-2 (preflight half): `cp-1/fr2-preflight-test.txt` (the test passes) and `cp-1/fr2-preflight-unsliced.txt`, where `factory docs preflight 001` on an unsliced feature prints `✗ not sliced — /slice 001` and exits 1.
+  - FR-6: `cp-1/fr6-blast-radius.txt`. §2 reads `_(Delete this section and renumber when nothing outside the FRs can break.)_`. After deleting §2 and renumbering 3–8 to 2–7, `docs check` reports 0 errors, and it is `clean` once the scratch repo declares a gate.
+  - FR-7: `cp-1/fr7-ada.txt` (`user.name = Ada` gives `author: Ada`) and `cp-1/fr7-noname.txt` (no `user.name` gives `author: _(name)_`).
 
 **Slice**: After this slice, `factory docs preflight` (and so `factory run`) refuses a live feature with no slices, instead of starting a run that ends `nothing ready`. `factory docs new` writes the author from `git config user.name`, and the scaffold says §2 Blast radius may be deleted. The skill text for all three is slice 02's. **No version bump here**: slice 02 bumps to 0.11.0 once for the whole PR, because a second bump is refused (`src/skills.rs:161-178`).
 
