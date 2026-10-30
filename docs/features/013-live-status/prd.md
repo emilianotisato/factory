@@ -27,7 +27,7 @@ Left alone: `factory wait`, its cursor and the cockpit skill's `PushNotification
 - **`factory status` output.** Without the new flags it prints exactly what it prints today. The no-id listing's exit code goes from 1 to 0 (FR-3). Nothing in the skills reads that exit code: `skills/deliver/SKILL.md:50` only runs it to list runs.
 - **Every Claude Code session on the machine.** A user-scope plugin loads into every session, the factory workers included. In each interactive session outside a worker, the mod spawns `factory status --here --json` every 10 s. Measured 2026-10-30 against 45 run folders: 3 ms to list, 13 ms for one board. Accepted cost: one short process every 10 s per open session. Inside a worker the mod does nothing (FR-4).
 - **The owner's `~/.claude` config.** `factory cockpit install` adds a marketplace and a plugin at user scope (FR-5). It is the only verb that writes there, and only when run.
-- **The gate and CI.** The gate gains two `claude plugin` commands (FR-6), so the gate needs the `claude` CLI on PATH. Every lane worker has it, since it is one. CI gains a step that installs it.
+- **The gate and CI.** The gate gains two `claude plugin` commands (FR-6), so the gate needs the `claude` CLI on PATH. Every lane worker has it, since it is one. CI gains a step that installs it. *Changed 2026-10-30 (owner review, AD-2): CI is left as on `main`; see FR-6.*
 
 ## 3. FR-1 — `factory status --json`
 
@@ -133,6 +133,8 @@ Accepted cost: a local gate needs `claude` on PATH, and CI pays an install step 
 
 **Acceptance**: a deliberately broken `register.tsx` turns the local gate red. The PR's CI log shows both `claude plugin` commands ran and passed. Bumping `Cargo.toml` without the mod turns `cargo test` red.
 
+*Changed 2026-10-30 (owner review, AD-2): CI stays as it is on `main`, running the cargo gate alone. The two `claude plugin` commands run in the local gate only, and the CI-log half of this acceptance is dropped.*
+
 ## 9. Decisions log
 
 - ~~**OPEN-1** — Route A (the project's `.claude/skills/<name>/`, auto-loaded) or Route B (folder marketplace at user scope)?~~ **2026-10-30: Route B, own verb.** Route A loads in every lane worktree, because those are checkouts that track `.claude/skills/` (`git ls-files .claude`). Its consent prompt is also unverified.
@@ -169,7 +171,7 @@ Three slices, sliced 2026-10-30.
 
 **Order and shape.** 01 and 02 are independent and build at once in two lanes; 03 follows 02. The first checkpoint lands after the second slice done, so the JSON contract and the mod are proven before the installer is built on them. The last checkpoint covers 03.
 
-**Workflow.** One branch (`feat/live-status`), one PR, one commit per slice, Prove at the checkpoints. FR-6's CI-log row is read at polish, once the PR's CI has run. The one Human row is in [`qa-guide.md`](qa-guide.md), for the owner at review.
+**Workflow.** One branch (`feat/live-status`), one PR, one commit per slice, Prove at the checkpoints. FR-6's CI-log row is read at polish, once the PR's CI has run. *Changed 2026-10-30 (owner review, AD-2): the CI-log half of FR-6's row is dropped; the gate transcript is its evidence.* The one Human row is in [`qa-guide.md`](qa-guide.md), for the owner at review.
 
 ## 12. Non-goals
 

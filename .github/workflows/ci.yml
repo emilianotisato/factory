@@ -13,9 +13,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - run: npm install -g @anthropic-ai/claude-code@2.1.312
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       # The gate, verbatim from docs/index.md frontmatter (`docs gate`).
-      - run: cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test && claude plugin validate mods/cockpit && claude plugin test mods/cockpit
+      - run: cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
