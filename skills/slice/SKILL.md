@@ -10,7 +10,7 @@ Turn a PRD's *what/why* into the *how*: a small number of **vertical slices**, e
 
 Output: `docs/features/{NNN}-{slug}/slice-NN-{subject}.md`, one file per slice, plus the prose in `prd.md` § Slices. `factory docs status` computes the board from the files and `state.toml`; nothing here is a table to maintain by hand.
 
-This is not a task-tracker export. The slice files are the durable artifact; they outlive any session's todo list. **Slicing is attended work.** It happens before a `factory` run starts, with the owner in the room; the run builds what you wrote here and never re-slices.
+This is not a task-tracker export. The slice files are the durable artifact; they outlive any session's todo list. **Slicing is attended work, unless `/deliver` called it.** It happens before a `factory` run starts, with the owner in the room or, when `/deliver` passes `NNN from /deliver`, with the plan reported instead of approved; the run builds what you wrote here and never re-slices.
 
 ## 0. Preflight
 
@@ -20,9 +20,9 @@ This is not a task-tracker export. The slice files are the durable artifact; the
 factory docs doctor
 ```
 
-**Not on the framework, behind, or drifted** → `/prd` first: its preflight sets the project up, and without a PRD on the framework there is nothing to slice. Never write slices into whatever ad-hoc task file the project already has.
+The `skills` line → apply [_shared/stale-tooling.md](../_shared/stale-tooling.md). On the rest, **not on the framework, behind, or drifted** (the docs framework) → `/prd` first: its preflight sets the project up, and without a PRD on the framework there is nothing to slice. Never write slices into whatever ad-hoc task file the project already has.
 
-**Current** → read `docs/index.md` (build order, what else is live, which files are contended), then the target PRD. Resolve the target from `$ARGUMENTS`: a number (`013`), a slug, or a path. No argument → `factory docs status` lists the features; ask which of the `ready` / `in-progress` ones.
+**Current** → read `docs/index.md` (build order, what else is live, which files are contended), then the target PRD. Resolve the target from `$ARGUMENTS`: a number (`013`), a slug, or a path; a trailing `from /deliver` sets the mode for §5 and leaves the target as it is. No argument → `factory docs status` lists the features; ask which of the `ready` / `in-progress` ones.
 
 **Then the gate:**
 
@@ -34,7 +34,7 @@ It prints the project's verify command, or exits 1 with candidates. **No gate �
 
 ## 1. Decide whether to slice at all
 
-**Small PRD: do not slice.** One or two FRs, one area of the code, a day's work — building straight from `prd.md` is correct. Say so, write "No slices — build straight from this document" into the PRD's § Slices, and stop. **Unless a `factory` run will build it:** the run records Progress on slice files, resumes from them and blocks on them, so a small PRD headed for `/factory-deliver` gets exactly one slice.
+**Small PRD: do not slice.** One or two FRs, one area of the code, a day's work — building straight from `prd.md` is correct. Say so, write "No slices — build straight from this document" into the PRD's § Slices, and stop. **Unless a `factory` run will build it:** the run records Progress on slice files, resumes from them and blocks on them, so a small PRD headed for `/deliver` gets exactly one slice.
 
 **Do not slice a PRD with load-bearing OPENs.** If the decisions log still holds unsettled questions that change the shape of the work, say which ones block and send the user back to `/prd`. A slice written against a guess is a rewrite.
 
@@ -111,7 +111,7 @@ Write these? [Y/n]
 
 Whether a run actually uses that width is not a slicing decision — it is `lanes` in `docs/project.toml`, which says how many isolated environments (database, ports, scratch paths) the project has. Do not ask about it here. The harness does not constrain this: builders never drive it, and the checkpoint that does runs alone.
 
-On approval, create each slice:
+**From `/deliver`** → print the board without the `Write these?` line and create the slices straight away; every other question in this skill still stops you. **Typed by the owner** → ask, and on approval create each slice:
 
 ```
 factory docs slice 013 wizard-failure-path --depends 1 --title "Wizard failure path"

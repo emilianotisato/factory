@@ -127,7 +127,7 @@ fn init_renders_the_bundle_the_links_and_the_manifest() {
     let m = manifest(root);
     assert_eq!(m.version, env!("CARGO_PKG_VERSION"));
     assert_eq!(m.bundle, skills::bundle_hash());
-    assert_eq!(m.files.len(), 21);
+    assert_eq!(m.files.len(), 22);
     for (rel, hash) in &m.files {
         let on_disk = read(root, &format!(".claude/skills/{rel}"));
         assert_eq!(&skills::file_hash(&on_disk), hash, "{rel}");
@@ -205,7 +205,7 @@ fn init_into_a_shared_agents_dir_writes_no_links() {
     let version = env!("CARGO_PKG_VERSION");
     assert!(
         said.contains(&format!(
-            "skills {version}: .claude/skills/ (21 files, factory.toml), .agents/skills/ is .claude/skills/ (no links)\n"
+            "skills {version}: .claude/skills/ (22 files, factory.toml), .agents/skills/ is .claude/skills/ (no links)\n"
         )),
         "{said}"
     );
@@ -384,7 +384,7 @@ fn init_prints_the_commit_line_and_commits_nothing() {
         .unwrap_or_else(|| panic!("no commit line in:\n{said}"));
     assert_eq!(line, commit);
     assert!(said.contains(&format!(
-        "skills {version}: .claude/skills/ (21 files, factory.toml), .agents/skills/ (10 links)\n"
+        "skills {version}: .claude/skills/ (22 files, factory.toml), .agents/skills/ (10 links)\n"
     )));
     assert!(said.contains("\nnext, in order: the gate (factory docs gate set \"<cmd>\", or /gate), the harness (/harness), the UX rubric (/ux rubric)\n"), "{said}");
 

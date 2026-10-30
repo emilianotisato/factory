@@ -222,3 +222,42 @@ fn the_lock_records_what_a_manifest_carries() {
     assert_eq!(manifest.bundle, lock.sha256);
     assert_eq!(manifest.version, lock.version);
 }
+
+#[test]
+fn the_prd_skill_offers_the_build_and_never_says_clear() {
+    let text = fs::read_to_string(root().join("skills/prd/SKILL.md")).unwrap();
+    for needle in [
+        "Build it now (Recommended)",
+        "Slice only",
+        "Stop here",
+        "/deliver NNN",
+    ] {
+        assert!(text.contains(needle), "{needle:?} missing");
+    }
+    assert!(!text.contains("Say the `/clear` part"));
+}
+
+#[test]
+fn the_slice_skill_skips_the_write_question_only_for_deliver() {
+    let text = fs::read_to_string(root().join("skills/slice/SKILL.md")).unwrap();
+    for needle in ["Write these? [Y/n]", "from /deliver"] {
+        assert!(text.contains(needle), "{needle:?} missing");
+    }
+    assert!(!text.contains("/factory-deliver"));
+}
+
+#[test]
+fn every_doctor_step_links_the_stale_tooling_rule() {
+    let read = |p: &str| fs::read_to_string(root().join("skills").join(p)).unwrap();
+    for skill in ["prd", "slice", "deliver", "lanes"] {
+        let text = read(&format!("{skill}/SKILL.md"));
+        assert!(
+            text.contains("(../_shared/stale-tooling.md)"),
+            "{skill} does not link the rule"
+        );
+    }
+    let rule = read("_shared/stale-tooling.md");
+    for needle in ["hand-edited", "factory skills update", "source checkout"] {
+        assert!(rule.contains(needle), "{needle:?} missing");
+    }
+}
