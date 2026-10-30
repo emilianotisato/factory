@@ -609,8 +609,9 @@ fn stop_ends_the_run_after_the_worker_and_the_next_run_builds_the_rest() {
         "{text}"
     );
 
+    // The phase flips to finished before the driver logs its last line.
     wait_until(&fx, &dir, "the run to stop", 30, || {
-        state(&dir)["phase"] == "finished"
+        state(&dir)["phase"] == "finished" && driver_log(&dir).contains(" stopped (")
     });
     let s = state(&dir);
     assert_eq!(s["stopped"], true);
