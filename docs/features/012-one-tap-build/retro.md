@@ -43,3 +43,31 @@ A comment or name the leaks check should have caught: `tests/skills_bundle.rs:22
 ## Score
 
 4 — the build was clean and the gate never went red. Both reviewers earned their cost: six real skill-flow defects were fixed before the owner's first live run, two of which would have put commits on the default branch.
+
+## Numbers
+
+<!-- factory:numbers -->
+| role | workers | own | subagents | weighted | minutes | turns |
+|---|---:|---:|---:|---:|---:|---:|
+| build | 2 | 413017 | 0 | 413017 | 11 | 43 |
+| checkpoint | 1 | 232316 | 0 | 232316 | 4 | 22 |
+| polish | 1 | 632129 | 186634 | 818763 | 10 | 32 |
+| total | 4 | 1277462 | 186634 | 1464096 | 25 | 97 |
+
+Knobs: build opus/high default · fix opus/high default · checkpoint opus/high default · polish opus/high default · budget 30000000 default · lanes 4 · factory 0.10.0 · claude 2.1.312
+
+Hypothesis: none
+
+quality: gate_red 0 · worker_gate_red 0 · fix_commits 0 · ci_red_rounds 0 · ci_reruns 0 · findings high=0 medium=3 low=8 fixed=10 parked=1 · decisions 3 decide 0 blocks 0
+
+Pack (build): slice 9069 · prd_sections 8121 · log 53 · outline 10907 · lookup 1115 · contract 3095 · autonomy 8610 · inner_loop 86 · total 41056 · start_context 24727
+
+Compared with:
+
+| run | feature | weighted | slices | per slice | lines changed | per line | comment share | id hits |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 012-20261030-59d9 (this run) | 012 | 1464096 | 2 | 732048 | 745 | 1965 | 2.2% | 0 |
+| 009-20261015-81ca | 009 | 4146840 | 6 | 691140 | 1748 | 2372 | 3.3% | 0 |
+| 008-20261015-b926 | 008 | 7304873 | 8 | 913109 | 4053 | 1802 | 3.3% | 0 |
+| 007-20261015-c8fa | 007 | 4526459 | 5 | 905292 | 3611 | 1254 | 4.0% | 0 |
+<!-- /factory:numbers -->
