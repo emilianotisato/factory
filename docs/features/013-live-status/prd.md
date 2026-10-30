@@ -65,9 +65,11 @@ There is no short form today; the board is 8 to 10 lines (`src/cli/status.rs:50-
 | driver dead | `013 · driver dead` |
 | run over (named by id) | `013 · finished · 3/3 done · 1h 02m` |
 
-The rows apply top-down, so the first matching state wins. The time is elapsed in whole minutes (`12m`), or hours and minutes from one hour (`1h 02m`). The board's `elapsed` (`src/cli/status.rs:136`) prints seconds under an hour, so the line needs its own short form. The pause time is local `HH:MM`. A board that will not open drops the `n/m done` part.
+The rows apply top-down, so the first matching state wins, with one exception: the progress row (`building` above) is the fallback, tried last, and shows the run's own phase (`starting`, `checkpoint`, `closeout`). A run that is over goes straight to the over row, as `owed` skips it (`src/cockpit.rs:171-173`). The time is elapsed in whole minutes (`12m`), or hours and minutes from one hour (`1h 02m`). The board's `elapsed` (`src/cli/status.rs:136`) prints seconds under an hour, so the line needs its own short form. The pause time is local `HH:MM`. A board that will not open drops the `n/m done` part.
 
 The line is a pure function of a small input: phase, open ids, parked reason, pause instant, driver dead, slices done and total (or none), elapsed seconds. `status` fills it from state, board, events and the clock.
+
+*Corrected 2026-10-30 (slicing): read literally, the `building` row came first, so a dead driver or an open BLOCK during the `building` phase could never show. The progress row is the fallback.*
 
 *Corrected 2026-10-30 (adversarial pass): an earlier draft pinned the rows "from a fixture event list". Events alone do not decide them: `n/m done` comes from the docs board, elapsed from `started_at`, the pause from `state.paused_until`, a park from the phase and a dead driver from pid liveness.*
 
@@ -159,7 +161,15 @@ Accepted cost: a local gate needs `claude` on PATH, and CI pays an install step 
 
 ## 11. Slices
 
-_(Not sliced yet. Run `/slice`.)_
+Three slices, sliced 2026-10-30.
+
+- **01 — Status as data** (FR-1, FR-2, FR-3). The CLI side: `--json`, `--line`, `--here`, and the listing's exit 0. One slice because all three write `src/cli/status.rs`.
+- **02 — The cockpit mod and its gate** (FR-4, FR-6). The highest-risk work: the first mod in this repo. It builds against the envelope §3 defines, from fixture JSON, so it runs beside 01.
+- **03 — `factory cockpit install`** (FR-5, and FR-4's embedding). Depends on 02, whose files it embeds and compares byte for byte.
+
+**Order and shape.** 01 and 02 are independent and build at once in two lanes; 03 follows 02. The first checkpoint lands after the second slice done, so the JSON contract and the mod are proven before the installer is built on them. The last checkpoint covers 03.
+
+**Workflow.** One branch (`feat/live-status`), one PR, one commit per slice, Prove at the checkpoints. FR-6's CI-log row is read at polish, once the PR's CI has run. The one Human row is in [`qa-guide.md`](qa-guide.md), for the owner at review.
 
 ## 12. Non-goals
 
