@@ -3,7 +3,7 @@
 **Source**: [`prd.md`](prd.md) → §7 FR-5, and §6 FR-4's "The binary embeds it with `include_str!`". **Depends on**: 02 (it embeds the files under `mods/cockpit/` and compares its output to them byte for byte, so they must exist)
 **Created**: 2026-10-30
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**: `src/mods.rs` embeds the five files under `mods/cockpit/` (`COCKPIT_FILES`). `factory cockpit install` (`src/cli/cockpit.rs`) writes `<data_dir>/mods/.claude-plugin/marketplace.json`, removes and rewrites `cockpit/`, then reads `claude plugin marketplace list --json` and `claude plugin list --json` and runs `marketplace add` / `install … --scope user` only for what is missing. It prints `run /reload-plugins in open sessions`. With no `claude` on PATH it writes the folder, prints both commands and exits 1. The stub `claude` gained a `plugin` branch: it records the call, then answers from `$FACTORY_STUB_DIR/plugins.json`. Tests are in `tests/cockpit_install.rs`: the bundle walk, the install-twice run, and the run with no claude. Inner loop: 2 runs, 0 red, about 3 min (the second run was there only to see the summary lines the first run's output cut off). Deviations: none. Prove (FR-5 transcript) is left for the checkpoint.
 
 **Slice**: Adds the one verb that puts the mod into Claude Code. The binary carries `mods/cockpit/` inside it. `factory cockpit install` writes a folder marketplace under the data dir, registers the marketplace and the plugin at user scope only when they are missing, and tells the owner to `/reload-plugins`. Re-running it is the upgrade path the mod's stale suffix names.
 

@@ -11,5 +11,6 @@ lane = 2
 depends_on = []
 
 [slices.3]
-status = "pending"
+status = "done"
+lane = 1
 depends_on = [2]
