@@ -76,6 +76,10 @@ pub fn status(args: &StatusArgs, out: &mut dyn Write, err: &mut dyn Write) -> Re
                 let here = paths::repo_root(Path::new(".")).ok();
                 live.retain(|s| here.as_deref().is_some_and(|h| same_repo(&s.repo, h)));
             }
+            if plain && args.here && live.is_empty() {
+                writeln!(out, "no live runs in this repository").map_err(io("stdout"))?;
+                return Ok(0);
+            }
             if plain {
                 cockpit::print_live(&data_dir, &live, out)?;
                 return Ok(0);

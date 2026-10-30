@@ -84,35 +84,65 @@ fn write(path: &Path, text: &str) -> Result<()> {
 
 /// `false` when `claude` is not on PATH.
 fn register(dir: &Path, out: &mut dyn Write) -> Result<bool> {
-    let Some(markets) = claude(&["plugin", "marketplace", "list", "--json"])? else {
+    let list = ["plugin", "marketplace", "list", "--json"];
+    let Some(markets) = claude(&list)? else {
         return Ok(false);
     };
-    if listed(&markets, "name", MARKETPLACE)? {
-        say(out, &format!("marketplace {MARKETPLACE}: already added"))?;
-    } else {
-        let add = [
-            OsStr::new("plugin"),
-            OsStr::new("marketplace"),
-            OsStr::new("add"),
-            dir.as_os_str(),
-        ];
-        if claude(&add)?.is_none() {
-            return Ok(false);
+    match find(&markets, &list, |m| m["name"] == MARKETPLACE)? {
+        Some(m) if m["source"] == "directory" && same_dir(&m["path"], dir) => {
+            say(out, &format!("marketplace {MARKETPLACE}: already added"))?;
         }
-        say(out, &format!("marketplace {MARKETPLACE}: added"))?;
+        Some(m) => {
+            let at = m["path"].as_str().or(m["repo"].as_str()).unwrap_or("?");
+            return Err(Error::Msg(format!(
+                "marketplace {MARKETPLACE} is already added from {at}, not {}; \
+                 run: claude plugin marketplace remove {MARKETPLACE}, then factory cockpit install",
+                dir.display()
+            )));
+        }
+        None => {
+            let add = [
+                OsStr::new("plugin"),
+                OsStr::new("marketplace"),
+                OsStr::new("add"),
+                dir.as_os_str(),
+            ];
+            if claude(&add)?.is_none() {
+                return Ok(false);
+            }
+            say(out, &format!("marketplace {MARKETPLACE}: added"))?;
+        }
     }
-    let Some(plugins) = claude(&["plugin", "list", "--json"])? else {
+    let list = ["plugin", "list", "--json"];
+    let Some(plugins) = claude(&list)? else {
         return Ok(false);
     };
-    if listed(&plugins, "id", PLUGIN)? {
-        say(out, &format!("{PLUGIN}: already installed"))?;
-    } else {
-        if claude(&INSTALL)?.is_none() {
-            return Ok(false);
+    match find(&plugins, &list, |p| {
+        p["id"] == PLUGIN && p["scope"] == "user"
+    })? {
+        Some(p) if p["enabled"] == false => say(
+            out,
+            &format!("{PLUGIN}: installed but disabled; run: claude plugin enable {PLUGIN}"),
+        )?,
+        Some(_) => say(out, &format!("{PLUGIN}: already installed"))?,
+        None => {
+            if claude(&INSTALL)?.is_none() {
+                return Ok(false);
+            }
+            say(out, &format!("{PLUGIN}: installed at user scope"))?;
         }
-        say(out, &format!("{PLUGIN}: installed at user scope"))?;
     }
     Ok(true)
+}
+
+fn same_dir(path: &Value, dir: &Path) -> bool {
+    let Some(path) = path.as_str() else {
+        return false;
+    };
+    match (Path::new(path).canonicalize(), dir.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => Path::new(path) == dir,
+    }
 }
 
 /// `None` when `claude` is not on PATH.
@@ -141,7 +171,8 @@ fn claude<S: AsRef<OsStr>>(args: &[S]) -> Result<Option<String>> {
     Ok(Some(String::from_utf8_lossy(&o.stdout).into_owned()))
 }
 
-fn listed(text: &str, field: &str, want: &str) -> Result<bool> {
-    let items: Vec<Value> = serde_json::from_str(text).map_err(json("claude plugin list"))?;
-    Ok(items.iter().any(|i| i[field].as_str() == Some(want)))
+fn find(text: &str, args: &[&str], want: impl Fn(&Value) -> bool) -> Result<Option<Value>> {
+    let items: Vec<Value> =
+        serde_json::from_str(text).map_err(json(format!("claude {}", args.join(" "))))?;
+    Ok(items.into_iter().find(want))
 }

@@ -66,3 +66,10 @@
 - FR-4, Human: the owner's look in a live cockpit. It needs slice 03's install, so it is the owner's, at review (§10 "Who builds it").
 
 **Acceptance:** after the checkpoint, the FR-4 test transcript and the red-gate transcript are in this slice's Progress.
+
+**Code-review fixes (2026-10-30).**
+- A rejection inside a poll (a refused state write) went unhandled behind `void poll()` and left the status line silent; the poll now shows `factory: <error>` for it too.
+- A second `session.start` in one module load would have started a second 10 s poller; the earlier one is cancelled first.
+- `/factory-board` waited for the turn to end; it is registered `immediate`, so the board opens mid-turn.
+- `mods/cockpit/tests/cockpit.test.tsx` holds its own copy of the version, unpinned, so a release bump left every non-stale fixture stale; the cargo pin now checks it beside `MOD_VERSION` and `plugin.json`.
+- `qa-guide.md` steps 1 and 4 failed a correct build: the line shows the run's own phase (`checkpoint`, `closeout`), and the pane says `no live run in this repo` where there is none.

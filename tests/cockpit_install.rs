@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 
 use factory::mods::COCKPIT_FILES;
+use factory::paths::shell_word;
 use harness::Fixture;
 
 const BIN: &str = env!("CARGO_BIN_EXE_factory");
@@ -90,6 +91,19 @@ fn argv(words: &[&str]) -> Vec<String> {
     words.iter().map(|w| w.to_string()).collect()
 }
 
+fn assert_marketplace(mods: &Path) {
+    let manifest: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(mods.join(".claude-plugin/marketplace.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest["name"], "factory");
+    assert!(manifest["owner"]["name"].is_string());
+    assert_eq!(
+        manifest["plugins"],
+        serde_json::json!([{ "name": "factory-cockpit", "source": "./cockpit" }])
+    );
+}
+
 #[test]
 fn install_writes_the_marketplace_once_and_rewrites_the_mod() {
     let fx = Fixture::new("cockpit-install");
@@ -104,20 +118,12 @@ fn install_writes_the_marketplace_once_and_rewrites_the_mod() {
         "first install: {stdout}{}",
         String::from_utf8_lossy(&first.stderr)
     );
-    assert!(
-        stdout.ends_with("run /reload-plugins in open sessions\n"),
+    assert_eq!(
+        stdout.lines().last(),
+        Some("run /reload-plugins in open sessions"),
         "{stdout}"
     );
-    let manifest: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(mods.join(".claude-plugin/marketplace.json")).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(manifest["name"], "factory");
-    assert!(manifest["owner"]["name"].is_string());
-    assert_eq!(
-        manifest["plugins"],
-        serde_json::json!([{ "name": "factory-cockpit", "source": "./cockpit" }])
-    );
+    assert_marketplace(&mods);
     let list = argv(&["plugin", "marketplace", "list", "--json"]);
     let plugins = argv(&["plugin", "list", "--json"]);
     assert_eq!(
@@ -145,6 +151,7 @@ fn install_writes_the_marketplace_once_and_rewrites_the_mod() {
         String::from_utf8_lossy(&second.stderr)
     );
     assert!(!mods.join("cockpit/stray.txt").exists());
+    assert_marketplace(&mods);
     assert_eq!(plugin_calls(&fx)[4..], [list, plugins]);
     assert!(
         files(&mods.join("cockpit")) == files(&mod_dir()),
@@ -165,7 +172,7 @@ fn install_without_claude_writes_the_folder_and_prints_the_commands() {
     assert!(
         stdout.contains(&format!(
             "  claude plugin marketplace add {}\n",
-            mods.display()
+            shell_word(&mods.to_string_lossy())
         )),
         "{stdout}"
     );
@@ -173,7 +180,64 @@ fn install_without_claude_writes_the_folder_and_prints_the_commands() {
         stdout.contains("  claude plugin install factory-cockpit@factory --scope user\n"),
         "{stdout}"
     );
+    assert_eq!(
+        stdout.lines().last(),
+        Some("then run /reload-plugins in open sessions"),
+        "{stdout}"
+    );
     assert!(mods.join(".claude-plugin/marketplace.json").is_file());
     assert!(files(&mods.join("cockpit")) == files(&mod_dir()));
     assert!(fx.calls().is_empty());
+}
+
+#[test]
+fn install_refuses_a_factory_marketplace_from_elsewhere_and_installs_over_project_scope() {
+    let fx = Fixture::new("cockpit-install-elsewhere");
+    let home = tempfile::tempdir().unwrap();
+    let seed = |marketplaces: serde_json::Value| {
+        let plugins = serde_json::json!([
+            { "id": "factory-cockpit@factory", "scope": "project", "enabled": true }
+        ]);
+        fs::write(
+            fx.stub_dir().join("plugins.json"),
+            serde_json::json!({ "marketplaces": marketplaces, "plugins": plugins }).to_string(),
+        )
+        .unwrap();
+    };
+
+    seed(serde_json::json!([{ "name": "factory", "source": "directory", "path": "/old/mods" }]));
+    let out = install(&fx, home.path(), None);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success());
+    assert!(stderr.contains("already added from /old/mods"), "{stderr}");
+    assert!(
+        stderr.contains("claude plugin marketplace remove factory"),
+        "{stderr}"
+    );
+    assert_eq!(plugin_calls(&fx).len(), 1, "only the marketplace list");
+
+    let mods = fx.data_dir().join("mods");
+    seed(serde_json::json!([{
+        "name": "factory", "source": "directory", "path": mods.to_str().unwrap()
+    }]));
+    let out = install(&fx, home.path(), None);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        plugin_calls(&fx)[1..],
+        [
+            argv(&["plugin", "marketplace", "list", "--json"]),
+            argv(&["plugin", "list", "--json"]),
+            argv(&[
+                "plugin",
+                "install",
+                "factory-cockpit@factory",
+                "--scope",
+                "user"
+            ]),
+        ]
+    );
 }

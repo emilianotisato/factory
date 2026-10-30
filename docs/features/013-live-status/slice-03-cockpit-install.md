@@ -46,3 +46,9 @@ A module beside `src/skills.rs` holding the `(path, contents)` list of every tra
 §10 QA plan row FR-5: run `install_writes_the_marketplace_once_and_rewrites_the_mod` under the sandboxed `HOME`; keep the transcript. Never run the verb against the owner's real `HOME` or data dir.
 
 **Acceptance:** after the checkpoint, the test transcript is in this slice's Progress.
+
+**Code-review fixes (2026-10-30).**
+- A `factory` marketplace already added from another path counted as this one, so the install reported success while Claude Code kept loading the old folder, and the stale suffix pointed at a verb that could never fix it. It now stops with the other source named and the remove command (AD-4).
+- A `factory-cockpit@factory` installed at project scope counted as installed; only a user-scope install does now, and a disabled one gets the enable command.
+- A parse failure of `claude plugin marketplace list` was blamed on `claude plugin list`; the error names the command that printed it.
+- The install tests now read `marketplace.json` after the second run too, assert the success and fallback reload lines exactly, and expect the data dir shell-quoted as the binary prints it.

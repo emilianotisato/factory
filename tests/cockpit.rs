@@ -287,10 +287,8 @@ fn status_json_carries_the_board_and_what_the_owner_owes() {
         state(&dir)["phase"] == "waiting-owner"
     });
 
-    // The board's elapsed counts seconds, so it is read on both sides of the JSON.
-    let before = stdout(&factory(&fx, &["status", &id]));
+    let plain = stdout(&factory(&fx, &["status", &id]));
     let v = status_json(&fx, fx.path(), &["status", &id, "--json"]);
-    let after = stdout(&factory(&fx, &["status", &id]));
     assert_eq!(v["schema"], 1);
     assert_eq!(v["factory"], env!("CARGO_PKG_VERSION"));
     let runs = v["runs"].as_array().unwrap();
@@ -300,13 +298,15 @@ fn status_json_carries_the_board_and_what_the_owner_owes() {
     assert_eq!(run["feature"], "001");
     assert_eq!(run["phase"], "waiting-owner");
     assert_eq!(run["line"], "001 · BLOCK-1 open");
+    // The first line's elapsed counts seconds, so it is compared up to them.
     let board = lines(&run["board"]);
+    let plain: Vec<&str> = plain.lines().collect();
+    let head = format!("run {id} · waiting-owner · ");
     assert!(
-        [&before, &after]
-            .iter()
-            .any(|t| t.lines().collect::<Vec<_>>() == board),
-        "{board:#?}\n{before}{after}"
+        board[0].starts_with(&head) && plain[0].starts_with(&head),
+        "{board:#?}"
     );
+    assert_eq!(board[1..], plain[1..]);
     assert_eq!(lines(&run["owner"]), [BLOCK_LINE]);
 
     let out = factory(&fx, &["status", &id, "--line"]);
@@ -405,11 +405,7 @@ fn here_keeps_this_repos_runs_and_a_listing_exits_zero() {
     );
     let out = factory_in(&fx, &outside, &["status", "--here"]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
-    assert!(
-        stdout(&out).starts_with("no live runs under "),
-        "{}",
-        stdout(&out)
-    );
+    assert_eq!(stdout(&out), "no live runs in this repository\n");
 }
 
 /// Unlike `events()`, tolerates the torn line this test plants.

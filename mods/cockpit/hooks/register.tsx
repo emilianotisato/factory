@@ -16,6 +16,8 @@ const status = atom({ plugin: 'factory-cockpit', key: 'status' } as const, null,
 
 type Reading = { runs: Run[]; isStale: boolean }
 
+let poller: { cancel: () => void } | undefined
+
 const firstLine = (text: string): string => text.trim().split('\n')[0] ?? ''
 
 const fieldsOf = (value: unknown): Record<string, unknown> =>
@@ -82,6 +84,7 @@ export const register: Register = on => {
     await $.command.register({
       name: COMMAND,
       description: 'Show or hide the board of every live factory run in this repo',
+      immediate: true,
     })
     let isPolling = false
     const poll = async (): Promise<void> => {
@@ -91,12 +94,15 @@ export const register: Register = on => {
       isPolling = true
       try {
         await refresh($)
+      } catch (err) {
+        $.ui.status(`factory: ${firstLine(err instanceof Error ? err.message : String(err))}`)
       } finally {
         isPolling = false
       }
     }
     void poll()
-    $.clock.every(POLL_MS, () => void poll())
+    poller?.cancel()
+    poller = $.clock.every(POLL_MS, () => void poll())
     return next(e)
   })
 

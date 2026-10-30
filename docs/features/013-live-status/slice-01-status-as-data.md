@@ -69,3 +69,7 @@
 - FR-3: run `here_keeps_this_repos_runs_and_a_listing_exits_zero`; keep the transcript.
 
 **Acceptance:** after the checkpoint, each row has its test transcript in this slice's Progress.
+
+**Code-review fixes (2026-10-30).**
+- `factory status --here` with nothing in this repo said `no live runs under <runs dir>`, false while another repo had one live; it now says `no live runs in this repository`.
+- `status_json_carries_the_board_and_what_the_owner_owes` accepted the JSON board only if it equalled a plain board read just before or after, so three calls straddling two second boundaries failed; it now compares the first line up to its seconds and the rest line for line.
