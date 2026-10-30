@@ -18,7 +18,16 @@ const BLOCK_LINE: &str =
     "BLOCK-1 slice 01: Which storage backs the fixture? (answer: factory answer BLOCK-1 \"...\")";
 
 fn factory(fx: &Fixture, args: &[&str]) -> Output {
-    let out = fx.command(BIN).args(args).output().unwrap();
+    factory_in(fx, fx.path(), args)
+}
+
+fn factory_in(fx: &Fixture, cwd: &Path, args: &[&str]) -> Output {
+    let out = fx
+        .command(BIN)
+        .current_dir(cwd)
+        .args(args)
+        .output()
+        .unwrap();
     // Echoed so a failing test's capture shows every command and what it said.
     eprintln!(
         "$ factory {}\n{}{}exit={}",
@@ -189,7 +198,7 @@ fn wait_relays_the_block_the_still_running_line_the_dead_driver_and_the_end() {
         "{text}"
     );
     let out = factory(&fx, &["status"]);
-    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     assert!(stdout(&out).contains(&id), "{}", stdout(&out));
 
     let rc = unsafe { libc::kill(driver as i32, libc::SIGKILL) };
@@ -242,6 +251,165 @@ fn wait_relays_the_block_the_still_running_line_the_dead_driver_and_the_end() {
     ] {
         assert!(text.contains(needle), "{needle:?} missing in:\n{text}");
     }
+}
+
+fn status_json(fx: &Fixture, cwd: &Path, args: &[&str]) -> Value {
+    let out = factory_in(fx, cwd, args);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let text = stdout(&out);
+    assert_eq!(text.lines().count(), 1, "{text}");
+    serde_json::from_str(&text).unwrap_or_else(|e| panic!("{e}: {text}"))
+}
+
+fn lines(v: &Value) -> Vec<String> {
+    v.as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l.as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn status_json_carries_the_board_and_what_the_owner_owes() {
+    let fx = Fixture::with_index("cockpit-status-json", &[("checkpoint_every", "10")]);
+    fx.write_plan(&[
+        json!({"outcome": "blocked", "question": QUESTION}),
+        done(),
+        done(),
+        done(),
+        checkpoint(),
+    ]);
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let dir = only_run_dir(&fx);
+    let id = run_id(&dir);
+    wait_until(&fx, &dir, "the run to park", 60, || {
+        state(&dir)["phase"] == "waiting-owner"
+    });
+
+    // The board's elapsed counts seconds, so it is read on both sides of the JSON.
+    let before = stdout(&factory(&fx, &["status", &id]));
+    let v = status_json(&fx, fx.path(), &["status", &id, "--json"]);
+    let after = stdout(&factory(&fx, &["status", &id]));
+    assert_eq!(v["schema"], 1);
+    assert_eq!(v["factory"], env!("CARGO_PKG_VERSION"));
+    let runs = v["runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 1, "{v}");
+    let run = &runs[0];
+    assert_eq!(run["id"], id.as_str());
+    assert_eq!(run["feature"], "001");
+    assert_eq!(run["phase"], "waiting-owner");
+    assert_eq!(run["line"], "001 · BLOCK-1 open");
+    let board = lines(&run["board"]);
+    assert!(
+        [&before, &after]
+            .iter()
+            .any(|t| t.lines().collect::<Vec<_>>() == board),
+        "{board:#?}\n{before}{after}"
+    );
+    assert_eq!(lines(&run["owner"]), [BLOCK_LINE]);
+
+    let out = factory(&fx, &["status", &id, "--line"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    assert_eq!(stdout(&out), "001 · BLOCK-1 open\n");
+
+    let out = factory(&fx, &["answer", "BLOCK-1", ANSWER]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let v = status_json(&fx, fx.path(), &["status", &id, "--json"]);
+    assert_eq!(v["runs"][0]["owner"], json!([]), "{v}");
+
+    wait_until(&fx, &dir, "the run to finish", 120, || {
+        state(&dir)["phase"] == "finished"
+    });
+    let v = status_json(&fx, fx.path(), &["status", &id, "--json"]);
+    assert_eq!(v["runs"][0]["owner"], json!([]), "{v}");
+    let line = v["runs"][0]["line"].as_str().unwrap();
+    assert!(line.starts_with("001 · finished · 3/3 done · "), "{line}");
+    let out = factory(&fx, &["status", &id, "--line"]);
+    assert_eq!(stdout(&out), format!("{line}\n"));
+
+    let out = factory(&fx, &["status", "001-20000101-dead", "--json"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+    assert_eq!(stdout(&out), "");
+}
+
+fn git_init(fx: &Fixture, dir: &Path) {
+    fs::create_dir_all(dir).unwrap();
+    let out = fx
+        .command("git")
+        .current_dir(dir)
+        .args(["init", "-q"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+}
+
+fn write_live_run(fx: &Fixture, id: &str, repo: &Path) {
+    let dir = data_dir(fx).join("runs").join(id);
+    fs::create_dir_all(&dir).unwrap();
+    let state = json!({
+        "id": id,
+        "repo": repo.canonicalize().unwrap(),
+        "feature": &id[..3],
+        "branch": null,
+        "phase": "building",
+        "pid": 0,
+        "started_at": "2026-10-30T12:00:00Z",
+        "updated_at": "2026-10-30T12:00:00Z",
+        "budget_weighted_tokens": 1000,
+        "stop_requested": false,
+    });
+    fs::write(dir.join("state.json"), state.to_string()).unwrap();
+}
+
+#[test]
+fn here_keeps_this_repos_runs_and_a_listing_exits_zero() {
+    let fx = Fixture::new("cockpit-status-here");
+    let base = data_dir(&fx).parent().unwrap().to_path_buf();
+    let mine = base.join("mine");
+    let theirs = base.join("theirs");
+    let outside = base.join("outside");
+    git_init(&fx, &mine);
+    git_init(&fx, &theirs);
+    let sub = mine.join("deep/sub");
+    fs::create_dir_all(&sub).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    write_live_run(&fx, "007-20261030-aaaa", &mine);
+    write_live_run(&fx, "008-20261030-bbbb", &theirs);
+
+    let v = status_json(&fx, &sub, &["status", "--here", "--json"]);
+    let runs = v["runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 1, "{v}");
+    assert_eq!(runs[0]["id"], "007-20261030-aaaa");
+    assert_eq!(
+        runs[0]["owner"],
+        json!(["driver dead; run: factory run 007"])
+    );
+
+    let v = status_json(&fx, &outside, &["status", "--here", "--json"]);
+    assert_eq!(v["runs"], json!([]), "{v}");
+
+    let out = factory_in(&fx, &mine, &["status", "--here", "--line"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    assert_eq!(stdout(&out), "007 · driver dead\n");
+    let out = factory_in(&fx, &outside, &["status", "--here", "--line"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    assert_eq!(stdout(&out), "");
+
+    let out = factory_in(&fx, &outside, &["status"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let text = stdout(&out);
+    assert!(
+        text.contains("007-20261030-aaaa") && text.contains("008-20261030-bbbb"),
+        "{text}"
+    );
+    let out = factory_in(&fx, &outside, &["status", "--here"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    assert!(
+        stdout(&out).starts_with("no live runs under "),
+        "{}",
+        stdout(&out)
+    );
 }
 
 /// Unlike `events()`, tolerates the torn line this test plants.
@@ -379,6 +547,10 @@ fn a_budget_park_is_relayed_and_is_not_a_dead_driver() {
     let text = stdout(&out);
     assert!(text.contains("/1 (parked)"), "{text}");
     assert!(!text.contains("driver dead"), "{text}");
+    let parked = stdout(&again);
+    let v = status_json(&fx, fx.path(), &["status", &id, "--json"]);
+    assert_eq!(v["runs"][0]["line"], "001 · parked: budget", "{v}");
+    assert_eq!(lines(&v["runs"][0]["owner"]), [parked.trim_end()]);
 }
 
 // ── factory stop ─────────────────────────────────────────────────────────────

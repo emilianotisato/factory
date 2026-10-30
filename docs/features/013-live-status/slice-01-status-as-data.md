@@ -3,7 +3,12 @@
 **Source**: [`prd.md`](prd.md) → §3 FR-1, §4 FR-2, §5 FR-3. **Depends on**: — (the three FRs share `src/cli/status.rs`, so they are one slice; nothing else in the PRD writes that file)
 **Created**: 2026-10-30
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+- Built: `StatusArgs` gains `--json`, `--line`, `--here`. `glance()` with its `Glance` input is the pure line function (`src/cli/status.rs`), and `line_of` fills it from state, events, the board and `clock::local_hhmm` (new, `localtime_r`). `cockpit::owed_from` now filters `needed()` (open questions then the park), and `cockpit::owner` adds the dead-driver line, shared with `wait` through `driver_dead_line`. `cockpit::park` returns the parked event, and `parked_on` uses it. `list_live` is split into `live_runs` and `print_live`. The board's start-to-end span is the shared `span()`, so the board's output does not change.
+- Tests: `the_glance_line_names_the_first_state_that_applies` (unit), `status_json_carries_the_board_and_what_the_owner_owes`, `here_keeps_this_repos_runs_and_a_listing_exits_zero` (new). The budget-park test also asserts `line` and `owner`, and `tests/cockpit.rs` now expects a no-id `factory status` to exit 0.
+- Inner loop: 1 run, green, ~3 min (the test suite ran twice in it). One red targeted run of the cockpit tests: my JSON test called `wait` with a cursor of 0, which relayed the BLOCK instead of the finish. It now waits on the phase.
+- Deviations: none from the FRs. AD-1 (fyi) covers how the flags combine.
+- Prove: left for the checkpoint, rows FR-1, FR-2 (plus `factory status <id> --line` on a fixture run), FR-3.
 
 **Slice**: Makes `factory status` a data source. `--json` prints the versioned envelope, `--line` prints one glance line per run, `--here` keeps this repo's runs, and the no-id listing exits 0. Plain `factory status [RUN]` prints exactly what it prints today. The mod that reads this JSON is slice 02's; it is built against the envelope §3 defines, so both slices can run at once.
 
