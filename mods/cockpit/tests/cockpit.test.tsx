@@ -2,7 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-const VERSION = '0.11.0'
+const VERSION = '0.12.0'
 const STALE = 'mod stale: factory cockpit install, then /reload-plugins'
 const QUESTION = 'Which storage? (answer: factory answer Q "...")'
 

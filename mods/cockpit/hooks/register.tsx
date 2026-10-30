@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 import type { Run } from '../types'
 
-const MOD_VERSION = '0.11.0'
+const MOD_VERSION = '0.12.0'
 const SCHEMA = 1
 const PANE = 'factory'
 const COMMAND = 'factory-board'
