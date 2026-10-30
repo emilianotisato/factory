@@ -150,3 +150,50 @@ fn a_logged_out_run_starts_and_notes_the_second_opinion_line() {
     assert!(noted[0].contains("Authentication required"), "{noted:?}");
     assert!(noted[0].contains("`cursor-agent login`"), "{noted:?}");
 }
+
+fn strip_slices(fx: &Fixture) {
+    let dir = fx.path().join(harness::FEATURE_DIR);
+    for n in 1..=3 {
+        fs::remove_file(fx.slice_path(n)).unwrap();
+    }
+    let state = fs::read_to_string(dir.join("state.toml")).unwrap();
+    let mut kept = String::new();
+    let mut in_slice = false;
+    for line in state.lines() {
+        if line.starts_with('[') {
+            in_slice = line.starts_with("[slices.");
+        }
+        if !in_slice {
+            kept.push_str(line);
+            kept.push('\n');
+        }
+    }
+    fs::write(dir.join("state.toml"), kept).unwrap();
+    fx.git(&["add", "-A"]);
+    fx.git(&["commit", "-q", "-m", "chore: unslice the fixture"]);
+}
+
+#[test]
+fn an_unsliced_feature_is_refused_before_a_run_starts() {
+    let fx = Fixture::new("preflight-unsliced");
+    let (_, out) = preflight(&fx, &[]);
+    assert!(!out.contains("not sliced"), "{out}");
+
+    strip_slices(&fx);
+    assert!(fx.state().slices.is_empty());
+    let (code, out) = preflight(&fx, &[]);
+    assert_eq!(code, Some(1), "{out}");
+    let refusal = format!("  ✗ not sliced — /slice {}\n", harness::FEATURE);
+    assert!(out.contains(&refusal), "{out}");
+}
+
+#[test]
+fn a_shipped_feature_with_a_log_resumes_without_slices() {
+    let fx = Fixture::new("preflight-unsliced-shipped");
+    strip_slices(&fx);
+    fx.docs(&["set", "001", "status=shipped"]);
+    fx.docs(&["log", "add", "001", "--kind", "note", "--title", "built"]);
+    let (_, out) = preflight(&fx, &[]);
+    assert!(out.contains("resumes at the PR"), "{out}");
+    assert!(!out.contains("not sliced"), "{out}");
+}

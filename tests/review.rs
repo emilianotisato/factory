@@ -401,13 +401,14 @@ fn a_base_starting_with_a_dash_is_a_usage_error() {
     assert!(calls(&fx).is_empty());
 }
 
-/// A zombie waiting to be reaped by its new parent counts as gone.
+/// A zombie waiting to be reaped by its new parent counts as gone, and so does one
+/// reaped between the two checks: its /proc entry is already unreadable.
 fn alive(pid: i32) -> bool {
     // SAFETY: signal 0 only checks that the pid exists.
     if unsafe { libc::kill(pid, 0) } != 0 {
         return false;
     }
-    fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |s| {
+    fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|s| {
         !s.rsplit(')')
             .next()
             .unwrap_or("")

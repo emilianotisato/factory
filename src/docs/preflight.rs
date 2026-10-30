@@ -22,7 +22,7 @@ pub fn git(root: &Path, args: &[&str]) -> Option<String> {
         .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-fn git_line(root: &Path, args: &[&str]) -> Option<String> {
+pub fn git_line(root: &Path, args: &[&str]) -> Option<String> {
     git(root, args).map(|s| s.trim().to_string())
 }
 
@@ -255,7 +255,8 @@ fn feature(
     let nnn = format!("{:03}", f.number);
     let st = f.status().unwrap_or_default();
     let (entries, _) = log::entries(&f.dir)?;
-    if st == "shipped" && !entries.is_empty() {
+    let resuming = st == "shipped" && !entries.is_empty();
+    if resuming {
         ok.push("status shipped by the run — resumes at the PR, CI or owner review".into());
     } else if !matches!(st.as_str(), "draft" | "ready" | "in-progress") {
         refuse.push(format!("PRD-{nnn} is {st} — nothing to deliver"));
@@ -276,6 +277,9 @@ fn feature(
         refuse.push(format!(
             "reviewed {r} is set but nothing is built — it marks the code's /polish pass, not a PRD review; clear it with `factory docs set {nnn} reviewed=`"
         ));
+    }
+    if slices.is_empty() && !resuming {
+        refuse.push(format!("not sliced — /slice {nnn}"));
     }
     let text = f.prd.as_ref().map(|(_, t)| t.as_str()).unwrap_or("");
     if board::has_qa_plan(text) {

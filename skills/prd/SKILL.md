@@ -20,7 +20,7 @@ Output: `docs/features/{NNN}-{slug}/prd.md` and its `state.toml`, both written b
 factory docs doctor
 ```
 
-Route on what it says:
+Its `skills` line first: apply [_shared/stale-tooling.md](../_shared/stale-tooling.md). Then route on the rest:
 
 - **Current, no drift** → read `docs/index.md` (build order, what else is live) and `factory docs status`, then go to §1.
 - **Not on the framework** → say so in one line and set it up, in this order, because each foundation is used by the next. `factory docs init` writes the layout and points `CLAUDE.md` and `AGENTS.md` at `docs/index.md`. Then the **gate**: `factory docs gate set "<cmd>"` when one exists, `/gate` when none does; every slice's Verify task reads it. Then the **harness**, `/harness`, unless the project has no user surface, said out loud. Then the **UX rubric**, `/ux rubric`, only when there is a UI. The gate and the harness can wait until §QA plan needs them; the layout cannot. Planning docs the project already has (`PLAN.md`, `specs/`, a flat `docs/`) stay where they are: cite them from the PRD, never rewrite them into the framework.
@@ -56,7 +56,7 @@ Fall back to plain prose questions only when the answer genuinely cannot be enum
 Cover, in roughly this order:
 
 - **Why now.** What triggered this? Which parts are outright bugs the owner hit versus improvements? Nothing is a requirement until someone is hurting.
-- **Blast radius.** What this can break: the surface being changed, external contracts (MCP tools, public API, webhooks, URLs), and any cost or operational surface a decision here would move. Not personas — consequences.
+- **Blast radius.** What this can break: the surface being changed, external contracts (MCP tools, public API, webhooks, URLs), and any cost or operational surface a decision here would move. Not personas — consequences. When nothing outside the FRs can break, the section is dropped and the sections after it renumbered.
 - **What each requirement actually is.** One `FR-n` per distinct thing. Inputs, outputs, the edge case that decides the shape, and what happens on the failures that have actually happened. Anything rarer goes through the extras gate below.
 - **What is explicitly out.** Non-goals prevent the scope creep that kills the slice plan. Every extra left out at the gate below lands here too, so the slicer and the builder know it was decided, not forgotten.
 - **Constraints.** Migrations? Contract breaks? Performance targets with a number and a load? Security or data-retention consequences?
@@ -128,7 +128,7 @@ Section by section, what the scaffold leaves to you:
 
 - **Frontmatter.** `type`, `author`, and **`summary`**: two or three lines on what this makes true and where it stands. `factory docs status` prints it, so keep it current through the feature's life; it replaces any notes cell. Never a status, and never `factory docs set NNN reviewed=…`: `reviewed` records that the *code* went through `/polish`, and setting it early makes a run's resume skip polish.
 - **§Why now.** The pressure. The bugs the owner actually hit, separately from the improvements, and one line on what this deliberately leaves alone.
-- **§Blast radius.** Not personas — what this can break: who uses the surface and what they would notice, external contracts (untouched and decided, or what breaks and how it is versioned), cost and operational surfaces only if a decision moves them. Drop any bullet with no consequence for the code.
+- **§Blast radius.** Not personas — what this can break: who uses the surface and what they would notice, external contracts (untouched and decided, or what breaks and how it is versioned), cost and operational surfaces only if a decision moves them. Drop any bullet with no consequence for the code. When nothing outside the FRs can break, delete the section and renumber the ones after it.
 - **One section per FR.** What is true today, with `file:line`. Then the decisions taken, dated, each with its **accepted cost** stated plainly and why the alternative lost; a decision with no stated cost reads as unconsidered. Then **Acceptance**: a number with a load, or an observable behaviour. An FR never asks the code to carry a comment: an invariant it must keep becomes a test that pins it, a type or a name. A retired FR keeps its section: whose call, why, and that the recon went to `docs/ideas/` with `factory docs idea add` so a future PRD does not redo it.
 - **§Decisions log.** Every `OPEN-n`, with what each option costs and what unblocks it. A settled one stays, struck through, with the date and the answer.
 - **§QA plan.** Gate, surface, harness, seed state, and one proof row per FR: a path a user could take, not "tests pass". An FR with no UI (a scheduler, a worker, an API contract) is proven below the UI: its Proof starts with `run` and names the test or command whose transcript is the evidence. The Proof cell names a test by its behavior name, and the test never names the FR: the row is the only map from FR to test. **Human?** is yes only for a judgment a machine cannot make, and those rows are all `qa-guide.md` is generated from. A missing harness is a decided prerequisite with a cost (a harness slice, first in the order), not an OPEN. The PRD is not `ready` without this section; `factory docs check` warns `W-NO-QA-PLAN` until it exists.
@@ -153,7 +153,7 @@ Not done until the board agrees and the check is clean:
 factory docs check
 ```
 
-6. **Agreed → `factory docs set NNN status=ready`.** Still open → it stays `draft`, and the summary says which OPENs hold it. Commit: `docs(NNN): PRD-NNN <title>`.
+6. **Agreed → `factory docs set NNN status=ready`.** Still open → it stays `draft`, and the summary says which OPENs hold it. Commit on `feat/{slug}`, never the default branch (`git switch -c feat/{slug}` first when HEAD is there): `docs(NNN): PRD-NNN <title>`.
 
 ## 8. Hand off
 
@@ -162,7 +162,12 @@ End with one recommendation:
 - **Big / multi-FR** → `/slice` to slice it.
 - **Small** → no slices, build straight from `prd.md`. Say so in the summary so nobody looks for a missing slice board.
 - **Still open** → say which `OPEN-n` block the build, and that the PRD is deliberately unsliceable until they close.
-- **Agreed, and the owner wants it built without them** → `/slice` first, then `/clear`, then `/deliver NNN`. Running it is the approval: it builds and proves each slice, polishes, and opens a pull request with CI green. It never merges. **Say the `/clear` part.** This interview is 100–250k of context, and every call of the run would re-read it. Commit the PRD and the slices on `feat/{slug}`, because the run refuses the default branch and any branch HEAD is not on.
+- **Agreed** (§7 set it `ready` and committed it) → the last act is one `AskUserQuestion`: **Build it now (Recommended)** / **Slice only** / **Stop here**. A tool question reaches the owner's phone; a prose offer does not.
+  - **Build it now** → invoke `/deliver NNN` with the Skill tool, in this session; it slices the PRD itself. Running it is the approval: it builds and proves each slice, polishes, and opens a pull request with CI green. It never merges.
+  - **Slice only** → invoke `/slice NNN`, attended.
+  - **Stop here** → end with the recommendation above that fits.
+
+  The owner may still `/clear` and type `/deliver NNN` at any time.
 
 And, whichever of those applies:
 

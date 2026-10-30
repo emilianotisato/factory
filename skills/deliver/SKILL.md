@@ -1,6 +1,6 @@
 ---
 name: deliver
-description: Drive an unattended `factory` run of a sliced PRD from one thin session — start it, wait on it, relay its questions to the owner, then run the review interview.
+description: Drive an unattended `factory` run of an agreed PRD from one thin session — slice it if needed, start it, wait on it, relay its questions to the owner, then run the review interview.
 ---
 
 # /deliver NNN — the cockpit
@@ -9,12 +9,18 @@ You are the cockpit of one `factory` run, not its builder. Never read the board,
 
 ## 1. Start
 
+0. `factory docs status NNN`. On the default branch → `git switch` to the `branch` it names (`-c` when it does not exist yet), so nothing below commits on the default branch. Then `factory docs doctor`, its `skills` line per [_shared/stale-tooling.md](../_shared/stale-tooling.md). `not sliced` → invoke `/slice NNN from /deliver` with the Skill tool, then commit what it wrote by pathspec, `docs(NNN): slice PRD-NNN`.
 1. `factory run NNN` (add `--budget <weighted tokens>` or `--hypothesis "<one line>"` only when the owner gave one). It prints the run id; tell the owner the id — it is the handle for `factory wait <id>`, `factory status <id>` and `factory stop <id>`.
-2. If it reports a live or resumed run, that run id is the one to drive.
+2. If it reports a live or resumed run, that run id is the one to drive. So the owner may `/clear` and type `/deliver NNN` at any time: this line picks the run up.
+3. Exit 1 is a preflight refusal: read each `✗` line, fix the ones below, then `factory run NNN` again.
+   - `working tree not clean` with every dirty path under `docs/features/NNN-*` → `git add` them and commit by pathspec, `docs(NNN): …`. Any other dirty path → ask.
+   - `docs check` errors in this feature's own files → fix them and commit.
+   - `not sliced — /slice NNN` → slice as in step 0.
+   - Every other `✗` line → one `AskUserQuestion` each, its fix as option 1; do what the answer says before the retry. Never run `/gate` or `/lanes` unasked.
 
 ## 2. Loop until the run ends
 
-Run `factory wait <id> --timeout 1500` in a background Bash and do nothing else until it returns. (A 25-minute poll: whether one Bash call can sleep for hours was not verified when this skill was written, and the loop is the same either way.) On return:
+Run `factory wait <id> --timeout 3300` in a background Bash whose own `timeout` is above 3,300,000 ms, and do nothing else until it returns. (A 55-minute poll stays inside the 1-hour prompt cache; `wait` returns early on every event the owner must see.) On return:
 
 - exit 3 (`still running: …`): wait again. Say nothing unless the owner asks.
 - exit 4 (`driver dead; run: factory run NNN`): run `factory run NNN` (if it says the run is live, a driver already took it), then wait again.
@@ -30,7 +36,7 @@ Run `factory wait <id> --timeout 1500` in a background Bash and do nothing else 
 
 If the owner asks to stop: `factory stop <id>` — it says how many workers are still in flight; the run ends when they exit.
 
-## 3. Review interview — as `/deliver` §8
+## 3. Review interview
 
 Read the log now, the only time this skill reads it: `factory docs log show NNN --decide` for the `decide` ADs no review answers yet, then `factory docs log show NNN --json` for the `fyi` decisions with no `review` entry pointing at them (`--decide` drops those); skip the ones with no flag. None → say so and ask nothing.
 
@@ -39,6 +45,6 @@ Read the log now, the only time this skill reads it: `factory docs log show NNN 
 3. Apply: one `factory docs log add NNN --kind review --ref AD-{n} --verdict kept --title "AD-{n} kept"` per kept answer, and `--verdict changed --title "AD-{n} changed" --body-file -` with the "to what" on stdin per changed one; never edit the log by hand. A changed AD gets its code change by a subagent on the feature branch: inner loop, then the gate once, one commit by pathspec. Append `**Owner review ({date}):** k kept, c changed (AD numbers)` to the feature's `retro.md`. Push once.
 4. Tell the owner the PR URL, that it is a draft, and that merging is theirs.
 
-## 4. A dead cockpit
+## 4. A dead cockpit, a compaction, a lost context
 
-Start here with the run id: `factory wait <id>` replays every event the old session missed and repeats every question and park still open, shown or not (`--replay` repeats them all), then continue at §2.
+Start here with the run id (gone → `factory status` lists the live runs): `factory wait <id>` replays every event the old session missed and repeats every question and park still open, shown or not (`--replay` repeats them all), then continue at §2.

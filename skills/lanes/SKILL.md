@@ -19,6 +19,7 @@ factory docs gate --inner
 factory docs lanes
 ```
 
+- **The `skills` line** → apply [_shared/stale-tooling.md](../_shared/stale-tooling.md).
 - **Not on the framework** → `factory docs init` first. The seed list lives in `docs/project.toml`.
 - **No inner loop and no gate** → stop and say `/gate` comes first. `--prove` runs the inner loop, so without one there is nothing to prove.
 - **The inner loop is red in the main tree** → stop and say so. A lane cannot be greener than the tree it is cut from.

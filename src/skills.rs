@@ -28,6 +28,10 @@ pub const FILES: &[(&str, &str)] = &[
         include_str!("../skills/_shared/models.md"),
     ),
     (
+        "_shared/stale-tooling.md",
+        include_str!("../skills/_shared/stale-tooling.md"),
+    ),
+    (
         "deliver/SKILL.md",
         include_str!("../skills/deliver/SKILL.md"),
     ),

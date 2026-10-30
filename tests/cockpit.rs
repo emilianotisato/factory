@@ -518,7 +518,10 @@ fn the_cockpit_skill_is_under_sixty_lines_and_names_the_five_commands() {
         // the log, read and written through the tool
         "factory docs log show NNN --decide",
         "--kind review --ref AD-{n} --verdict kept",
-        "--timeout 1500",
+        "--timeout 3300",
+        // an unsliced PRD is sliced first, without the write question
+        "not sliced",
+        "from /deliver",
         // a dead cockpit reattaches
         "replays every event",
         "repeats every question and park still open",
@@ -528,6 +531,7 @@ fn the_cockpit_skill_is_under_sixty_lines_and_names_the_five_commands() {
     ] {
         assert!(text.contains(needle), "{needle:?} missing in:\n{text}");
     }
+    assert!(!text.contains("--timeout 1500"), "the old poll");
     // nothing owner-specific
     for forbidden in ["/home/", "~/Dropbox", "Dropbox", "emiliano", "Emiliano"] {
         assert!(!text.contains(forbidden), "{forbidden:?} in the skill");

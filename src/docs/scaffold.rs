@@ -4,7 +4,9 @@ use std::path::Path;
 use std::process::Command;
 
 use super::board::{self, Kind};
+use super::frontmatter;
 use super::ideas;
+use super::preflight;
 use super::project;
 use super::state;
 use crate::config::PROJECT_FILE;
@@ -256,6 +258,14 @@ fn name_ok(what: &str, s: &str) -> Result<()> {
     Ok(())
 }
 
+/// `git config user.name` as a frontmatter value that reads back as the name: bare, else quoted.
+fn author(root: &Path) -> Option<String> {
+    let name = preflight::git_line(root, &["config", "user.name"]).filter(|n| !n.is_empty())?;
+    [name.clone(), format!("\"{name}\"")].into_iter().find(|v| {
+        frontmatter::parse(&format!("---\nauthor: {v}\n---\n")).str("author") == Some(name.as_str())
+    })
+}
+
 /// No `log.jsonl`: the first append makes it.
 pub fn new(root: &Path, slug: &str, title: Option<&str>, out: &mut dyn Write) -> Result<()> {
     new_from(root, slug, title, None, out)
@@ -299,6 +309,9 @@ pub fn new_from(
         .replace("{{TITLE}}", &title)
         .replace("{{DATE}}", &today())
         .replace("{{GATE}}", &gate);
+    if let Some(author) = author(root) {
+        body = body.replacen("\nauthor: _(name)_\n", &format!("\nauthor: {author}\n"), 1);
+    }
     if let Some((id, _, i)) = &idea {
         body = with_idea(&body, id, &i.body);
     }
