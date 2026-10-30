@@ -1,0 +1,7 @@
+{
+  "name": "factory-cockpit",
+  "version": "0.11.0",
+  "description": "Live factory run status in a cockpit session: the status line, a band when the owner is needed, and a /factory-board pane",
+  "author": { "name": "Emiliano Tisato" },
+  "types": "./types/index.d.ts"
+}
