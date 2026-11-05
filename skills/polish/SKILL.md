@@ -56,7 +56,7 @@ Its prompt carries a reader's questions, because a rule table cannot ask them. O
 
 **Then `/ux`, when the diff touches anything a user sees** — pages, components, templates, styles, or the server code deciding what a page renders. It drives the app through the verify skill, captures every state (empty, loading, error, focus, narrow, long content) and checks them against `docs/ux-rubric.md`. It is a **collector like the others**: its findings join the same triage, not a separate ritual.
 
-Skip it only when nothing user-visible changed, and say so. No harness (`.claude/skills/verify-*` missing) → say that instead, and that the UI went unreviewed; do not substitute reading the source.
+Skip it only when nothing user-visible changed, and say so. No harness (`.claude/skills/verify-*` missing) → say that instead, and that the UI went unreviewed; do not substitute reading the source. A Claude Code mod is the exception: `claude plugin validate` and `claude plugin test` are its harness, so run them and report what they cannot show (how the band, pane or status line look in a live session) for the owner's QA row.
 
 **Then the second opinion, a reviewer that did not write the code.** It is the `second opinion` role in [_shared/models.md](../_shared/models.md) — Cursor CLI, unconditionally. Do not probe for any other vendor's CLI or plugin and do not branch on one being installed; presence says nothing about whether its subscription is live. Cross-vendor is the entire point: models from one vendor share blind spots, so a second Claude agreeing with the first is weak evidence.
 

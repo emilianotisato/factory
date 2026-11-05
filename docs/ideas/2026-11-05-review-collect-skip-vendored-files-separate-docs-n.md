@@ -18,3 +18,5 @@ Should:
 2. Put docs-only passes in their own lower-priority section, or out by default.
 3. Size passes by something closer to complexity than raw lines, or cap a single file's pass.
 4. Mark a pass that times out without findings text `unreviewed`, not `counted`, so the fallback rule applies.
+
+Seen again in PRD-013 (harvest 2026-11-05): pass 1 got `docs/features/013-live-status/log.jsonl` and `state.toml`, files only the binary writes, and spent most of its time on docs. Tool-written files (`log.jsonl`, `state.toml`, `events.jsonl`) belong in the default exclude.
