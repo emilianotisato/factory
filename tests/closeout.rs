@@ -1094,6 +1094,7 @@ fn a_red_check_gets_one_fix_round_then_green() {
     let ship_sha = sha_of(&fx, "docs(001): ship PRD-001");
     let refresh_sha = sha_of(&fx, "docs(001): refresh numbers");
     assert_eq!(refresh_sha, head(&fx));
+    assert_eq!(of_kind(&dir, "ci_green")[0]["head"], refresh_sha);
     assert_eq!(files_of(&fx, &refresh_sha), [RETRO.to_string()]);
     assert_eq!(
         fx.git(&["show", &format!("{refresh_sha}:{RETRO}")]),
