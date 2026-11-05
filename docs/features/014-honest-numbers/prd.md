@@ -59,7 +59,7 @@ summary: |
 
 ## 4. Slices
 
-No slices — build straight from this document.
+One slice, because a `factory` run builds from slice files: `slice-01` changes `push` in `src/closeout.rs` and the closeout tests. One branch (`feat/honest-numbers`), one PR, one commit per slice; the end-of-run checkpoint proves the FR-1 row. No Human row, so no `qa-guide.md`.
 
 ## 5. Non-goals
 
