@@ -1012,7 +1012,7 @@ fn open_pr(
         )?;
         return Ok(Some(Outcome::Done));
     }
-    if let Some(o) = push(run, docs, &feature_dir, &branch, out)? {
+    if let Some(o) = push(run, docs, board, &branch, out)? {
         return Ok(Some(o));
     }
     let body = run.dir().join(PR_BODY_FILE);
@@ -1107,14 +1107,16 @@ fn open_pr(
 fn push(
     run: &mut Run,
     docs: &Docs,
-    feature_dir: &Path,
+    board: &Status,
     branch: &str,
     out: &mut dyn Write,
 ) -> Result<Option<Outcome>> {
+    let repo = run.state().repo.clone();
+    let feature_dir = &repo.join(&board.dir);
     if let Some(o) = branch_guard(run, docs, feature_dir, "pr", "push", out)? {
         return Ok(Some(o));
     }
-    let repo = run.state().repo.clone();
+    refresh_numbers(run, board, out)?;
     match ci::push(&repo, branch)? {
         Ok(()) => {
             say(out, &format!("pr: pushed {branch} to origin"))?;
@@ -1138,6 +1140,35 @@ fn push(
             )?))
         }
     }
+}
+
+/// A section that cannot be computed or written is said and skipped, never failing the push.
+fn refresh_numbers(run: &Run, board: &Status, out: &mut dyn Write) -> Result<()> {
+    let repo = &run.state().repo;
+    let retro = repo.join(&board.dir).join("retro.md");
+    if !retro.exists() {
+        return Ok(());
+    }
+    let written = retro::numbers(run.db(), run.id().as_str(), repo)
+        .and_then(|section| retro::write(&retro, &section));
+    match written {
+        Ok(true) => {
+            let path = format!("{}/retro.md", board.dir);
+            if let Some(c) = commit::commit(
+                repo,
+                &[path],
+                &commit::subject(board, "docs", "refresh numbers"),
+            )? {
+                say(
+                    out,
+                    &format!("push: ## Numbers refreshed, {}", short(&c.sha)),
+                )?;
+            }
+        }
+        Ok(false) => {}
+        Err(e) => say(out, &format!("push: no ## Numbers written — {e}"))?,
+    }
+    Ok(())
 }
 
 fn branch_guard(
@@ -1375,7 +1406,7 @@ fn watch_ci(
                         if run.state().stop_requested {
                             return Ok(Some(Outcome::Stopped));
                         }
-                        if let Some(o) = push(run, docs, &feature_dir, &branch, out)? {
+                        if let Some(o) = push(run, docs, board, &branch, out)? {
                             return Ok(Some(o));
                         }
                         since = Instant::now();

@@ -3,7 +3,11 @@
 **Source**: [`prd.md`](prd.md) → §2 FR-1, §3 QA plan. **Depends on**: — (the PRD's only slice; a `factory` run builds from slice files)
 **Created**: 2026-11-05
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+- **Built.** `push` (`src/closeout.rs`) takes the board instead of the feature dir and calls the new `refresh_numbers` after `branch_guard` and before `ci::push`. When `retro.md` exists, `refresh_numbers` computes and writes `## Numbers`, and on `Ok(true)` commits that one path as `docs(NNN): refresh numbers` through `commit::commit` and `commit::subject`. A compute or write error is said as `push: no ## Numbers written — {e}` and the push goes ahead. A commit error still propagates (AD-1). The ship step is unchanged.
+- **Tests** (`tests/closeout.rs`): `a_red_check_gets_one_fix_round_then_green` now ends on `docs(001): refresh numbers` at `HEAD`. That commit holds only the retro, it matches the working tree, and its `fix` row counts one more worker than the ship commit's. `three_fix_rounds_on_a_red_check_block_the_closeout` also pinned the subjects, so it now expects one refresh commit after each fix (the PRD's accepted cost). The new `a_numbers_section_that_cannot_be_written_still_lets_the_fix_round_push` uses polish friction text with a stray opening marker and asserts both pushes, the skip line, no refresh commit and a clean tree. `a_finished_board_polishes_ships_pushes_and_opens_the_draft_pr` and `a_flaky_check_is_rerun_once_then_green` are untouched and green.
+- **Inner loop:** 2 runs, 1 red, ~2 min. The red run caught `three_fix_rounds_on_a_red_check_block_the_closeout`, which pinned the old subject list. Before that, one targeted run of the 4 named closeout tests was green.
+- **Prove (FR-1 row):** left for the checkpoint.
 
 **Slice**: `push` in `src/closeout.rs` rewrites the retro's `## Numbers` from the store before it pushes, and when the section changed, commits the retro alone as `docs(NNN): refresh numbers`. A CI fix round's push then carries the fix and the refreshed section together; the push in `open_pr` right after ship changes nothing and commits nothing. A failure to compute or write the section is said in one line and never stops the push.
 

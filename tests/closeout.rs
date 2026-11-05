@@ -1084,15 +1084,26 @@ fn a_red_check_gets_one_fix_round_then_green() {
         [
             "fix(001): polish review fixes",
             "docs(001): ship PRD-001",
-            "fix(001): CI test"
+            "fix(001): CI test",
+            "docs(001): refresh numbers"
         ]
     );
     let fix_sha = sha_of(&fx, "fix(001): CI test");
     assert_eq!(files_of(&fx, &fix_sha), ["src/lib.txt".to_string()]);
     assert!(fx.read("src/lib.txt").contains("fixed by spawn 7\n"));
     let ship_sha = sha_of(&fx, "docs(001): ship PRD-001");
+    let refresh_sha = sha_of(&fx, "docs(001): refresh numbers");
+    assert_eq!(refresh_sha, head(&fx));
+    assert_eq!(files_of(&fx, &refresh_sha), [RETRO.to_string()]);
     assert_eq!(
-        fx.git(&["show", &format!("{ship_sha}:{RETRO}")]),
+        fx.git(&["show", &format!("{refresh_sha}:{RETRO}")]),
+        fx.read(RETRO)
+    );
+    let shipped_retro = fx.git(&["show", &format!("{ship_sha}:{RETRO}")]);
+    assert_eq!(
+        fix_workers(&fx.read(RETRO)),
+        fix_workers(&shipped_retro) + 1,
+        "{}",
         fx.read(RETRO)
     );
     assert_eq!(fx.state().status, "shipped");
@@ -1151,6 +1162,48 @@ fn a_red_check_gets_one_fix_round_then_green() {
     assert_eq!(last["kind"], "run_finished");
     assert_eq!(last["ci_cycles"], 1);
     assert_eq!(last["pr_url"], PR_URL);
+}
+
+/// The `workers` cell of the Numbers table's `fix` row; no row counts none.
+fn fix_workers(retro: &str) -> u64 {
+    retro
+        .lines()
+        .find(|l| l.starts_with("| fix |"))
+        .map_or(0, |l| l.split('|').nth(2).unwrap().trim().parse().unwrap())
+}
+
+#[test]
+fn a_numbers_section_that_cannot_be_written_still_lets_the_fix_round_push() {
+    let fx = Fixture::new("closeout-ci-numbers-unwritable");
+    fx.chain();
+    fx.script_ci(&["red:test", "green"]);
+    let stray = format!("A stray marker: {}", factory::retro::OPEN);
+    fx.write_plan(&plan_with(&[
+        json!({"outcome": "polish", "friction": stray}),
+        step("fix"),
+    ]));
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "finished", 120);
+
+    assert_eq!(
+        subjects(&fx)[subjects(&fx).len() - 2..],
+        ["docs(001): ship PRD-001", "fix(001): CI test"]
+    );
+    assert!(
+        !subjects(&fx).contains(&"docs(001): refresh numbers".to_string()),
+        "{:?}",
+        subjects(&fx)
+    );
+    assert_eq!(origin_head(&fx, "feat/fixture"), Some(head(&fx)));
+    let log = driver_log(&dir);
+    assert!(log.contains("push: no ## Numbers written — "), "{log}");
+    assert_eq!(
+        log.matches("pr: pushed feat/fixture to origin").count(),
+        2,
+        "{log}"
+    );
+    assert_eq!(fx.git(&["status", "--porcelain"]).trim(), "", "tree dirty");
+    assert_eq!(of_kind(&dir, "run_finished").len(), 1);
 }
 
 #[test]
@@ -1269,8 +1322,11 @@ fn three_fix_rounds_on_a_red_check_block_the_closeout() {
         [
             "docs(001): ship PRD-001",
             "fix(001): CI test",
+            "docs(001): refresh numbers",
             "fix(001): CI test",
-            "fix(001): CI test"
+            "docs(001): refresh numbers",
+            "fix(001): CI test",
+            "docs(001): refresh numbers"
         ]
     );
     assert_eq!(report_json(&fx, &dir)["ci_cycles"], 3);

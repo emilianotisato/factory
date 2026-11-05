@@ -1,5 +1,6 @@
 status = "ready"
 
 [slices.1]
-status = "pending"
+status = "done"
+lane = 1
 depends_on = []
