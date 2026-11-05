@@ -9,6 +9,7 @@ summary: |
   The second opinion's default timeout goes from 900 s to 1800 s, because half of all stored passes were killed while still reviewing. Eight one-line skill fixes (seven harvest slips and the `/gate` anecdote) ride the same version bump (0.8.0). Agreed; small enough to build from one slice.
 from_idea: "2026-10-15-a-timed-out-review-pass-with-only-opening-chatter"
 ---
+> **History.** The code, `docs/reference` and `docs/decisions.md` win over this document.
 
 # PRD-010 — Second-opinion passes that finish
 

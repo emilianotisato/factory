@@ -9,6 +9,7 @@ summary: |
   The worker hook no longer denies a whole read of a file the pack only outlines; it denies a whole read of the slice file alone, which the pack carries in full. Built attended as 0.10.0, no slices; the after-merge read of denials and builder turns is still to do.
 from_idea: "2026-10-20-the-outline-deny-costs-a-turn-and-the-builder-read"
 ---
+> **History.** The code, `docs/reference` and `docs/decisions.md` win over this document.
 
 # PRD-011 — Whole reads of Outline files go through
 

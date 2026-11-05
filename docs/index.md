@@ -24,7 +24,7 @@
 
 A slice is `pending → building → done`, or `blocked` while it waits on the owner.
 
-**Build order:** no feature is live; 001 to 009 are archived. When more than one feature is live, state the order here and say why: shared files, migration risk, whichever ships second eats the merge.
+**Build order:** no feature is live; 001 to 013 are archived. When more than one feature is live, state the order here and say why: shared files, migration risk, whichever ships second eats the merge.
 
 **Retired numbers — never reused:** _(none yet)_
 

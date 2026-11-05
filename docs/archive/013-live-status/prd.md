@@ -9,6 +9,7 @@ summary: |
   A Claude Code mod, bundled in the binary and installed at user scope by `factory cockpit install`, shows this repo's live runs in the cockpit session at zero model tokens: a status-line glance, a band only when the owner is needed, a full board in a pane `/factory-board` toggles. It polls a new `factory status --here --json`, whose `line`, `owner` and `board` strings the CLI renders. Agreed 2026-10-30, nothing cut; built by a factory run.
 from_idea: "2026-10-30-live-run-status-in-the-cockpit-cli-feeds-and-a-fac"
 ---
+> **History.** The code, `docs/reference` and `docs/decisions.md` win over this document.
 
 # PRD-013 — Live run status in the cockpit
 

@@ -9,6 +9,7 @@ author: Emiliano Tisato
 summary: |
   An agreed PRD ends with one AskUserQuestion; "Build it now" slices, clears what preflight can fix alone, and starts the run in the same session, which then waits on it with a 55-minute poll. Stale skills or binary update themselves with a chore commit. Blast radius becomes optional and `author` comes from git. Ready, built by a factory run.
 ---
+> **History.** The code, `docs/reference` and `docs/decisions.md` win over this document.
 
 # PRD-012 — From an agreed PRD to a running build in one tap
 
