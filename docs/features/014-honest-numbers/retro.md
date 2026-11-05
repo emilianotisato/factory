@@ -43,3 +43,31 @@ Leaks: clean. No comment or name it should have caught.
 ## Score
 
 4: one small FR, built and proven in one slice with a single red inner-loop run. Polish found one real defect, which two vendors agreed on independently. The fix's own regression test could not be written with today's fixture.
+
+## Numbers
+
+<!-- factory:numbers -->
+| role | workers | own | subagents | weighted | minutes | turns |
+|---|---:|---:|---:|---:|---:|---:|
+| build | 1 | 219194 | 0 | 219194 | 4 | 22 |
+| checkpoint | 1 | 152984 | 0 | 152984 | 2 | 15 |
+| polish | 1 | 432607 | 166654 | 599261 | 7 | 28 |
+| total | 3 | 804785 | 166654 | 971439 | 13 | 65 |
+
+Knobs: build opus/high default · fix opus/high default · checkpoint opus/high default · polish opus/high default · budget 30000000 default · lanes 4 · factory 0.12.0 · claude mise
+
+Hypothesis: none
+
+quality: gate_red 0 · worker_gate_red 0 · fix_commits 0 · ci_red_rounds 0 · ci_reruns 0 · findings high=0 medium=3 low=9 fixed=4 parked=2 · decisions 1 decide 0 blocks 0
+
+Pack (build): slice 6566 · prd_sections 4709 · log 53 · outline 14257 · lookup 1115 · contract 3095 · autonomy 8610 · inner_loop 86 · total 38491 · start_context 23342
+
+Compared with:
+
+| run | feature | weighted | slices | per slice | lines changed | per line | comment share | id hits |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 014-20261105-4bd7 (this run) | 014 | 971439 | 1 | 971439 | 319 | 3045 | 5.9% | 0 |
+| 013-20261030-bf19 | 013 | 2582078 | 3 | 860693 | 2072 | 1246 | 1.7% | 0 |
+| 012-20261030-59d9 | 012 | 1464096 | 2 | 732048 | 745 | 1965 | 2.2% | 0 |
+| 009-20261015-81ca | 009 | 4146840 | 6 | 691140 | 1748 | 2372 | 3.3% | 0 |
+<!-- /factory:numbers -->
