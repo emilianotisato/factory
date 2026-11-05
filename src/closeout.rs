@@ -1142,7 +1142,8 @@ fn push(
     }
 }
 
-/// A section that cannot be computed or written is said and skipped, never failing the push.
+/// A section that cannot be computed or written is said and skipped; a failed commit still stops the push.
+/// The retro is committed even when the write changed nothing: a driver killed before its commit left it on disk.
 fn refresh_numbers(run: &Run, board: &Status, out: &mut dyn Write) -> Result<()> {
     let repo = &run.state().repo;
     let retro = repo.join(&board.dir).join("retro.md");
@@ -1152,7 +1153,7 @@ fn refresh_numbers(run: &Run, board: &Status, out: &mut dyn Write) -> Result<()>
     let written = retro::numbers(run.db(), run.id().as_str(), repo)
         .and_then(|section| retro::write(&retro, &section));
     match written {
-        Ok(true) => {
+        Ok(_) => {
             let path = format!("{}/retro.md", board.dir);
             if let Some(c) = commit::commit(
                 repo,
@@ -1165,7 +1166,6 @@ fn refresh_numbers(run: &Run, board: &Status, out: &mut dyn Write) -> Result<()>
                 )?;
             }
         }
-        Ok(false) => {}
         Err(e) => say(out, &format!("push: no ## Numbers written — {e}"))?,
     }
     Ok(())

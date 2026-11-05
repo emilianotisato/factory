@@ -1186,14 +1186,10 @@ fn a_numbers_section_that_cannot_be_written_still_lets_the_fix_round_push() {
     let dir = start(&fx);
     wait_phase(&fx, &dir, "finished", 120);
 
+    let all = subjects(&fx);
     assert_eq!(
-        subjects(&fx)[subjects(&fx).len() - 2..],
+        all[all.len() - 2..],
         ["docs(001): ship PRD-001", "fix(001): CI test"]
-    );
-    assert!(
-        !subjects(&fx).contains(&"docs(001): refresh numbers".to_string()),
-        "{:?}",
-        subjects(&fx)
     );
     assert_eq!(origin_head(&fx, "feat/fixture"), Some(head(&fx)));
     let log = driver_log(&dir);
@@ -2287,5 +2283,11 @@ fn a_ci_fix_orphan_adopted_by_a_resumed_driver_lands_once() {
     assert_eq!(count_subject(&fx, "fix(001): CI test"), 1, "{log}");
     let fix_sha = sha_of(&fx, "fix(001): CI test");
     assert_eq!(files_of(&fx, &fix_sha), ["src/lib.txt".to_string()]);
+    assert_eq!(
+        sha_of(&fx, "docs(001): refresh numbers"),
+        head(&fx),
+        "{log}"
+    );
+    assert_eq!(origin_head(&fx, "feat/fixture"), Some(head(&fx)));
     assert_eq!(fx.git(&["status", "--porcelain"]).trim(), "", "tree dirty");
 }

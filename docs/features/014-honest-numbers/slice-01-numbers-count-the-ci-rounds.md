@@ -50,3 +50,9 @@
 §3 QA plan, row FR-1: `run cargo test --test closeout`, the three named tests and the new one, transcript kept in Progress.
 
 **Acceptance:** after the checkpoint, the FR-1 row has its transcript in Progress.
+
+**Code-review fixes (2026-11-05).**
+- **A refresh left on disk was never committed.** `refresh_numbers` committed only when `retro::write` returned `Ok(true)`. A driver killed after the write and before its commit resumes to an `Ok(false)` write: the file already matches, so the refreshed section never reached a commit and the push sent the old one. Both the local review and the second opinion raised this. It now commits on any successful write, and `commit::commit` still makes no commit when nothing differs.
+- **The doc comment said "never failing the push"**, but a failed commit still stops it (AD-1). It now says both, and why a no-change write still commits.
+- **The resume road had no test.** The PRD put the refresh in `push` so a resumed driver's `open_pr` push would carry it. `a_ci_fix_orphan_adopted_by_a_resumed_driver_lands_once` now asserts `docs(001): refresh numbers` is `HEAD` and on origin after the resume.
+- `a_numbers_section_that_cannot_be_written_still_lets_the_fix_round_push` reads the subjects once. The tail check already rules out a refresh commit.
