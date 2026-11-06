@@ -8,6 +8,9 @@
 - **Inner loop**: 2 runs, 1 red, about 2 min. The red run was clippy `cloned_ref_to_slice_refs` in the CI unit test. Both behaviour tests passed on their first run.
 - **Deviations**: none. AD-1: a slice with no recorded status reads as `"pending"`.
 - **Prove (left for the checkpoint)**: rows FR-1, FR-2 and all. Their transcripts are not taken yet.
+- **Prove FR-1** (checkpoint 1): `cp-1/fr1-status-json.txt`. `factory status --json` over the two fixture runs, read back against `state.json`, the `prd.md` title and the last `events.jsonl` seq. All match, and the repo with no `docs/features` gives `slug`/`title` `null`. Pinned by `status_json_says_where_a_run_belongs` (`cp-1/test-status_json_says_where_a_run_belongs.log`).
+- **Prove FR-2** (checkpoint 1): `cp-1/fr2-status-json-per-state.txt`. `factory status <id> --json` once for each of the ten states, with the fields and the `slices`/`checkpoints:`/`quota:`/`PR:` board lines side by side, and they agree. Pinned by `status_json_draws_each_run_state_as_fields` (`cp-1/test-status_json_draws_each_run_state_as_fields.log`).
+- **Prove all** (checkpoint 1): `cp-1/all-status-id-json.txt`. Plain, `--json` and `--line` over the stubbed run parked on BLOCK-1: the six old keys are there, and `board[1..]` matches the plain output. Pinned by `status_json_carries_the_board_and_what_the_owner_owes` (`cp-1/test-status_json_carries_the_board_and_what_the_owner_owes.log`), whose asserts from `main` are all still there.
 
 **Slice**: After this slice, every run object in `factory status --json` also carries where it belongs (`repo`, `branch`, `slug`, `title`, `startedAt`, `updatedAt`, `elapsedSeconds`, `seq`) and its progress as fields (`slices`, `budget`, `checkpoints`, `pr`, `ci`, `pausedUntil`, `parked`, `driverDead`, `stopped`). Schema stays 1, and the six existing keys print exactly as today. `questions` and `--recent` are slice 02's.
 

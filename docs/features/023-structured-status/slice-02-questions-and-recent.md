@@ -9,6 +9,8 @@
 - Inner loop: 1 run, 0 red, ~1.6 min.
 - Deviations: none.
 - Prove (FR-3, FR-4 rows of prd §8): left for the checkpoint.
+- Prove FR-3 (checkpoint 1): `cp-1/fr3-answers.txt`, `cp-1/fr3-answers-BLOCK-1.json`, `cp-1/fr3-answers-ASK-1.json`. Each `questions[].answer` argv was run with a text appended from the run's repo. Both exited 0 and wrote their answer files, and the next `--json` has `questions: []`. Pinned by `status_json_carries_the_board_and_what_the_owner_owes` and `status_json_gives_a_preflight_ask_the_command_that_answers_it` (`cp-1/test-status_json_carries_the_board_and_what_the_owner_owes.log`, `cp-1/test-status_json_gives_a_preflight_ask_the_command_that_answers_it.log`).
+- Prove FR-4 (checkpoint 1): `cp-1/fr4-recent.txt`. Over the live, 2-day and 8-day fixture runs, `--json --recent` lists the 2-day and live runs in start order and `--json` lists the live one only. `--recent --here` from outside the repo lists none. `--recent` alone and `<id> --json --recent` both exit 2 with clap's message. Pinned by `recent_adds_runs_that_ended_this_week` (`cp-1/test-recent_adds_runs_that_ended_this_week.log`).
 
 **Slice**: After this slice, each run object carries `questions`: every open id apart, with `at`, `n`, the full `text` and the exact `factory answer` argv. And `factory status --json --recent` also lists runs that ended in the last 7 days. The default listing, the plain and `--line` outputs, and the `owner` strings stay as they are.
 
