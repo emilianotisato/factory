@@ -150,7 +150,12 @@ Its §3 says "the exact shape is factory's call" and its builder writes the ship
 
 ## 10. Slices
 
-_(Not sliced yet. Run `/slice`, or write "No slices — build straight from this document" if it is small.)_
+Two slices, built in order on one branch, one PR, one commit per slice. Prove rows are driven at the checkpoint after slice 02 (`checkpoint_every = 2`), with the full gate.
+
+- **Slice 01, the run record** (FR-1, FR-2): every run object gains where it belongs and its progress as fields, with one fixture run per state. It goes first because slice 02's tests reuse those fixtures.
+- **Slice 02, questions and `--recent`** (FR-3, FR-4): `questions` with each answer argv, proven on real stubbed runs, then the 7-day listing. It depends on 01 because both grow `RunJson` and `run_json` in `src/cli/status.rs` and the same tests in `tests/cockpit.rs`; built in parallel they would collide.
+
+No QA plan row says Human, so there is no `qa-guide.md`.
 
 ## 11. Non-goals
 
