@@ -42,3 +42,31 @@ None with evidence. The gate ran green three times at about 1.5 min each, and th
 ## Score
 
 4 — the build and checkpoint were clean and the reviewers found real defects cheaply, but the PRD's own `ci` rule contradicted its reason and the inner-loop cost is invisible to the retro.
+
+## Numbers
+
+<!-- factory:numbers -->
+| role | workers | own | subagents | weighted | minutes | turns |
+|---|---:|---:|---:|---:|---:|---:|
+| build | 2 | 565171 | 0 | 565171 | 9 | 38 |
+| checkpoint | 1 | 329097 | 0 | 329097 | 2 | 22 |
+| polish | 1 | 595661 | 104929 | 700590 | 9 | 34 |
+| total | 4 | 1489928 | 104929 | 1594857 | 20 | 94 |
+
+Knobs: build opus/high default · fix opus/high default · checkpoint opus/high default · polish opus/high default · budget 30000000 default · lanes 4 · factory 0.12.1 · claude 2.1.316
+
+Hypothesis: none
+
+quality: gate_red 0 · worker_gate_red 0 · fix_commits 0 · ci_red_rounds 0 · ci_reruns 0 · findings high=0 medium=4 low=6 fixed=7 parked=3 · decisions 3 decide 1 blocks 0
+
+Pack (build): slice 8024 · prd_sections 7028 · log 374 · outline 11673 · lookup 1115 · contract 3095 · autonomy 8610 · inner_loop 86 · total 40004 · start_context 24102
+
+Compared with:
+
+| run | feature | weighted | slices | per slice | lines changed | per line | comment share | id hits |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 023-20261106-360f (this run) | 023 | 1594857 | 2 | 797429 | 1500 | 1063 | 1.2% | 0 |
+| 014-20261105-4bd7 | 014 | 971439 | 1 | 971439 | 319 | 3045 | 5.9% | 0 |
+| 013-20261030-bf19 | 013 | 2582078 | 3 | 860693 | 2072 | 1246 | 1.7% | 0 |
+| 012-20261030-59d9 | 012 | 1464096 | 2 | 732048 | 745 | 1965 | 2.2% | 0 |
+<!-- /factory:numbers -->
