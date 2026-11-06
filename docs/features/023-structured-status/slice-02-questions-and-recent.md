@@ -3,7 +3,12 @@
 **Source**: [`prd.md`](prd.md) → §5 FR-3, §6 FR-4, §8. **Depends on**: 01 (same `RunJson` and `run_json` in `src/cli/status.rs`, and the same tests in `tests/cockpit.rs`)
 **Created**: 2026-11-06
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+- Built: `cockpit::questions` (each open id's latest opening event in `owner`'s order, none once over; `needed` without the park). `status.rs` maps each one to `QuestionJson` (`id`, `at`, `n`, `text`, `answer`) on `RunJson.questions`. `--recent` (`requires = "json"`, `conflicts_with = "run"`) swaps `live_runs` for `recent_runs`: `list_runs` filtered to live runs plus over runs whose `updated_at` falls within `RECENT_SECS` (7 days). `live_runs` is unchanged.
+- Tests: `questions_come_apart_from_their_latest_opening_with_the_argv_that_answers_them` (unit, `src/cli/status.rs`: five kinds, one re-opened, one answered, over gives `[]`). `status_json_carries_the_board_and_what_the_owner_owes` pins the BLOCK question and answers through its argv (`answer_as_told`, run from `repo`); its existing asserts are kept. `status_json_gives_a_preflight_ask_the_command_that_answers_it` covers the ASK case. `recent_adds_runs_that_ended_this_week` covers the listings and the two refused flag mixes (exit 2, clap's message).
+- Inner loop: 1 run, 0 red, ~1.6 min.
+- Deviations: none.
+- Prove (FR-3, FR-4 rows of prd §8): left for the checkpoint.
 
 **Slice**: After this slice, each run object carries `questions`: every open id apart, with `at`, `n`, the full `text` and the exact `factory answer` argv. And `factory status --json --recent` also lists runs that ended in the last 7 days. The default listing, the plain and `--line` outputs, and the `owner` strings stay as they are.
 

@@ -316,14 +316,28 @@ fn status_json_carries_the_board_and_what_the_owner_owes() {
     assert_eq!(run["slices"].as_array().unwrap().len(), 3, "{run}");
     assert_eq!(run["slices"][0], json!({"n": 1, "status": "blocked"}));
 
+    assert_eq!(
+        run["questions"],
+        json!([{
+            "id": "BLOCK-1",
+            "at": "slice",
+            "n": 1,
+            "text": QUESTION,
+            "answer": ["factory", "answer", "--feature", "001", "BLOCK-1"],
+        }]),
+        "{run}"
+    );
+
     let out = factory(&fx, &["status", &id, "--line"]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     assert_eq!(stdout(&out), "001 · BLOCK-1 open\n");
 
-    let out = factory(&fx, &["answer", "BLOCK-1", ANSWER]);
+    let out = answer_as_told(&fx, run, "BLOCK-1", ANSWER);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    assert!(dir.join("answers/BLOCK-1.json").is_file());
     let v = status_json(&fx, fx.path(), &["status", &id, "--json"]);
     assert_eq!(v["runs"][0]["owner"], json!([]), "{v}");
+    assert_eq!(v["runs"][0]["questions"], json!([]), "{v}");
 
     wait_until(&fx, &dir, "the run to finish", 120, || {
         state(&dir)["phase"] == "finished"
@@ -338,6 +352,65 @@ fn status_json_carries_the_board_and_what_the_owner_owes() {
     let out = factory(&fx, &["status", "001-20000101-dead", "--json"]);
     assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
     assert_eq!(stdout(&out), "");
+}
+
+/// Runs the `answer` argv a run's `questions` entry gives, from the run's repo, with `text` appended.
+fn answer_as_told(fx: &Fixture, run: &Value, id: &str, text: &str) -> Output {
+    let q = run["questions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|q| q["id"] == id)
+        .unwrap_or_else(|| panic!("no {id} in {run}"));
+    let argv: Vec<&str> = q["answer"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a.as_str().unwrap())
+        .collect();
+    assert_eq!(argv[..2], ["factory", "answer"], "{q}");
+    let mut args = argv[1..].to_vec();
+    args.push(text);
+    factory_in(fx, Path::new(run["repo"].as_str().unwrap()), &args)
+}
+
+#[test]
+fn status_json_gives_a_preflight_ask_the_command_that_answers_it() {
+    use factory::events::EventKind;
+    use factory::run::{Phase, Run};
+
+    let fx = Fixture::new("cockpit-status-ask");
+    let item = "no inner loop declared";
+    // The run's pid is this test's, so the answer finds a live driver and spawns none.
+    let mut run = Run::create(&data_dir(&fx), fx.path(), "001", None, 1).unwrap();
+    run.emit(EventKind::AskOpened {
+        id: "ASK-1".into(),
+        text: item.into(),
+    })
+    .unwrap();
+    run.set_phase(Phase::WaitingOwner).unwrap();
+    let id = run.id().to_string();
+
+    let v = status_json(&fx, fx.path(), &["status", "--json"]);
+    let listed = &v["runs"][0];
+    assert_eq!(listed["id"], id.as_str(), "{v}");
+    assert_eq!(
+        listed["questions"],
+        json!([{
+            "id": "ASK-1",
+            "at": "preflight",
+            "n": null,
+            "text": item,
+            "answer": ["factory", "answer", "--run", id, "ASK-1"],
+        }]),
+        "{listed}"
+    );
+
+    let out = answer_as_told(&fx, listed, "ASK-1", "proceed");
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    assert!(run.dir().join("answers/ASK-1.json").is_file());
+    let v = status_json(&fx, fx.path(), &["status", &id, "--json"]);
+    assert_eq!(v["runs"][0]["questions"], json!([]), "{v}");
 }
 
 fn git_init(fx: &Fixture, dir: &Path) {
@@ -1109,5 +1182,65 @@ fn status_json_draws_each_run_state_as_fields() {
             "{n}"
         );
         assert_eq!(board[0].contains("(stopped)"), w.stopped, "{n}");
+    }
+}
+
+fn days_ago(days: u64) -> String {
+    factory::clock::rfc3339(factory::clock::unix_now() - days * 86_400)
+}
+
+#[test]
+fn recent_adds_runs_that_ended_this_week() {
+    let fx = Fixture::new("cockpit-status-recent");
+    let outside = data_dir(&fx).parent().unwrap().join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    let ended = |started: u64, updated: u64| json!({"phase": "finished", "started_at": days_ago(started), "updated_at": days_ago(updated)});
+    write_run(
+        &fx,
+        "001-20261106-live",
+        fx.path(),
+        json!({"started_at": days_ago(1), "updated_at": days_ago(1)}),
+        &[json!({"kind": "run_started"})],
+    );
+    write_run(&fx, "001-20261104-week", fx.path(), ended(3, 2), &[]);
+    write_run(&fx, "001-20261029-old", fx.path(), ended(9, 8), &[]);
+    let ids = |v: &Value| -> Vec<String> {
+        v["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    let v = status_json(&fx, fx.path(), &["status", "--json", "--recent"]);
+    assert_eq!(ids(&v), ["001-20261104-week", "001-20261106-live"], "{v}");
+    assert_eq!(v["runs"][0]["phase"], "finished");
+    assert_eq!(v["runs"][0]["questions"], json!([]));
+    let v = status_json(&fx, fx.path(), &["status", "--json"]);
+    assert_eq!(ids(&v), ["001-20261106-live"], "{v}");
+    let v = status_json(&fx, fx.path(), &["status", "--json", "--recent", "--here"]);
+    assert_eq!(ids(&v), ["001-20261104-week", "001-20261106-live"], "{v}");
+    let v = status_json(&fx, &outside, &["status", "--json", "--recent", "--here"]);
+    assert_eq!(v["runs"], json!([]), "{v}");
+
+    for (args, says) in [
+        (
+            &["status", "--recent"][..],
+            "the following required arguments were not provided",
+        ),
+        (
+            &["status", "001-20261106-live", "--json", "--recent"][..],
+            "cannot be used with",
+        ),
+    ] {
+        let out = factory(&fx, args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {}", stdout(&out));
+        assert_eq!(stdout(&out), "", "{args:?}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.starts_with("error: ") && err.contains(says),
+            "{args:?}: {err}"
+        );
     }
 }

@@ -12,7 +12,7 @@ use crate::events::{self, Event, EventKind};
 use crate::run::{Phase, Run, RunState};
 use crate::scheduler::pad_list;
 use crate::stream::RateLimit;
-use crate::{Result, clock, paths, quota, worker};
+use crate::{Result, checkpoint, clock, paths, quota, worker};
 
 #[derive(Args, Debug, Clone)]
 pub struct StatusArgs {
@@ -27,10 +27,16 @@ pub struct StatusArgs {
     /// Only the live runs of the git repository this directory is in
     #[arg(long, conflicts_with = "run")]
     pub here: bool,
+    /// With `--json`, also the runs that ended in the last 7 days
+    #[arg(long, requires = "json", conflicts_with = "run")]
+    pub recent: bool,
 }
 
 /// The `schema` of `--json`; bumped when a field changes meaning or goes away.
 const SCHEMA: u32 = 1;
+
+/// How far back `--recent` reaches for runs that are over.
+const RECENT_SECS: u64 = 7 * 86_400;
 
 #[derive(Serialize)]
 struct Envelope {
@@ -47,6 +53,7 @@ struct RunJson {
     phase: &'static str,
     line: String,
     owner: Vec<String>,
+    questions: Vec<QuestionJson>,
     board: Vec<String>,
     repo: String,
     branch: Option<String>,
@@ -65,6 +72,15 @@ struct RunJson {
     parked: Option<String>,
     driver_dead: bool,
     stopped: bool,
+}
+
+#[derive(Serialize, Debug, PartialEq)]
+struct QuestionJson {
+    id: String,
+    at: &'static str,
+    n: Option<u32>,
+    text: String,
+    answer: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -108,7 +124,11 @@ pub fn status(args: &StatusArgs, out: &mut dyn Write, err: &mut dyn Write) -> Re
             vec![Run::open(&data_dir, id)?]
         }
         None => {
-            let mut live = cockpit::live_runs(&data_dir)?;
+            let mut live = if args.recent {
+                recent_runs(&data_dir)?
+            } else {
+                cockpit::live_runs(&data_dir)?
+            };
             if args.here {
                 let here = paths::repo_root(Path::new(".")).ok();
                 live.retain(|s| here.as_deref().is_some_and(|h| same_repo(&s.repo, h)));
@@ -153,6 +173,17 @@ pub fn status(args: &StatusArgs, out: &mut dyn Write, err: &mut dyn Write) -> Re
     Ok(0)
 }
 
+/// The live runs and the ones that ended within `RECENT_SECS`, oldest start first.
+fn recent_runs(data_dir: &Path) -> Result<Vec<RunState>> {
+    let since = clock::unix_now().saturating_sub(RECENT_SECS);
+    Ok(crate::run::list_runs(data_dir)?
+        .into_iter()
+        .filter(|s| {
+            !s.phase.is_over() || clock::from_rfc3339(&s.updated_at).is_some_and(|t| t >= since)
+        })
+        .collect())
+}
+
 fn same_repo(repo: &Path, top: &Path) -> bool {
     repo.canonicalize().is_ok_and(|r| r == top)
 }
@@ -182,6 +213,7 @@ fn run_json(run: &Run) -> Result<RunJson> {
         phase: s.phase.as_str(),
         line: line_of(s, &events),
         owner: cockpit::owner(s, &events),
+        questions: questions(s, &events),
         board: board(run)?.into_iter().take(10).collect(),
         repo: s.repo.display().to_string(),
         branch: s.branch.clone(),
@@ -206,6 +238,56 @@ fn run_json(run: &Run) -> Result<RunJson> {
         parked: park_reason(s, &events).map(str::to_string),
         driver_dead: cockpit::driver_dead(s, &events),
         stopped: s.stopped,
+    })
+}
+
+fn questions(s: &RunState, events: &[Event]) -> Vec<QuestionJson> {
+    cockpit::questions(s, events)
+        .into_iter()
+        .filter_map(|e| question(e, &s.feature, s.id.as_str()))
+        .collect()
+}
+
+/// `answer` is the argv to run from the run's repo, every flag before the id so the text can follow it.
+fn question(e: &Event, feature: &str, run: &str) -> Option<QuestionJson> {
+    let (id, at, n, text) = match &e.kind {
+        EventKind::SliceBlocked {
+            slice,
+            block_id: Some(id),
+            question,
+        } => (
+            id,
+            "slice",
+            Some(*slice),
+            question.clone().unwrap_or_default(),
+        ),
+        EventKind::CheckpointBlocked {
+            n,
+            block_id,
+            question,
+        } => (block_id, "checkpoint", Some(*n), question.clone()),
+        EventKind::CloseoutBlocked {
+            block_id, question, ..
+        } => (block_id, "closeout", None, question.clone()),
+        EventKind::MergeRefused { block_id, detail } => {
+            (block_id, "merge", None, checkpoint::refusal_summary(detail))
+        }
+        EventKind::AskOpened { id, text } => (id, "preflight", None, text.clone()),
+        _ => return None,
+    };
+    let (flag, value) = if at == "preflight" {
+        ("--run", run)
+    } else {
+        ("--feature", feature)
+    };
+    Some(QuestionJson {
+        id: id.clone(),
+        at,
+        n,
+        text,
+        answer: ["factory", "answer", flag, value, id]
+            .map(str::to_string)
+            .to_vec(),
     })
 }
 
@@ -793,6 +875,133 @@ mod tests {
             Some("pending")
         );
         assert_eq!(ci(&[], true, true), Some("none"));
+    }
+
+    #[test]
+    fn questions_come_apart_from_their_latest_opening_with_the_argv_that_answers_them() {
+        let ev = |seq, kind| Event {
+            seq,
+            ts: String::new(),
+            kind,
+        };
+        let state = |phase: &str| -> RunState {
+            serde_json::from_value(serde_json::json!({
+                "id": "007-20261106-abcd",
+                "repo": "/r",
+                "feature": "007",
+                "branch": null,
+                "phase": phase,
+                "pid": 0,
+                "started_at": "2026-11-06T00:00:00Z",
+                "updated_at": "2026-11-06T00:00:00Z",
+                "budget_weighted_tokens": 1,
+                "stop_requested": false,
+            }))
+            .unwrap()
+        };
+        let events = vec![
+            ev(
+                1,
+                EventKind::SliceBlocked {
+                    slice: 2,
+                    block_id: Some("BLOCK-1".into()),
+                    question: Some("Which store?\nA or B".into()),
+                },
+            ),
+            ev(
+                2,
+                EventKind::CheckpointBlocked {
+                    n: 1,
+                    block_id: "BLOCK-2".into(),
+                    question: "Gate red".into(),
+                },
+            ),
+            ev(
+                3,
+                EventKind::MergeRefused {
+                    block_id: "BLOCK-3".into(),
+                    detail: "docs log merge\n✗ AD-1 twice\n✗ AD-2 twice".into(),
+                },
+            ),
+            ev(
+                4,
+                EventKind::CloseoutBlocked {
+                    phase: "pr".into(),
+                    block_id: "BLOCK-4".into(),
+                    question: "No PR body".into(),
+                },
+            ),
+            ev(
+                5,
+                EventKind::AskOpened {
+                    id: "ASK-1".into(),
+                    text: "no inner loop declared".into(),
+                },
+            ),
+            ev(
+                6,
+                EventKind::SliceBlocked {
+                    slice: 2,
+                    block_id: Some("BLOCK-1".into()),
+                    question: None,
+                },
+            ),
+            ev(
+                7,
+                EventKind::BlockAnswered {
+                    id: "BLOCK-2".into(),
+                    slice: None,
+                    text: "fix it".into(),
+                },
+            ),
+        ];
+        let q = |id: &str, at, n, text: &str, flag, value| QuestionJson {
+            id: id.into(),
+            at,
+            n,
+            text: text.into(),
+            answer: ["factory", "answer", flag, value, id]
+                .map(str::to_string)
+                .to_vec(),
+        };
+        let feature = |id, at, n, text| q(id, at, n, text, "--feature", "007");
+        assert_eq!(
+            questions(&state("waiting-owner"), &events),
+            [
+                feature("BLOCK-3", "merge", None, "AD-1 twice; AD-2 twice"),
+                feature("BLOCK-4", "closeout", None, "No PR body"),
+                q(
+                    "ASK-1",
+                    "preflight",
+                    None,
+                    "no inner loop declared",
+                    "--run",
+                    "007-20261106-abcd"
+                ),
+                feature("BLOCK-1", "slice", Some(2), ""),
+            ],
+            "the re-opened block moves to its latest opening and the answered one is gone"
+        );
+        assert_eq!(
+            questions(&state("building"), &events[..2]),
+            [
+                feature("BLOCK-1", "slice", Some(2), "Which store?\nA or B"),
+                feature("BLOCK-2", "checkpoint", Some(1), "Gate red"),
+            ],
+            "the text is whole"
+        );
+        assert_eq!(questions(&state("finished"), &events), []);
+        let json = serde_json::to_value(questions(&state("building"), &events[..1])).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!([{
+                "id": "BLOCK-1",
+                "at": "slice",
+                "n": 2,
+                "text": "Which store?\nA or B",
+                "answer": ["factory", "answer", "--feature", "007", "BLOCK-1"],
+            }])
+        );
     }
 
     #[test]

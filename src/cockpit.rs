@@ -200,6 +200,14 @@ fn needed(events: &[Event], parked: bool) -> Vec<&Event> {
     owed
 }
 
+/// Each open question's latest opening event, in the order `owner` lists them; none once the run is over.
+pub fn questions<'a>(state: &RunState, events: &'a [Event]) -> Vec<&'a Event> {
+    if state.phase.is_over() {
+        return Vec::new();
+    }
+    needed(events, false)
+}
+
 /// What the owner must act on now, whatever the cursor: the questions, the park, then a dead driver.
 pub fn owner(state: &RunState, events: &[Event]) -> Vec<String> {
     if state.phase.is_over() {
