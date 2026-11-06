@@ -64,3 +64,11 @@
 prd §8 rows **FR-1**, **FR-2** and **all**: run `factory status --json` over the fixture runs (FR-1, FR-2) and `factory status <id> --json` over the parked stubbed run ("all"), and keep each transcript.
 
 **Acceptance:** after the checkpoint, this slice's Progress holds the three transcripts, and the test names that pin them.
+
+**Code-review fixes (2026-11-06).**
+
+- **`ci` stuck on `"pending"` for an ended run.** A run stopped during a flaky rerun, or finished after a CI fix commit with no later verdict, read `"pending"` forever, and `--recent` keeps it listed for 7 days. Now a run that is over reads `"none"` unless its latest CI event is a verdict (AD-2, `Review: decide`); the unit test pins the over-run-after-fix case.
+- **`feature_folder` fell through to the archive on an ambiguous live tree.** With the docs board unreadable and two `docs/features/NNN-*` folders, the scan skipped the live tree and returned an archived PRD's slug and title. Now the first tree with any match decides, and more than one match is `null`; a unit test pins it.
+- **The `seq` fixture carried an unreadable event.** Its `slice_spawned` line had `exit_code` in place of `session_id` and `pid`, so status skipped it and the `seq` check passed for the wrong reason. The line is now a readable spawn.
+- **Live `elapsedSeconds` allowed up to 59 s of lag**, so a span floored to the minute passed. The tolerance is 10 s.
+- **`budget.used` was only ever pinned at 0.** `a_budget_park_is_relayed_and_is_not_a_dead_driver` now reads `budget` from a real stubbed run: limit 1, used at least 1, and the board's `budget:` line drawn from the same numbers.

@@ -62,3 +62,8 @@
 prd §8 rows **FR-3** and **FR-4**: run each `questions[].answer` argv with a text appended from the run's repo, and keep both answers' transcripts, the answer files and the next `--json`; run `factory status --json --recent` and `factory status --json` over the live, 2-day and 8-day fixture runs, plus the two refused flag mixes, and keep the transcripts.
 
 **Acceptance:** after the checkpoint, this slice's Progress holds those transcripts and names the tests that pin them.
+
+**Code-review fixes (2026-11-06).**
+
+- **`--recent`'s test could not tell `updated_at` from `started_at`, or start order from id order.** A run started 10 days ago and ended 6 days ago is now listed, first, ahead of a run whose id sorts before it, so a filter on start time, a cutoff under 6 days, or an id sort goes red.
+- **A crafted block id could become a flag in the `answer` argv.** A slice block's id comes from the repo's `log.jsonl`; an id such as `--run=X-1` made `factory answer` read it as a flag and the owner's text as the id. `questions` now lists only ids of the form `BLOCK-n` (`ASK-n` for a preflight ask), so the argv keeps FR-3's shape (AD-3); the unit test pins four crafted ids.

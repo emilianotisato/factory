@@ -626,6 +626,19 @@ fn a_budget_park_is_relayed_and_is_not_a_dead_driver() {
     let parked = stdout(&again);
     let v = status_json(&fx, fx.path(), &["status", &id, "--json"]);
     assert_eq!(v["runs"][0]["line"], "001 · parked: budget", "{v}");
+    let budget = &v["runs"][0]["budget"];
+    assert_eq!(budget["limit"], 1, "{v}");
+    let used = budget["used"].as_u64().unwrap();
+    assert!(used >= 1, "{v}");
+    assert!(
+        lines(&v["runs"][0]["board"])
+            .iter()
+            .any(|l| l.contains(&format!(
+                "budget: {}/1 (parked)",
+                factory::cockpit::tokens(used)
+            ))),
+        "{v}"
+    );
     assert_eq!(lines(&v["runs"][0]["owner"]), [parked.trim_end()]);
 }
 
@@ -833,7 +846,7 @@ fn since_started() -> u64 {
 fn assert_elapsed_since_start(run: &Value) {
     let secs = run["elapsedSeconds"].as_u64().unwrap();
     let now = since_started();
-    assert!(secs <= now && now - secs < 60, "{secs} vs {now}: {run}");
+    assert!(secs <= now && now - secs < 10, "{secs} vs {now}: {run}");
 }
 
 #[test]
@@ -849,7 +862,7 @@ fn status_json_says_where_a_run_belongs() {
         json!({"branch": "feat/001-fixture"}),
         &[
             json!({"kind": "run_started"}),
-            json!({"kind": "slice_spawned", "slice": 1, "exit_code": null}),
+            json!({"kind": "slice_spawned", "slice": 1, "session_id": "s-1", "pid": 0}),
             json!({"kind": "slice_done", "slice": 1}),
         ],
     );
@@ -1203,6 +1216,7 @@ fn recent_adds_runs_that_ended_this_week() {
         &[json!({"kind": "run_started"})],
     );
     write_run(&fx, "001-20261104-week", fx.path(), ended(3, 2), &[]);
+    write_run(&fx, "001-20261105-long", fx.path(), ended(10, 6), &[]);
     write_run(&fx, "001-20261029-old", fx.path(), ended(9, 8), &[]);
     let ids = |v: &Value| -> Vec<String> {
         v["runs"]
@@ -1214,13 +1228,29 @@ fn recent_adds_runs_that_ended_this_week() {
     };
 
     let v = status_json(&fx, fx.path(), &["status", "--json", "--recent"]);
-    assert_eq!(ids(&v), ["001-20261104-week", "001-20261106-live"], "{v}");
-    assert_eq!(v["runs"][0]["phase"], "finished");
-    assert_eq!(v["runs"][0]["questions"], json!([]));
+    assert_eq!(
+        ids(&v),
+        [
+            "001-20261105-long",
+            "001-20261104-week",
+            "001-20261106-live"
+        ],
+        "{v}"
+    );
+    assert_eq!(v["runs"][1]["phase"], "finished");
+    assert_eq!(v["runs"][1]["questions"], json!([]));
     let v = status_json(&fx, fx.path(), &["status", "--json"]);
     assert_eq!(ids(&v), ["001-20261106-live"], "{v}");
     let v = status_json(&fx, fx.path(), &["status", "--json", "--recent", "--here"]);
-    assert_eq!(ids(&v), ["001-20261104-week", "001-20261106-live"], "{v}");
+    assert_eq!(
+        ids(&v),
+        [
+            "001-20261105-long",
+            "001-20261104-week",
+            "001-20261106-live"
+        ],
+        "{v}"
+    );
     let v = status_json(&fx, &outside, &["status", "--json", "--recent", "--here"]);
     assert_eq!(v["runs"], json!([]), "{v}");
 

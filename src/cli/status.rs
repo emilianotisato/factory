@@ -275,11 +275,15 @@ fn question(e: &Event, feature: &str, run: &str) -> Option<QuestionJson> {
         EventKind::AskOpened { id, text } => (id, "preflight", None, text.clone()),
         _ => return None,
     };
-    let (flag, value) = if at == "preflight" {
-        ("--run", run)
+    let (flag, value, prefix) = if at == "preflight" {
+        ("--run", run, "ASK-")
     } else {
-        ("--feature", feature)
+        ("--feature", feature, "BLOCK-")
     };
+    let number = id.strip_prefix(prefix)?;
+    if number.is_empty() || !number.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
     Some(QuestionJson {
         id: id.clone(),
         at,
@@ -300,8 +304,8 @@ fn feature_folder(repo: &Path, feature: &str, docs: Option<&Status>) -> Option<(
         }
     }
     let prefix = format!("{feature}-");
-    ["docs/features", "docs/archive"].iter().find_map(|sub| {
-        let mut found: Vec<(String, PathBuf)> = std::fs::read_dir(repo.join(sub))
+    let found = ["docs/features", "docs/archive"].iter().find_map(|sub| {
+        let found: Vec<(String, PathBuf)> = std::fs::read_dir(repo.join(sub))
             .ok()?
             .filter_map(|e| e.ok())
             .filter(|e| e.path().is_dir())
@@ -311,8 +315,10 @@ fn feature_folder(repo: &Path, feature: &str, docs: Option<&Status>) -> Option<(
                 Some((slug, e.path()))
             })
             .collect();
-        (found.len() == 1).then(|| found.remove(0))
-    })
+        (!found.is_empty()).then_some(found)
+    })?;
+    let [one] = <[_; 1]>::try_from(found).ok()?;
+    Some(one)
 }
 
 fn prd_title(dir: &Path) -> Option<String> {
@@ -325,18 +331,22 @@ fn budget_used(run: &Run) -> Result<u64> {
     Ok(quota::weighted_sum(run.db(), run.id().as_str())?.ceil() as u64)
 }
 
-/// A run can finish with no checks reported, so a PR with no verdict is `none` once the run is over.
+/// A run can end with no verdict on its last head, so a run that is over is never `pending`: that would never clear.
 fn ci(events: &[Event], pr: bool, over: bool) -> Option<&'static str> {
     if !pr {
         return None;
     }
-    let latest = events.iter().rev().find_map(|e| match e.kind {
-        EventKind::CiGreen { .. } => Some("green"),
-        EventKind::CiRed { .. } => Some("red"),
-        EventKind::CiRerun { .. } | EventKind::CiFixCommitted { .. } => Some("pending"),
+    let verdict = events.iter().rev().find_map(|e| match e.kind {
+        EventKind::CiGreen { .. } => Some(Some("green")),
+        EventKind::CiRed { .. } => Some(Some("red")),
+        EventKind::CiRerun { .. } | EventKind::CiFixCommitted { .. } => Some(None),
         _ => None,
     });
-    Some(latest.unwrap_or(if over { "none" } else { "pending" }))
+    Some(match verdict.flatten() {
+        Some(v) => v,
+        None if over => "none",
+        None => "pending",
+    })
 }
 
 fn park_reason<'a>(s: &RunState, events: &'a [Event]) -> Option<&'a str> {
@@ -840,6 +850,24 @@ mod tests {
     }
 
     #[test]
+    fn a_feature_folder_is_one_match_in_the_first_tree_that_has_any() {
+        let repo = tempfile::tempdir().unwrap();
+        let mkdir = |p: &str| std::fs::create_dir_all(repo.path().join(p)).unwrap();
+        mkdir("docs/archive/007-old");
+        let found = |f| feature_folder(repo.path(), f, None).map(|(slug, _)| slug);
+        assert_eq!(found("007").as_deref(), Some("old"));
+        mkdir("docs/features/007-new");
+        assert_eq!(found("007").as_deref(), Some("new"));
+        mkdir("docs/features/007-other");
+        assert_eq!(
+            found("007"),
+            None,
+            "two live folders never fall back to the archive"
+        );
+        assert_eq!(found("008"), None);
+    }
+
+    #[test]
     fn ci_reads_the_latest_verdict_and_a_missing_one_by_whether_the_run_is_over() {
         let ev = |seq, kind| Event {
             seq,
@@ -868,6 +896,11 @@ mod tests {
         assert_eq!(
             ci(&[red.clone(), fixed.clone()], true, false),
             Some("pending")
+        );
+        assert_eq!(
+            ci(&[red.clone(), fixed.clone()], true, true),
+            Some("none"),
+            "a run that ended on a fix with no verdict is not left pending"
         );
         assert_eq!(ci(&[red, fixed, green], true, true), Some("green"));
         assert_eq!(
@@ -991,6 +1024,23 @@ mod tests {
             "the text is whole"
         );
         assert_eq!(questions(&state("finished"), &events), []);
+        let crafted = ["--run=X-1", "BLOCK-", "BLOCK-1x", "ASK-1"].map(|id| {
+            ev(
+                1,
+                EventKind::SliceBlocked {
+                    slice: 1,
+                    block_id: Some(id.into()),
+                    question: None,
+                },
+            )
+        });
+        for e in &crafted {
+            assert_eq!(
+                questions(&state("building"), std::slice::from_ref(e)),
+                [],
+                "an id the answer command cannot take as one never reaches its argv: {e:?}"
+            );
+        }
         let json = serde_json::to_value(questions(&state("building"), &events[..1])).unwrap();
         assert_eq!(
             json,
