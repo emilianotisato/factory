@@ -1,1 +1,8 @@
-status = "draft"
+status = "shipped"
+reviewed = "2026-11-05"
+shipped = "2026-11-05"
+
+[slices.1]
+status = "done"
+lane = 1
+depends_on = []
