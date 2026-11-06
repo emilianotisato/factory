@@ -1,0 +1,13 @@
+status = "shipped"
+reviewed = "2026-11-06"
+shipped = "2026-11-06"
+
+[slices.1]
+status = "done"
+lane = 1
+depends_on = []
+
+[slices.2]
+status = "done"
+lane = 1
+depends_on = [1]
