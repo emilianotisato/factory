@@ -1,12 +1,12 @@
 //! Slices and lanes come from the board, the truth; everything else from the run's own files.
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use clap::Args;
 use serde::Serialize;
 
 use crate::cockpit::{self, tokens};
-use crate::docs::{Docs, Status};
+use crate::docs::{Docs, Status, frontmatter};
 use crate::error::{io, json};
 use crate::events::{self, Event, EventKind};
 use crate::run::{Phase, Run, RunState};
@@ -40,6 +40,7 @@ struct Envelope {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct RunJson {
     id: String,
     feature: String,
@@ -47,6 +48,42 @@ struct RunJson {
     line: String,
     owner: Vec<String>,
     board: Vec<String>,
+    repo: String,
+    branch: Option<String>,
+    slug: Option<String>,
+    title: Option<String>,
+    started_at: String,
+    updated_at: String,
+    elapsed_seconds: u64,
+    seq: u64,
+    slices: Option<Vec<SliceJson>>,
+    budget: BudgetJson,
+    checkpoints: CheckpointsJson,
+    pr: Option<String>,
+    ci: Option<&'static str>,
+    paused_until: Option<String>,
+    parked: Option<String>,
+    driver_dead: bool,
+    stopped: bool,
+}
+
+#[derive(Serialize)]
+struct SliceJson {
+    n: u32,
+    status: String,
+}
+
+#[derive(Serialize)]
+struct BudgetJson {
+    used: u64,
+    limit: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CheckpointsJson {
+    done: usize,
+    last_gate: Option<&'static str>,
 }
 
 pub fn status(args: &StatusArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i32> {
@@ -123,6 +160,22 @@ fn same_repo(repo: &Path, top: &Path) -> bool {
 fn run_json(run: &Run) -> Result<RunJson> {
     let s = run.state();
     let events = run.events()?;
+    let docs = Docs::open(&s.repo).and_then(|d| d.status(&s.feature)).ok();
+    let folder = feature_folder(&s.repo, &s.feature, docs.as_ref());
+    let title = folder.as_ref().and_then(|(_, dir)| prd_title(dir));
+    let slices = docs.as_ref().map(|b| {
+        let mut v: Vec<SliceJson> = b
+            .slices
+            .iter()
+            .map(|x| SliceJson {
+                n: x.number,
+                status: x.status.clone().unwrap_or_else(|| "pending".to_string()),
+            })
+            .collect();
+        v.sort_by_key(|x| x.n);
+        v
+    });
+    let now = clock::unix_now();
     Ok(RunJson {
         id: s.id.to_string(),
         feature: s.feature.clone(),
@@ -130,6 +183,84 @@ fn run_json(run: &Run) -> Result<RunJson> {
         line: line_of(s, &events),
         owner: cockpit::owner(s, &events),
         board: board(run)?.into_iter().take(10).collect(),
+        repo: s.repo.display().to_string(),
+        branch: s.branch.clone(),
+        slug: folder.map(|(slug, _)| slug),
+        title,
+        started_at: s.started_at.clone(),
+        updated_at: s.updated_at.clone(),
+        elapsed_seconds: span(s),
+        seq: events.last().map_or(0, |e| e.seq),
+        slices,
+        budget: BudgetJson {
+            used: budget_used(run)?,
+            limit: s.budget_weighted_tokens,
+        },
+        checkpoints: CheckpointsJson {
+            done: checkpoints_done(&events),
+            last_gate: last_gate(&events).map(|g| if g.red { "red" } else { "green" }),
+        },
+        pr: s.pr_url.clone(),
+        ci: ci(&events, s.pr_url.is_some(), s.phase.is_over()),
+        paused_until: s.paused_until.filter(|u| *u > now).map(clock::rfc3339),
+        parked: park_reason(s, &events).map(str::to_string),
+        driver_dead: cockpit::driver_dead(s, &events),
+        stopped: s.stopped,
+    })
+}
+
+/// The slug and folder of a feature, live before archived.
+fn feature_folder(repo: &Path, feature: &str, docs: Option<&Status>) -> Option<(String, PathBuf)> {
+    if let Some(b) = docs {
+        let dir = repo.join(&b.dir);
+        if dir.is_dir() {
+            return Some((b.slug.clone(), dir));
+        }
+    }
+    let prefix = format!("{feature}-");
+    ["docs/features", "docs/archive"].iter().find_map(|sub| {
+        let mut found: Vec<(String, PathBuf)> = std::fs::read_dir(repo.join(sub))
+            .ok()?
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir())
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().into_owned();
+                let slug = name.strip_prefix(&prefix)?.to_string();
+                Some((slug, e.path()))
+            })
+            .collect();
+        (found.len() == 1).then(|| found.remove(0))
+    })
+}
+
+fn prd_title(dir: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(dir.join("prd.md")).ok()?;
+    frontmatter::parse(&text).str("title").map(str::to_string)
+}
+
+/// Rounded up, so `used > budget` reads as such (1.4 of 1 is `2/1`, not `1/1`).
+fn budget_used(run: &Run) -> Result<u64> {
+    Ok(quota::weighted_sum(run.db(), run.id().as_str())?.ceil() as u64)
+}
+
+/// A run can finish with no checks reported, so a PR with no verdict is `none` once the run is over.
+fn ci(events: &[Event], pr: bool, over: bool) -> Option<&'static str> {
+    if !pr {
+        return None;
+    }
+    let latest = events.iter().rev().find_map(|e| match e.kind {
+        EventKind::CiGreen { .. } => Some("green"),
+        EventKind::CiRed { .. } => Some("red"),
+        EventKind::CiRerun { .. } | EventKind::CiFixCommitted { .. } => Some("pending"),
+        _ => None,
+    });
+    Some(latest.unwrap_or(if over { "none" } else { "pending" }))
+}
+
+fn park_reason<'a>(s: &RunState, events: &'a [Event]) -> Option<&'a str> {
+    cockpit::park(s, events).and_then(|e| match &e.kind {
+        EventKind::RunParked { reason, .. } => Some(reason.as_str()),
+        _ => None,
     })
 }
 
@@ -171,10 +302,7 @@ pub fn glance(g: &Glance) -> String {
 
 fn line_of(s: &RunState, events: &[Event]) -> String {
     let open = cockpit::open_questions(events);
-    let parked = cockpit::park(s, events).and_then(|e| match &e.kind {
-        EventKind::RunParked { reason, .. } => Some(reason.as_str()),
-        _ => None,
-    });
+    let parked = park_reason(s, events);
     let now = clock::unix_now();
     let paused = s.paused_until.filter(|u| *u > now).map(clock::local_hhmm);
     let slices = Docs::open(&s.repo)
@@ -276,8 +404,7 @@ pub fn board(run: &Run) -> Result<Vec<String>> {
             ))
         )
     });
-    // Rounded up, so `used > budget` reads as such (1.4 of 1 is `2/1`, not `1/1`).
-    let used = quota::weighted_sum(run.db(), run.id().as_str())?.ceil() as u64;
+    let used = budget_used(run)?;
     lines.push(format!(
         "quota: {pause} · {limit} · budget: {}/{}{}",
         tokens(used),
@@ -368,32 +495,61 @@ fn lanes_line(b: &Status) -> String {
     format!("{head} — {}", per.join(" · "))
 }
 
-fn checkpoints_line(events: &[Event]) -> String {
-    let done = events
+struct LastGate {
+    n: u32,
+    attempt: u32,
+    red: bool,
+    minutes: Option<f64>,
+}
+
+fn checkpoints_done(events: &[Event]) -> usize {
+    events
         .iter()
         .filter(|e| matches!(e.kind, EventKind::CheckpointDone { .. }))
-        .count();
-    let gate = events.iter().rev().find_map(|e| match &e.kind {
+        .count()
+}
+
+/// `minutes` is `None` for a cached gate.
+fn last_gate(events: &[Event]) -> Option<LastGate> {
+    events.iter().rev().find_map(|e| match &e.kind {
         EventKind::GateRun {
             n,
             attempt,
             red,
             minutes,
             ..
-        } => Some(format!(
-            "{} (checkpoint {n} attempt {attempt}, {minutes:.2} min)",
-            if *red { "red" } else { "green" }
-        )),
+        } => Some(LastGate {
+            n: *n,
+            attempt: *attempt,
+            red: *red,
+            minutes: Some(*minutes),
+        }),
         EventKind::GateCached {
             n, attempt, red, ..
-        } => Some(format!(
-            "{} (checkpoint {n} attempt {attempt}, cached)",
-            if *red { "red" } else { "green" }
-        )),
+        } => Some(LastGate {
+            n: *n,
+            attempt: *attempt,
+            red: *red,
+            minutes: None,
+        }),
         _ => None,
+    })
+}
+
+fn checkpoints_line(events: &[Event]) -> String {
+    let gate = last_gate(events).map(|g| {
+        format!(
+            "{} (checkpoint {} attempt {}, {})",
+            if g.red { "red" } else { "green" },
+            g.n,
+            g.attempt,
+            g.minutes
+                .map_or("cached".to_string(), |m| format!("{m:.2} min"))
+        )
     });
     format!(
-        "checkpoints: {done} done · last gate: {}",
+        "checkpoints: {} done · last gate: {}",
+        checkpoints_done(events),
         gate.unwrap_or_else(|| "not run yet".to_string())
     )
 }
@@ -599,6 +755,44 @@ mod tests {
             let l = glance(g);
             assert!(l.chars().count() <= 60, "{} chars: {l}", l.chars().count());
         }
+    }
+
+    #[test]
+    fn ci_reads_the_latest_verdict_and_a_missing_one_by_whether_the_run_is_over() {
+        let ev = |seq, kind| Event {
+            seq,
+            ts: String::new(),
+            kind,
+        };
+        let red = ev(
+            1,
+            EventKind::CiRed {
+                check: "test".into(),
+                round: 0,
+                head: "a".into(),
+            },
+        );
+        let fixed = ev(
+            2,
+            EventKind::CiFixCommitted {
+                round: 1,
+                sha: "b".into(),
+                files: vec![],
+            },
+        );
+        let green = ev(3, EventKind::CiGreen { head: "b".into() });
+        assert_eq!(ci(&[red.clone(), green.clone()], false, false), None);
+        assert_eq!(ci(std::slice::from_ref(&red), true, false), Some("red"));
+        assert_eq!(
+            ci(&[red.clone(), fixed.clone()], true, false),
+            Some("pending")
+        );
+        assert_eq!(ci(&[red, fixed, green], true, true), Some("green"));
+        assert_eq!(
+            ci(&[ev(1, EventKind::RunStarted)], true, false),
+            Some("pending")
+        );
+        assert_eq!(ci(&[], true, true), Some("none"));
     }
 
     #[test]
