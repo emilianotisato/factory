@@ -8,6 +8,7 @@
 - **Tests:** `tests/live/evidence.rs` has the five task-1 acceptance tests and `live_evidence_names_the_entries_citing_a_file_and_its_sidecars`. A linked dir is also checked in `live_evidence_paths_stay_under_root`. A unit test in `src/live/evidence.rs` covers kind, stem and caption.
 - **Inner loop:** 1 run, 0 red, ~1.7 min (plus one targeted `--test live` run).
 - **Prove (FR-6):** left for the checkpoint: `live_skips_a_symlink_in_evidence` and `live_evidence_paths_stay_under_root`.
+- **Proved (checkpoint 2):** FR-6, `live_skips_a_symlink_in_evidence`, `live_evidence_paths_stay_under_root`, 2 passed — `cp-2/fr-6-evidence-paths.txt`
 
 **Slice**: After this slice, `factory live` lists the run's evidence: per checkpoint of this run, newest first, each file's path under the evidence root, kind, size, mtime, whether it is still being written, an etag, a caption from its name, the log entries that cite it, and its `.aria.txt` sidecars. It only `lstat`s: no symlink is followed and no file is read. Captions are file names; there is no manifest.
 

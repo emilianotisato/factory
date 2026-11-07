@@ -8,6 +8,7 @@
 - **Inner loop**: 2 runs, 0 red, about 4 min — caught nothing.
 - **Deviations**: none.
 - **Prove**: FR-8 (`a_red_gate_block_names_the_failure`) is left for the checkpoint.
+- **Proved (checkpoint 2):** FR-8, `a_red_gate_block_names_the_failure`, 1 passed — `cp-2/fr-8-red-gate-title.txt`
 
 **Slice**: After this slice, when the gate goes red three times at a checkpoint, the block's title names the failure the excerpt found, behind the same "gate red three times at checkpoint N:" prefix, instead of the log's last non-empty line. The title still goes through `block_title` and its 160-char cap, and a log where the excerpt finds nothing keeps today's last-line title. `status --json` `questions[].text` and the herdr strip show the new words; the schema does not change.
 

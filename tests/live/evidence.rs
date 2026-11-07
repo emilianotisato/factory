@@ -20,6 +20,11 @@ fn file(dir: &Path, rel: &str, ago: Duration) -> PathBuf {
     path
 }
 
+/// `rel` inside checkpoint `n`'s evidence dir, as the listing prints it.
+fn under(n: u32, rel: &str) -> String {
+    format!("cp-{n}/{rel}")
+}
+
 fn secs(n: u64) -> Duration {
     Duration::from_secs(n)
 }
@@ -55,11 +60,11 @@ fn live_lists_evidence_newest_first() {
     let fx = Fixture::new("live-evidence-order");
     let dir = write_run(&fx, json!({}), &[started(1), done(1), started(2)]);
     let ev = dir.join("evidence");
-    file(&ev, "cp-1/old.png", secs(600));
-    file(&ev, "cp-2/b-tie.png", secs(60));
-    file(&ev, "cp-2/a-tie.png", secs(60));
-    file(&ev, "cp-2/newest_shot.txt", secs(30));
-    file(&ev, "cp-9/other-run.png", secs(5));
+    file(&ev, &under(1, "old.png"), secs(600));
+    file(&ev, &under(2, "b-tie.png"), secs(60));
+    file(&ev, &under(2, "a-tie.png"), secs(60));
+    file(&ev, &under(2, "newest_shot.txt"), secs(30));
+    file(&ev, &under(9, "other-run.png"), secs(5));
     file(&ev, "stray.png", secs(5));
 
     let e = live(&fx, &[])["evidence"].clone();
@@ -73,14 +78,18 @@ fn live_lists_evidence_newest_first() {
     assert_eq!(cps[1]["state"], "done");
     assert_eq!(
         paths(&cps[0]),
-        ["cp-2/newest_shot.txt", "cp-2/a-tie.png", "cp-2/b-tie.png"]
+        [
+            under(2, "newest_shot.txt"),
+            under(2, "a-tie.png"),
+            under(2, "b-tie.png")
+        ]
     );
-    assert_eq!(paths(&cps[1]), ["cp-1/old.png"]);
+    assert_eq!(paths(&cps[1]), [under(1, "old.png")]);
 
     let f = &cps[0]["files"][0];
     assert_eq!(f["kind"], "text");
     assert_eq!(f["caption"], "Newest shot");
-    let bytes = "cp-2/newest_shot.txt".len();
+    let bytes = under(2, "newest_shot.txt").len();
     assert_eq!(f["bytes"], bytes);
     let mtime = f["mtime"].as_str().unwrap();
     assert!(mtime.ends_with('Z') && mtime.contains('T'), "{mtime}");
@@ -95,14 +104,14 @@ fn live_lists_evidence_newest_first() {
 fn live_skips_a_symlink_in_evidence() {
     let fx = Fixture::new("live-evidence-symlink");
     let dir = write_run(&fx, json!({}), &[started(1)]);
-    let cp = dir.join("evidence/cp-1");
+    let cp = dir.join("evidence").join(under(1, ""));
     file(&cp, "real.png", secs(60));
     std::os::unix::fs::symlink("/etc/passwd", cp.join("passwd.txt")).unwrap();
     let fifo = CString::new(cp.join("pipe.txt").as_os_str().as_bytes()).unwrap();
     assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
 
     let e = live(&fx, &[])["evidence"].clone();
-    assert_eq!(all_paths(&e), ["cp-1/real.png"], "{e}");
+    assert_eq!(all_paths(&e), [under(1, "real.png")], "{e}");
     assert_eq!(e["skipped"], 2, "{e}");
 }
 
@@ -111,14 +120,18 @@ fn live_evidence_paths_stay_under_root() {
     let fx = Fixture::new("live-evidence-depth");
     let dir = write_run(&fx, json!({}), &[started(3)]);
     let ev = dir.join("evidence");
-    file(&ev, "cp-3/top.png", secs(60));
-    file(&ev, "cp-3/a/b/deep.png", secs(60));
-    file(&ev, "cp-3/a/b/c/too-deep.png", secs(60));
-    std::os::unix::fs::symlink("/etc", ev.join("cp-3/etc")).unwrap();
+    file(&ev, &under(3, "top.png"), secs(60));
+    file(&ev, &under(3, "a/b/deep.png"), secs(60));
+    file(&ev, &under(3, "a/b/c/too-deep.png"), secs(60));
+    std::os::unix::fs::symlink("/etc", ev.join(under(3, "etc"))).unwrap();
 
     let e = live(&fx, &[])["evidence"].clone();
     let listed = all_paths(&e);
-    assert_eq!(listed, ["cp-3/a/b/deep.png", "cp-3/top.png"], "{e}");
+    assert_eq!(
+        listed,
+        [under(3, "a/b/deep.png"), under(3, "top.png")],
+        "{e}"
+    );
     for p in listed {
         let path = Path::new(p);
         assert!(path.is_relative(), "{p}");
@@ -136,7 +149,7 @@ fn live_evidence_paths_stay_under_root() {
 fn live_marks_a_file_written_this_second_unstable() {
     let fx = Fixture::new("live-evidence-stable");
     let dir = write_run(&fx, json!({}), &[started(1)]);
-    let cp = dir.join("evidence/cp-1");
+    let cp = dir.join("evidence").join(under(1, ""));
     fs::create_dir_all(&cp).unwrap();
     fs::write(cp.join("fresh.png"), "x").unwrap();
     file(&cp, "settled.png", secs(10));
@@ -144,8 +157,8 @@ fn live_marks_a_file_written_this_second_unstable() {
     let e = live(&fx, &[])["evidence"].clone();
     let files = e["checkpoints"][0]["files"].as_array().unwrap();
     let by = |p: &str| files.iter().find(|f| f["path"] == p).unwrap()["stable"].clone();
-    assert_eq!(by("cp-1/fresh.png"), false, "{e}");
-    assert_eq!(by("cp-1/settled.png"), true, "{e}");
+    assert_eq!(by(&under(1, "fresh.png")), false, "{e}");
+    assert_eq!(by(&under(1, "settled.png")), true, "{e}");
 }
 
 #[test]
@@ -153,14 +166,18 @@ fn live_evidence_respects_the_limit() {
     let fx = Fixture::new("live-evidence-limit");
     let dir = write_run(&fx, json!({}), &[started(1), done(1), started(2)]);
     let ev = dir.join("evidence");
-    file(&ev, "cp-1/one.png", secs(500));
-    file(&ev, "cp-1/two.png", secs(400));
-    file(&ev, "cp-2/three.png", secs(300));
-    file(&ev, "cp-2/four.png", secs(200));
-    file(&ev, "cp-2/five.png", secs(100));
+    file(&ev, &under(1, "one.png"), secs(500));
+    file(&ev, &under(1, "two.png"), secs(400));
+    file(&ev, &under(2, "three.png"), secs(300));
+    file(&ev, &under(2, "four.png"), secs(200));
+    file(&ev, &under(2, "five.png"), secs(100));
 
     let e = live(&fx, &["--evidence-limit", "2"])["evidence"].clone();
-    assert_eq!(all_paths(&e), ["cp-2/five.png", "cp-2/four.png"], "{e}");
+    assert_eq!(
+        all_paths(&e),
+        [under(2, "five.png"), under(2, "four.png")],
+        "{e}"
+    );
     assert_eq!(e["truncated"], true);
 
     let e = live(&fx, &[])["evidence"].clone();
@@ -172,16 +189,16 @@ fn live_evidence_respects_the_limit() {
 fn live_evidence_names_the_entries_citing_a_file_and_its_sidecars() {
     let fx = Fixture::new("live-evidence-cited");
     let dir = write_run(&fx, json!({}), &[started(1)]);
-    let cp = dir.join("evidence/cp-1");
+    let cp = dir.join("evidence").join(under(1, ""));
     file(&cp, "home.png", secs(60));
     file(&cp, "home.aria.txt", secs(50));
     file(&cp, "orders.png", secs(40));
     file(&cp, "lonely.aria.txt", secs(30));
     let entries = [
-        json!({"id": "CP-1", "kind": "checkpoint", "ts": "2026-11-07T12:00:00Z", "title": "t",
-               "body": "**Prove:** evidence: cp-1/home.png"}),
+        json!({"id": "e1", "kind": "checkpoint", "ts": "2026-11-07T12:00:00Z", "title": "t",
+               "body": format!("**Prove:** evidence: {}", under(1, "home.png"))}),
         json!({"kind": "note", "ts": "2026-11-07T12:00:00Z", "title": "n",
-               "body": "also cp-1/home.png, but no id"}),
+               "body": format!("also {}, but no id", under(1, "home.png"))}),
     ];
     let log: String = entries.iter().map(|e| format!("{e}\n")).collect();
     fs::write(fx.path().join(FEATURE_DIR).join("log.jsonl"), log).unwrap();
@@ -190,14 +207,18 @@ fn live_evidence_names_the_entries_citing_a_file_and_its_sidecars() {
     let files = e["checkpoints"][0]["files"].as_array().unwrap();
     assert_eq!(
         all_paths(&e),
-        ["cp-1/lonely.aria.txt", "cp-1/orders.png", "cp-1/home.png"],
+        [
+            under(1, "lonely.aria.txt"),
+            under(1, "orders.png"),
+            under(1, "home.png")
+        ],
         "{e}"
     );
     let by = |p: &str| files.iter().find(|f| f["path"] == p).unwrap().clone();
-    let home = by("cp-1/home.png");
-    assert_eq!(home["citedBy"], json!(["CP-1"]));
-    assert_eq!(home["sidecars"], json!(["cp-1/home.aria.txt"]));
-    assert_eq!(by("cp-1/orders.png")["citedBy"], json!([]));
-    assert_eq!(by("cp-1/orders.png")["sidecars"], json!([]));
-    assert_eq!(by("cp-1/lonely.aria.txt")["caption"], "Lonely");
+    let home = by(&under(1, "home.png"));
+    assert_eq!(home["citedBy"], json!(["e1"]));
+    assert_eq!(home["sidecars"], json!([under(1, "home.aria.txt")]));
+    assert_eq!(by(&under(1, "orders.png"))["citedBy"], json!([]));
+    assert_eq!(by(&under(1, "orders.png"))["sidecars"], json!([]));
+    assert_eq!(by(&under(1, "lonely.aria.txt"))["caption"], "Lonely");
 }

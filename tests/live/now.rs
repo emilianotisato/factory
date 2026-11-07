@@ -8,6 +8,14 @@ use super::{ID, factory, live, worker, write_run};
 
 const RESETS_AT: u64 = 1_794_052_800;
 
+fn block(n: u32) -> String {
+    format!("BLOCK-{n}")
+}
+
+fn ask(n: u32) -> String {
+    format!("ASK-{n}")
+}
+
 fn me() -> Value {
     json!(std::process::id())
 }
@@ -48,8 +56,8 @@ fn live_names_what_the_run_waits_on() {
             "owner",
             json!({"phase": "waiting-owner"}),
             vec![
-                json!({"kind": "slice_blocked", "slice": 1, "block_id": "BLOCK-1", "question": "Which store?"}),
-                json!({"kind": "run_waiting", "blocked": [1], "asks": [], "reason": "slice 01 blocked"}),
+                json!({"kind": "slice_blocked", "slice": 1, "block_id": block(1), "question": "Which store?"}),
+                json!({"kind": "run_waiting", "blocked": [1], "asks": [], "reason": "a slice blocked"}),
             ],
         ),
         (
@@ -139,15 +147,15 @@ fn live_says_driver_after_an_answer_nobody_picked_up() {
         &fx,
         json!({"phase": "waiting-owner"}),
         &[
-            json!({"kind": "slice_blocked", "slice": 1, "block_id": "BLOCK-1", "question": "Which store?"}),
-            json!({"kind": "run_waiting", "blocked": [1], "asks": [], "reason": "slice 01 blocked"}),
-            json!({"kind": "block_answered", "id": "BLOCK-1", "slice": 1, "text": "B"}),
+            json!({"kind": "slice_blocked", "slice": 1, "block_id": block(1), "question": "Which store?"}),
+            json!({"kind": "run_waiting", "blocked": [1], "asks": [], "reason": "a slice blocked"}),
+            json!({"kind": "block_answered", "id": block(1), "slice": 1, "text": "B"}),
         ],
     );
     let v = live(&fx, &[]);
     assert_eq!(v["now"]["waitingOn"], "driver", "{v}");
     assert!(
-        v["now"]["label"].as_str().unwrap().contains("BLOCK-1"),
+        v["now"]["label"].as_str().unwrap().contains(&block(1)),
         "{v}"
     );
     assert_eq!(v["attention"], json!([]));
@@ -174,7 +182,7 @@ fn live_says_what_a_stop_waits_for() {
     );
     assert_eq!(
         live(&fx, &[])["now"]["stopping"],
-        json!({"on": "worker", "what": "slice 01 slice worker"})
+        json!({"on": "worker", "what": format!("slice {:02} slice worker", 1)})
     );
 }
 
@@ -185,14 +193,14 @@ fn live_attention_answer_is_status_answer() {
         &fx,
         json!({"phase": "waiting-owner", "branch": null}),
         &[
-            json!({"kind": "ask_opened", "id": "ASK-1", "text": "no inner loop declared"}),
-            json!({"kind": "slice_blocked", "slice": 1, "block_id": "BLOCK-1", "question": "Which store?\nA or B"}),
+            json!({"kind": "ask_opened", "id": ask(1), "text": "no inner loop declared"}),
+            json!({"kind": "slice_blocked", "slice": 1, "block_id": block(1), "question": "Which store?\nA or B"}),
         ],
     );
     log_entries(
         &fx,
         &[
-            json!({"id": "BLOCK-1", "kind": "block", "ts": "2026-11-07T12:00:00Z", "title": "Which store?", "body": "**Happened:** two stores"}),
+            json!({"id": block(1), "kind": "block", "ts": "2026-11-07T12:00:00Z", "title": "Which store?", "body": "**Happened:** two stores"}),
         ],
     );
 
@@ -215,10 +223,10 @@ fn live_attention_answer_is_status_answer() {
         assert_eq!(a["kind"], kind);
         assert_eq!(a["openedAt"], "2026-11-07T12:00:00Z");
     }
-    assert_eq!(by_id(&v, "BLOCK-1")["body"], "**Happened:** two stores");
-    assert_eq!(by_id(&v, "ASK-1")["body"], Value::Null);
+    assert_eq!(by_id(&v, &block(1))["body"], "**Happened:** two stores");
+    assert_eq!(by_id(&v, &ask(1))["body"], Value::Null);
     assert_eq!(
-        by_id(&v, "BLOCK-1")["reason"],
+        by_id(&v, &block(1))["reason"],
         json!({"source": "driver", "log": null, "excerpt": null})
     );
     assert_eq!(v["now"]["waitingOn"], "owner");
@@ -232,7 +240,7 @@ fn a_red_gate_block_carries_the_gate_excerpt_and_its_log_body() {
         json!({"phase": "waiting-owner"}),
         &[
             json!({"kind": "gate_run", "n": 1, "attempt": 3, "red": true, "minutes": 1.0, "log": "gates/1-3.log"}),
-            json!({"kind": "checkpoint_blocked", "n": 1, "block_id": "BLOCK-2", "question": "The gate stays red"}),
+            json!({"kind": "checkpoint_blocked", "n": 1, "block_id": block(2), "question": "The gate stays red"}),
         ],
     );
     fs::create_dir_all(dir.join("gates")).unwrap();
@@ -245,12 +253,12 @@ fn a_red_gate_block_carries_the_gate_excerpt_and_its_log_body() {
     log_entries(
         &fx,
         &[
-            json!({"id": "BLOCK-2", "kind": "block", "ts": "2026-11-07T12:00:00Z", "title": "red", "body": body}),
+            json!({"id": block(2), "kind": "block", "ts": "2026-11-07T12:00:00Z", "title": "red", "body": body}),
         ],
     );
 
     let v = live(&fx, &[]);
-    let a = by_id(&v, "BLOCK-2");
+    let a = by_id(&v, &block(2));
     assert_eq!(a["kind"], "block");
     assert_eq!(a["title"], "The gate stays red");
     assert_eq!(a["body"], body);
@@ -274,7 +282,7 @@ fn a_ci_block_carries_the_ci_excerpt_and_warnings_follow_the_questions() {
         &[
             json!({"kind": "pack_section_missing", "slice": 2, "section": 3}),
             json!({"kind": "ci_red", "check": "test", "round": 2, "head": "abc"}),
-            json!({"kind": "closeout_blocked", "phase": "ci", "block_id": "BLOCK-3", "question": "CI stays red"}),
+            json!({"kind": "closeout_blocked", "phase": "ci", "block_id": block(3), "question": "CI stays red"}),
             json!({"kind": "polish_findings_missing", "session_id": "s9"}),
         ],
     );
@@ -293,7 +301,7 @@ fn a_ci_block_carries_the_ci_excerpt_and_warnings_follow_the_questions() {
         .map(|a| a["kind"].as_str().unwrap())
         .collect();
     assert_eq!(kinds, ["block", "warn", "warn"], "{v}");
-    let a = by_id(&v, "BLOCK-3");
+    let a = by_id(&v, &block(3));
     assert_eq!(a["reason"]["source"], "ci", "{a}");
     assert_eq!(a["reason"]["log"], "ci/2.log");
     assert!(
@@ -312,7 +320,7 @@ fn a_ci_block_carries_the_ci_excerpt_and_warnings_follow_the_questions() {
 #[test]
 fn a_park_entry_needs_a_park_with_nothing_after_it() {
     let fx = Fixture::new("live-attention-park");
-    let park = json!({"kind": "run_waiting", "blocked": [], "asks": [], "reason": "slice 01 cannot land: a.txt changed in the main tree"});
+    let park = json!({"kind": "run_waiting", "blocked": [], "asks": [], "reason": "the landing cannot go on: a.txt changed in the main tree"});
     write_run(
         &fx,
         json!({"phase": "waiting-owner"}),
