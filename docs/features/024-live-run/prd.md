@@ -225,6 +225,7 @@ factory live <id> --json [--since <seq>] [--wait <secs>] [--evidence-limit <n>]
 - **New events:**
   - `gate_started {n, attempt, cmd, log}`, in `gate_once` after the cache miss and before `File::create` (`checkpoint.rs:495-501`).
   - `collect_started {passes, dir, reused}`, on both the fresh path (`closeout.rs:352-354`) and the reuse path (`:342-350`). `collected()` (`:335`) gains a `run` parameter, or the emits move to its caller at `:196`. A small diff that skips the second opinion has `passes: 0` (`collect.rs:49-59`).
+    - Corrected 2026-11-07 at slicing: at `closeout.rs:352-354` neither `passes` nor `dir` is known yet. `collect` groups the passes and makes the review dir inside `second_opinion` (`collect.rs:124`, `:127`), after the leaks scan (`:47`). So the fresh path's `collect_started` is the sink's first message. The reuse path reads both from the file (`log:` at `collect.rs:153`, the `### Pass` headings at `:146`). The reuse path also emits `collect_done {seconds: 0, ok: true}`, or §4 rule 7 reads a reused collect as a review that never ends.
   - `review_pass_done {k, of, seconds}`, emitted as each pass ends. `run_passes` prints every line up front and joins in order (`review.rs:405-443`). `Db` is not Sync (`db.rs:172-174`), so the pass threads send on a channel, and the caller emits through `run`.
     - `collect` and `run_passes` take an `Option` sink.
     - The run-less `factory review` CLI passes `None` (`cli/review.rs:86`, `:136`).
@@ -282,7 +283,7 @@ factory live <id> --json [--since <seq>] [--wait <secs>] [--evidence-limit <n>]
   - JSON `"(password|secret|token|key)": "…"`
   - `X-API-Key:` headers
   - URL path tokens of 41 or more hex or base62 characters, which keeps 40-hex git shas
-- Home paths become `~`.
+- Home paths become `~`, except the envelope's `repo`, which §3 keeps as stored (corrected 2026-11-07 at slicing). Token shapes still apply to it.
 
 **Accepted cost:** best effort only, and screenshots can still show tokens. The consumer keeps images local (herdr-factory PRD-003 §9).
 
@@ -300,7 +301,7 @@ factory live <id> --json [--since <seq>] [--wait <secs>] [--evidence-limit <n>]
 
 **Accepted cost:** the herdr strip and dialog, and any reader of `questions[].text`, see different words for the same question.
 
-**Acceptance:** `a_red_gate_block_names_the_failure`: an end-to-end red gate, run like `tests/checkpoints.rs:883`. That test's `tests/fixture/gate.sh:27-29` writes one line, so this one needs a new fixture gate that prints a pest failure mid-log and ends in a useless line. The block's title names the failing test.
+**Acceptance:** `a_red_gate_block_names_the_failure`: an end-to-end red gate, run like `three_reds_block_the_run_and_the_answer_reruns_the_gate` (`tests/checkpoints.rs:1071`; corrected 2026-11-07 at slicing, this said `:883`, which is red-red-green and never blocks). The fixture gate `tests/fixture/gate.sh:27-29` writes one line, so this one needs a new fixture gate that prints a pest failure mid-log and ends in a useless line. The block's title names the failing test.
 
 ## 11. Decisions log
 
@@ -322,6 +323,11 @@ factory live <id> --json [--since <seq>] [--wait <secs>] [--evidence-limit <n>]
   - `repo` was called `~`-relative. Status prints the stored path.
   - `nothing` had no rule and tones had no table. Both are now listed.
   - Rebutted: `scheduler.rs:205` and `:455` call `enter_park`, which itself calls `park_with` (`:600`).
+- **Slice recon corrections, 2026-11-07.** Re-verifying §15 at slicing found these, and the sections now carry the fix:
+  - §10 modelled the FR-8 test on `tests/checkpoints.rs:883`. That test never blocks; the red-gate block test is `:1071`, whose title assert (`:1106`) stays green because the generic `^FAIL` matches its one line.
+  - §7 put `collect_started` at `closeout.rs:352-354`, where `passes` and `dir` are not known yet. It rides the progress sink instead.
+  - §7 gave the reuse path a `collect_started` and no `collect_done`, so §4 rule 7 would read it as a review forever. The reuse path emits both.
+  - §9's home rewrite over every string contradicted §3's stored `repo`. `repo` is exempt from the home rewrite only.
 - **Recon corrections, 2026-11-07.** The idea's draft cited these wrong, and §3 to §10 carry the corrected facts:
   - `state.json` fields at `run.rs:357-433`: they are setters, and `RunState` is `:93-126`.
   - A `ciFix` role, which does not exist.
@@ -363,7 +369,21 @@ No row needs a human, so no `qa-guide.md`. The panel's look is herdr-factory PRD
 
 ## 13. Slices
 
-_(Not sliced yet.)_
+Nine slices on one branch, `feat/live-run`, one PR, one commit per slice. Prove rows are driven at the checkpoints with the full gate (`checkpoint_every = 2`): after the 2nd, 4th, 6th and 8th done slice, and once at the end. Every row is a `run` row, proven below the UI.
+
+- **01, the spine** (FR-1, the FR-5 event kinds and `timeline[]`, FR-2's `run_waiting.reason` field): the read-only verb, the full envelope, `rev`, `--wait`, the cap, the timeline and its tone table, and a minimal `workers[]`. It also lays out one source file and one test file per section (`src/live/<section>.rs`, `tests/live/<section>.rs` under `tests/live.rs`), each a stub, so the branch slices never edit the same file. It declares every new event kind in `events.rs`, so the emitting and the reading slices run in parallel. It goes first and alone: everything depends on it.
+- **02, review progress** (FR-5: `collect_started`, `review_pass_done`, `collect_done`): the progress sink through `review.rs` and `collect.rs`. **Highest risk:** it reshapes the review library the run-less CLI shares. It is numbered first among the branches so it starts early.
+- **03, gate, CI and the excerpt** (FR-4): the stack-neutral extractor, `gate_failure` with its `docs check` arm and `/gate` line (a skill edit, so a patch version bump and a relock), the saved `ci/<round>.log`, and the `gate`/`ci` sections. It precedes 05, 08 and 09, which reuse the extractor or the logs it reads.
+- **04, driver phase events** (FR-5: `gate_started`, `ci_waiting`, `ci_no_checks`, `fix_empty`): emit-only, in `checkpoint.rs` and `closeout.rs`.
+- **05, now and attention** (FR-2): `waitingOn` and the rest of `now`, `attention[]` with status's own answer argv, the park entry and its reason. It depends on 03 because `attention[].reason.excerpt` comes from the extractor.
+- **06, workers** (FR-3): the bounded tail reader over the two committed 2.1.316 streams, `job` and `outcome`.
+- **07, evidence** (FR-6): the `lstat` listing, `citedBy`, sidecars, the limit.
+- **08, the red-gate block title** (FR-8, the owner's own slice): the first excerpt match in place of the last log line. It waits on 03 only.
+- **09, redaction** (FR-7): one pass over every string. It waits on 03, 05 and 06 because its acceptance plants secrets in the gate and CI logs, a block body and a worker narration.
+
+**Build shape.** 01 is the spine. 02, 03, 04, 06 and 07 branch off it and are mutually independent, which is five ready slices for 4 lanes. 05 and 08 branch off 03. 09 joins 03, 05 and 06. The reader slices (03, 05, 06, 07, 09) work from fixture events, so none waits on the emitting slices (02, 04). The only file two branches both edit is `src/closeout.rs`, in separate functions: `collected()` (02), `on_red` (03), `watch_ci` and `nothing()` (04). `src/checkpoint.rs` is shared the same way: `gate_once` and `fix_once` (04), the red title at `:124-135` (08).
+
+No QA plan row says Human, so there is no `qa-guide.md`.
 
 ## 14. Non-goals
 
@@ -377,6 +397,9 @@ _(Not sliced yet.)_
 ## 15. Verification notes
 
 Checked 2026-11-07 on `feat/live-run` (`src/` identical to `main`, 0.13.0) by a recon pass over every claim. **Re-verify at slice entry.**
+
+Re-verified 2026-11-07 at slicing, still with `src/` identical to `main`. Every line below held, within a line or two. The corrections are in §11.
+
 
 - `run.rs:93-126` is `RunState`: `stop_requested :104`, `stopped :106`, `paused_until :109`. `WorkerRef` is `:138-153`. `driver_alive :129-131` and `worker_alive :133-135` work over `/proc` (`:575-603`).
 - `db.rs:348-378`: `Db::open` creates dirs and migrates under IMMEDIATE. `Db` holds a non-Sync `rusqlite::Connection` (`:172-174`).
