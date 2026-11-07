@@ -216,6 +216,7 @@ factory live <id> --json [--since <seq>] [--wait <secs>] [--evidence-limit <n>]
 **Decided 2026-11-07.**
 - **`timeline[]`:** `{ seq, ts, kind, tone: owner|red|green|info|noise, label, data }`.
   - `label` is factory's short sentence, extending the board's shortener (`cli/status.rs:680-719`).
+    - **Corrected 2026-11-07 (fix/live-labels):** shipped as the board's shortener itself, so the panel showed machine text (`slice_done(01)`, `gate_run(3)`). `label` is now its own exhaustive table over every `EventKind` (`src/live/label.rs`, no `_` arm), a plain-English sentence from the event's fields: "slice 01 done", "waiting on the owner", "gate 3 green in 1.7 min", "CI red: test", "judge: …". Redacted, then cut to 80 chars with `…`. `kind` keeps the machine name; `status` keeps `short()`. Test: `live_timeline_labels_read_as_sentences`.
   - `data` is a whitelisted subset per kind. Lists and blobs become counts.
   - `tone`, one table over every `EventKind`:
     - `owner`: `ask_opened`, `run_waiting`, `run_parked`, `slice_blocked`, `checkpoint_blocked`, `closeout_blocked`, `block_answered`, `ask_answered`.

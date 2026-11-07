@@ -2,6 +2,7 @@
 use serde_json::{Map, Value, json};
 
 use super::Ctx;
+use super::label::label;
 use crate::events::{Event, EventKind};
 
 /// How many events the timeline keeps when no `since` is given.
@@ -28,7 +29,7 @@ fn item(e: &Event) -> Value {
         "ts": e.ts,
         "kind": e.kind.name(),
         "tone": tone(&e.kind),
-        "label": e.kind.short(),
+        "label": label(&e.kind),
         "data": data(&e.kind),
     })
 }
