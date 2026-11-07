@@ -71,7 +71,7 @@ factory live <id> --json [--since <seq>] [--wait <secs>] [--evidence-limit <n>]
 ```jsonc
 {
   "schema": 1, "factory": "0.14.0",
-  "id": "…", "phase": "checkpoint", "repo": "~/…", "branch": "feat/…",
+  "id": "…", "feature": "007", "phase": "checkpoint", "repo": "~/…", "branch": "feat/…",
   "seq": 61,
   "rev": "…",          // changes only when something visible changes (below)
   "at": "…",
@@ -89,7 +89,7 @@ factory live <id> --json [--since <seq>] [--wait <secs>] [--evidence-limit <n>]
     "title": "…",      // same text as status questions[].text
     "body": null, "bodySource": "worker|driver|null",
     "reason": null,    // {source: "gate|ci|land|driver", log: "gates/2-3.log", excerpt: [..]}
-    "answer": ["factory", "answer", "BLOCK-3"]  // the same argv status has
+    "answer": ["factory", "answer", "--feature", "007", "BLOCK-3"]  // exactly status's questions[].answer
   }],
   "workers": [{
     "sessionId": "…",
@@ -135,7 +135,7 @@ factory live <id> --json [--since <seq>] [--wait <secs>] [--evidence-limit <n>]
 ## Where each part comes from, and what is new
 
 **Already in factory:**
-- `id`, `phase`, `repo`, `branch`: `state.json` (`src/run.rs:357-433`).
+- `id`, `feature`, `phase`, `repo`, `branch`: `state.json` (`src/run.rs:357-433`). The panel's Answer dialog needs `feature`, and the same `answer` argv status gives: `--feature` goes before the id, because the answer text is a trailing var-arg.
 - `seq` and `timeline`: `events.jsonl`, with the tolerant scan (`src/events.rs:284-343`).
 - Questions, title and answer argv: shared with status (`status.rs:77-84, 244-296`). Move them into one function, so the two cannot disagree.
 - Workers' role, slice, lane, spawn time and alive: `state.json` `workers[]` (`src/run.rs:138-153, 579-587`), plus `worker_dead`.
