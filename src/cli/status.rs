@@ -5,14 +5,14 @@ use std::path::{Path, PathBuf};
 use clap::Args;
 use serde::Serialize;
 
-use crate::cockpit::{self, tokens};
+use crate::cockpit::{self, Question as QuestionJson, tokens};
 use crate::docs::{Docs, Status, frontmatter};
 use crate::error::{io, json};
 use crate::events::{self, Event, EventKind};
 use crate::run::{Phase, Run, RunState};
 use crate::scheduler::pad_list;
 use crate::stream::RateLimit;
-use crate::{Result, checkpoint, clock, paths, quota, worker};
+use crate::{Result, clock, paths, quota, worker};
 
 #[derive(Args, Debug, Clone)]
 pub struct StatusArgs {
@@ -72,15 +72,6 @@ struct RunJson {
     parked: Option<String>,
     driver_dead: bool,
     stopped: bool,
-}
-
-#[derive(Serialize, Debug, PartialEq)]
-struct QuestionJson {
-    id: String,
-    at: &'static str,
-    n: Option<u32>,
-    text: String,
-    answer: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -244,55 +235,8 @@ fn run_json(run: &Run) -> Result<RunJson> {
 fn questions(s: &RunState, events: &[Event]) -> Vec<QuestionJson> {
     cockpit::questions(s, events)
         .into_iter()
-        .filter_map(|e| question(e, &s.feature, s.id.as_str()))
+        .filter_map(|e| cockpit::question(e, &s.feature, s.id.as_str()))
         .collect()
-}
-
-/// `answer` is the argv to run from the run's repo, every flag before the id so the text can follow it.
-fn question(e: &Event, feature: &str, run: &str) -> Option<QuestionJson> {
-    let (id, at, n, text) = match &e.kind {
-        EventKind::SliceBlocked {
-            slice,
-            block_id: Some(id),
-            question,
-        } => (
-            id,
-            "slice",
-            Some(*slice),
-            question.clone().unwrap_or_default(),
-        ),
-        EventKind::CheckpointBlocked {
-            n,
-            block_id,
-            question,
-        } => (block_id, "checkpoint", Some(*n), question.clone()),
-        EventKind::CloseoutBlocked {
-            block_id, question, ..
-        } => (block_id, "closeout", None, question.clone()),
-        EventKind::MergeRefused { block_id, detail } => {
-            (block_id, "merge", None, checkpoint::refusal_summary(detail))
-        }
-        EventKind::AskOpened { id, text } => (id, "preflight", None, text.clone()),
-        _ => return None,
-    };
-    let (flag, value, prefix) = if at == "preflight" {
-        ("--run", run, "ASK-")
-    } else {
-        ("--feature", feature, "BLOCK-")
-    };
-    let number = id.strip_prefix(prefix)?;
-    if number.is_empty() || !number.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    Some(QuestionJson {
-        id: id.clone(),
-        at,
-        n,
-        text,
-        answer: ["factory", "answer", flag, value, id]
-            .map(str::to_string)
-            .to_vec(),
-    })
 }
 
 /// The slug and folder of a feature, live before archived.

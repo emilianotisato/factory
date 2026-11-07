@@ -3,7 +3,10 @@
 **Source**: [`prd.md`](prd.md) → §4 FR-2. **Depends on**: 01 (the `src/live/now.rs` stub, `tests/live/now.rs`, `run_waiting.reason` and the new kinds `waitingOn` reads) and 03 (`attention[].reason.excerpt` is the excerpt of the block's gate or CI log, read through the extractor and the log reader slice 03 adds in `src/live/gate.rs`). Independent of 02, 04, 06, 07.
 **Created**: 2026-11-07
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+- **Built**: `cockpit::Question` and `cockpit::question` (moved from `status`, which now maps through them, its JSON unchanged); `src/live/now.rs` fills `now` (the ten-step `waitingOn`, `label`, `since`, review `progress`, quota `resumesAt`, `idleSeconds` over events, worker streams and gate logs, `driverAlive`, `stopping`) and `attention[]` (questions with status's `answer` argv and their `log.jsonl` body, `gate`/`ci`/`driver` reasons with the excerpt from slice 03's reader, a `park-<seq>` entry for a park with no question, `warn-<seq>` entries). Tests: seven in `tests/live/now.rs`, and `a_park_with_no_question_carries_its_reason` in `tests/commits.rs`.
+- **Inner loop**: 2 runs, 1 red, 1.7 min. The red run caught a clippy `cloned_ref_to_slice_refs` in a new test. Targeted runs of the new tests were green first time.
+- **Deviations**: AD-11 (a new end-to-end test by the Prove row's name, not asserts inside the dirty-landing test); AD-12 (what `now` and `attention` say where the slice is silent).
 
 **Slice**: After this slice, `factory live` fills `now` (what the run waits on, in factory's words, since when, review progress, when a quota pause resumes, how long nothing moved, whether the driver lives, what a stop waits for) and `attention[]` (every open block and ask with the exact `answer` argv `status --json` gives, its log body and the failing excerpt behind it, a park with no question and its reason, and the two warning kinds). The question list moves into one function that `status` and `live` share.
 

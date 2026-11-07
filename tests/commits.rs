@@ -585,3 +585,42 @@ fn a_dirty_path_in_the_main_tree_parks_the_landing_and_keeps_the_owners_edit() {
     assert_eq!(fx.git(&["status", "--porcelain"]), "");
     assert_eq!(factory_refs(&fx), "");
 }
+
+#[test]
+fn a_park_with_no_question_carries_its_reason() {
+    let fx = Fixture::with_index("commits-dirty-reason", &[("checkpoint_every", "10")]);
+    fx.write_plan(&[
+        json!({"outcome": "done", "delay_ms": 1500}),
+        json!({"outcome": "done", "delay_ms": 3000}),
+        json!({"outcome": "done"}),
+        json!({"outcome": "checkpoint"}),
+    ]);
+    let dir = start(&fx);
+    let owned = fx.path().join("src/slice-01.txt");
+    fs::write(&owned, "owner\n").unwrap();
+    wait_phase(&fx, &dir, "waiting-owner", 30);
+
+    let waiting: Vec<Value> = events(&dir)
+        .into_iter()
+        .filter(|e| e["kind"] == "run_waiting")
+        .collect();
+    assert_eq!(waiting.len(), 1, "{waiting:?}");
+    let reason = waiting[0]["reason"].as_str().unwrap();
+    assert!(reason.contains("src/slice-01.txt"), "{reason}");
+    let out = factory(&fx, &["live", &run_id(&dir), "--json"]);
+    assert_eq!(out.status.code(), Some(0));
+    let live: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let parks: Vec<&Value> = live["attention"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|a| a["kind"] == "park")
+        .collect();
+    assert_eq!(parks.len(), 1, "{live}");
+    assert_eq!(parks[0]["title"], reason);
+    assert_eq!(parks[0]["reason"]["source"], "land");
+    assert_eq!(live["now"]["waitingOn"], "owner");
+
+    fs::remove_file(&owned).unwrap();
+    wait_phase(&fx, &dir, "finished", 40);
+}
