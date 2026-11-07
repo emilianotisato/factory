@@ -44,3 +44,31 @@ A comment or name the leaks check should have caught: none found. The two mispla
 ## Score
 
 4. Every slice and Prove row was green first time, and polish closed 16 findings, including a real partial-secret leak the slice-09 tests could not see. A full point is off because the redaction and stale-CI defects were designed in at slicing, and only a cross-vendor reviewer and a security pass caught them.
+
+## Numbers
+
+<!-- factory:numbers -->
+| role | workers | own | subagents | weighted | minutes | turns |
+|---|---:|---:|---:|---:|---:|---:|
+| build | 9 | 3284851 | 0 | 3284851 | 64 | 242 |
+| checkpoint | 3 | 546219 | 0 | 546219 | 9 | 43 |
+| polish | 1 | 1385299 | 888425 | 2273724 | 16 | 56 |
+| total | 13 | 5216368 | 888425 | 6104793 | 89 | 341 |
+
+Knobs: build opus/high default · fix opus/high default · checkpoint opus/high default · polish opus/high default · budget 30000000 default · lanes 4 · factory 0.13.0 · claude 2.1.316
+
+Hypothesis: none
+
+quality: gate_red 0 · worker_gate_red 0 · fix_commits 0 · ci_red_rounds 0 · ci_reruns 0 · findings high=2 medium=10 low=34 fixed=16 parked=26 · decisions 16 decide 3 blocks 0
+
+Pack (build): slice 7910 · prd_sections 5455 · log 4225 · outline 9234 · lookup 1115 · contract 3095 · autonomy 8610 · inner_loop 86 · total 39730 · start_context 23968
+
+Compared with:
+
+| run | feature | weighted | slices | per slice | lines changed | per line | comment share | id hits |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 024-20261107-2f04 (this run) | 024 | 6104793 | 9 | 678310 | 7078 | 863 | 3.0% | 0 |
+| 023-20261106-360f | 023 | 1594857 | 2 | 797429 | 1500 | 1063 | 1.2% | 0 |
+| 014-20261105-4bd7 | 014 | 971439 | 1 | 971439 | 319 | 3045 | 5.9% | 0 |
+| 013-20261030-bf19 | 013 | 2582078 | 3 | 860693 | 2072 | 1246 | 1.7% | 0 |
+<!-- /factory:numbers -->
