@@ -621,6 +621,7 @@ pub(crate) fn park_with(
         run.emit(EventKind::RunWaiting {
             blocked: blocked.to_vec(),
             asks: asks.to_vec(),
+            reason: what.to_string(),
         })?;
         run.set_phase(Phase::WaitingOwner)?;
         *parked = true;

@@ -531,6 +531,7 @@ mod tests {
             EventKind::RunWaiting {
                 blocked: vec![1],
                 asks: vec![],
+                reason: String::new(),
             },
         ] {
             assert!(!is_cockpit(&progress), "{progress:?}");

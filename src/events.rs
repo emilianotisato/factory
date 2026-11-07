@@ -54,9 +54,12 @@ pub enum EventKind {
         question: Option<String>,
     },
     /// Nothing spawnable, nothing running, and the owner owes an answer.
+    /// `reason` is the park's first reason; empty in a line an older binary wrote.
     RunWaiting {
         blocked: Vec<u32>,
         asks: Vec<String>,
+        #[serde(default)]
+        reason: String,
     },
     BlockAnswered {
         id: String,
@@ -131,6 +134,13 @@ pub enum EventKind {
         attempt: u32,
         red: bool,
         minutes: f64,
+        log: String,
+    },
+    /// Written before the gate's transcript is created at `log`.
+    GateStarted {
+        n: u32,
+        attempt: u32,
+        cmd: String,
         log: String,
     },
     /// No process ran; `log` is the earlier run's transcript.
@@ -217,6 +227,40 @@ pub enum EventKind {
         session_id: String,
         pid: u32,
     },
+    /// Emitted only when the set of running check names changes.
+    CiWaiting {
+        checks: Vec<String>,
+    },
+    CiNoChecks {
+        minutes: u64,
+    },
+    /// A fix worker that changed nothing: a gate fix carries `n`, `attempt` and `session_id`, a CI fix `round`.
+    FixEmpty {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        n: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attempt: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        round: Option<u32>,
+    },
+    /// `dir` is absent when no review dir was made; `passes` is 0 when the second opinion was skipped.
+    CollectStarted {
+        passes: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dir: Option<String>,
+        reused: bool,
+    },
+    ReviewPassDone {
+        k: u32,
+        of: u32,
+        seconds: u64,
+    },
+    CollectDone {
+        seconds: u64,
+        ok: bool,
+    },
     CiFixCommitted {
         round: u32,
         sha: String,
@@ -268,6 +312,29 @@ impl EventKind {
                 .unwrap_or("unknown")
                 .to_string(),
             _ => "unknown".to_string(),
+        }
+    }
+
+    /// The kind and its subject, `slice_done(03)`: the slice, else `n`, else the first id-like string.
+    pub fn short(&self) -> String {
+        let name = self.name();
+        let Ok(serde_json::Value::Object(o)) = serde_json::to_value(self) else {
+            return name;
+        };
+        let subject = o
+            .get("slice")
+            .and_then(|v| v.as_u64())
+            .map(|n| format!("{n:02}"))
+            .or_else(|| o.get("n").and_then(|v| v.as_u64()).map(|n| n.to_string()))
+            .or_else(|| {
+                ["block_id", "id", "check", "literal", "reason"]
+                    .iter()
+                    .find_map(|k| o.get(*k).and_then(|v| v.as_str()).filter(|s| !s.is_empty()))
+                    .map(str::to_string)
+            });
+        match subject {
+            Some(s) => format!("{name}({s})"),
+            None => name,
         }
     }
 }
@@ -445,6 +512,116 @@ mod tests {
             Some("skipped unreadable line 3")
         );
         assert_eq!(skip_note(run.dir(), &[]), None);
+    }
+
+    #[test]
+    fn old_binary_skips_new_events() {
+        let (_tmp, run) = run();
+        let lines = [
+            r#"{"seq":1,"ts":"t","kind":"a_kind_from_a_newer_binary","n":2,"files":["a"],"what":{"x":1}}"#,
+            r#"{"seq":2,"ts":"t","kind":"run_waiting","blocked":[1],"asks":[]}"#,
+        ];
+        fs::write(run.dir().join(FILE), lines.join("\n") + "\n").unwrap();
+        let (events, skipped) = scan(run.dir()).unwrap();
+        assert!(skipped.is_empty(), "{skipped:?}");
+        let got: Vec<EventKind> = events.into_iter().map(|e| e.kind).collect();
+        assert_eq!(
+            got,
+            vec![
+                EventKind::Unknown,
+                EventKind::RunWaiting {
+                    blocked: vec![1],
+                    asks: vec![],
+                    reason: String::new(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn the_progress_kinds_keep_their_field_names() {
+        let cases = [
+            (
+                EventKind::GateStarted {
+                    n: 2,
+                    attempt: 1,
+                    cmd: "make gate".into(),
+                    log: "gates/2-1.log".into(),
+                },
+                serde_json::json!({"kind":"gate_started","n":2,"attempt":1,"cmd":"make gate","log":"gates/2-1.log"}),
+            ),
+            (
+                EventKind::CollectStarted {
+                    passes: 3,
+                    dir: Some("review/x".into()),
+                    reused: false,
+                },
+                serde_json::json!({"kind":"collect_started","passes":3,"dir":"review/x","reused":false}),
+            ),
+            (
+                EventKind::CollectStarted {
+                    passes: 0,
+                    dir: None,
+                    reused: true,
+                },
+                serde_json::json!({"kind":"collect_started","passes":0,"reused":true}),
+            ),
+            (
+                EventKind::ReviewPassDone {
+                    k: 2,
+                    of: 3,
+                    seconds: 41,
+                },
+                serde_json::json!({"kind":"review_pass_done","k":2,"of":3,"seconds":41}),
+            ),
+            (
+                EventKind::CollectDone {
+                    seconds: 90,
+                    ok: true,
+                },
+                serde_json::json!({"kind":"collect_done","seconds":90,"ok":true}),
+            ),
+            (
+                EventKind::CiWaiting {
+                    checks: vec!["test".into()],
+                },
+                serde_json::json!({"kind":"ci_waiting","checks":["test"]}),
+            ),
+            (
+                EventKind::CiNoChecks { minutes: 5 },
+                serde_json::json!({"kind":"ci_no_checks","minutes":5}),
+            ),
+            (
+                EventKind::FixEmpty {
+                    n: Some(1),
+                    attempt: Some(2),
+                    session_id: Some("s".into()),
+                    round: None,
+                },
+                serde_json::json!({"kind":"fix_empty","n":1,"attempt":2,"session_id":"s"}),
+            ),
+            (
+                EventKind::FixEmpty {
+                    n: None,
+                    attempt: None,
+                    session_id: None,
+                    round: Some(3),
+                },
+                serde_json::json!({"kind":"fix_empty","round":3}),
+            ),
+            (
+                EventKind::RunWaiting {
+                    blocked: vec![],
+                    asks: vec![],
+                    reason: "dirty landing".into(),
+                },
+                serde_json::json!({"kind":"run_waiting","blocked":[],"asks":[],"reason":"dirty landing"}),
+            ),
+        ];
+        for (kind, want) in cases {
+            assert_eq!(serde_json::to_value(&kind).unwrap(), want);
+            assert_eq!(serde_json::from_value::<EventKind>(want).unwrap(), kind);
+        }
     }
 
     /// The names are spliced so no grep finds a use of a deleted kind.

@@ -3,7 +3,12 @@
 **Source**: [`prd.md`](prd.md) → §3 FR-1, §7 FR-5 (the event kinds and `timeline[]`), §4 FR-2 (`run_waiting.reason`), §2. **Depends on**: — (the spine: every later slice fills one section file this one lays out, and needs the event kinds it declares)
 **Created**: 2026-11-07
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+- Built: the FR-5 kinds (`gate_started`, `collect_started`, `review_pass_done`, `collect_done`, `ci_waiting`, `ci_no_checks`, `fix_empty` in both shapes) and `run_waiting.reason`, set from `park_with`'s `what`. The board's shortener moved to `EventKind::short` and now skips an empty subject, so an old `run_waiting` still reads `run_waiting`. `factory live <id> --json [--since] [--wait] [--evidence-limit]` in `src/cli/live.rs` over `src/live/{mod,now,workers,gate,evidence,timeline,redact}.rs`; `now`, `gate`, `ci` are null, `attention` is `[]`, `evidence` is `{root: null, checkpoints: [], skipped: 0, truncated: false}`, `redact::all` is the identity. `feature_folder` in `cli/status.rs` is `pub(crate)` and shared. `tests/live.rs` with stubs `tests/live/{now,workers,gate,evidence,redact}.rs`.
+- `paths::data_dir()` creates the data dir when it is missing, so `live` resolves the run through the new `paths::data_dir_path()`, which only computes it.
+- Inner loop: 1 run, 0 red, about 2 min (the 11 live tests ran green first, in 4 s).
+- Deviation: `--wait` stats the run's two files every 100 ms and does a full reread at least once a second (AD-1, fyi).
+- Prove: left for the checkpoint.
 
 **Slice**: After this slice, `factory live <id> --json [--since] [--wait] [--evidence-limit]` prints one schema-1 JSON object built without opening `factory.db` or writing anything: the full envelope, a `timeline` with tones and labels, `decisions.count`, a minimal `workers[]` (identity, `alive`, `lastWriteAt`), `rev`, `--wait`, and the 512 KiB cap. Every new event kind of FR-5 and `run_waiting.reason` exist in `EventKind`, so the driver slices emit them and the reader slices read them in parallel. `now`, `attention`, `gate`, `ci`, `evidence` and the worker detail fields are stubs here (null or empty), each in its own file, so slices 03, 05, 06, 07 and 09 edit only their own file.
 

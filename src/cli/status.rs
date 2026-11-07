@@ -296,7 +296,11 @@ fn question(e: &Event, feature: &str, run: &str) -> Option<QuestionJson> {
 }
 
 /// The slug and folder of a feature, live before archived.
-fn feature_folder(repo: &Path, feature: &str, docs: Option<&Status>) -> Option<(String, PathBuf)> {
+pub(crate) fn feature_folder(
+    repo: &Path,
+    feature: &str,
+    docs: Option<&Status>,
+) -> Option<(String, PathBuf)> {
     if let Some(b) = docs {
         let dir = repo.join(&b.dir);
         if dir.is_dir() {
@@ -692,30 +696,9 @@ fn last_three(events: &[Event]) -> String {
         .collect::<Vec<_>>()
         .into_iter()
         .rev()
-        .map(short)
+        .map(|e| e.kind.short())
         .collect::<Vec<_>>()
         .join(" → ")
-}
-
-fn short(e: &Event) -> String {
-    let name = e.kind.name();
-    let Ok(serde_json::Value::Object(o)) = serde_json::to_value(&e.kind) else {
-        return name;
-    };
-    let subject = o
-        .get("slice")
-        .and_then(|v| v.as_u64())
-        .map(|n| format!("{n:02}"))
-        .or_else(|| o.get("n").and_then(|v| v.as_u64()).map(|n| n.to_string()))
-        .or_else(|| {
-            ["block_id", "id", "check", "literal", "reason"]
-                .iter()
-                .find_map(|k| o.get(*k).and_then(|v| v.as_str()).map(str::to_string))
-        });
-    match subject {
-        Some(s) => format!("{name}({s})"),
-        None => name,
-    }
 }
 
 #[cfg(test)]
@@ -1069,6 +1052,7 @@ mod tests {
                 EventKind::RunWaiting {
                     blocked: vec![1],
                     asks: vec![],
+                    reason: "slice 01 blocked".into(),
                 },
             ),
             ev(
@@ -1083,7 +1067,7 @@ mod tests {
         ];
         assert_eq!(
             last_three(&events),
-            "slice_done(03) → run_waiting → block_answered(01)",
+            "slice_done(03) → run_waiting(slice 01 blocked) → block_answered(01)",
             "a kind this binary does not know is passed over"
         );
         assert_eq!(last_three(&[]), "none yet");
