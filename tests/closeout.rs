@@ -1544,6 +1544,70 @@ fn a_refused_run_list_blocks_instead_of_a_blind_fix_round() {
 }
 
 #[test]
+fn an_empty_fix_is_an_event() {
+    let fx = Fixture::new("closeout-ci-empty-fix");
+    fx.chain();
+    fx.script_ci(&["red:test", "green"]);
+    fx.write_plan(&plan_with(&[
+        step("polish"),
+        json!({"outcome": "fix", "touch": []}),
+    ]));
+    let dir = start_with(&fx, &FAST);
+    wait_phase(&fx, &dir, "finished", 120);
+
+    assert_eq!(roles(&fx, &dir)[5..], ["polish", "fix"]);
+    let empty = of_kind(&dir, "fix_empty");
+    assert_eq!(empty.len(), 1, "{empty:?}");
+    assert_eq!(empty[0]["round"], 1);
+    for key in ["n", "attempt", "session_id"] {
+        assert!(empty[0].get(key).is_none(), "{}", empty[0]);
+    }
+    assert!(!subjects(&fx).iter().any(|s| s.starts_with("fix(001): CI")));
+}
+
+#[test]
+fn ci_waiting_emits_on_a_change_of_checks_only() {
+    let fx = Fixture::new("closeout-ci-waiting");
+    fx.chain();
+    fx.script_ci(&[
+        "pending:test",
+        "pending:test",
+        "pending:test pending:lint",
+        "pass:test pending:lint",
+        "green",
+    ]);
+    fx.write_plan(&built());
+    let dir = start_with(&fx, &FAST);
+    wait_phase(&fx, &dir, "finished", 90);
+
+    let waits: Vec<Value> = of_kind(&dir, "ci_waiting")
+        .iter()
+        .map(|e| e["checks"].clone())
+        .collect();
+    assert_eq!(
+        waits,
+        [json!(["test"]), json!(["lint", "test"]), json!(["lint"])]
+    );
+    assert_eq!(of_kind(&dir, "ci_green").len(), 1);
+}
+
+#[test]
+fn checks_never_reported_past_the_grace_are_one_event() {
+    let fx = Fixture::new("closeout-ci-no-checks");
+    fx.chain();
+    fx.script_ci(&["none"; 12]);
+    fx.write_plan(&built());
+    let dir = start_with(&fx, &FAST);
+    wait_phase(&fx, &dir, "finished", 90);
+
+    let none = of_kind(&dir, "ci_no_checks");
+    assert_eq!(none.len(), 1, "{none:?}");
+    assert_eq!(none[0]["minutes"], 0);
+    assert!(of_kind(&dir, "ci_waiting").is_empty());
+    assert!(of_kind(&dir, "ci_green").is_empty());
+}
+
+#[test]
 fn no_checks_right_after_the_push_are_waited_on_for_the_grace() {
     let fx = Fixture::new("closeout-ci-none-then-green");
     fx.chain();
@@ -1553,6 +1617,8 @@ fn no_checks_right_after_the_push_are_waited_on_for_the_grace() {
     wait_phase(&fx, &dir, "finished", 90);
     assert_eq!(gh_calls(&fx, "pr checks").len(), 3, "{:?}", fx.gh_log());
     assert_eq!(of_kind(&dir, "ci_green").len(), 1);
+    assert!(of_kind(&dir, "ci_no_checks").is_empty());
+    assert!(of_kind(&dir, "ci_waiting").is_empty());
     assert_eq!(
         driver_log(&dir)
             .matches("ci: waiting — no checks reported yet")

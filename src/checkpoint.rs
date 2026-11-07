@@ -494,6 +494,12 @@ fn gate_once(
     }
 
     let rel = format!("{GATES_DIR}/{n}-{attempt}.log");
+    run.emit(EventKind::GateStarted {
+        n,
+        attempt,
+        cmd: gate.to_string(),
+        log: rel.clone(),
+    })?;
     let log = run.dir().join(&rel);
     if let Some(parent) = log.parent() {
         fs::create_dir_all(parent).map_err(io(format!("mkdir {}", parent.display())))?;
@@ -619,10 +625,18 @@ fn fix_once(
     let dead = limit.is_none() && exit.summary.is_dead();
     match land_here(run, board, n, "fix", attempt, lane, row_id, out)? {
         Ok(Some(_)) => {}
-        Ok(None) if !dead && limit.is_none() => say(
-            out,
-            &format!("checkpoint {n}: fix worker {session_id} changed nothing to commit"),
-        )?,
+        Ok(None) if !dead && limit.is_none() => {
+            run.emit(EventKind::FixEmpty {
+                n: Some(n),
+                attempt: Some(attempt),
+                session_id: Some(session_id.clone()),
+                round: None,
+            })?;
+            say(
+                out,
+                &format!("checkpoint {n}: fix worker {session_id} changed nothing to commit"),
+            )?;
+        }
         Ok(None) => {}
         Err(o) => {
             if matches!(o, Outcome::Parked { .. }) {

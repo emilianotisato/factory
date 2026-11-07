@@ -3,7 +3,12 @@
 **Source**: [`prd.md`](prd.md) → §7 FR-5 (`gate_started`, `ci_waiting`, `ci_no_checks`, `fix_empty`). **Depends on**: 01 (the event kinds it declares). Independent of 02, 03, 05, 06, 07: it only emits, and every reader of these events works from fixture events.
 **Created**: 2026-11-07
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+- Built: `gate_started` in `gate_once` after the cache miss, before the transcript is created; `fix_empty {n, attempt, session_id}` beside the gate fix's "changed nothing" line, and `fix_empty {round}` in `nothing()` for a CI fix; `ci_no_checks {minutes}` on `Verdict::NoChecks`; `ci_waiting {checks}` in `watch_ci` with its own dedup (`running`, reset with `waiting` on a rerun and after a fix round), the set being the non-stale rows `ci::class` calls `Pending`.
+- Tests: `an_empty_fix_is_an_event` (one in `tests/checkpoints.rs`, one in `tests/closeout.rs`), `ci_waiting_emits_on_a_change_of_checks_only`, `checks_never_reported_past_the_grace_are_one_event`. The red-red-green test asserts a `gate_started` before each `gate_run` and no `fix_empty`. The in-grace test asserts no `ci_no_checks` and no `ci_waiting`.
+- Inner loop: 5 runs, 4 red, about 7 min. The reds were older tests that pin the exact event list (`tests/checkpoints.rs`, `commits.rs`, `loop.rs`, `run.rs`). Each gained `gate_started` before its `gate_run`, and the counts and indexes in `run.rs` moved by one.
+- Deviation: a set with no running check emits no `ci_waiting` (AD-4, fyi).
+- Prove (this slice's FR-5 rows): left for the checkpoint.
 
 **Slice**: After this slice, the driver phases that are silent in `events.jsonl` today write an event: a gate's start (before it runs for 9 to 33 min), each change in the set of CI checks still running, a PR that reports no checks, and a fix worker (gate or CI) that changed nothing to commit. `run_waiting.reason` landed in slice 01; the collect events are slice 02's.
 

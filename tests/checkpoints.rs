@@ -623,6 +623,7 @@ fn the_driver_runs_the_gate_at_each_checkpoint_and_commits_the_cp_entries() {
             "slice_done",
             "slice_committed",
             "checkpoint_started",
+            "gate_started",
             "gate_run",
             "checkpoint_spawned",
             "checkpoint_done",
@@ -630,6 +631,7 @@ fn the_driver_runs_the_gate_at_each_checkpoint_and_commits_the_cp_entries() {
             "slice_done",
             "slice_committed",
             "checkpoint_started",
+            "gate_started",
             "gate_run",
             "checkpoint_spawned",
             "checkpoint_done",
@@ -996,6 +998,8 @@ fn red_red_green_runs_two_fix_workers_and_three_gates_before_the_cp() {
         assert_eq!(w.outcome.as_deref(), Some("done"));
         assert_eq!(w.commit_sha.as_deref(), Some(fixes[i].as_str()));
     }
+    assert!(of_kind(&dir, "fix_empty").is_empty());
+    assert_gate_started_comes_before_gate_run(&dir);
     let out = factory(&fx, &["report", &run_id(&dir), "--json"]);
     let r: Value = serde_json::from_str(&stdout(&out)).expect("one JSON object");
     assert_eq!(r["fix_commits"], 2, "{r}");
@@ -1041,12 +1045,15 @@ fn red_red_green_runs_two_fix_workers_and_three_gates_before_the_cp() {
         kinds_from(&dir, "checkpoint_started"),
         [
             "checkpoint_started",
+            "gate_started",
             "gate_run",
             "fix_spawned",
             "fix_committed",
+            "gate_started",
             "gate_run",
             "fix_spawned",
             "fix_committed",
+            "gate_started",
             "gate_run",
             "checkpoint_spawned",
             "checkpoint_done",
@@ -1054,6 +1061,7 @@ fn red_red_green_runs_two_fix_workers_and_three_gates_before_the_cp() {
             "slice_done",
             "slice_committed",
             "checkpoint_started",
+            "gate_started",
             "gate_run",
             "checkpoint_spawned",
             "checkpoint_done",
@@ -1069,6 +1077,56 @@ fn red_red_green_runs_two_fix_workers_and_three_gates_before_the_cp() {
         ]
     );
     assert_two_checkpoints(&fx, &dir);
+}
+
+fn assert_gate_started_comes_before_gate_run(dir: &Path) {
+    let started = of_kind(dir, "gate_started");
+    let ran = of_kind(dir, "gate_run");
+    assert_eq!(started.len(), ran.len(), "{started:?}\n{ran:?}");
+    for r in &ran {
+        let s = started
+            .iter()
+            .find(|s| s["n"] == r["n"] && s["attempt"] == r["attempt"])
+            .unwrap_or_else(|| panic!("no gate_started for {r}"));
+        assert_eq!(s["log"], r["log"], "{s} {r}");
+        assert_eq!(s["cmd"], "./gate.sh", "{s}");
+        assert!(s["seq"].as_u64() < r["seq"].as_u64(), "{s} {r}");
+    }
+}
+
+// ── a fix that changes nothing ──────────────────────────────────────────────
+
+#[test]
+fn an_empty_fix_is_an_event() {
+    let fx = Fixture::new("cp-empty-fix");
+    fx.chain();
+    fx.script_gate(&["red", "green"]);
+    fx.write_plan(&[
+        done(),
+        done(),
+        json!({"outcome": "fix", "touch": []}),
+        step("fix"),
+        step("checkpoint"),
+        done(),
+        step("checkpoint"),
+    ]);
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "finished", 90);
+
+    let workers = db(&fx).workers(&run_id(&dir)).unwrap();
+    let empty_fixer = workers.iter().find(|w| w.role == "fix").unwrap();
+    let empty = of_kind(&dir, "fix_empty");
+    assert_eq!(empty.len(), 1, "{empty:?}");
+    assert_eq!(empty[0]["n"], 1);
+    assert_eq!(empty[0]["attempt"], 1);
+    assert_eq!(
+        empty[0]["session_id"],
+        empty_fixer.session_id.as_deref().unwrap()
+    );
+    assert!(empty[0].get("round").is_none(), "{}", empty[0]);
+    assert_eq!(of_kind(&dir, "fix_committed").len(), 1);
+    assert!(!of_kind(&dir, "gate_cached").is_empty());
+    assert_gate_started_comes_before_gate_run(&dir);
 }
 
 // ── three reds block; the answer reruns the gate ────────────────────────────
@@ -1137,12 +1195,15 @@ fn three_reds_block_the_run_and_the_answer_reruns_the_gate() {
         kinds_from(&dir, "checkpoint_started"),
         [
             "checkpoint_started",
+            "gate_started",
             "gate_run",
             "fix_spawned",
             "fix_committed",
+            "gate_started",
             "gate_run",
             "fix_spawned",
             "fix_committed",
+            "gate_started",
             "gate_run",
             "checkpoint_blocked",
             "run_waiting",
@@ -1201,6 +1262,7 @@ fn three_reds_block_the_run_and_the_answer_reruns_the_gate() {
         kinds_after(&dir, "block_answered"),
         [
             "checkpoint_resumed",
+            "gate_started",
             "gate_run",
             "checkpoint_spawned",
             "checkpoint_done",
@@ -1208,6 +1270,7 @@ fn three_reds_block_the_run_and_the_answer_reruns_the_gate() {
             "slice_done",
             "slice_committed",
             "checkpoint_started",
+            "gate_started",
             "gate_run",
             "checkpoint_spawned",
             "checkpoint_done",
@@ -1452,6 +1515,7 @@ fn two_dead_checkpoint_workers_block_the_run_and_the_answer_spawns_a_third() {
         kinds_from(&dir, "checkpoint_started"),
         [
             "checkpoint_started",
+            "gate_started",
             "gate_run",
             "checkpoint_spawned",
             "worker_dead",
@@ -1505,6 +1569,7 @@ fn two_dead_checkpoint_workers_block_the_run_and_the_answer_spawns_a_third() {
             "slice_done",
             "slice_committed",
             "checkpoint_started",
+            "gate_started",
             "gate_run",
             "checkpoint_spawned",
             "checkpoint_done",

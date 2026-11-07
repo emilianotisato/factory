@@ -679,6 +679,12 @@ fn nothing(
     out: &mut dyn Write,
 ) -> Result<Option<String>> {
     if let Closer::CiFix { round, .. } = who {
+        run.emit(EventKind::FixEmpty {
+            n: None,
+            attempt: None,
+            session_id: None,
+            round: Some(*round),
+        })?;
         say(
             out,
             &format!("ci: fix worker of round {round} changed nothing to commit"),
@@ -1331,6 +1337,7 @@ fn watch_ci(
     let mut since = Instant::now();
     let mut expected: BTreeSet<String> = BTreeSet::new();
     let mut waiting: Option<String> = None;
+    let mut running: Option<BTreeSet<String>> = None;
     say(
         out,
         &format!("ci: watching the checks of {url} (a poll every {interval}s)"),
@@ -1412,6 +1419,9 @@ fn watch_ci(
                 return Ok(None);
             }
             Verdict::NoChecks => {
+                run.emit(EventKind::CiNoChecks {
+                    minutes: since.elapsed().as_secs() / 60,
+                })?;
                 say(
                     out,
                     &format!(
@@ -1433,6 +1443,7 @@ fn watch_ci(
                     Next::Again => {
                         since = Instant::now();
                         waiting = None;
+                        running = None;
                         continue;
                     }
                     Next::Fix { round, check, log } => {
@@ -1450,6 +1461,7 @@ fn watch_ci(
                         since = Instant::now();
                         w.stale.clear();
                         waiting = None;
+                        running = None;
                         continue;
                     }
                 }
@@ -1476,6 +1488,19 @@ fn watch_ci(
                 &body,
                 out,
             )?));
+        }
+        let checks: BTreeSet<String> = rows
+            .iter()
+            .filter(|r| r.link.is_empty() || !w.stale.contains(&r.link))
+            .filter(|r| ci::class(r) == ci::Class::Pending)
+            .map(|r| r.name.clone())
+            .collect();
+        // An empty set is a wait on no check (head lag, rerun, grace): nothing to emit.
+        if !checks.is_empty() && running.as_ref() != Some(&checks) {
+            run.emit(EventKind::CiWaiting {
+                checks: checks.iter().cloned().collect(),
+            })?;
+            running = Some(checks);
         }
         if waiting.as_deref() != Some(why.as_str()) {
             say(out, &format!("ci: waiting — {why}"))?;

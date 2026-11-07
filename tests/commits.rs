@@ -294,6 +294,7 @@ fn each_done_slice_lands_as_one_commit_from_its_lane() {
             "slice_done",
             "slice_committed",
             "checkpoint_started",
+            "gate_started",
             "gate_run",
             "checkpoint_spawned",
             "checkpoint_done",
