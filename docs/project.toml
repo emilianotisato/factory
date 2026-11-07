@@ -54,6 +54,8 @@ allow = [
   { path = "tests/docs.rs" },
   { path = "tests/docs_v3.rs" },
   { path = "tests/fixture/log-without-covers/log.jsonl" },
+  { path = "tests/fixture/recordings/claude-stream-build-mid-bash-2.1.316.jsonl", scope = "all" },
+  { path = "tests/fixture/recordings/claude-stream-polish-skill-2.1.316.jsonl", scope = "all" },
   { path = "tests/harness/mod.rs" },
   { path = "tests/hook.rs" },
   { path = "tests/lanes.rs" },
