@@ -124,13 +124,14 @@ pub fn run(
         let (reds, fixes) = reds_in_a_row(run, n)?;
         if reds >= RED_CAP {
             let tail = fs::read_to_string(&result.log).unwrap_or_default();
-            let line = tail
-                .lines()
-                .rev()
-                .map(str::trim)
-                .find(|l| !l.is_empty())
-                .unwrap_or("no output")
-                .to_string();
+            let line = failure_line(run, &result.log).unwrap_or_else(|| {
+                tail.lines()
+                    .rev()
+                    .map(str::trim)
+                    .find(|l| !l.is_empty())
+                    .unwrap_or("no output")
+                    .to_string()
+            });
             let title =
                 answers::block_title(&format!("gate red three times at checkpoint {n}: {line}"));
             let quoted: String = crate::pack::tail(&tail, 40)
@@ -1097,6 +1098,20 @@ fn spawned_before_answer(events: &[Event], n: u32) -> HashSet<String> {
 }
 
 /// The body of the pack's `# Leaks`; a scan that fails reads `not run`, never a red.
+/// The first line the excerpt matched in a gate log, if it matched any.
+fn failure_line(run: &Run, log: &Path) -> Option<String> {
+    let read = crate::live::gate::read_log(log)?;
+    let patterns = crate::docs::project::load(&run.state().repo)
+        .ok()
+        .flatten()
+        .map(|p| p.failure_patterns())
+        .unwrap_or_default();
+    crate::excerpt::excerpt(&read.text, &patterns)
+        .into_iter()
+        .find(|l| l.hit)
+        .map(|l| l.text)
+}
+
 fn leaks_section(base: &str, scanned: Result<crate::leaks::Report>) -> String {
     match scanned {
         Ok(report) => {

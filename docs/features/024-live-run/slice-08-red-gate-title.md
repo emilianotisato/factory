@@ -3,7 +3,11 @@
 **Source**: [`prd.md`](prd.md) → §10 FR-8, §2 (block titles change), §11 slice recon corrections. **Depends on**: 03 (the excerpt extractor in `src/excerpt.rs` and the `gate_failure` reader). Independent of every other slice: it touches `checkpoint.rs:125-135` only, which slice 04 does not edit.
 **Created**: 2026-11-07
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+- **Built**: `failure_line` in `src/checkpoint.rs` reads the last 1 MiB of the red gate log (`live::gate::read_log`), runs the excerpt with the main tree's `gate_failure` patterns, and takes the first hit (never a context line) for the block title behind the unchanged prefix, through `block_title`. No hit, or an unreadable log, keeps the last-non-empty-line title. The body's 40-line quote is unchanged. New fixture gate `tests/fixture/gate-pest.sh` (Pest JSON failure mid-log, ends on `Script @ci:check was called via verify`) and test `a_red_gate_block_names_the_failure` in `tests/checkpoints.rs`; `three_reds_block_the_run_and_the_answer_reruns_the_gate` stays green unchanged.
+- **Inner loop**: 2 runs, 0 red, about 4 min — caught nothing.
+- **Deviations**: none.
+- **Prove**: FR-8 (`a_red_gate_block_names_the_failure`) is left for the checkpoint.
 
 **Slice**: After this slice, when the gate goes red three times at a checkpoint, the block's title names the failure the excerpt found, behind the same "gate red three times at checkpoint N:" prefix, instead of the log's last non-empty line. The title still goes through `block_title` and its 160-char cap, and a log where the excerpt finds nothing keeps today's last-line title. `status --json` `questions[].text` and the herdr strip show the new words; the schema does not change.
 

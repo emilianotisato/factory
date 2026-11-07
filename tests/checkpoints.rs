@@ -1310,6 +1310,39 @@ fn three_reds_block_the_run_and_the_answer_reruns_the_gate() {
 }
 
 #[test]
+fn a_red_gate_block_names_the_failure() {
+    let fx = Fixture::new("cp-block-pest");
+    fs::copy(
+        harness::fixture_src().join("gate-pest.sh"),
+        fx.path().join("gate.sh"),
+    )
+    .unwrap();
+    fx.chain();
+    fx.script_gate(&["red", "red", "red"]);
+    fx.write_plan(&[done(), done(), step("fix"), step("fix")]);
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "waiting-owner", 90);
+
+    assert_eq!(fx.gate_log().len(), 3);
+    let blocks = fx.log_of("block");
+    assert_eq!(blocks.len(), 1, "{blocks:?}");
+    let title = blocks[0]["title"].as_str().unwrap();
+    assert!(
+        title.starts_with("gate red three times at checkpoint 1: "),
+        "{title}"
+    );
+    assert!(title.contains("it rejects an expired token"), "{title}");
+    assert!(!title.contains("Script @ci:check"), "{title}");
+    let blocked = of_kind(&dir, "checkpoint_blocked");
+    assert_eq!(blocked[0]["question"], title, "{blocked:?}");
+    assert!(
+        body(&blocks[0]).contains("  Script @ci:check was called via verify\n"),
+        "{}",
+        body(&blocks[0])
+    );
+}
+
+#[test]
 fn a_block_body_names_the_run_dir_under_the_home_as_tilde() {
     let fx = Fixture::new("cp-block-home");
     fx.chain();
