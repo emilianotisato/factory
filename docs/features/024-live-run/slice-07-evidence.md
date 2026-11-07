@@ -3,7 +3,11 @@
 **Source**: [`prd.md`](prd.md) → §8 FR-6, §3 (`--evidence-limit`, the cap order). **Depends on**: 01 (`src/live/evidence.rs`, `tests/live/evidence.rs`, the parsed `--evidence-limit` and the cap that cuts evidence first). Independent of 02 to 06.
 **Created**: 2026-11-07
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+- **Built:** `src/live/evidence.rs` lists `evidence` as `{root: "evidence", checkpoints, skipped, truncated}`. This run's checkpoint numbers come from `checkpoint_started`, `checkpoint_resumed` and `checkpoint_done` events; `state` is `done` once `checkpoint_done` exists. Each existing `cp-N` dir is walked with `symlink_metadata` only, to depth 4 below the root. Symlinks, FIFOs and devices count in `skipped`, and a symlinked dir is never entered. Printed paths are built from the walk's relative names, never from an absolute path. Files sort by mtime descending, then path. `x.aria.txt` attaches to the first row stemmed `x` in its dir (AD-9: `sidecars` is a list of paths); one with no such row is its own row. Each row has `kind` by extension, RFC3339 `mtime`, `stable` (older than 2 s), `etag` `<bytes>-<mtimeMs>`, a humanized `caption`, and `citedBy`: the ids of the feature log entries whose body contains the path. `--evidence-limit` counts rows, newest checkpoint first, and sets `evidence.truncated` when it cuts. The choices the slice left open are AD-10.
+- **Tests:** `tests/live/evidence.rs` has the five task-1 acceptance tests and `live_evidence_names_the_entries_citing_a_file_and_its_sidecars`. A linked dir is also checked in `live_evidence_paths_stay_under_root`. A unit test in `src/live/evidence.rs` covers kind, stem and caption.
+- **Inner loop:** 1 run, 0 red, ~1.7 min (plus one targeted `--test live` run).
+- **Prove (FR-6):** left for the checkpoint: `live_skips_a_symlink_in_evidence` and `live_evidence_paths_stay_under_root`.
 
 **Slice**: After this slice, `factory live` lists the run's evidence: per checkpoint of this run, newest first, each file's path under the evidence root, kind, size, mtime, whether it is still being written, an etag, a caption from its name, the log entries that cite it, and its `.aria.txt` sidecars. It only `lstat`s: no symlink is followed and no file is read. Captions are file names; there is no manifest.
 
