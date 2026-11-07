@@ -108,6 +108,7 @@ factory live <id> --json [--since <seq>] [--wait <secs>] [--evidence-limit <n>]
     6. `gate`: a `gate_started` with no later `gate_run`.
     7. `review`: a `collect_started` with no later `collect_done`.
     8. `ci`: the newest CI event is `ci_waiting` or `ci_no_checks`.
+       - **Corrected 2026-11-07 (owner review, AD-16):** `ci` also covers a run in closeout with no verdict (`ci_green`, `ci_red`) after the newest head (`pr_opened`, `ci_fix_committed`, `ci_rerun`): the grace window before checks register, a head lag and a rerun. Read-side only; `ci_waiting` keeps AD-4's meaning.
     9. `worker`: a worker is alive.
     10. `nothing`: none of the above.
   - `label` is factory's own sentence: "checkpoint 2 gate, attempt 2".

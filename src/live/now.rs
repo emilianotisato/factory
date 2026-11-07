@@ -121,15 +121,7 @@ fn waiting(ctx: &Ctx) -> Waiting {
         w.progress = json!({"done": done, "of": of});
         return w;
     }
-    if let Some(e) = events.iter().rev().find(|e| is_ci(&e.kind))
-        && let Some(label) = match &e.kind {
-            EventKind::CiWaiting { checks } => Some(format!("CI checks: {}", checks.join(", "))),
-            EventKind::CiNoChecks { minutes } => {
-                Some(format!("CI checks, none reported after {minutes} min"))
-            }
-            _ => None,
-        }
-    {
+    if let Some((e, label)) = ci_wait(ctx) {
         return Waiting::new("ci", label, Some(e));
     }
     let live: Vec<&WorkerRef> = live_workers(ctx);
@@ -191,6 +183,46 @@ fn open_collect(events: &[Event]) -> Option<usize> {
         )
     })?;
     matches!(events[at].kind, EventKind::CollectStarted { .. }).then_some(at)
+}
+
+/// The newest CI event when it is `ci_waiting` or `ci_no_checks`; else, in closeout, the newest head when no verdict
+/// followed it, which covers the grace window before checks register, a head lag and a rerun (AD-16).
+fn ci_wait(ctx: &Ctx) -> Option<(&Event, String)> {
+    let events = &ctx.events;
+    if let Some(e) = events.iter().rev().find(|e| is_ci(&e.kind)) {
+        match &e.kind {
+            EventKind::CiWaiting { checks } => {
+                return Some((e, format!("CI checks: {}", checks.join(", "))));
+            }
+            EventKind::CiNoChecks { minutes } => {
+                return Some((e, format!("CI checks, none reported after {minutes} min")));
+            }
+            _ => {}
+        }
+    }
+    if ctx.state.phase != Phase::Closeout {
+        return None;
+    }
+    let head = events.iter().rev().find(|e| {
+        matches!(
+            e.kind,
+            EventKind::PrOpened { .. }
+                | EventKind::CiFixCommitted { .. }
+                | EventKind::CiRerun { .. }
+                | EventKind::CiGreen { .. }
+                | EventKind::CiRed { .. }
+        )
+    })?;
+    let label = match &head.kind {
+        EventKind::PrOpened { .. } => "CI checks to register on the PR".to_string(),
+        EventKind::CiFixCommitted { round, sha, .. } => {
+            let short = sha.get(..7).unwrap_or(sha);
+            format!("CI checks to register on fix round {round} ({short})")
+        }
+        EventKind::CiRerun { check, .. } => format!("CI rerun of {check}"),
+        _ => return None,
+    };
+    Some((head, label))
 }
 
 fn is_ci(kind: &EventKind) -> bool {

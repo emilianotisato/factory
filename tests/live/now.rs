@@ -141,6 +141,58 @@ fn live_names_what_the_run_waits_on() {
 }
 
 #[test]
+fn live_says_ci_while_checks_have_not_registered() {
+    let fx = Fixture::new("live-now-ci-unregistered");
+    let pr = json!({"kind": "pr_opened", "url": "https://github.com/o/r/pull/7"});
+    let red = json!({"kind": "ci_red", "check": "test", "round": 0, "head": "abc"});
+    let fix =
+        json!({"kind": "ci_fix_committed", "round": 1, "sha": "def4567890", "files": ["src/a.rs"]});
+    let cases: Vec<(&str, Vec<Value>)> = vec![
+        ("ci", vec![pr.clone()]),
+        (
+            "ci",
+            vec![
+                pr.clone(),
+                json!({"kind": "ci_waiting", "checks": ["test"]}),
+                red.clone(),
+                fix.clone(),
+            ],
+        ),
+        (
+            "ci",
+            vec![
+                pr.clone(),
+                red.clone(),
+                json!({"kind": "ci_rerun", "check": "test", "run_id": 9, "head": "abc"}),
+            ],
+        ),
+        (
+            "nothing",
+            vec![
+                pr.clone(),
+                fix.clone(),
+                json!({"kind": "ci_green", "head": "def4567890"}),
+            ],
+        ),
+        ("nothing", vec![json!({"kind": "shipped", "sha": "abc"})]),
+    ];
+    for (want, events) in cases {
+        write_run(&fx, json!({"phase": "closeout", "pid": me()}), &events);
+        let now = live(&fx, &[])["now"].clone();
+        assert_eq!(now["waitingOn"], want, "{events:?} {now}");
+        if want == "ci" {
+            assert!(now["since"].is_string(), "{now}");
+            assert!(!now["label"].as_str().unwrap().is_empty(), "{now}");
+        }
+        if events.last() == Some(&fix) {
+            assert!(now["label"].as_str().unwrap().contains("def4567"), "{now}");
+        }
+    }
+    write_run(&fx, json!({"pid": me()}), &[pr]);
+    assert_eq!(live(&fx, &[])["now"]["waitingOn"], "nothing");
+}
+
+#[test]
 fn live_says_driver_after_an_answer_nobody_picked_up() {
     let fx = Fixture::new("live-now-unpicked-answer");
     write_run(
