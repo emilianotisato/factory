@@ -377,7 +377,7 @@ fn run_on_the_clean_fixture_starts_notes_the_judge_lines_then_resumes() {
             && fx.calls().len() == 3
     });
     let k = kinds(dir);
-    assert_eq!(k.len(), 14, "{k:?}");
+    assert_eq!(k.len(), 15, "{k:?}");
     assert!(k[5..7].iter().all(|k| k == "slice_spawned"), "{k:?}");
     assert_eq!(
         k[7..11],
@@ -391,7 +391,12 @@ fn run_on_the_clean_fixture_starts_notes_the_judge_lines_then_resumes() {
     );
     assert_eq!(
         k[11..],
-        ["checkpoint_started", "gate_run", "checkpoint_spawned"],
+        [
+            "checkpoint_started",
+            "gate_started",
+            "gate_run",
+            "checkpoint_spawned"
+        ],
         "{k:?}"
     );
     assert_eq!(fx.slice_status(1), "done");
@@ -407,7 +412,7 @@ fn run_on_the_clean_fixture_starts_notes_the_judge_lines_then_resumes() {
     let row = db.run_row(&id).unwrap().unwrap();
     assert_eq!(row.phase, "checkpoint");
     assert_eq!(row.branch.as_deref(), Some("feat/fixture"));
-    assert_eq!(db.events(&id).unwrap().len(), 14);
+    assert_eq!(db.events(&id).unwrap().len(), 15);
 
     let driver = state(dir)["pid"].as_u64().unwrap() as u32;
     assert!(pid_alive(driver));
@@ -444,9 +449,9 @@ fn run_on_the_clean_fixture_starts_notes_the_judge_lines_then_resumes() {
         state(dir)["phase"] == "finished"
     });
     let k = kinds(dir);
-    assert_eq!(k[14], "run_resumed", "{k:?}");
+    assert_eq!(k[15], "run_resumed", "{k:?}");
     assert_eq!(
-        k[15..],
+        k[16..],
         [
             "worker_dead",
             "checkpoint_resumed",
@@ -457,9 +462,13 @@ fn run_on_the_clean_fixture_starts_notes_the_judge_lines_then_resumes() {
             "slice_done",
             "slice_committed",
             "checkpoint_started",
+            "gate_started",
             "gate_run",
             "checkpoint_spawned",
             "checkpoint_done",
+            "collect_started",
+            "review_pass_done",
+            "collect_done",
             "polish_spawned",
             "polish_done",
             "shipped",

@@ -2,6 +2,8 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 
+use serde::Serialize;
+
 use crate::error::io;
 use crate::events::{Event, EventKind};
 use crate::run::{self, Run, RunState};
@@ -206,6 +208,63 @@ pub fn questions<'a>(state: &RunState, events: &'a [Event]) -> Vec<&'a Event> {
         return Vec::new();
     }
     needed(events, false)
+}
+
+/// An open question as `status --json` and `live --json` show it.
+#[derive(Serialize, Debug, PartialEq)]
+pub struct Question {
+    pub id: String,
+    pub at: &'static str,
+    pub n: Option<u32>,
+    pub text: String,
+    pub answer: Vec<String>,
+}
+
+/// `answer` is the argv to run from the run's repo, every flag before the id so the text can follow it.
+pub fn question(e: &Event, feature: &str, run: &str) -> Option<Question> {
+    let (id, at, n, text) = match &e.kind {
+        EventKind::SliceBlocked {
+            slice,
+            block_id: Some(id),
+            question,
+        } => (
+            id,
+            "slice",
+            Some(*slice),
+            question.clone().unwrap_or_default(),
+        ),
+        EventKind::CheckpointBlocked {
+            n,
+            block_id,
+            question,
+        } => (block_id, "checkpoint", Some(*n), question.clone()),
+        EventKind::CloseoutBlocked {
+            block_id, question, ..
+        } => (block_id, "closeout", None, question.clone()),
+        EventKind::MergeRefused { block_id, detail } => {
+            (block_id, "merge", None, checkpoint::refusal_summary(detail))
+        }
+        EventKind::AskOpened { id, text } => (id, "preflight", None, text.clone()),
+        _ => return None,
+    };
+    let (flag, value, prefix) = if at == "preflight" {
+        ("--run", run, "ASK-")
+    } else {
+        ("--feature", feature, "BLOCK-")
+    };
+    let number = id.strip_prefix(prefix)?;
+    if number.is_empty() || !number.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some(Question {
+        id: id.clone(),
+        at,
+        n,
+        text,
+        answer: ["factory", "answer", flag, value, id]
+            .map(str::to_string)
+            .to_vec(),
+    })
 }
 
 /// What the owner must act on now, whatever the cursor: the questions, the park, then a dead driver.
@@ -531,6 +590,7 @@ mod tests {
             EventKind::RunWaiting {
                 blocked: vec![1],
                 asks: vec![],
+                reason: String::new(),
             },
         ] {
             assert!(!is_cockpit(&progress), "{progress:?}");

@@ -1,0 +1,15 @@
+
+ INFO Configuration cache cleared successfully. 
+
+{"tool":"pint","result":"passed"}
+> check:src
+> vp check resources app tests/Fixtures/Modules vite.config.ts
+
+[1m[94mpass:[39m[0m All 209 files are correctly formatted [2m(2435ms, 20 threads)[0m
+[1m[94mpass:[39m[0m Found no warnings or lint errors in 206 files [2m(575ms, 20 threads)[0m
+
+> types:check
+> vue-tsc --noEmit
+
+app/Modules/Irsa/resources/js/pages/flujos/Mapas.vue(5,33): error TS2307: Cannot find module '@/actions/App/Modules/Irsa/Http/Controllers/FlujoMapsController' or its corresponding type declarations.
+Script npm run types:check handling the test event returned with error code 2

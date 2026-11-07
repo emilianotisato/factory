@@ -11,7 +11,7 @@ use crate::{Error, Result};
 
 /// An existing dir keeps its mode: `FACTORY_DATA_DIR` may name one the owner shares on purpose.
 pub fn data_dir() -> PathBuf {
-    let d = dir("FACTORY_DATA_DIR", "XDG_DATA_HOME", ".local/share");
+    let d = data_dir_path();
     if !d.exists() {
         let _ = private_dir_all(&d);
     }
@@ -58,6 +58,11 @@ pub fn factory_command() -> String {
 
 pub fn config_dir() -> PathBuf {
     dir("FACTORY_CONFIG_DIR", "XDG_CONFIG_HOME", ".config")
+}
+
+/// Where [`data_dir`] is, without creating it.
+pub fn data_dir_path() -> PathBuf {
+    dir("FACTORY_DATA_DIR", "XDG_DATA_HOME", ".local/share")
 }
 
 /// Absolute: a relative `FACTORY_DATA_DIR` must mean the same directory to a worker or `git` in the repo.

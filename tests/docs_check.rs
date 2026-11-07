@@ -187,3 +187,32 @@ fn node_is_spawned_in_one_place() {
     hits.sort();
     assert_eq!(hits, ["cli/docs.rs"]);
 }
+
+#[test]
+fn docs_check_rejects_a_bad_gate_failure_regex() {
+    let check = |value: &str| {
+        let fx = Fixture::with_index("check-gate-failure", &[("gate_failure", value)]);
+        let out = fx.docs_output(&["check"]);
+        (out.status.code(), stderr(&out))
+    };
+
+    let (code, err) = check(r#"["("]"#);
+    assert_eq!(code, Some(1), "{err}");
+    assert!(err.contains("✗ E-PROJECT-INVALID"), "{err}");
+    assert!(
+        err.contains(r#"gate_failure "(" does not compile"#),
+        "{err}"
+    );
+    assert!(err.contains("unclosed group"), "{err}");
+
+    let (code, err) = check(r#"["FAIL:"]"#);
+    assert_eq!(code, Some(0), "{err}");
+    assert!(!err.contains("E-PROJECT-INVALID"), "{err}");
+
+    let (code, err) = check(r#""x""#);
+    assert_eq!(code, Some(1), "{err}");
+    assert!(
+        err.contains(r#"[docs] gate_failure = "x" is not a list of regex strings"#),
+        "{err}"
+    );
+}

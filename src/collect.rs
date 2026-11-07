@@ -10,6 +10,7 @@ use std::path::Path;
 
 use crate::config::Review;
 use crate::leaks::{self, Input};
+use crate::review::{Progress, Sink};
 use crate::{Result, ci, paths, review};
 
 /// One file under this many changed lines needs the local review only.
@@ -32,6 +33,22 @@ pub fn reusable(text: &str, head: &str) -> bool {
         && !text.contains(&format!("\nverdict: {DID_NOT_RUN}"))
 }
 
+/// A collected `text`'s pass count and review log dir, from its second opinion's pass headings and `log:` line.
+pub fn passes_and_log(text: &str) -> (usize, Option<&str>) {
+    let Some((_, opinion)) = text.split_once("\n## Second opinion\n") else {
+        return (0, None);
+    };
+    let passes = opinion
+        .lines()
+        .filter(|l| {
+            l.starts_with("### Pass ")
+                && (l.ends_with(" — counted") || l.ends_with(" — unreviewed"))
+        })
+        .count();
+    let log = opinion.lines().find_map(|l| l.strip_prefix("log: "));
+    (passes, log)
+}
+
 /// Whether the size row adds the second opinion to the local review.
 pub fn needs_second_opinion(files: &[(String, u64)]) -> bool {
     let lines: u64 = files.iter().map(|(_, n)| n).sum();
@@ -39,16 +56,30 @@ pub fn needs_second_opinion(files: &[(String, u64)]) -> bool {
 }
 
 /// The collected file for `<base>...HEAD` in `root`, the second opinion's progress lines going to `progress`.
-/// Only a git error reading HEAD or the changed files is the error: every later part writes its own failure into the file.
-pub fn collect(root: &Path, base: &str, cfg: &Review, progress: &mut dyn Write) -> Result<String> {
+/// `sink` hears `Started` once the passes are known, then each pass as it ends.
+/// Only a git error reading HEAD or the changed files, or the sink failing on a skipped second opinion, is the
+/// error: every later part writes its own failure into the file.
+pub fn collect(
+    root: &Path,
+    base: &str,
+    cfg: &Review,
+    progress: &mut dyn Write,
+    mut sink: Sink,
+) -> Result<String> {
     let head = ci::head(root)?;
     let files = review::numstat(root, base, &[])?;
     let lines: u64 = files.iter().map(|(_, n)| n).sum();
     let leaks = leaks_part(root, base);
     let second = needs_second_opinion(&files);
     let (state, opinion) = if second {
-        second_opinion(root, base, cfg, &files, progress)
+        second_opinion(root, base, cfg, &files, progress, sink)
     } else {
+        if let Some(sink) = sink.as_mut() {
+            sink(Progress::Started {
+                passes: 0,
+                dir: None,
+            })?;
+        }
         (
             "skipped by size".to_string(),
             format!(
@@ -109,6 +140,7 @@ fn second_opinion(
     cfg: &Review,
     files: &[(String, u64)],
     progress: &mut dyn Write,
+    mut sink: Sink,
 ) -> (String, String) {
     let unreviewed = |reason: &str, log: Option<&Path>, passes: &str| {
         let log = log.map_or(String::new(), |d| format!("log: {}\n", d.display()));
@@ -117,14 +149,27 @@ fn second_opinion(
             format!("exit: 2\nunreviewed: {reason}\n{log}{passes}"),
         )
     };
+    let passes = review::group(files, cfg.pass_lines);
+    let mut started = |dir: Option<&Path>| match sink.as_mut() {
+        Some(sink) => sink(Progress::Started {
+            passes: passes.len(),
+            dir: dir.map(Path::to_path_buf),
+        }),
+        None => Ok(()),
+    };
     let dir = match review::new_log_dir(&paths::data_dir()) {
         Ok(d) => d,
-        Err(e) => return unreviewed(&e.to_string(), None, ""),
+        Err(e) => {
+            let _ = started(None);
+            return unreviewed(&e.to_string(), None, "");
+        }
     };
+    if let Err(e) = started(Some(&dir)) {
+        return unreviewed(&e.to_string(), Some(&dir), "");
+    }
     if let Err(reason) = review::probe(cfg, &dir) {
         return unreviewed(&reason, Some(&dir), "");
     }
-    let passes = review::group(files, cfg.pass_lines);
     let ran = match review::run_passes(
         cfg,
         root,
@@ -132,6 +177,7 @@ fn second_opinion(
         &passes,
         |n, pass| review::diff_pass_prompt(root, base, &dir, n, pass),
         progress,
+        sink,
     ) {
         Ok(r) => r,
         Err(e) => return unreviewed(&e.to_string(), Some(&dir), ""),

@@ -25,6 +25,8 @@ enum Command {
     Answer(cli::answer::AnswerArgs),
     /// Show the board of the live run
     Status(cli::status::StatusArgs),
+    /// One run's live detail as JSON, read without writing anything
+    Live(cli::live::LiveArgs),
     /// Stop the live run
     Stop(cli::stop::StopArgs),
     /// Print the metrics report of a run
@@ -92,6 +94,7 @@ fn main() -> ExitCode {
         Command::Leaks(a) => cli::leaks::leaks(&a, &mut stdout(), &mut stderr()),
         Command::Wait(a) => cli::wait::wait(&a, &mut stdout(), &mut stderr()),
         Command::Status(a) => cli::status::status(&a, &mut stdout(), &mut stderr()),
+        Command::Live(a) => cli::live::live(&a, &mut stdout(), &mut stderr()),
         Command::Review { verb } => cli::review::review(&verb, &mut stdout(), &mut stderr()),
         Command::Upstream { verb } => cli::upstream::upstream(&verb, &mut stdout(), &mut stderr()),
         Command::Ctx { verb } => ctx::run(&verb, Path::new("."), &mut stdout(), &mut stderr()),

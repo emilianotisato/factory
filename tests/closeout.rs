@@ -384,6 +384,30 @@ fn a_finished_board_polishes_ships_pushes_and_opens_the_draft_pr() {
             "polish"
         ]
     );
+    let collect: Vec<Value> = events(&dir)
+        .into_iter()
+        .filter(|e| {
+            ["collect_started", "review_pass_done", "collect_done"]
+                .contains(&e["kind"].as_str().unwrap())
+        })
+        .collect();
+    assert!(collect.len() >= 2, "{collect:?}");
+    let (first, last) = (&collect[0], &collect[collect.len() - 1]);
+    assert_eq!(first["kind"], "collect_started", "{collect:?}");
+    assert_eq!(first["reused"], false, "{first}");
+    assert_eq!(last["kind"], "collect_done", "{collect:?}");
+    assert_eq!(last["ok"], true, "{last}");
+    let passes = first["passes"].as_u64().unwrap();
+    let mut ks: Vec<u64> = collect[1..collect.len() - 1]
+        .iter()
+        .map(|e| {
+            assert_eq!(e["kind"], "review_pass_done", "{collect:?}");
+            assert_eq!(e["of"].as_u64(), Some(passes), "{e}");
+            e["k"].as_u64().unwrap()
+        })
+        .collect();
+    ks.sort();
+    assert_eq!(ks, (1..=passes).collect::<Vec<_>>(), "{collect:?}");
     let polish = &db(&fx).workers(&run_id(&dir)).unwrap()[5];
     assert_eq!(polish.role, "polish");
     assert_eq!(polish.slice, None);
@@ -1039,6 +1063,27 @@ fn a_slice_not_done_at_ship_blocks_the_closeout_in_phase_polish() {
 }
 
 #[test]
+fn ci_red_writes_the_whole_failure_log() {
+    let fx = Fixture::new("closeout-ci-red-log");
+    fx.chain();
+    fx.script_ci(&["red:test", "green"]);
+    fx.write_plan(&plan_with(&[step("polish"), step("fix")]));
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "finished", 120);
+
+    let ci_log = fs::read_to_string(dir.join("ci/1.log")).unwrap();
+    for want in [
+        "FAIL test: expected 2 got 3",
+        "##[error]Process completed with exit code 1.",
+    ] {
+        assert!(ci_log.contains(want), "{want:?} missing:\n{ci_log}");
+    }
+    assert!(!ci_log.contains('\u{1b}'), "{ci_log}");
+    assert_eq!(fs::read_dir(dir.join("ci")).unwrap().count(), 1);
+    stop(&fx, &dir);
+}
+
+#[test]
 fn a_red_check_gets_one_fix_round_then_green() {
     let fx = Fixture::new("closeout-ci-red-green");
     fx.chain();
@@ -1520,6 +1565,70 @@ fn a_refused_run_list_blocks_instead_of_a_blind_fix_round() {
 }
 
 #[test]
+fn an_empty_fix_is_an_event() {
+    let fx = Fixture::new("closeout-ci-empty-fix");
+    fx.chain();
+    fx.script_ci(&["red:test", "green"]);
+    fx.write_plan(&plan_with(&[
+        step("polish"),
+        json!({"outcome": "fix", "touch": []}),
+    ]));
+    let dir = start_with(&fx, &FAST);
+    wait_phase(&fx, &dir, "finished", 120);
+
+    assert_eq!(roles(&fx, &dir)[5..], ["polish", "fix"]);
+    let empty = of_kind(&dir, "fix_empty");
+    assert_eq!(empty.len(), 1, "{empty:?}");
+    assert_eq!(empty[0]["round"], 1);
+    for key in ["n", "attempt", "session_id"] {
+        assert!(empty[0].get(key).is_none(), "{}", empty[0]);
+    }
+    assert!(!subjects(&fx).iter().any(|s| s.starts_with("fix(001): CI")));
+}
+
+#[test]
+fn ci_waiting_emits_on_a_change_of_checks_only() {
+    let fx = Fixture::new("closeout-ci-waiting");
+    fx.chain();
+    fx.script_ci(&[
+        "pending:test",
+        "pending:test",
+        "pending:test pending:lint",
+        "pass:test pending:lint",
+        "green",
+    ]);
+    fx.write_plan(&built());
+    let dir = start_with(&fx, &FAST);
+    wait_phase(&fx, &dir, "finished", 90);
+
+    let waits: Vec<Value> = of_kind(&dir, "ci_waiting")
+        .iter()
+        .map(|e| e["checks"].clone())
+        .collect();
+    assert_eq!(
+        waits,
+        [json!(["test"]), json!(["lint", "test"]), json!(["lint"])]
+    );
+    assert_eq!(of_kind(&dir, "ci_green").len(), 1);
+}
+
+#[test]
+fn checks_never_reported_past_the_grace_are_one_event() {
+    let fx = Fixture::new("closeout-ci-no-checks");
+    fx.chain();
+    fx.script_ci(&["none"; 12]);
+    fx.write_plan(&built());
+    let dir = start_with(&fx, &FAST);
+    wait_phase(&fx, &dir, "finished", 90);
+
+    let none = of_kind(&dir, "ci_no_checks");
+    assert_eq!(none.len(), 1, "{none:?}");
+    assert_eq!(none[0]["minutes"], 0);
+    assert!(of_kind(&dir, "ci_waiting").is_empty());
+    assert!(of_kind(&dir, "ci_green").is_empty());
+}
+
+#[test]
 fn no_checks_right_after_the_push_are_waited_on_for_the_grace() {
     let fx = Fixture::new("closeout-ci-none-then-green");
     fx.chain();
@@ -1529,6 +1638,8 @@ fn no_checks_right_after_the_push_are_waited_on_for_the_grace() {
     wait_phase(&fx, &dir, "finished", 90);
     assert_eq!(gh_calls(&fx, "pr checks").len(), 3, "{:?}", fx.gh_log());
     assert_eq!(of_kind(&dir, "ci_green").len(), 1);
+    assert!(of_kind(&dir, "ci_no_checks").is_empty());
+    assert!(of_kind(&dir, "ci_waiting").is_empty());
     assert_eq!(
         driver_log(&dir)
             .matches("ci: waiting — no checks reported yet")
@@ -1985,6 +2096,8 @@ fn two_dead_polish_workers_block_and_the_answer_spawns_a_third() {
         [
             "polish_spawned",
             "worker_dead",
+            "collect_started",
+            "collect_done",
             "polish_spawned",
             "worker_dead",
             "closeout_blocked",
