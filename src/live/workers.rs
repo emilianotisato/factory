@@ -273,11 +273,11 @@ fn blocks<'a>(v: &'a Map<String, Value>, kind: &'a str) -> impl Iterator<Item = 
         .filter(move |b| b.get("type").and_then(Value::as_str) == Some(kind))
 }
 
-fn one_line(s: &str) -> String {
+pub(super) fn one_line(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn cut(s: &str, max: usize) -> String {
+pub(super) fn cut(s: &str, max: usize) -> String {
     match s.char_indices().nth(max) {
         Some(_) => {
             let mut out: String = s.chars().take(max - 1).collect();

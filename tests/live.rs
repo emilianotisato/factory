@@ -10,6 +10,8 @@ mod gate;
 mod now;
 #[path = "live/redact.rs"]
 mod redact;
+#[path = "live/timeline.rs"]
+mod timeline;
 #[path = "live/workers.rs"]
 mod workers;
 
@@ -301,16 +303,16 @@ fn live_timeline_tones_follow_the_table() {
         tones,
         ["owner", "red", "green", "noise", "info", "info", "red"]
     );
-    assert_eq!(t[0]["label"], "ask_opened(q7)");
+    assert_eq!(t[0]["label"], "q7 asks: Which store?");
     assert_eq!(t[0]["data"], json!({"id": "q7", "text": "Which store?"}));
     assert_eq!(t[1]["kind"], "gate_run");
-    assert_eq!(t[1]["label"], "gate_run(1)");
+    assert_eq!(t[1]["label"], "gate 1 red, attempt 2");
     assert_eq!(t[1]["ts"], STARTED);
     assert_eq!(t[3]["data"], json!({"checks": 2}));
     assert_eq!(t[5]["kind"], "unknown");
-    assert_eq!(t[5]["label"], "unknown");
+    assert_eq!(t[5]["label"], "an event from a newer factory");
     assert_eq!(t[5]["data"], json!({}));
-    assert_eq!(t[6]["label"], "landing_conflicted(03)");
+    assert_eq!(t[6]["label"], "slice 03 conflicted in 2 files");
     assert_eq!(t[6]["data"], json!({"slice": 3, "paths": 2}));
 }
 

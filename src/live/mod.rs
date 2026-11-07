@@ -12,6 +12,7 @@ use crate::{Result, clock, metrics};
 
 pub mod evidence;
 pub mod gate;
+pub mod label;
 pub mod now;
 pub mod redact;
 pub mod timeline;
