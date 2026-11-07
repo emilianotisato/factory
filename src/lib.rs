@@ -15,6 +15,7 @@ pub mod db;
 pub mod docs;
 pub mod error;
 pub mod events;
+pub mod excerpt;
 pub mod gatecache;
 pub mod land;
 pub mod lanes;

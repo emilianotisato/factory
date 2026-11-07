@@ -1,0 +1,16 @@
+Diff in /home/user/Projects/factory/src/cli/report.rs:842:
+         // `2.1.296 (Claude Code)` reads `2.1.296`.
+         format!(
+             "claude {}",
+[31m-            or_dash(k["claude_version"].as_str().and_then(|v| v.split_whitespace().next()))
+(B[m[32m+            or_dash(
+(B[m[32m+                k["claude_version"]
+(B[m[32m+                    .as_str()
+(B[m[32m+                    .and_then(|v| v.split_whitespace().next())
+(B[m[32m+            )
+(B[m         ),
+     ]);
+     parts.join(" · ")
+Diff in /home/user/Projects/factory/tests/knobs.rs:96:
+     // The model came from the project file, the effort from the default.
+     assert_eq!(knobs["workers"]["polish"]["effort_source"], "default");

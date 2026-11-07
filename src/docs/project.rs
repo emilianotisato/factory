@@ -7,7 +7,7 @@ use crate::error::io;
 use crate::scheduler::write_atomic;
 use crate::{Error, Result};
 
-pub const KEYS: [&str; 8] = [
+pub const KEYS: [&str; 9] = [
     "framework",
     "gate",
     "inner",
@@ -16,6 +16,7 @@ pub const KEYS: [&str; 8] = [
     "checkpoint_every",
     "prd_max_kb",
     "slice_max_kb",
+    "gate_failure",
 ];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -29,6 +30,18 @@ pub struct Project {
     pub checkpoint_every: u32,
     pub prd_max_kb: f64,
     pub slice_max_kb: f64,
+    /// Regexes for the lines a red gate failed on, tried before the built-in set.
+    pub gate_failure: Vec<String>,
+}
+
+impl Project {
+    /// The `gate_failure` patterns that compile; `docs check` reports the rest.
+    pub fn failure_patterns(&self) -> Vec<regex::Regex> {
+        self.gate_failure
+            .iter()
+            .filter_map(|p| regex::Regex::new(p).ok())
+            .collect()
+    }
 }
 
 pub fn path(root: &Path) -> PathBuf {
@@ -74,6 +87,13 @@ pub fn load(root: &Path) -> Result<Option<Project>> {
         checkpoint_every: floor1("checkpoint_every", 2),
         prd_max_kb: float("prd_max_kb", 120.0),
         slice_max_kb: float("slice_max_kb", 30.0),
+        gate_failure: match docs.get("gate_failure") {
+            Some(toml::Value::Array(items)) => items
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect(),
+            _ => Vec::new(),
+        },
     }))
 }
 
@@ -189,6 +209,7 @@ mod tests {
         assert_eq!((p.lanes, p.checkpoint_every), (1, 2));
         assert_eq!((p.prd_max_kb, p.slice_max_kb), (120.0, 30.0));
         assert_eq!((p.gate, p.inner, p.gate_parallel), (None, None, None));
+        assert!(p.gate_failure.is_empty());
         assert!(is_v3(d.path()));
 
         let d = repo("[docs]\nframework = 3\ngate_parallel = false\nlanes = 0\n");
@@ -199,6 +220,16 @@ mod tests {
         let d = repo("[run]\nbudget = 5\n");
         assert_eq!(load(d.path()).unwrap(), None);
         assert!(!is_v3(d.path()));
+    }
+
+    #[test]
+    fn gate_failure_reads_as_an_array_and_a_bad_pattern_is_skipped() {
+        let d = repo("[docs]\nframework = 3\ngate_failure = [\"^FAIL:\", \"(\"]\n");
+        let p = load(d.path()).unwrap().unwrap();
+        assert_eq!(p.gate_failure, ["^FAIL:", "("]);
+        let pats = p.failure_patterns();
+        assert_eq!(pats.len(), 1);
+        assert!(pats[0].is_match("FAIL: x"));
     }
 
     #[test]

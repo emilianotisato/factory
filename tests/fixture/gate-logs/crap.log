@@ -1,0 +1,45 @@
+=== 5. Tests (race detector) ===
+ok  	github.com/prokeycloud/sii/cmd/admin	3.924s	coverage: 89.2% of statements
+ok  	github.com/prokeycloud/sii/cmd/api	1.011s	coverage: 37.9% of statements
+	github.com/prokeycloud/sii/cmd/worker		coverage: 0.0% of statements
+ok  	github.com/prokeycloud/sii/infra/k8s	(cached)	coverage: [no statements]
+ok  	github.com/prokeycloud/sii/internal/auth/apikey	3.802s	coverage: 80.1% of statements
+ok  	github.com/prokeycloud/sii/internal/config	(cached)	coverage: 100.0% of statements
+ok  	github.com/prokeycloud/sii/internal/crypto	(cached)	coverage: 94.7% of statements
+ok  	github.com/prokeycloud/sii/internal/db	3.862s	coverage: 83.3% of statements
+ok  	github.com/prokeycloud/sii/internal/dbtest	3.738s	coverage: 76.3% of statements
+ok  	github.com/prokeycloud/sii/internal/httpapi	4.288s	coverage: 92.9% of statements
+	github.com/prokeycloud/sii/internal/httpapi/middleware		coverage: 0.0% of statements
+ok  	github.com/prokeycloud/sii/internal/httpapi/response	(cached)	coverage: 92.3% of statements
+ok  	github.com/prokeycloud/sii/internal/idempotency	1.015s	coverage: 27.9% of statements
+ok  	github.com/prokeycloud/sii/internal/queue	4.858s	coverage: 80.0% of statements
+ok  	github.com/prokeycloud/sii/internal/tenant	3.168s	coverage: 86.7% of statements
+?   	github.com/prokeycloud/sii/migrations	[no test files]
+ok  	github.com/prokeycloud/sii/openapi	1.024s	coverage: 85.7% of statements
+
+=== 6. CRAP (complexity vs coverage) ===
+
+==========================================================================================
+                                   CRAP ANALYSIS REPORT                                   
+==========================================================================================
+ Function                                      | Complexity | Coverage %   | CRAP Score
+------------------------------------------------------------------------------------------
+[91m Idempotency                                  | 17         | 0.0          | 306.00    [0m
+   ↳ Location: internal/httpapi/middleware/idempotency.go:32
+[91m run                                          | 6          | 0.0          | 42.00     [0m
+   ↳ Location: cmd/worker/main.go:27
+[93m Find                                         | 5          | 0.0          | 30.00     [0m
+   ↳ Location: internal/idempotency/repository.go:46
+[93m Complete                                     | 5          | 0.0          | 30.00     [0m
+   ↳ Location: internal/idempotency/repository.go:75
+[93m APIKey                                       | 4          | 0.0          | 20.00     [0m
+   ↳ Location: internal/httpapi/middleware/apikey.go:27
+[93m terminalAdd                                  | 12         | 87.1         | 12.31     [0m
+   ↳ Location: cmd/admin/tenant.go:161
+==========================================================================================
+
+❌ [91m[FAIL] Verification Rejected: code contains untested high-risk complexity (CRAP > 30).[0m
+   Either refactor functions to reduce complexity or strengthen unit tests.
+
+make[1]: *** [Makefile:68: crap] Error 1
+make: *** [Makefile:20: verify] Error 2

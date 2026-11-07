@@ -1769,6 +1769,12 @@ fn on_red(
         log.push_str("--- checks with no Actions run, so no log to fetch:\n");
         log.push_str(&ci::table(&unlinked));
     }
+    let dir = run.dir().join("ci");
+    fs::create_dir_all(&dir).map_err(io(format!("create {}", dir.display())))?;
+    scheduler::write_atomic(
+        &dir.join(format!("{round}.log")),
+        &crate::excerpt::clean(&log),
+    )?;
     Ok(Next::Fix { round, check, log })
 }
 

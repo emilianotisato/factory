@@ -100,6 +100,7 @@ pub fn run(root: &Path) -> Report {
         checkpoint_every: 2,
         prd_max_kb: 120.0,
         slice_max_kb: 30.0,
+        gate_failure: Vec::new(),
     });
     let docs = root.join("docs");
     let mut folder = |name: &str, kind: Kind| match board::scan_folder(&docs.join(name), kind) {
@@ -225,6 +226,25 @@ fn read_project(root: &Path, r: &mut Report) -> Option<Option<Project>> {
                         || matches!(v, T::String(s) if s == "true" || s == "false")
                 }
                 "prd_max_kb" | "slice_max_kb" => matches!(v, T::Integer(_) | T::Float(_)),
+                "gate_failure" => match v {
+                    T::Array(items) => {
+                        for item in items {
+                            if let T::String(p) = item
+                                && let Err(e) = regex::Regex::new(p)
+                            {
+                                r.err(
+                                    "E-PROJECT-INVALID",
+                                    format!(
+                                        "docs/project.toml [docs] gate_failure {item} does not compile: {}",
+                                        e.to_string().replace('\n', " ")
+                                    ),
+                                );
+                            }
+                        }
+                        items.iter().all(|i| matches!(i, T::String(_)))
+                    }
+                    _ => false,
+                },
                 _ => true,
             };
             if !ok {
@@ -243,6 +263,7 @@ fn kind_of(key: &str) -> &'static str {
         "gate" | "inner" => "string",
         "gate_parallel" => "boolean",
         "prd_max_kb" | "slice_max_kb" => "number",
+        "gate_failure" => "list of regex strings",
         _ => "integer",
     }
 }

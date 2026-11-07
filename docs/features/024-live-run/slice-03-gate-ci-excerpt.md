@@ -3,7 +3,11 @@
 **Source**: [`prd.md`](prd.md) → §6 FR-4, §2 (`ci/<round>.log`, `gate_failure`). **Depends on**: 01 (the `src/live/gate.rs` stub, `tests/live/gate.rs`, and the `gate_started` / `fix_empty` / `ci_waiting` / `ci_no_checks` kinds it reads). Independent of 02, 04, 05, 06, 07. Slices 08 and 09 wait on this one: 08 reuses the extractor, 09 plants secrets in the gate and CI logs this slice reads.
 **Created**: 2026-11-07
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+- **Built**: `src/excerpt.rs` (the extractor with an ANSI/OSC/charset stripper, BOM and CR handling, `{text, hit}` lines) over five scrubbed fixtures in `tests/fixture/gate-logs/`; `gate_failure` in `project.rs` (array reader, `failure_patterns` skips a bad regex) and its `check.rs` arm; the `/gate` skill line with the 0.13.1 bump, the three mod pins and a relocked `skills/bundle.lock`; `on_red` writes `ci/<round>.log` cleaned; `live` fills `gate` and `ci` (`src/live/gate.rs`, with `read_log` and `excerpt_json` for slice 05).
+- **Inner loop**: 2 full runs, 0 red (1.7 and 1.4 min). Targeted runs before that: 1 compile error (a closure borrow in the budget loop) and 1 red unit test. The red test caught a wrong test, not wrong code: the project-pattern test's generic match sat right before `returned with error code`, so the always-add rule kept it.
+- **Deviations**: AD-5 (`excerpt` is `[{text, hit}]`, decide), AD-6 (extractor readings: non-zero vulnerabilities, header as context), AD-7 (`ci` null only on an old layout, excerpt only while red), AD-8 (`ci_red_writes_the_whole_failure_log` is its own test so the Prove row can run it by name).
+- **Prove**: left for the checkpoint: the `excerpt_finds_*`, `excerpt_ignores_zero_failed` and `excerpt_uses_project_gate_failure_first` tests, `ci_red_writes_the_whole_failure_log`, `docs_check_rejects_a_bad_gate_failure_regex`.
 
 **Slice**: After this slice, one stack-neutral `excerpt` function finds the failing lines anywhere in a gate or CI log, trying a project's own `gate_failure` regexes first. `factory live` fills `gate` (the running or last gate, its 40-line tail and, when red, its excerpt) and `ci` (state, round, head, checks, excerpt). A red CI round's whole failure log is saved as `runs/<id>/ci/<round>.log`. `docs check` rejects a `gate_failure` regex that does not compile, and the `/gate` skill names the key. Emitting `gate_started` is slice 04's: this slice reads it from fixture events.
 

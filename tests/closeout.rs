@@ -1063,6 +1063,27 @@ fn a_slice_not_done_at_ship_blocks_the_closeout_in_phase_polish() {
 }
 
 #[test]
+fn ci_red_writes_the_whole_failure_log() {
+    let fx = Fixture::new("closeout-ci-red-log");
+    fx.chain();
+    fx.script_ci(&["red:test", "green"]);
+    fx.write_plan(&plan_with(&[step("polish"), step("fix")]));
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "finished", 120);
+
+    let ci_log = fs::read_to_string(dir.join("ci/1.log")).unwrap();
+    for want in [
+        "FAIL test: expected 2 got 3",
+        "##[error]Process completed with exit code 1.",
+    ] {
+        assert!(ci_log.contains(want), "{want:?} missing:\n{ci_log}");
+    }
+    assert!(!ci_log.contains('\u{1b}'), "{ci_log}");
+    assert_eq!(fs::read_dir(dir.join("ci")).unwrap().count(), 1);
+    stop(&fx, &dir);
+}
+
+#[test]
 fn a_red_check_gets_one_fix_round_then_green() {
     let fx = Fixture::new("closeout-ci-red-green");
     fx.chain();
