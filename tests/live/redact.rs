@@ -115,6 +115,7 @@ fn live_redacts_every_string() {
             w
         })
         .collect();
+    let block = format!("BLOCK-{}", 1);
     let dir = write_run(
         &fx,
         json!({"phase": "waiting-owner", "workers": workers}),
@@ -122,14 +123,14 @@ fn live_redacts_every_string() {
             json!({"kind": "run_failed", "error": all}),
             json!({"kind": "gate_run", "n": 1, "attempt": 1, "red": true, "minutes": 1.0, "log": "gates/1-1.log"}),
             json!({"kind": "ci_red", "check": "test", "round": 0, "head": SHA}),
-            json!({"kind": "slice_blocked", "slice": 1, "block_id": "BLOCK-1", "question": "Which store?"}),
+            json!({"kind": "slice_blocked", "slice": 1, "block_id": block, "question": "Which store?"}),
         ],
     );
     fs::create_dir_all(dir.join("gates")).unwrap();
     fs::write(dir.join("gates/1-1.log"), &failures).unwrap();
     fs::create_dir_all(dir.join("ci")).unwrap();
     fs::write(dir.join("ci/1.log"), &failures).unwrap();
-    let entry = json!({"id": "BLOCK-1", "kind": "block", "ts": "2026-11-07T12:00:00Z", "title": "Which store?", "body": all});
+    let entry = json!({"id": block, "kind": "block", "ts": "2026-11-07T12:00:00Z", "title": "Which store?", "body": all});
     fs::write(
         fx.path().join(FEATURE_DIR).join("log.jsonl"),
         format!("{entry}\n"),
@@ -156,7 +157,7 @@ fn live_redacts_every_string() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|a| a["id"] == "BLOCK-1")
+        .find(|a| a["id"] == block.as_str())
         .unwrap_or_else(|| panic!("no block: {}", v["attention"]))["body"]
         .clone();
     let narrations: Vec<Value> = v["workers"]

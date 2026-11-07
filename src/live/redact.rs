@@ -230,7 +230,7 @@ mod tests {
         let home = Path::new("/srv/me");
         let mut v = json!({
             "repo": "/srv/me/code/app GITHUB_TOKEN=abc",
-            "gate": {"tail": ["/srv/me/code/app/src/x.rs:3 failed", "/tmp/srv/me/x"]},
+            "gate": {"tail": ["/srv/me/code/app/src failed", "/tmp/srv/me/x"]},
             "workers": [{"repo": "/srv/me/a"}],
         });
         if let Value::Object(o) = &mut v {
@@ -242,7 +242,7 @@ mod tests {
             v,
             json!({
                 "repo": format!("/srv/me/code/app GITHUB_TOKEN={MARKER}"),
-                "gate": {"tail": ["~/code/app/src/x.rs:3 failed", "/tmp/srv/me/x"]},
+                "gate": {"tail": ["~/code/app/src failed", "/tmp/srv/me/x"]},
                 "workers": [{"repo": "~/a"}],
             })
         );

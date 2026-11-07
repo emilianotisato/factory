@@ -4,6 +4,7 @@
 **Created**: 2026-11-07
 
 **Progress**: `src/live/redact.rs` walks the finished snapshot and rewrites every string: eleven `LazyLock` rules (prefix tokens keep their prefix, a JWT goes whole, `Bearer`/`X-API-Key:`/env/JSON keep their name, a `/`-led segment of 41+ alnum becomes `/[redacted]`), then `paths::home_to_tilde`, skipped for the top-level `repo` only. Unit tests cover each shape alone, case-insensitive and suffixed env names, a 40-hex sha kept and dotted names left alone. `tests/live/redact.rs` adds `live_redacts_every_string` (13 planted lines in a `run_failed.error`, a red gate log, `ci/1.log`, a block body and 13 worker narrations, with `HOME` set to the fixture base so `repo` sits under it) and `live_keeps_a_git_sha`; both were checked to fail with the redactor switched off. Inner loop: 1 run, 0 red, 1.7 min. Deviation: the token list is read a little wider (AD-13), and lines are cut to 300/160 chars before the redactor sees them, so a token split by that cut can leave part of itself unredacted.
+Evidence (FR-7): cp-3/fr-7-redaction.txt
 
 **Slice**: After this slice, every string `factory live` prints passes once through a redactor just before serialization, whatever section it came from: token shapes become a fixed marker and home paths become `~`. Forty-hex git shas survive. This is best effort; screenshots are untouched and stay local on the consumer's side.
 
