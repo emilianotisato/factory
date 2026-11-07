@@ -320,12 +320,13 @@ mod tests {
     #[test]
     fn excerpt_finds_a_pest_json_failure() {
         let x = excerpt(&fixture("pest-json.log"), &[]);
-        let hits = hits(&x);
+        let file = "/home/user/.local/share/factory/lanes/prokeycloud-13825a9c/lane-1/tests/Feature/DataTables/UserDataTableTest.php";
+        let line = 31;
         assert_eq!(
-            hits,
-            [
-                "P\\Tests\\Feature\\DataTables\\UserDataTableTest::__pest_evaluable_it_filters_users_by_search (/home/user/.local/share/factory/lanes/prokeycloud-13825a9c/lane-1/tests/Feature/DataTables/UserDataTableTest.php:31): Expecting Illuminate\\Support\\Collection not to contain 'Maria Lopez'."
-            ],
+            hits(&x),
+            [format!(
+                "P\\Tests\\Feature\\DataTables\\UserDataTableTest::__pest_evaluable_it_filters_users_by_search ({file}:{line}): Expecting Illuminate\\Support\\Collection not to contain 'Maria Lopez'."
+            )],
             "{x:#?}"
         );
         assert!(x.iter().all(|l| !l.text.contains("\"failures\"")), "{x:#?}");
@@ -378,10 +379,9 @@ mod tests {
         }
         log.extend_from_slice(b"\ntest result: ok. 200 passed; 0 failed; 0 ignored\n");
         let x = excerpt(&log, &[]);
-        assert!(
-            hits(&x).contains(&"Diff in /home/user/Projects/factory/src/cli/report.rs:842:"),
-            "{x:#?}"
-        );
+        let top = fixture("rustfmt.log");
+        let top = String::from_utf8_lossy(&top);
+        assert_eq!(hits(&x).first(), top.lines().next().as_ref(), "{x:#?}");
         assert!(
             hits(&x)
                 .iter()

@@ -224,7 +224,7 @@ fn live_tells_a_ci_fix_from_a_gate_fix() {
 fn live_worker_outcome_reads_the_status_below_the_first_line() {
     let fx = Fixture::new("live-workers-outcome");
     write_run(&fx, json!({ "workers": [finished("w", "slice")] }), &[]);
-    let result = "Stopped at the migration.\n\nSTATUS: blocked\nINNER: 2 runs, 1 red, 3 min\nBLOCK: BLOCK-2 — the index forbids soft-delete";
+    let result = "Stopped at the migration.\n\nSTATUS: blocked\nINNER: 2 runs, 1 red, 3 min\nBLOCK: the index forbids soft-delete";
     let text = lines(&[
         assistant(json!([{"type": "text", "text": "Blocking."}])),
         json!({"type": "result", "subtype": "success", "is_error": false, "result": result}),
@@ -234,7 +234,7 @@ fn live_worker_outcome_reads_the_status_below_the_first_line() {
     let w = live(&fx, &[])["workers"][0].clone();
     assert_eq!(
         w["outcome"],
-        json!({"status": "blocked", "block": "BLOCK-2 — the index forbids soft-delete"})
+        json!({"status": "blocked", "block": "the index forbids soft-delete"})
     );
     assert_eq!(w["running"], Value::Null);
 }

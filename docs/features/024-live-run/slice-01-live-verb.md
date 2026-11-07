@@ -9,6 +9,7 @@
 - Inner loop: 1 run, 0 red, about 2 min (the 11 live tests ran green first, in 4 s).
 - Deviation: `--wait` stats the run's two files every 100 ms and does a full reread at least once a second (AD-1, fyi).
 - Prove: left for the checkpoint.
+- **Proved (checkpoint 1):** FR-1, `live_answers_one_line_of_schema_1_json`, `live_writes_nothing`, `live_wait_returns_when_something_visible_changes`, `live_rev_ignores_a_growing_stream`, `live_caps_output_and_names_what_it_cut`, 5 passed — `cp-1/fr-1-live-verb.txt`
 
 **Slice**: After this slice, `factory live <id> --json [--since] [--wait] [--evidence-limit]` prints one schema-1 JSON object built without opening `factory.db` or writing anything: the full envelope, a `timeline` with tones and labels, `decisions.count`, a minimal `workers[]` (identity, `alive`, `lastWriteAt`), `rev`, `--wait`, and the 512 KiB cap. Every new event kind of FR-5 and `run_waiting.reason` exist in `EventKind`, so the driver slices emit them and the reader slices read them in parallel. `now`, `attention`, `gate`, `ci`, `evidence` and the worker detail fields are stubs here (null or empty), each in its own file, so slices 03, 05, 06, 07 and 09 edit only their own file.
 

@@ -9,6 +9,7 @@
 - Inner loop: 5 runs, 4 red, about 7 min. The reds were older tests that pin the exact event list (`tests/checkpoints.rs`, `commits.rs`, `loop.rs`, `run.rs`). Each gained `gate_started` before its `gate_run`, and the counts and indexes in `run.rs` moved by one.
 - Deviation: a set with no running check emits no `ci_waiting` (AD-4, fyi).
 - Prove (this slice's FR-5 rows): left for the checkpoint.
+- **Proved (checkpoint 1):** FR-5, this slice's part: `ci_waiting_emits_on_a_change_of_checks_only` and both `an_empty_fix_is_an_event`, 3 passed — `cp-1/fr-5-phase-events.txt`
 
 **Slice**: After this slice, the driver phases that are silent in `events.jsonl` today write an event: a gate's start (before it runs for 9 to 33 min), each change in the set of CI checks still running, a PR that reports no checks, and a fix worker (gate or CI) that changed nothing to commit. `run_waiting.reason` landed in slice 01; the collect events are slice 02's.
 

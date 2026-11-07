@@ -9,6 +9,7 @@
 - **Deliberate:** ten existing tests pin the exact event-kind sequence of a whole run (in `tests/checkpoints.rs`, `closeout.rs`, `commits.rs`, `loop.rs`, and `run.rs`). The new kinds were added to their expected lists before `polish_spawned`. Nothing was removed from them.
 - **Inner loop:** 3 runs, 2 red, about 3.5 min. Both red runs were the same failure: those ten sequence pins.
 - **Prove:** `review_passes_report_as_they_finish` transcript is left for the checkpoint.
+- **Proved (checkpoint 1):** FR-5, this slice's part: `review_passes_report_as_they_finish`, 1 passed — `cp-1/fr-5-phase-events.txt`
 
 **Highest risk of this feature.** It changes the shape of `review::run_passes` and `collect::collect`, which the run-less `factory review` CLI also calls, and moves event emission into a scoped-thread join. Keep the CLI's output byte for byte.
 

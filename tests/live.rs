@@ -282,7 +282,7 @@ fn live_timeline_tones_follow_the_table() {
         &fx,
         json!({}),
         &[
-            json!({"kind": "ask_opened", "id": "ASK-1", "text": "Which store?"}),
+            json!({"kind": "ask_opened", "id": "q7", "text": "Which store?"}),
             gate(true),
             gate(false),
             json!({"kind": "ci_waiting", "checks": ["test", "lint"]}),
@@ -299,8 +299,8 @@ fn live_timeline_tones_follow_the_table() {
         tones,
         ["owner", "red", "green", "noise", "info", "info", "red"]
     );
-    assert_eq!(t[0]["label"], "ask_opened(ASK-1)");
-    assert_eq!(t[0]["data"], json!({"id": "ASK-1", "text": "Which store?"}));
+    assert_eq!(t[0]["label"], "ask_opened(q7)");
+    assert_eq!(t[0]["data"], json!({"id": "q7", "text": "Which store?"}));
     assert_eq!(t[1]["kind"], "gate_run");
     assert_eq!(t[1]["label"], "gate_run(1)");
     assert_eq!(t[1]["ts"], STARTED);

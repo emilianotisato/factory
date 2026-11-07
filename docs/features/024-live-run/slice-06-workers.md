@@ -9,6 +9,7 @@
 - **Inner loop:** 2 runs, 1 red, ~2 min. The red run was a clippy `redundant_closure`.
 - **Deviations:** none from the slice. AD-2 (fyi) covers what a finished worker's tail shows.
 - **Prove (FR-3):** left for the checkpoint.
+- **Proved (checkpoint 1):** FR-3, `live_worker_says_what_it_is_doing`, `live_worker_label_never_carries_the_command`, `live_worker_on_an_unknown_stream_shape_is_null_not_an_error`, 3 passed — `cp-1/fr-3-workers.txt`
 
 **Slice**: After this slice, each `workers[]` entry says what the worker is doing now: its `job` (a gate fix or a CI fix), the tool it is in and a safe label for it, whether that is inside a subagent, its last narration line, the tool still running and for how long, and its outcome once it has returned. A bounded tail reader gets all of it from the end of the worker's stream, never parsing the whole file, and never printing a command or tool output.
 

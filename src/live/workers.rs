@@ -396,8 +396,13 @@ mod tests {
     #[test]
     fn the_block_line_is_found_anywhere_and_none_is_null() {
         assert_eq!(
-            outcome(Some("x\ny\nSTATUS: blocked\nBLOCK: BLOCK-2 — why")),
-            (Some("blocked"), Some("BLOCK-2 — why".into()))
+            outcome(Some(
+                "x\ny\nSTATUS: blocked\nBLOCK: the index forbids soft-delete"
+            )),
+            (
+                Some("blocked"),
+                Some("the index forbids soft-delete".into())
+            )
         );
         assert_eq!(
             outcome(Some("STATUS: done\nBLOCK: none")),
