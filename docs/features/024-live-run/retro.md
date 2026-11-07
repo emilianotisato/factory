@@ -72,3 +72,5 @@ Compared with:
 | 014-20261105-4bd7 | 014 | 971439 | 1 | 971439 | 319 | 3045 | 5.9% | 0 |
 | 013-20261030-bf19 | 013 | 2582078 | 3 | 860693 | 2072 | 1246 | 1.7% | 0 |
 <!-- /factory:numbers -->
+
+**Owner review (2026-11-07):** 2 kept, 1 changed (AD-16). Only the decide ADs were reviewed; the 13 fyi ADs were left as the run took them.
