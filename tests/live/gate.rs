@@ -23,7 +23,7 @@ fn live_shows_a_running_gate_tail() {
     let fx = Fixture::new("live-gate-tail");
     let dir = write_run(
         &fx,
-        json!({}),
+        json!({"pid": std::process::id()}),
         &[
             json!({"kind": "gate_run", "n": 1, "attempt": 1, "red": true, "minutes": 0.5, "log": "gates/1-1.log"}),
             json!({"kind": "fix_empty", "n": 1, "attempt": 1, "session_id": "s1"}),
@@ -100,7 +100,7 @@ fn live_shows_the_red_ci_round_and_its_excerpt() {
         json!({}),
         &[
             json!({"kind": "ci_waiting", "checks": ["test", "lint"]}),
-            json!({"kind": "ci_red", "check": "test", "round": 0, "head": "abc123"}),
+            json!({"kind": "ci_red", "check": "test", "round": 0, "head": "abc123", "ts": "2026-11-01T00:00:00Z"}),
         ],
     );
     fs::create_dir_all(dir.join("ci")).unwrap();
@@ -119,6 +119,18 @@ fn live_shows_the_red_ci_round_and_its_excerpt() {
     assert!(
         hits(&c["excerpt"]).contains(&"FAIL test: expected 2 got 3"),
         "{c}"
+    );
+
+    append(
+        &dir,
+        json!({"kind": "ci_red", "check": "test", "round": 1, "head": "abc123", "ts": "2099-01-01T00:00:00Z"}),
+    );
+    let c = live(&fx, &[])["ci"].clone();
+    assert_eq!(c["state"], "red", "{c}");
+    assert_eq!(
+        c["excerpt"],
+        Value::Null,
+        "a red with no log of its own does not show the last round's"
     );
 
     append(&dir, json!({"kind": "ci_waiting", "checks": ["test"]}));

@@ -31,7 +31,7 @@ const PLANTED: [(&str, &str); 13] = [
     ),
     (
         "jwt eyJhbGciOiJIUzI1NiJ9.eyJwbGFudGVkIjoxfQ.PlantedJwtSignature_x-y",
-        "eyJwbGFudGVkIjoxfQ",
+        "PlantedJwtSignature",
     ),
     (
         "Authorization: Bearer PlantedBearerValue123",
@@ -122,7 +122,7 @@ fn live_redacts_every_string() {
         &[
             json!({"kind": "run_failed", "error": all}),
             json!({"kind": "gate_run", "n": 1, "attempt": 1, "red": true, "minutes": 1.0, "log": "gates/1-1.log"}),
-            json!({"kind": "ci_red", "check": "test", "round": 0, "head": SHA}),
+            json!({"kind": "ci_red", "check": "test", "round": 0, "head": SHA, "ts": "2026-11-01T00:00:00Z"}),
             json!({"kind": "slice_blocked", "slice": 1, "block_id": block, "question": "Which store?"}),
         ],
     );

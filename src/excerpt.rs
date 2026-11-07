@@ -4,11 +4,13 @@ use std::sync::LazyLock;
 use regex::Regex;
 use serde_json::Value;
 
+use crate::live::redact::tokens;
+
 /// At most this many lines come back.
 pub const MAX_LINES: usize = 20;
 /// Lines of context kept on each side of a match.
 pub const CONTEXT: usize = 2;
-/// Every line, and a structured failure's message, is cut to this many chars.
+/// Every line, and a structured failure's message, is cut to this many chars, after its tokens are redacted.
 pub const WIDTH: usize = 300;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,7 +91,7 @@ pub fn excerpt(bytes: &[u8], project: &[Regex]) -> Vec<Line> {
     let before_exit = lines
         .iter()
         .rposition(|l| EXIT.is_match(l))
-        .and_then(|i| i.checked_sub(1));
+        .and_then(|i| lines[..i].iter().rposition(|l| !l.trim().is_empty()));
     if let Some(i) = before_exit
         && !hits.contains(&i)
     {
@@ -134,7 +136,7 @@ pub fn excerpt(bytes: &[u8], project: &[Regex]) -> Vec<Line> {
         .enumerate()
         .filter(|(i, _)| keep[*i])
         .map(|(i, text)| Line {
-            text: cut(&text, WIDTH),
+            text: cut(&tokens(&text), WIDTH),
             hit: hits.binary_search(&i).is_ok(),
         })
         .collect()
@@ -172,7 +174,7 @@ fn failures(line: &str) -> Option<Vec<String>> {
                     format!("{text} ({at})")
                 };
             }
-            let message = cut(s("message"), WIDTH);
+            let message = cut(&tokens(s("message")), WIDTH);
             if !message.is_empty() {
                 text = if text.is_empty() {
                     message
@@ -315,6 +317,27 @@ mod tests {
             .filter(|l| l.hit)
             .map(|l| l.text.as_str())
             .collect()
+    }
+
+    #[test]
+    fn the_line_before_the_exit_skips_blank_lines() {
+        let log = b"ok 1\nassertion failed: left == right\n\n   \nmake: *** [gate] Error 1\n";
+        let x = excerpt(log, &[]);
+        assert_eq!(hits(&x)[0], "assertion failed: left == right", "{x:?}");
+        assert!(
+            x.iter()
+                .filter(|l| l.hit)
+                .all(|l| !l.text.trim().is_empty())
+        );
+    }
+
+    #[test]
+    fn a_secret_across_the_width_is_redacted_before_the_cut() {
+        let pad = "x".repeat(WIDTH - 20);
+        let log = format!("error: {pad} {{\"password\": \"correct-horse-battery-staple\"}}\n");
+        let x = excerpt(log.as_bytes(), &[]);
+        assert!(!x[0].text.contains("correc"), "{x:?}");
+        assert_eq!(x[0].text.chars().count(), WIDTH);
     }
 
     #[test]

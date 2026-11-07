@@ -1097,7 +1097,6 @@ fn spawned_before_answer(events: &[Event], n: u32) -> HashSet<String> {
         .collect()
 }
 
-/// The body of the pack's `# Leaks`; a scan that fails reads `not run`, never a red.
 /// The first line the excerpt matched in a gate log, if it matched any.
 fn failure_line(run: &Run, log: &Path) -> Option<String> {
     let read = crate::live::gate::read_log(log)?;
@@ -1112,6 +1111,7 @@ fn failure_line(run: &Run, log: &Path) -> Option<String> {
         .map(|l| l.text)
 }
 
+/// The body of the pack's `# Leaks`; a scan that fails reads `not run`, never a red.
 fn leaks_section(base: &str, scanned: Result<crate::leaks::Report>) -> String {
     match scanned {
         Ok(report) => {

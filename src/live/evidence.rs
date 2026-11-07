@@ -36,8 +36,16 @@ pub fn evidence(ctx: &Ctx, limit: usize) -> Value {
     let root = ctx.run_dir.join(ROOT);
     let ours = checkpoints(ctx);
     let mut skipped = 0;
+    let real = match fs::symlink_metadata(&root) {
+        Ok(m) if m.is_dir() => true,
+        Ok(_) => {
+            skipped += 1;
+            false
+        }
+        Err(_) => false,
+    };
     let mut found: Vec<(u32, Vec<File>)> = Vec::new();
-    for (&n, _) in ours.iter().rev() {
+    for (&n, _) in ours.iter().rev().filter(|_| real) {
         let rel = format!("cp-{n}");
         let Ok(meta) = fs::symlink_metadata(root.join(&rel)) else {
             continue;

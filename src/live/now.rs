@@ -6,7 +6,7 @@ use std::time::UNIX_EPOCH;
 use serde_json::{Value, json};
 
 use super::Ctx;
-use super::gate::{excerpt_json, patterns, read_log};
+use super::gate::{current_ci_log, excerpt_json, patterns, read_log, run_file};
 use crate::clock;
 use crate::cockpit;
 use crate::docs::log;
@@ -81,7 +81,7 @@ fn waiting(ctx: &Ctx) -> Waiting {
             EventKind::RunPaused { literal, resets_at } => Some((e, literal, *resets_at)),
             _ => None,
         });
-        let resets = pause.map(|(_, _, at)| at).or(s.paused_until);
+        let resets = s.paused_until.or(pause.map(|(_, _, at)| at));
         let label = match pause {
             Some((_, literal, _)) if !literal.is_empty() => format!("quota pause: {literal}"),
             _ => "quota pause".to_string(),
@@ -367,9 +367,11 @@ fn source(source: &str, log: Option<String>, excerpt: Value) -> Value {
 
 fn question_reason(ctx: &Ctx, e: &Event) -> Value {
     let logged = |rel: String| {
-        let excerpt = read_log(&ctx.run_dir.join(&rel)).map_or(Value::Null, |r| {
-            excerpt_json(&excerpt::excerpt(&r.text, &patterns(ctx)))
-        });
+        let excerpt = run_file(ctx, &rel)
+            .and_then(|p| read_log(&p))
+            .map_or(Value::Null, |r| {
+                excerpt_json(&excerpt::excerpt(&r.text, &patterns(ctx)))
+            });
         (Some(rel), excerpt)
     };
     match &e.kind {
@@ -393,7 +395,7 @@ fn question_reason(ctx: &Ctx, e: &Event) -> Value {
             }
         }
         EventKind::CloseoutBlocked { phase, .. } if phase == "ci" => {
-            match newest_ci_round(&ctx.run_dir) {
+            match current_ci_log(ctx, e.seq) {
                 Some(r) => {
                     let (log, excerpt) = logged(format!("ci/{r}.log"));
                     source("ci", log, excerpt)
@@ -403,16 +405,6 @@ fn question_reason(ctx: &Ctx, e: &Event) -> Value {
         }
         _ => source("driver", None, Value::Null),
     }
-}
-
-fn newest_ci_round(run_dir: &Path) -> Option<u32> {
-    fs::read_dir(run_dir.join("ci"))
-        .ok()?
-        .filter_map(|e| {
-            let name = e.ok()?.file_name();
-            name.to_str()?.strip_suffix(".log")?.parse::<u32>().ok()
-        })
-        .max()
 }
 
 fn warnings(events: &[Event]) -> Vec<Entry<'_>> {

@@ -40,3 +40,7 @@
 prd §12 row **FR-8**: run `a_red_gate_block_names_the_failure` and keep the transcript.
 
 **Acceptance:** after the checkpoint, this slice's Progress names that transcript.
+
+**Code-review fixes (2026-11-07).**
+
+- `failure_line` had been inserted between `leaks_section` and its doc comment, so it carried the Leaks doc and `leaks_section` had none; each doc is back on its own function.

@@ -37,3 +37,9 @@ Evidence (FR-7): cp-3/fr-7-redaction.txt
 prd §12 row **FR-7**: run `live_redacts_every_string` and `live_keeps_a_git_sha`, and keep the transcript.
 
 **Acceptance:** after the checkpoint, this slice's Progress names that transcript.
+
+**Code-review fixes (2026-11-07).**
+
+- Strings were cut to 300 or 160 chars before the redactor ran, so a secret across the cut (`{"password": "correc`, half a JWT, a short AKIA) printed in part. Each section now redacts before it cuts (AD-14), which also redacts a red gate's block title before it reaches `log.jsonl`.
+- The home directory named alone (`cd /home/x`, `/home/x:`) kept the user name; it is now `~` too, in `live` only.
+- `live_redacts_every_string` checked the JWT by its payload, so a rule that left the signature stayed green; it now checks the signature.

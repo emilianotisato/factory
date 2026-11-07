@@ -54,3 +54,8 @@
 prd §12 row **FR-3**: run `live_worker_says_what_it_is_doing`, `live_worker_label_never_carries_the_command` and `live_worker_on_an_unknown_stream_shape_is_null_not_an_error`, and keep the transcript.
 
 **Acceptance:** after the checkpoint, this slice's Progress names that transcript.
+
+**Code-review fixes (2026-11-07).**
+
+- A `tool_result` over 64 KiB (a large Read) is skipped unparsed, so the heartbeat before it kept the tool `running` after it returned. An oversized line now reaches the reader as unreadable, and an older heartbeat is no longer trusted.
+- `live_worker_label_never_carries_the_command` could not fail: the redactor already masks the `ghp_` token it looked for. The command and the output now also carry plain strings the redactor does not know.

@@ -132,7 +132,7 @@ fn live_worker_label_never_carries_the_command() {
         &[],
     );
     let id = "toolu_secret";
-    let cmd = format!("curl -H 'Authorization: token {TOKEN}' https://api.example");
+    let cmd = format!("curl -H 'Authorization: token {TOKEN}' https://api.example?k=unshapedInput");
     let calls = [
         assistant(json!([{"type": "tool_use", "id": id, "name": "Bash",
             "input": {"command": cmd, "timeout": 600000}}])),
@@ -143,14 +143,17 @@ fn live_worker_label_never_carries_the_command() {
     ];
     stream(&fx, "w", &lines(&calls));
     let mut returned = calls.to_vec();
-    returned.push(tool_result(id, &format!("echoed {TOKEN}")));
+    returned.push(tool_result(id, &format!("echoed {TOKEN} unshapedOutput")));
     stream(&fx, "done", &lines(&returned));
 
     let out = super::factory(&fx, &["live", super::ID, "--json"]);
     assert_eq!(out.status.code(), Some(0));
     let text = String::from_utf8(out.stdout).unwrap();
     assert!(
-        !text.contains(TOKEN) && !text.contains("FAKEt0ken"),
+        !text.contains(TOKEN)
+            && !text.contains("FAKEt0ken")
+            && !text.contains("unshapedInput")
+            && !text.contains("unshapedOutput"),
         "{text}"
     );
     let v: Value = serde_json::from_str(&text).unwrap();

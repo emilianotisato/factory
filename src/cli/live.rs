@@ -1,6 +1,6 @@
 //! `factory live <id> --json`: one run's live detail, read without writing anything.
 use std::io::Write;
-use std::path::Path;
+use std::path::{Component, Path};
 use std::time::{Duration, Instant, SystemTime};
 
 use clap::Args;
@@ -36,7 +36,9 @@ const POLL: Duration = Duration::from_millis(100);
 
 pub fn live(args: &LiveArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i32> {
     let dir = Run::runs_dir(&paths::data_dir_path()).join(&args.run);
-    if !dir.join(STATE_FILE).is_file() {
+    let mut parts = Path::new(&args.run).components();
+    let one_name = matches!(parts.next(), Some(Component::Normal(_))) && parts.next().is_none();
+    if !one_name || !dir.join(STATE_FILE).is_file() {
         writeln!(err, "no run {}", args.run).map_err(io("stderr"))?;
         return Ok(1);
     }

@@ -141,6 +141,15 @@ fn live_evidence_paths_stay_under_root() {
         );
     }
     assert_eq!(e["skipped"], 1, "the linked dir is not followed");
+
+    fs::rename(&ev, dir.join("moved")).unwrap();
+    std::os::unix::fs::symlink(dir.join("moved"), &ev).unwrap();
+    let e = live(&fx, &[])["evidence"].clone();
+    assert!(
+        all_paths(&e).is_empty(),
+        "a linked root is not followed: {e}"
+    );
+    assert_eq!(e["skipped"], 1, "{e}");
     let root = e["root"].as_str().unwrap();
     assert!(Path::new(root).is_relative(), "{root}");
 }

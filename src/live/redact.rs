@@ -70,11 +70,33 @@ fn walk(v: &mut Value, home: &Path, tilde: bool) {
 fn string<'a>(s: &'a str, home: &Path, tilde: bool) -> Cow<'a, str> {
     let mut out = tokens(s);
     if tilde {
-        let t = paths::home_to_tilde(&out, home);
+        let t = bare_home(&paths::home_to_tilde(&out, home), home);
         if t != out {
             out = Cow::Owned(t);
         }
     }
+    out
+}
+
+/// The home directory named alone, as in `cd /home/x` or `/home/x:`, also becomes `~`.
+fn bare_home(text: &str, home: &Path) -> String {
+    let Some(home) = home.to_str().map(|h| h.trim_end_matches('/')) else {
+        return text.to_string();
+    };
+    if home.is_empty() {
+        return text.to_string();
+    }
+    let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || "._-~/".contains(c));
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(home) {
+        let end = at + home.len();
+        let alone = !word(rest[..at].chars().next_back()) && !word(rest[end..].chars().next());
+        out.push_str(&rest[..at]);
+        out.push_str(if alone { "~" } else { home });
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
     out
 }
 
@@ -230,7 +252,7 @@ mod tests {
         let home = Path::new("/srv/me");
         let mut v = json!({
             "repo": "/srv/me/code/app GITHUB_TOKEN=abc",
-            "gate": {"tail": ["/srv/me/code/app/src failed", "/tmp/srv/me/x"]},
+            "gate": {"tail": ["/srv/me/code/app/src failed", "/tmp/srv/me/x", "cd /srv/me: denied", "/srv/meg"]},
             "workers": [{"repo": "/srv/me/a"}],
         });
         if let Value::Object(o) = &mut v {
@@ -242,7 +264,7 @@ mod tests {
             v,
             json!({
                 "repo": format!("/srv/me/code/app GITHUB_TOKEN={MARKER}"),
-                "gate": {"tail": ["~/code/app/src failed", "/tmp/srv/me/x"]},
+                "gate": {"tail": ["~/code/app/src failed", "/tmp/srv/me/x", "cd ~: denied", "/srv/meg"]},
                 "workers": [{"repo": "~/a"}],
             })
         );

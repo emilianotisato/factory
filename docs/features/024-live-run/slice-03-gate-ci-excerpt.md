@@ -65,3 +65,11 @@
 prd §12 row **FR-4**: run the `excerpt_finds_*` tests, `ci_red_writes_the_whole_failure_log` and `docs_check_rejects_a_bad_gate_failure_regex`, and keep the transcript.
 
 **Acceptance:** after the checkpoint, this slice's Progress names that transcript.
+
+**Code-review fixes (2026-11-07).**
+
+- `ci.excerpt` showed the newest `ci/<round>.log` for any red, but a red that ends in a rerun, a head-mismatch block or the fix-round cap writes no log, so an earlier round's failure read as the current cause. The log now counts only when written at or after the newest `ci_red` (AD-15).
+- `gate.running` stayed true forever after a driver died mid-gate or `gate_once` failed after `gate_started`; it now also needs a live driver.
+- `read_log` followed a symlink and blocked on a FIFO a worker could put in `gates/` or `ci/`; it now reads regular files only. A log path taken from an event that is absolute or climbs out of the run dir is not read.
+- A single line longer than the 1 MiB read was dropped whole, leaving `tail` and `excerpt` empty; the cut line's end is now kept.
+- The line before `make: *** … Error` was taken even when blank, which made a red gate's block title end in nothing; the nearest non-blank line is taken.

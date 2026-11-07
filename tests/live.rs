@@ -110,7 +110,9 @@ pub fn append(dir: &Path, mut event: Value) {
         .count()
         + 1;
     event["seq"] = json!(seq);
-    event["ts"] = json!(STARTED);
+    if event.get("ts").is_none() {
+        event["ts"] = json!(STARTED);
+    }
     let mut f = OpenOptions::new()
         .append(true)
         .create(true)

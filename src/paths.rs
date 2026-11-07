@@ -60,12 +60,12 @@ pub fn config_dir() -> PathBuf {
     dir("FACTORY_CONFIG_DIR", "XDG_CONFIG_HOME", ".config")
 }
 
-/// Absolute: a relative `FACTORY_DATA_DIR` must mean the same directory to a worker or `git` in the repo.
 /// Where [`data_dir`] is, without creating it.
 pub fn data_dir_path() -> PathBuf {
     dir("FACTORY_DATA_DIR", "XDG_DATA_HOME", ".local/share")
 }
 
+/// Absolute: a relative `FACTORY_DATA_DIR` must mean the same directory to a worker or `git` in the repo.
 fn dir(ours: &str, xdg: &str, fallback: &str) -> PathBuf {
     let d = if let Some(p) = non_empty(ours) {
         PathBuf::from(p)

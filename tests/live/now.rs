@@ -281,7 +281,7 @@ fn a_ci_block_carries_the_ci_excerpt_and_warnings_follow_the_questions() {
         json!({"phase": "waiting-owner"}),
         &[
             json!({"kind": "pack_section_missing", "slice": 2, "section": 3}),
-            json!({"kind": "ci_red", "check": "test", "round": 2, "head": "abc"}),
+            json!({"kind": "ci_red", "check": "test", "round": 2, "head": "abc", "ts": "2026-11-01T00:00:00Z"}),
             json!({"kind": "closeout_blocked", "phase": "ci", "block_id": block(3), "question": "CI stays red"}),
             json!({"kind": "polish_findings_missing", "session_id": "s9"}),
         ],

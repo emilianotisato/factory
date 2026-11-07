@@ -49,3 +49,7 @@
 prd §12 row **FR-6**: run `live_skips_a_symlink_in_evidence` and `live_evidence_paths_stay_under_root`, and keep the transcript.
 
 **Acceptance:** after the checkpoint, this slice's Progress names that transcript.
+
+**Code-review fixes (2026-11-07).**
+
+- The `evidence` root itself was never lstat'ed, so a worker that replaced `$FACTORY_EVIDENCE` with a symlink got the listing to walk outside the run dir. A root that is not a real directory is now listed as nothing and counted in `skipped`.

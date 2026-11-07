@@ -78,3 +78,8 @@ So that slices 03, 05, 06, 07 and 09 can be built in parallel lanes without touc
 prd §12 row **FR-1**: run `live_answers_one_line_of_schema_1_json`, `live_writes_nothing`, `live_wait_returns_when_something_visible_changes`, `live_rev_ignores_a_growing_stream`, `live_caps_output_and_names_what_it_cut`, and keep the transcript.
 
 **Acceptance:** after the checkpoint, this slice's Progress names that transcript.
+
+**Code-review fixes (2026-11-07).**
+
+- The run id was joined onto the runs dir unchecked, so `live ../../x` read any dir with a `state.json`; an id that is not one plain path name is now `no run <id>`, exit 1.
+- `data_dir_path` had been inserted under `dir`'s doc comment, so the reason `dir` absolutizes the path sat on the wrong function; each doc is back on its own item.

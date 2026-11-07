@@ -6,6 +6,7 @@ use std::path::{Component, Path};
 
 use serde_json::{Map, Value, json};
 
+use super::redact::tokens;
 use super::{Ctx, mtime};
 use crate::events::EventKind;
 use crate::run::WorkerRef;
@@ -118,13 +119,19 @@ pub struct Tail {
 }
 
 /// Newest line first. A finished worker stops at its `result` line; a live one reads until every
-/// field is decided or [`BUDGET`] is spent.
+/// field is decided or [`BUDGET`] is spent. A heartbeat older than a line too long to read is not
+/// trusted: that line may be the result that ended its tool.
 pub fn read_tail(path: &Path, alive: bool, paths: &Paths) -> Tail {
     let mut t = Tail::default();
     let mut at_done = false;
     let mut returned: HashSet<String> = HashSet::new();
+    let mut blind = false;
     let _ = each_line_back(path, BUDGET, |line| {
-        if !line.starts_with(b"{") || !wanted(&t, at_done, line) {
+        let Some(line) = line else {
+            blind |= t.running.is_none();
+            return true;
+        };
+        if !line.starts_with(b"{") || !wanted(&t, at_done, blind, line) {
             return true;
         }
         let Ok(Value::Object(v)) = serde_json::from_slice::<Value>(line) else {
@@ -149,7 +156,7 @@ pub fn read_tail(path: &Path, alive: bool, paths: &Paths) -> Tail {
                     returned.insert(id.to_string());
                 }
             }
-            Some("tool_progress") if t.running.is_none() => {
+            Some("tool_progress") if t.running.is_none() && !blind => {
                 let tool = v.get("parent_tool_use_id").and_then(Value::as_str);
                 if let Some(id) = tool
                     && !returned.contains(id)
@@ -167,7 +174,11 @@ pub fn read_tail(path: &Path, alive: bool, paths: &Paths) -> Tail {
             }
             _ => {}
         }
-        !(alive && at_done && t.doing.is_some() && t.narration.is_some() && t.running.is_some())
+        !(alive
+            && at_done
+            && t.doing.is_some()
+            && t.narration.is_some()
+            && (t.running.is_some() || blind))
     });
     if !alive {
         t.running = None;
@@ -176,12 +187,12 @@ pub fn read_tail(path: &Path, alive: bool, paths: &Paths) -> Tail {
 }
 
 /// Only lines that can still decide something are parsed.
-fn wanted(t: &Tail, at_done: bool, line: &[u8]) -> bool {
+fn wanted(t: &Tail, at_done: bool, blind: bool, line: &[u8]) -> bool {
     let has = |n: &[u8]| line.windows(n.len()).any(|w| w == n);
     (!at_done && has(b"\"timestamp\""))
         || (t.doing.is_none() && has(b"\"tool_use\""))
         || (t.narration.is_none() && has(b"\"text\""))
-        || (t.running.is_none() && (has(b"\"tool_progress\"") || has(b"\"tool_result\"")))
+        || (t.running.is_none() && !blind && (has(b"\"tool_progress\"") || has(b"\"tool_result\"")))
         || (t.outcome.is_none() && has(b"\"result\""))
 }
 
@@ -207,7 +218,7 @@ fn assistant(t: &mut Tail, v: &Map<String, Value>, paths: &Paths) {
             .filter(|s| !s.is_empty())
             .last()
     {
-        t.narration = Some(cut(&text, NARRATION_MAX));
+        t.narration = Some(cut(&tokens(&text), NARRATION_MAX));
     }
 }
 
@@ -230,7 +241,10 @@ fn label(tool: &str, input: Option<&Value>, paths: &Paths) -> String {
             .and_then(|p| paths.relative(&p))
             .map(|p| format!("{tool} {p}")),
     };
-    cut(&named.unwrap_or_else(|| tool.to_string()), NARRATION_MAX)
+    cut(
+        &tokens(&named.unwrap_or_else(|| tool.to_string())),
+        NARRATION_MAX,
+    )
 }
 
 fn outcome(text: Option<&str>) -> (Option<&'static str>, Option<String>) {
@@ -246,7 +260,7 @@ fn outcome(text: Option<&str>) -> (Option<&'static str>, Option<String>) {
         .find_map(|l| l.strip_prefix("BLOCK:"))
         .map(str::trim)
         .filter(|b| !b.is_empty() && !b.eq_ignore_ascii_case("none"))
-        .map(|b| cut(b, NARRATION_MAX));
+        .map(|b| cut(&tokens(b), NARRATION_MAX));
     (status, block)
 }
 
@@ -275,12 +289,12 @@ fn cut(s: &str, max: usize) -> String {
 }
 
 /// Calls `f` on each whole line from the newest, until it returns false or `budget` bytes are read.
-/// The last line without its newline, lines longer than [`LINE_MAX`] and the line cut by the budget
-/// never reach `f`.
+/// A line longer than [`LINE_MAX`] reaches `f` as `None`; the last line without its newline and the
+/// line cut by the budget never reach it.
 pub fn each_line_back(
     path: &Path,
     budget: u64,
-    mut f: impl FnMut(&[u8]) -> bool,
+    mut f: impl FnMut(Option<&[u8]>) -> bool,
 ) -> std::io::Result<()> {
     let mut file = File::open(path)?;
     let len = file.metadata()?.len();
@@ -303,9 +317,11 @@ pub fn each_line_back(
                 partial = false;
             } else if !oversized && seg.len() + carry.len() <= LINE_MAX {
                 let line = [seg, &carry[..]].concat();
-                if !f(&line) {
+                if !f(Some(&line)) {
                     return Ok(());
                 }
+            } else if !f(None) {
+                return Ok(());
             }
             carry.clear();
             oversized = false;
@@ -321,7 +337,7 @@ pub fn each_line_back(
         }
     }
     if pos == 0 && !partial && !oversized && !carry.is_empty() {
-        f(&carry);
+        f(Some(&carry));
     }
     Ok(())
 }
@@ -339,7 +355,8 @@ mod tests {
         std::fs::write(&path, text).unwrap();
         let mut out = Vec::new();
         each_line_back(&path, budget, |l| {
-            out.push(String::from_utf8_lossy(l).into_owned());
+            let line = l.map_or("<long>".into(), |l| String::from_utf8_lossy(l).into_owned());
+            out.push(line);
             true
         })
         .unwrap();
@@ -358,13 +375,28 @@ mod tests {
         let long = "x".repeat(BLOCK as usize + 10);
         let mut text = format!("first\n{long}\nlast\n").into_bytes();
         let got = lines_back(&text, BUDGET);
-        assert_eq!(got, ["last", "first"]);
+        assert_eq!(got, ["last", "<long>", "first"]);
 
         let mid = "y".repeat(40 * 1024);
         text = format!("first\n{mid}\nlast\n").into_bytes();
         let got = lines_back(&text, BUDGET);
         assert_eq!(got.len(), 3);
         assert_eq!(got[1], mid);
+    }
+
+    #[test]
+    fn a_heartbeat_older_than_an_oversized_line_is_not_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        let beat = json!({"type": "tool_progress", "tool_name": "Read",
+            "parent_tool_use_id": "t1", "elapsed_time_seconds": 3});
+        let result = json!({"type": "user", "message": {"content": [{"type": "tool_result",
+            "tool_use_id": "t1", "content": "r".repeat(LINE_MAX)}]}});
+        std::fs::write(&path, format!("{beat}\n")).unwrap();
+        let paths = Paths { roots: Vec::new() };
+        assert!(read_tail(&path, true, &paths).running.is_some());
+        std::fs::write(&path, format!("{beat}\n{result}\n")).unwrap();
+        assert_eq!(read_tail(&path, true, &paths).running, None);
     }
 
     #[test]

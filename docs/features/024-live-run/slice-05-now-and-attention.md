@@ -56,3 +56,8 @@
 prd §12 row **FR-2**: run `live_names_what_the_run_waits_on`, `a_park_with_no_question_carries_its_reason` and `live_attention_answer_is_status_answer`, and keep the transcript.
 
 **Acceptance:** after the checkpoint, this slice's Progress names that transcript.
+
+**Code-review fixes (2026-11-07).**
+
+- `resumesAt` came from the newest `run_paused` event, but a second pause extends `paused_until` in state without a new event; state now wins.
+- A CI block's `reason` attached the newest `ci/<round>.log` even to blocks with no log of their own (timeout, head mismatch, round cap), showing an already-fixed failure; it uses the same current-log rule as `ci.excerpt` (AD-15), else `source: driver`.
