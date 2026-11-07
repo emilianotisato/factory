@@ -3,7 +3,12 @@
 **Source**: [`prd.md`](prd.md) → §5 FR-3. **Depends on**: 01 (the minimal `workers[]` and `src/live/workers.rs`, `tests/live/workers.rs` it lays out). Independent of 02, 03, 04, 05, 07.
 **Created**: 2026-11-07
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+- **Built:** `src/live/workers.rs` fills `job`, `doing`, `narration`, `running` and `outcome` for each `workers[]` entry. `each_line_back` reads the stream backwards in 64 KiB blocks, up to 1 MiB. It drops the partial last line, lines over 64 KiB and the line the budget cuts. `read_tail` parses only lines that can still decide a field: a byte check runs before `serde_json`. A live worker stops once every field is decided. A finished one stops at its `result` line (AD-2). `running` matches a heartbeat's `parent_tool_use_id` against `tool_result.tool_use_id`. A label is the Bash `description`, `Skill <name>`, `Agent <description>`, or the tool plus a path relative to the lane dir or then the repo, otherwise just the tool name. A label never holds a command, tool output or an absolute path. `outcome` reuses `StatusHint::from_result`. `job` comes from `fix_spawned` / `ci_fix_spawned` by session id.
+- **Tests:** `tests/live/workers.rs` has the five task-1 acceptance tests, `live_tells_a_ci_fix_from_a_gate_fix` and `live_worker_outcome_reads_the_status_below_the_first_line`. `src/live/workers.rs` has unit tests for the backwards reader (block-crossing and oversized lines, the budget), path labels and the `BLOCK:` line.
+- **Inner loop:** 2 runs, 1 red, ~2 min. The red run was a clippy `redundant_closure`.
+- **Deviations:** none from the slice. AD-2 (fyi) covers what a finished worker's tail shows.
+- **Prove (FR-3):** left for the checkpoint.
 
 **Slice**: After this slice, each `workers[]` entry says what the worker is doing now: its `job` (a gate fix or a CI fix), the tool it is in and a safe label for it, whether that is inside a subagent, its last narration line, the tool still running and for how long, and its outcome once it has returned. A bounded tail reader gets all of it from the end of the worker's stream, never parsing the whole file, and never printing a command or tool output.
 
