@@ -401,7 +401,20 @@ pub struct Ran {
     pub elapsed: Duration,
 }
 
+/// What a review reports while it runs, for a caller that records it as it happens.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Progress {
+    /// The passes about to run and their log dir; 0 passes and no dir when the second opinion is skipped.
+    Started { passes: usize, dir: Option<PathBuf> },
+    /// Pass `k` of `of` ended, in finishing order.
+    PassDone { k: usize, of: usize, seconds: u64 },
+}
+
+/// Where a review sends its [`Progress`]; `None` reports nothing.
+pub type Sink<'a> = Option<&'a mut dyn FnMut(Progress) -> Result<()>>;
+
 /// Starts every pass at once, writing each one's progress line to `progress` as it starts; returns in pass order.
+/// `sink` hears each pass end as it ends; its first error is returned once every pass has ended.
 pub fn run_passes(
     cfg: &Review,
     cwd: &Path,
@@ -409,6 +422,7 @@ pub fn run_passes(
     passes: &[Pass],
     prompt: impl Fn(usize, &Pass) -> Result<String> + Sync,
     progress: &mut dyn Write,
+    mut sink: Sink,
 ) -> Result<Vec<Ran>> {
     // Written before any spawn: a failed write must not leave reviewers running for nothing.
     for (i, pass) in passes.iter().enumerate() {
@@ -422,24 +436,42 @@ pub fn run_passes(
         )
         .map_err(io("review progress"))?;
     }
-    let ran = std::thread::scope(|s| {
+    let of = passes.len();
+    let (ended, done) = std::sync::mpsc::channel::<(usize, Duration)>();
+    let (ran, failed) = std::thread::scope(|s| {
         let mut running = Vec::with_capacity(passes.len());
         for (i, pass) in passes.iter().enumerate() {
             let n = i + 1;
             let prompt = &prompt;
+            let ended = ended.clone();
             running.push(s.spawn(move || {
                 let started = Instant::now();
                 let outcome = prompt(n, pass).and_then(|p| run_pass(cfg, cwd, dir, n, &p));
                 let elapsed = outcome.as_ref().map_or(started.elapsed(), |o| o.elapsed);
+                let _ = ended.send((n, elapsed));
                 Ran { outcome, elapsed }
             }));
         }
-        running
+        drop(ended);
+        // Received while the passes run, so each is reported as it ends. A sink error stops the
+        // reports, never the receiving, so every reviewer has ended when this returns.
+        let mut failed = None;
+        for (k, elapsed) in done {
+            if let (None, Some(sink)) = (&failed, sink.as_mut()) {
+                let seconds = elapsed.as_secs();
+                failed = sink(Progress::PassDone { k, of, seconds }).err();
+            }
+        }
+        let ran: Vec<Ran> = running
             .into_iter()
             .map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)))
-            .collect()
+            .collect();
+        (ran, failed)
     });
-    Ok(ran)
+    match failed {
+        Some(e) => Err(e),
+        None => Ok(ran),
+    }
 }
 
 /// Git allows a newline in a path; written raw, one could forge the headings that follow.

@@ -384,6 +384,30 @@ fn a_finished_board_polishes_ships_pushes_and_opens_the_draft_pr() {
             "polish"
         ]
     );
+    let collect: Vec<Value> = events(&dir)
+        .into_iter()
+        .filter(|e| {
+            ["collect_started", "review_pass_done", "collect_done"]
+                .contains(&e["kind"].as_str().unwrap())
+        })
+        .collect();
+    assert!(collect.len() >= 2, "{collect:?}");
+    let (first, last) = (&collect[0], &collect[collect.len() - 1]);
+    assert_eq!(first["kind"], "collect_started", "{collect:?}");
+    assert_eq!(first["reused"], false, "{first}");
+    assert_eq!(last["kind"], "collect_done", "{collect:?}");
+    assert_eq!(last["ok"], true, "{last}");
+    let passes = first["passes"].as_u64().unwrap();
+    let mut ks: Vec<u64> = collect[1..collect.len() - 1]
+        .iter()
+        .map(|e| {
+            assert_eq!(e["kind"], "review_pass_done", "{collect:?}");
+            assert_eq!(e["of"].as_u64(), Some(passes), "{e}");
+            e["k"].as_u64().unwrap()
+        })
+        .collect();
+    ks.sort();
+    assert_eq!(ks, (1..=passes).collect::<Vec<_>>(), "{collect:?}");
     let polish = &db(&fx).workers(&run_id(&dir)).unwrap()[5];
     assert_eq!(polish.role, "polish");
     assert_eq!(polish.slice, None);
@@ -1985,6 +2009,8 @@ fn two_dead_polish_workers_block_and_the_answer_spawns_a_third() {
         [
             "polish_spawned",
             "worker_dead",
+            "collect_started",
+            "collect_done",
             "polish_spawned",
             "worker_dead",
             "closeout_blocked",

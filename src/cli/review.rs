@@ -83,7 +83,7 @@ fn collect_file(a: &CollectArgs, out: &mut dyn Write, err: &mut dyn Write) -> Re
     let cfg = load_review(err)?;
     let cwd = std::env::current_dir().map_err(io("read the current directory"))?;
     let root = paths::repo_root(&cwd)?;
-    let text = collect::collect(&root, base, &cfg, err)?;
+    let text = collect::collect(&root, base, &cfg, err, None)?;
     match &a.out {
         Some(p) => fs::write(p, text).map_err(io(format!("write {}", p.display())))?,
         None => out.write_all(text.as_bytes()).map_err(io("stdout"))?,
@@ -140,6 +140,7 @@ fn second(a: &SecondArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i3
         &passes,
         |n, pass| prompt(&mode, &root, &dir, others.as_deref(), n, pass),
         err,
+        None,
     )?;
     let mut reviewed = 0;
     for (i, (pass, ran)) in passes.iter().zip(&ran).enumerate() {

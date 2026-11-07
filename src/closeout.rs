@@ -19,6 +19,7 @@ use crate::events::EventKind;
 use crate::land::{self, Landing};
 use crate::pack::{self, Pack};
 use crate::quota::{self, Hold, Limit};
+use crate::review::Progress;
 use crate::run::{Phase, Run, WorkerOutcome, WorkerRef};
 use crate::scheduler::{self, DEATH_CAP, say, short};
 use crate::stream::{Findings, Summary};
@@ -194,6 +195,7 @@ fn polish(
         let lane = closeout_lane(board);
         let (lane_dir, lane_def) = scheduler::prepare_lane(run, lane, true, out)?;
         let collected = collected(
+            run,
             &lane_dir,
             &default_branch,
             &cfg.review,
@@ -333,6 +335,7 @@ fn polish(
 /// The `# Collected` body, from the file while `collect::reusable` holds at the lane's HEAD; a failed collect is
 /// the body, never the error.
 fn collected(
+    run: &mut Run,
     lane_dir: &Path,
     base: &str,
     review: &config::Review,
@@ -347,16 +350,51 @@ fn collected(
             out,
             &format!("polish: reused {} (head {})", file.display(), short(&head)),
         )?;
+        let (passes, dir) = collect::passes_and_log(&text);
+        run.emit(EventKind::CollectStarted {
+            passes: passes as u32,
+            dir: dir.map(str::to_string),
+            reused: true,
+        })?;
+        run.emit(EventKind::CollectDone {
+            seconds: 0,
+            ok: true,
+        })?;
         return Ok(pack::collected(&text, file));
     }
     let started = Instant::now();
-    let written =
-        collect::collect(lane_dir, base, review, &mut Stamped::new(out)).and_then(|text| {
-            // A torn file would carry a head line and be reused as finished.
-            scheduler::write_atomic(file, &text)?;
-            Ok(text)
-        });
+    let mut emit = |p: Progress| -> Result<()> {
+        let kind = match p {
+            Progress::Started { passes, dir } => EventKind::CollectStarted {
+                passes: passes as u32,
+                dir: dir.map(|d| d.display().to_string()),
+                reused: false,
+            },
+            Progress::PassDone { k, of, seconds } => EventKind::ReviewPassDone {
+                k: k as u32,
+                of: of as u32,
+                seconds,
+            },
+        };
+        run.emit(kind).map(drop)
+    };
+    let written = collect::collect(
+        lane_dir,
+        base,
+        review,
+        &mut Stamped::new(out),
+        Some(&mut emit),
+    )
+    .and_then(|text| {
+        // A torn file would carry a head line and be reused as finished.
+        scheduler::write_atomic(file, &text)?;
+        Ok(text)
+    });
     let secs = started.elapsed().as_secs_f64();
+    run.emit(EventKind::CollectDone {
+        seconds: secs as u64,
+        ok: written.is_ok(),
+    })?;
     match written {
         Ok(text) => {
             say(
@@ -2552,6 +2590,7 @@ mod tests {
         let head = repo_on_main(&lane);
         let file = tmp.path().join(COLLECT_FILE);
         let cfg = config::Review::default();
+        let mut run = Run::create(&tmp.path().join("data"), &lane, "001", None, 1).unwrap();
         for (plan, reused) in [
             (
                 "second opinion: reviewed, 1 of 1 passes counted\n\n## Leaks\n\nverdict: clean\n",
@@ -2568,7 +2607,7 @@ mod tests {
         ] {
             fs::write(&file, format!("<!-- head: {head} -->\n\n## Plan\n\n{plan}")).unwrap();
             let mut out = Vec::new();
-            collected(&lane, "main", &cfg, &file, &mut out).unwrap();
+            collected(&mut run, &lane, "main", &cfg, &file, &mut out).unwrap();
             let log = String::from_utf8(out).unwrap();
             assert_eq!(log.contains("polish: reused "), reused, "{plan}\n{log}");
             assert_eq!(log.contains("polish: collected "), !reused, "{plan}\n{log}");
@@ -2586,8 +2625,10 @@ mod tests {
         let not_a_repo = tmp.path().join("lane");
         fs::create_dir_all(&not_a_repo).unwrap();
         let file = tmp.path().join(COLLECT_FILE);
+        let mut run = Run::create(&tmp.path().join("data"), &not_a_repo, "001", None, 1).unwrap();
         let mut out = Vec::new();
         let body = collected(
+            &mut run,
             &not_a_repo,
             "main",
             &config::Review::default(),

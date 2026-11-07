@@ -545,6 +545,19 @@ fn polish_collects_once_and_a_rate_limited_respawn_reuses_the_file() {
     assert!(section.contains("\nsecond opinion: "), "{section}");
     assert_eq!(collected_section(&respawn), section);
     assert_eq!(review_calls(&fx), collected_calls);
+    let collect: Vec<Value> = events(&dir)
+        .into_iter()
+        .filter(|e| e["kind"] == "collect_started" || e["kind"] == "collect_done")
+        .collect();
+    let reused = collect
+        .iter()
+        .position(|e| e["kind"] == "collect_started" && e["reused"] == true)
+        .unwrap_or_else(|| panic!("no reused collect_started: {collect:?}"));
+    assert_eq!(
+        collect.get(reused + 1).map(|e| &e["kind"]),
+        Some(&json!("collect_done")),
+        "{collect:?}"
+    );
     assert_eq!(outcomes(&fx, &dir, "polish"), ["rate_limited", "done"]);
 }
 
