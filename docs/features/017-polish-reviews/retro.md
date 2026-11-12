@@ -43,3 +43,31 @@ A comment or name the leaks check should have caught: none found.
 ## Score
 
 4/5: every slice and checkpoint went green on the first run, but polish found 7 medium defects the build's tests missed, two of them in tests that could not fail.
+
+## Numbers
+
+<!-- factory:numbers -->
+| role | workers | own | subagents | weighted | minutes | turns |
+|---|---:|---:|---:|---:|---:|---:|
+| build | 5 | 1873805 | 0 | 1873805 | 40 | 131 |
+| checkpoint | 2 | 298335 | 0 | 298335 | 4 | 24 |
+| polish | 1 | 1155865 | 2375640 | 3531505 | 16 | 57 |
+| total | 8 | 3328006 | 2375640 | 5703646 | 59 | 212 |
+
+Knobs: build opus/high default · fix opus/high default · checkpoint opus/high default · polish opus/high default · budget 30000000 default · lanes 4 · factory 0.13.2 · claude 2.1.316
+
+Hypothesis: none
+
+quality: gate_red 0 · worker_gate_red 0 · fix_commits 0 · ci_red_rounds 0 · ci_reruns 0 · findings high=0 medium=7 low=15 fixed=18 parked=4 · decisions 8 decide 0 blocks 0
+
+Pack (build): slice 7698 · prd_sections 7540 · log 2629 · outline 9712 · lookup 1115 · contract 3095 · autonomy 8610 · inner_loop 86 · total 40485 · start_context 23966
+
+Compared with:
+
+| run | feature | weighted | slices | per slice | lines changed | per line | comment share | id hits |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 017-20261112-a618 (this run) | 017 | 5703646 | 5 | 1140729 | 3138 | 1818 | 4.1% | 0 |
+| 024-20261107-2f04 | 024 | 6104793 | 9 | 678310 | 7078 | 863 | 3.0% | 0 |
+| 023-20261106-360f | 023 | 1594857 | 2 | 797429 | 1500 | 1063 | 1.2% | 0 |
+| 014-20261105-4bd7 | 014 | 971439 | 1 | 971439 | 319 | 3045 | 5.9% | 0 |
+<!-- /factory:numbers -->
