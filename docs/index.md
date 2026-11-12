@@ -24,7 +24,7 @@
 
 A slice is `pending → building → done`, or `blocked` while it waits on the owner.
 
-**Build order:** 014 to 022 are drafts from the 2026-11-05 idea triage, one per topic; none is agreed and no order is set. Each goes through `/prd` when picked. 001 to 013 are archived. **017 (polish-reviews) is agreed (2026-11-12) and goes next.** It edits `src/review.rs`, `src/collect.rs`, `src/closeout.rs`, `skills/polish/SKILL.md` and `assets/autonomy.md`. 018 (skill-wording) also edits the polish skill, so it rebases on 017. 024 (live-run) shipped first. It adds events and touches `events.rs`, `checkpoint.rs`, `closeout.rs`, `review.rs`, `collect.rs` and `cli/status.rs`, so a draft that edits those after it rebases on it. herdr-factory PRD-003 waits on it. When more than one feature is live, state the order here and say why: shared files, migration risk, whichever ships second eats the merge.
+**Build order:** 014 to 022 are drafts from the 2026-11-05 idea triage, one per topic; none is agreed and no order is set. Each goes through `/prd` when picked. 001 to 013 are archived. 017 (polish-reviews) shipped 2026-11-12 as v0.13.3. **018 (skill-wording) is agreed (2026-11-12) and goes next.** It edits only `skills/` and `assets/` text plus skill-text tests. It ships before 015, so it lives with 015's relock trip. 024 (live-run) shipped first. It adds events and touches `events.rs`, `checkpoint.rs`, `closeout.rs`, `review.rs`, `collect.rs` and `cli/status.rs`, so a draft that edits those after it rebases on it. herdr-factory PRD-003 waits on it. When more than one feature is live, state the order here and say why: shared files, migration risk, whichever ships second eats the merge.
 
 **Retired numbers — never reused:** _(none yet)_
 
