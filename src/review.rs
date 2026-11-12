@@ -23,50 +23,176 @@ pub const FLAGS: [&str; 6] = [
     "--stream-partial-output",
 ];
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Pass {
     pub files: Vec<String>,
     pub lines: u64,
     /// One file over the cap, alone in its pass.
     pub over: bool,
+    /// The slice of its one file's diff this pass covers, when the file was split.
+    pub part: Option<Part>,
+}
+
+/// Part `k` of `n` of one file's diff, with its own copy of the file header.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Part {
+    pub k: usize,
+    pub n: usize,
+    pub diff: String,
 }
 
 pub fn group(files: &[(String, u64)], cap: u64) -> Vec<Pass> {
     let mut out = Vec::new();
-    let mut cur = Pass {
-        files: Vec::new(),
-        lines: 0,
-        over: false,
-    };
+    let mut cur = Pass::default();
     for (file, n) in files {
         if !cur.files.is_empty() && (*n > cap || cur.lines + n > cap) {
-            out.push(std::mem::replace(
-                &mut cur,
-                Pass {
-                    files: Vec::new(),
-                    lines: 0,
-                    over: false,
-                },
-            ));
+            out.push(std::mem::take(&mut cur));
         }
         cur.files.push(file.clone());
         cur.lines += n;
         if *n > cap {
             cur.over = true;
-            out.push(std::mem::replace(
-                &mut cur,
-                Pass {
-                    files: Vec::new(),
-                    lines: 0,
-                    over: false,
-                },
-            ));
+            out.push(std::mem::take(&mut cur));
         }
     }
     if !cur.files.is_empty() {
         out.push(cur);
     }
     out
+}
+
+/// `group`'s passes, each file over twice `cap` replaced by one pass per part of its `<base>...HEAD` diff.
+/// A file whose diff cannot be read stays whole, so its pass reports the error.
+pub fn plan(root: &Path, base: &str, files: &[(String, u64)], cap: u64) -> Vec<Pass> {
+    let mut out = Vec::new();
+    for pass in group(files, cap) {
+        let parts = if pass.over && pass.lines > 2 * cap {
+            diff(root, base, &pass.files)
+                .map(|text| split_diff(&text, cap))
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        if parts.len() < 2 {
+            out.push(pass);
+            continue;
+        }
+        let n = parts.len();
+        for (i, (diff, lines)) in parts.into_iter().enumerate() {
+            let part = Part { k: i + 1, n, diff };
+            out.push(Pass {
+                files: pass.files.clone(),
+                lines,
+                over: false,
+                part: Some(part),
+            });
+        }
+    }
+    out
+}
+
+/// One file's diff as parts of whole hunks packed up to `cap` changed lines, each headed by the file header,
+/// with each part's changed lines. A hunk over `cap` is first cut into even chunks of at most `cap`.
+pub fn split_diff(text: &str, cap: u64) -> Vec<(String, u64)> {
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let starts: Vec<usize> = (0..lines.len())
+        .filter(|&i| lines[i].starts_with("@@"))
+        .collect();
+    let Some(&first) = starts.first() else {
+        return vec![(text.to_string(), 0)];
+    };
+    let header = lines[..first].concat();
+    let mut parts: Vec<(String, u64)> = Vec::new();
+    for (i, &start) in starts.iter().enumerate() {
+        let end = starts.get(i + 1).copied().unwrap_or(lines.len());
+        for (hunk, n) in cut_hunk(lines[start], &lines[start + 1..end], cap) {
+            match parts.last_mut() {
+                Some((text, m)) if *m + n <= cap => {
+                    text.push_str(&hunk);
+                    *m += n;
+                }
+                _ => parts.push((format!("{header}{hunk}"), n)),
+            }
+        }
+    }
+    parts
+}
+
+fn is_change(line: &str) -> bool {
+    line.starts_with('+') || line.starts_with('-')
+}
+
+fn changed(lines: &[&str]) -> u64 {
+    lines.iter().filter(|l| is_change(l)).count() as u64
+}
+
+/// A hunk over `cap` changed lines as chunks with recomputed `@@` headers; a `\ No newline` line stays with the
+/// line before it, and context after a chunk's last change stays with that chunk.
+fn cut_hunk(head: &str, body: &[&str], cap: u64) -> Vec<(String, u64)> {
+    let total = changed(body);
+    let starts = hunk_starts(head);
+    let (Some((mut old, mut new, tail)), true) = (starts, total > cap && cap > 0) else {
+        return vec![(format!("{head}{}", body.concat()), total)];
+    };
+    let size = total.div_ceil(total.div_ceil(cap));
+    let mut chunks: Vec<Vec<&str>> = vec![Vec::new()];
+    let mut n = 0;
+    for line in body {
+        if is_change(line) {
+            if n == size {
+                chunks.push(Vec::new());
+                n = 0;
+            }
+            n += 1;
+        }
+        chunks.last_mut().expect("one chunk at least").push(line);
+    }
+    let mut out = Vec::new();
+    for (i, chunk) in chunks.iter().enumerate() {
+        let olds = chunk
+            .iter()
+            .filter(|l| !l.starts_with('+') && !l.starts_with('\\'))
+            .count() as u64;
+        let news = chunk
+            .iter()
+            .filter(|l| !l.starts_with('-') && !l.starts_with('\\'))
+            .count() as u64;
+        // An empty side names the line before it, as git writes `-0,0` for an added file.
+        let at = |pos: u64, count: u64| {
+            if count == 0 {
+                pos.saturating_sub(1)
+            } else {
+                pos
+            }
+        };
+        let tail = if i == 0 { tail } else { "" };
+        out.push((
+            format!(
+                "@@ -{},{olds} +{},{news} @@{tail}\n{}",
+                at(old, olds),
+                at(new, news),
+                chunk.concat()
+            ),
+            changed(chunk),
+        ));
+        old += olds;
+        new += news;
+    }
+    out
+}
+
+/// The first old and new line a hunk covers, and the text after its closing `@@`.
+fn hunk_starts(head: &str) -> Option<(u64, u64, &str)> {
+    let (old, rest) = head.strip_prefix("@@ -")?.split_once(" +")?;
+    let (new, tail) = rest.split_once(" @@")?;
+    let first = |range: &str| -> Option<u64> {
+        let (start, count) = match range.split_once(',') {
+            Some((s, c)) => (s.parse::<u64>().ok()?, c.parse::<u64>().ok()?),
+            None => (range.parse::<u64>().ok()?, 1),
+        };
+        Some(if count == 0 { start + 1 } else { start })
+    };
+    Some((first(old)?, first(new)?, tail.trim_end_matches('\n')))
 }
 
 pub fn parse_numstat(text: &str) -> Vec<(String, u64)> {
@@ -555,7 +681,7 @@ pub fn run_passes(
             "review pass {}/{}: {} ({} lines)",
             i + 1,
             passes.len(),
-            file_list(&pass.files),
+            covers(pass),
             pass.lines
         )
         .map_err(io("review progress"))?;
@@ -611,6 +737,14 @@ pub fn one_line(path: &str) -> String {
     line
 }
 
+/// The pass's files, and which part of the file's diff when it covers one.
+fn covers(pass: &Pass) -> String {
+    match &pass.part {
+        Some(p) => format!("{} (part {} of {})", file_list(&pass.files), p.k, p.n),
+        None => file_list(&pass.files),
+    }
+}
+
 fn file_list(files: &[String]) -> String {
     files
         .iter()
@@ -636,7 +770,7 @@ pub fn pass_header(n: usize, pass: &Pass, ran: &Ran, cfg: &Review) -> String {
     };
     format!(
         "Pass {n} — {}{over} ({} lines, {} s, {})",
-        file_list(&pass.files),
+        covers(pass),
         pass.lines,
         ran.elapsed.as_secs(),
         cfg.model
@@ -652,9 +786,23 @@ pub fn diff_pass_prompt(
     pass: &Pass,
 ) -> Result<String> {
     let file = dir.join(format!("review-{n}.diff"));
-    fs::write(&file, diff(root, base, &pass.files)?)
-        .map_err(io(format!("write {}", file.display())))?;
-    Ok(diff_prompt(&pass.files, base, &file))
+    let (text, what) = match &pass.part {
+        Some(p) => (
+            p.diff.clone(),
+            format!(
+                "Part {} of {} of the diff of {}",
+                p.k,
+                p.n,
+                pass.files.join(" ")
+            ),
+        ),
+        None => (
+            diff(root, base, &pass.files)?,
+            format!("The diff of {}", pass.files.join(" ")),
+        ),
+    };
+    fs::write(&file, text).map_err(io(format!("write {}", file.display())))?;
+    Ok(diff_prompt(&what, base, &file))
 }
 
 fn exit_words(code: Option<i32>) -> String {
@@ -714,10 +862,10 @@ fn body(o: &Outcome, timeout_secs: u64) -> (String, bool) {
     (text, false)
 }
 
-pub fn diff_prompt(files: &[String], base: &str, diff_file: &Path) -> String {
+/// `what` names the diff, as `The diff of a.rs b.rs`.
+pub fn diff_prompt(what: &str, base: &str, diff_file: &Path) -> String {
     format!(
-        "Adversarial code review. The diff of {} against {base} is in {}: read it, and read any file in the repository you need for context. Report only defects you can point to at file:line with a failure scenario; no praise, no style. Do not edit anything.",
-        files.join(" "),
+        "Adversarial code review. {what} against {base} is in {}: read it, and read any file in the repository you need for context. Report only defects you can point to at file:line with a failure scenario; no praise, no style. Do not edit anything.",
         diff_file.display()
     )
 }
@@ -993,5 +1141,177 @@ mod tests {
         for text in ["grok-4.7-high-max", "xgrok-4.7-high", "grok-4.7", ""] {
             assert!(!lists_model(text, "grok-4.7-high"), "{text}");
         }
+    }
+
+    fn run_git(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// `git diff` of `f` in a fresh repo at `dir`: from `before` to `after`, or added as `after` when `before` is `None`.
+    fn real_diff(dir: &Path, before: Option<&str>, after: &str) -> String {
+        run_git(dir, &["init", "-q"]);
+        let f = dir.join("f");
+        let diff = [
+            "diff",
+            "--no-color",
+            "--no-ext-diff",
+            "-U3",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+        ];
+        match before {
+            Some(b) => {
+                fs::write(&f, b).unwrap();
+                run_git(dir, &["add", "f"]);
+                fs::write(&f, after).unwrap();
+                run_git(dir, &diff)
+            }
+            None => {
+                fs::write(&f, after).unwrap();
+                run_git(dir, &["add", "f"]);
+                run_git(dir, &[&diff[..], &["--cached"]].concat())
+            }
+        }
+    }
+
+    fn numbered(prefix: &str, range: std::ops::RangeInclusive<usize>) -> String {
+        range.map(|i| format!("{prefix}{i}\n")).collect()
+    }
+
+    /// The `+` and `-` lines after the file header.
+    fn changes(text: &str) -> u64 {
+        let hunks = &text[text.find("\n@@").unwrap()..];
+        changed(&hunks.split_inclusive('\n').collect::<Vec<_>>())
+    }
+
+    fn hunk_heads(text: &str) -> Vec<&str> {
+        text.lines().filter(|l| l.starts_with("@@")).collect()
+    }
+
+    #[test]
+    fn a_huge_hunk_splits_with_headers_git_can_apply() {
+        let cases = [
+            (
+                "changes between short runs of context",
+                numbered("a", 1..=40),
+                [
+                    numbered("a", 1..=5),
+                    numbered("b", 6..=10),
+                    numbered("a", 11..=14),
+                    numbered("c", 1..=20),
+                    numbered("a", 31..=40),
+                ]
+                .concat(),
+            ),
+            (
+                "a last line without a newline",
+                numbered("a", 1..=30).trim_end().to_string(),
+                [numbered("a", 1..=5), numbered("b", 1..=41)]
+                    .concat()
+                    .trim_end()
+                    .to_string(),
+            ),
+            (
+                "lines added between kept ones",
+                numbered("a", 1..=20),
+                [
+                    numbered("a", 1..=10),
+                    numbered("n", 1..=35),
+                    numbered("a", 11..=20),
+                ]
+                .concat(),
+            ),
+        ];
+        for (what, before, after) in cases {
+            let repo = tempfile::tempdir().unwrap();
+            let text = real_diff(repo.path(), Some(&before), &after);
+            assert_eq!(hunk_heads(&text).len(), 1, "{what}: {text}");
+            let total = changes(&text);
+            let parts = split_diff(&text, 10);
+            assert!(parts.len() > 1, "{what}: {parts:?}");
+            for (part, n) in &parts {
+                assert!(*n <= 10, "{what}: {part}");
+                assert_eq!(*n, changes(part), "{what}: {part}");
+            }
+            assert_eq!(parts.iter().map(|(_, n)| n).sum::<u64>(), total, "{what}");
+
+            fs::write(repo.path().join("f"), &before).unwrap();
+            let patches = tempfile::tempdir().unwrap();
+            for (k, (part, _)) in parts.iter().enumerate() {
+                let p = patches.path().join(format!("{k}.diff"));
+                fs::write(&p, part).unwrap();
+                let p = p.to_str().unwrap();
+                run_git(repo.path(), &["apply", "--check", "--unidiff-zero", p]);
+                run_git(repo.path(), &["apply", "--unidiff-zero", p]);
+            }
+            let got = fs::read_to_string(repo.path().join("f")).unwrap();
+            assert_eq!(got, after, "{what}: {parts:?}");
+        }
+    }
+
+    #[test]
+    fn whole_hunks_pack_up_to_the_cap() {
+        let mut after = String::new();
+        for i in 1..=100 {
+            let edited = (0..6).any(|e| i == 5 + 15 * e || i == 6 + 15 * e);
+            after.push_str(&format!("{}{i}\n", if edited { "b" } else { "a" }));
+        }
+        let repo = tempfile::tempdir().unwrap();
+        let text = real_diff(repo.path(), Some(&numbered("a", 1..=100)), &after);
+        let heads = hunk_heads(&text);
+        assert_eq!(heads.len(), 6, "{text}");
+        let parts = split_diff(&text, 10);
+        let got: Vec<(Vec<&str>, u64)> = parts.iter().map(|(p, n)| (hunk_heads(p), *n)).collect();
+        assert_eq!(
+            got,
+            [
+                (heads[0..2].to_vec(), 8),
+                (heads[2..4].to_vec(), 8),
+                (heads[4..6].to_vec(), 8)
+            ]
+        );
+        assert_eq!(split_diff(&text, 24), [(text.clone(), 24)]);
+    }
+
+    #[test]
+    fn the_file_header_heads_every_part() {
+        let repo = tempfile::tempdir().unwrap();
+        let text = real_diff(repo.path(), None, &numbered("n", 1..=30));
+        let header = &text[..text.find("\n@@").unwrap() + 1];
+        assert!(
+            header.starts_with("diff --git a/f b/f\nnew file mode "),
+            "{header}"
+        );
+        assert!(header.ends_with("--- /dev/null\n+++ b/f\n"), "{header}");
+        let parts = split_diff(&text, 10);
+        let heads: Vec<Vec<&str>> = parts.iter().map(|(p, _)| hunk_heads(p)).collect();
+        assert_eq!(
+            heads,
+            [
+                ["@@ -0,0 +1,10 @@"],
+                ["@@ -0,0 +11,10 @@"],
+                ["@@ -0,0 +21,10 @@"]
+            ]
+        );
+        for (part, _) in &parts {
+            assert!(part.starts_with(header), "{part}");
+        }
+        let added: String = parts
+            .iter()
+            .flat_map(|(p, _)| p.lines().filter_map(|l| l.strip_prefix('+')))
+            .filter(|l| !l.starts_with("++ "))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        assert_eq!(added, numbered("n", 1..=30));
     }
 }

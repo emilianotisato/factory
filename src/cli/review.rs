@@ -120,11 +120,8 @@ fn second(a: &SecondArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i3
                     .map_err(io("stdout"))?;
                 return Ok(2);
             }
-            (
-                root,
-                review::group(&skip.kept, cfg.pass_lines),
-                skip.lines(),
-            )
+            let passes = review::plan(&root, base, &skip.kept, cfg.pass_lines);
+            (root, passes, skip.lines())
         }
         Mode::Doc(doc, _) => {
             let text = fs::read_to_string(doc).map_err(io(format!("read {}", doc.display())))?;
@@ -132,6 +129,7 @@ fn second(a: &SecondArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i3
                 files: vec![doc.display().to_string()],
                 lines: text.lines().count() as u64,
                 over: false,
+                part: None,
             };
             (
                 paths::repo_root(&cwd).unwrap_or(cwd.clone()),

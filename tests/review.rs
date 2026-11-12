@@ -51,13 +51,30 @@ fn branch_off(
         fx.git(&["add", f]);
     }
     fx.git(&["commit", "-q", "-m", "feat: the branch"]);
+    configure(&fx, timeout);
+    fx
+}
+
+/// `feat/review` off `main`, where `path` holds `before` on `main` and `after` on the branch.
+fn edited(name: &str, path: &str, before: &str, after: &str) -> Fixture {
+    let fx = Fixture::new(name);
+    fs::write(fx.path().join(path), before).unwrap();
+    fx.git(&["add", path]);
+    fx.git(&["commit", "-q", "-m", "chore: on main"]);
+    fx.git(&["checkout", "-q", "-b", "feat/review"]);
+    fs::write(fx.path().join(path), after).unwrap();
+    fx.git(&["commit", "-q", "-am", "feat: the branch"]);
+    configure(&fx, 20);
+    fx
+}
+
+fn configure(fx: &Fixture, timeout: u64) {
     let cfg = PathBuf::from(&fx.env()["FACTORY_CONFIG_DIR"]);
     fs::write(
         cfg.join("config.toml"),
         format!("[review]\ntimeout_secs = {timeout}\n"),
     )
     .unwrap();
-    fx
 }
 
 fn scenario(fx: &Fixture, v: Value) {
@@ -787,4 +804,126 @@ fn second_skips_the_same_files_and_lists_them_before_the_passes() {
         format!("unreviewed: no changes against main left after skipping {LOG}\n")
     );
     assert!(calls(&fx).is_empty(), "{:?}", calls(&fx));
+}
+
+/// The second opinion's pass headings and its log dir.
+fn passes_and_dir(file: &str) -> (Vec<&str>, PathBuf) {
+    let second = part(file, "Second opinion");
+    let heads = second
+        .lines()
+        .filter(|l| l.starts_with("### Pass"))
+        .collect();
+    let dir = second
+        .lines()
+        .find_map(|l| l.strip_prefix("log: "))
+        .unwrap_or_else(|| panic!("no log: {second}"));
+    (heads, PathBuf::from(dir))
+}
+
+fn hunk_heads(diff: &str) -> Vec<&str> {
+    diff.lines().filter(|l| l.starts_with("@@")).collect()
+}
+
+/// The `+` and `-` lines below the file header.
+fn changes(diff: &str) -> usize {
+    let hunks = &diff[diff
+        .find("\n@@")
+        .unwrap_or_else(|| panic!("no hunk: {diff}"))..];
+    hunks
+        .lines()
+        .filter(|l| l.starts_with('+') || l.starts_with('-'))
+        .count()
+}
+
+#[test]
+fn a_huge_file_splits_at_hunks() {
+    let blocks = |word: &str| -> String {
+        (1..=10)
+            .flat_map(|b| {
+                let changed = (1..=100).map(move |i| format!("{word} {b} {i}\n"));
+                changed.chain((1..=10).map(move |i| format!("keep {b} {i}\n")))
+            })
+            .collect()
+    };
+    let fx = edited("split-hunks", "big", &blocks("old"), &blocks("new"));
+    let file = collected(&fx);
+    assert!(
+        part(&file, "Plan").contains("\n- big (2000 lines)\n"),
+        "{file}"
+    );
+    let (heads, dir) = passes_and_dir(&file);
+    assert_eq!(heads.len(), 4, "{file}");
+    for (k, (head, lines)) in heads.iter().zip([600, 600, 600, 200]).enumerate() {
+        let k = k + 1;
+        let want = format!("### Pass {k} — big (part {k} of 4) ({lines} lines, ");
+        assert!(head.starts_with(&want), "{head}");
+        assert!(head.ends_with(" — counted"), "{head}");
+    }
+    assert_eq!(review_calls(&fx).len(), 4);
+
+    let whole = fx.git(&["diff", "--no-renames", "main...HEAD", "--", "big"]);
+    let header = &whole[..whole.find("\n@@").unwrap() + 1];
+    let mut seen = Vec::new();
+    for n in 1..=4 {
+        let diff = fs::read_to_string(dir.join(format!("review-{n}.diff"))).unwrap();
+        assert!(diff.starts_with(header), "part {n}: {diff}");
+        assert!(changes(&diff) <= 600, "part {n}: {}", changes(&diff));
+        for head in hunk_heads(&diff) {
+            let at = whole.find(&format!("\n{head}\n")).unwrap();
+            let rest = &whole[at + 1..];
+            let hunk = &rest[..rest[1..].find("\n@@").map_or(rest.len(), |e| e + 2)];
+            assert!(diff.contains(hunk), "part {n} cuts {head}: {diff}");
+            seen.extend([head.to_string()]);
+        }
+    }
+    assert_eq!(seen, hunk_heads(&whole), "{whole}");
+    assert_eq!(seen.len(), 10);
+}
+
+#[test]
+fn a_file_under_twice_the_cap_stays_whole() {
+    for n in [900, 1200] {
+        let fx = branch(&format!("split-under-{n}"), 20, &[("a", n)]);
+        let file = collected(&fx);
+        let (heads, dir) = passes_and_dir(&file);
+        assert_eq!(heads.len(), 1, "{file}");
+        let want = format!("### Pass 1 — a (over 600, alone) ({n} lines, ");
+        assert!(heads[0].starts_with(&want), "{}", heads[0]);
+        let diff = fs::read_to_string(dir.join("review-1.diff")).unwrap();
+        assert_eq!(hunk_heads(&diff), [format!("@@ -0,0 +1,{n} @@")], "{diff}");
+        assert_eq!(review_calls(&fx).len(), 1);
+    }
+}
+
+#[test]
+fn an_added_huge_file_splits_at_lines() {
+    let fx = branch("split-lines", 20, &[("big", 1500)]);
+    let file = collected(&fx);
+    let (heads, dir) = passes_and_dir(&file);
+    assert_eq!(heads.len(), 3, "{file}");
+    let mut added = Vec::new();
+    for k in 1..=3 {
+        let want = format!("### Pass {k} — big (part {k} of 3) (500 lines, ");
+        assert!(heads[k - 1].starts_with(&want), "{}", heads[k - 1]);
+        let diff = fs::read_to_string(dir.join(format!("review-{k}.diff"))).unwrap();
+        assert!(
+            diff.starts_with("diff --git a/big b/big\nnew file mode "),
+            "{diff}"
+        );
+        let first = 1 + 500 * (k - 1);
+        assert_eq!(
+            hunk_heads(&diff),
+            [format!("@@ -0,0 +{first},500 @@")],
+            "{diff}"
+        );
+        let hunk = &diff[diff.find("\n@@").unwrap() + 1..];
+        added.extend(
+            hunk.lines()
+                .skip(1)
+                .map(|l| format!("{}\n", l.strip_prefix('+').unwrap_or_else(|| panic!("{l}")))),
+        );
+    }
+    let body: Vec<String> = (1..=1500).map(|i| format!("big line {i}\n")).collect();
+    assert_eq!(added, body);
+    assert_eq!(review_calls(&fx).len(), 3);
 }

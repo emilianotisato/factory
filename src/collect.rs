@@ -157,7 +157,7 @@ fn second_opinion(
             format!("exit: 2\nunreviewed: {reason}\n{log}{passes}"),
         )
     };
-    let passes = review::group(files, cfg.pass_lines);
+    let passes = review::plan(root, base, files, cfg.pass_lines);
     let mut started = |dir: Option<&Path>| match sink.as_mut() {
         Some(sink) => sink(Progress::Started {
             passes: passes.len(),
