@@ -10,6 +10,8 @@
 - **Inner loop:** 2 runs, 1 red, about 4 min. The red run caught the collect usage test, which matches `--base <branch> [--out <file>]` as a substring; the new flags now follow `[--out <file>]` in `USAGE`, so the existing test is unchanged.
 - **Deviations:** none from the tasks. AD-5 (fyi) records the prompt wording, the order beside `--others`, and the third cut step.
 - **Prove:** left for the checkpoint (FR-5's three review tests, FR-6's three).
+- **Checkpoint 2:** FR-5 green (its three review tests plus the skill row) — evidence: cp-2/fr-5-settled-decisions.txt
+- **Checkpoint 2:** FR-6 green (all three tests) — evidence: cp-2/fr-6-since-last-review.txt
 
 **Slice**: After this slice, `review collect` and `review second --diff` take `--feature NNN`. Every pass prompt then carries the feature's settled block: its decisions (id, title, `**Chose:**` line, superseded ones left out) and its PRD's Decisions log and Non-goals sections, capped at 32 KiB. `review collect` also takes `--since <commit>` and reviews `<commit>..HEAD` for the second opinion, while leaks still scans the whole branch. The driver passes the run's feature and, when the feature was reviewed before, the commit that last set `reviewed`. The skill text that tells attended polish to pass these flags is slice 05's.
 

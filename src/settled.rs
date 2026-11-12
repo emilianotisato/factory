@@ -174,6 +174,10 @@ mod tests {
     use super::*;
     use crate::docs::log::{Entry, Kind};
 
+    fn id(n: u32) -> String {
+        format!("AD-{n}")
+    }
+
     fn decision(id: &str, title: &str, body: &str) -> String {
         let mut e = Entry::new(Kind::Decision, title, body);
         e.id = Some(id.to_string());
@@ -198,24 +202,27 @@ mod tests {
         let dir = feature(
             &[
                 decision(
-                    "AD-1",
+                    &id(1),
                     "Retry three times",
                     "**Chose:** three retries\n**Over:** one",
                 ),
                 decision(
-                    "AD-2",
+                    &id(2),
                     "Retry five times",
-                    "**Chose:** five retries\n**Supersedes:** AD-1\n**Over:** three",
+                    &format!(
+                        "**Chose:** five retries\n**Supersedes:** {}\n**Over:** three",
+                        id(1)
+                    ),
                 ),
             ],
             None,
         );
         let block = block(dir.path()).unwrap();
         assert!(
-            block.contains("- AD-2 — Retry five times: five retries"),
+            block.contains(&format!("- {} — Retry five times: five retries", id(2))),
             "{block}"
         );
-        assert!(!block.contains("AD-1"), "{block}");
+        assert!(!block.contains(&id(1)), "{block}");
         assert!(!block.contains("three retries"), "{block}");
     }
 
@@ -225,7 +232,7 @@ mod tests {
         let log: Vec<String> = (1..=150)
             .map(|n| {
                 decision(
-                    &format!("AD-{n}"),
+                    &id(n),
                     &format!("Choice {n}"),
                     &format!("**Chose:** {chose}"),
                 )
@@ -240,14 +247,17 @@ mod tests {
         assert!(block.len() <= CAP, "{}", block.len());
         assert!(!block.contains("nothing more"));
         assert!(block.contains("## 1. Decisions log"), "{block}");
-        assert!(block.contains("- AD-150 — Choice 150: "));
-        assert!(!block.contains("- AD-1 — "));
+        assert!(block.contains(&format!("- {} — Choice 150: ", id(150))));
+        assert!(!block.contains(&format!("- {} — ", id(1))));
         let cut = block.lines().last().unwrap();
         assert!(
             cut.starts_with("Cut to fit 32 KiB: the PRD's Non-goals section, the "),
             "{cut}"
         );
-        assert!(cut.contains(" oldest decisions (AD-1 to AD-"), "{cut}");
+        assert!(
+            cut.contains(&format!(" oldest decisions ({} to AD-", id(1))),
+            "{cut}"
+        );
 
         let small = feature(&log[..2], Some(PRD));
         let whole = super::block(small.path()).unwrap();
@@ -275,9 +285,9 @@ mod tests {
         assert!(!prd_only.contains("notes"), "{prd_only}");
 
         let no_goals = "## 12. Decisions log\n\n- kept the queue\n";
-        let log_only = block(feature(&[decision("AD-1", "T", "")], Some(no_goals)).path()).unwrap();
+        let log_only = block(feature(&[decision(&id(1), "T", "")], Some(no_goals)).path()).unwrap();
         assert!(
-            log_only.starts_with("Decisions taken:\n- AD-1 — T\n"),
+            log_only.starts_with(&format!("Decisions taken:\n- {} — T\n", id(1))),
             "{log_only}"
         );
         assert!(!log_only.contains("Non-goals"), "{log_only}");
