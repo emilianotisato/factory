@@ -9,6 +9,10 @@
 - **Inner loop.** 3 runs, 1 red, about 7 min. The red run was a stale `skills/bundle.lock` after a second skill edit under the version this slice had already bumped. Restoring the lock and rewriting it once fixed it.
 - **Deviation.** The skill edit needed a version bump to 0.13.3 (`bundle_lock_matches`), and that bump also moves the cockpit mod's three version pins (`cockpit_mod`). This is AD-1 (fyi).
 - **Prove.** The FR-1, FR-5 (skill row), FR-7 and FR-8 rows are left for the checkpoint.
+- **Evidence (checkpoint 1):** FR-1 → `cp-1/fr-1-security-range.txt` (1 passed).
+- **Evidence (checkpoint 1):** FR-5 (skill row) → `cp-1/fr-5-skill-sources.txt` (1 passed).
+- **Evidence (checkpoint 1):** FR-7 → `cp-1/fr-7-ux-first.txt` (1 passed).
+- **Evidence (checkpoint 1):** FR-8 → `cp-1/fr-8-autonomy-rows.txt` (1 passed).
 
 **Slice**: After this slice, `/polish` §1:
 
