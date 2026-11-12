@@ -7,9 +7,10 @@
 //   list_models: "ok" (default) | "auth" | "no-model"
 //     `--list-models` prints a list holding grok-4.7-high and exits 0, the
 //     expired-login line and exits 1, or a list without it and exits 0.
-//   sleep_after_assistant: n
-//     a review call replays up to and including the n-th `assistant` event,
-//     then sleeps 60 s (the caller's timeout kills it).
+//   sleep_after_assistant: n | {"<pass>": n}
+//     a review call (or only its own pass's, when n is per pass) replays up
+//     to and including the n-th `assistant` event, then sleeps 60 s (the
+//     caller's timeout kills it).
 //   exit_after_assistant: n, exit_code: c (default 1), error_result: text
 //     a review call replays up to and including the n-th `assistant` event,
 //     writes a `result` event with `is_error` and `text` when error_result is
@@ -72,7 +73,10 @@ if (unlinkOn && pass === unlinkOn) {
 function replay() {
   const lines = fs.readFileSync(path.join(__dirname, 'cursor-review.jsonl'), 'utf8').split('\n')
   if (lines[lines.length - 1] === '') lines.pop()
-  const stop = scenario.sleep_after_assistant
+  const stop =
+    typeof scenario.sleep_after_assistant === 'object'
+      ? scenario.sleep_after_assistant[pass]
+      : scenario.sleep_after_assistant
   const quit = scenario.exit_after_assistant
   let seen = 0
   for (let line of lines) {

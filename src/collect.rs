@@ -4,7 +4,8 @@
 //! `## Second opinion` heading, in that order; the second opinion is last and runs to the end, because
 //! the findings hold headings of their own. The plan's `size:` and `second opinion:` rows, the leaks
 //! `verdict:` and, when the second opinion ran, its `exit:` are lines of their own, and each pass is a
-//! `### Pass n — … — counted` (or `— unreviewed`) heading above its findings.
+//! `### Pass n — … — counted` (or `— unreviewed`) heading above its findings. Files no reviewer reads are a
+//! `skipped:` block in the plan, before `size:`.
 use std::io::Write;
 use std::path::Path;
 
@@ -67,12 +68,13 @@ pub fn collect(
     mut sink: Sink,
 ) -> Result<String> {
     let head = ci::head(root)?;
-    let files = review::numstat(root, base, &[])?;
+    let skip = review::skip(root, review::numstat(root, base, &[])?);
+    let files = &skip.kept;
     let lines: u64 = files.iter().map(|(_, n)| n).sum();
     let leaks = leaks_part(root, base);
-    let second = needs_second_opinion(&files);
+    let second = needs_second_opinion(files);
     let (state, opinion) = if second {
-        second_opinion(root, base, cfg, &files, progress, sink)
+        second_opinion(root, base, cfg, files, progress, sink)
     } else {
         if let Some(sink) = sink.as_mut() {
             sink(Progress::Started {
@@ -80,12 +82,17 @@ pub fn collect(
                 dir: None,
             })?;
         }
+        let why = if files.is_empty() && !skip.skipped.is_empty() {
+            format!("no file left after skipping {}", skip.names())
+        } else {
+            format!(
+                "{} under {LOCAL_ONLY_LINES} changed lines",
+                count(files.len(), "file")
+            )
+        };
         (
             "skipped by size".to_string(),
-            format!(
-                "skipped by size: {} under {LOCAL_ONLY_LINES} changed lines\n",
-                count(files.len(), "file")
-            ),
+            format!("skipped by size: {why}\n"),
         )
     };
 
@@ -99,13 +106,14 @@ pub fn collect(
         count(files.len(), "file"),
         count(lines as usize, "line")
     );
-    for (file, n) in &files {
+    for (file, n) in files {
         plan.push_str(&format!(
             "- {} ({})\n",
             review::one_line(file),
             count(*n as usize, "line")
         ));
     }
+    plan.push_str(&skip.lines());
     Ok(format!(
         "{}\n\n## Plan\n\n{plan}size: {size}\nsecond opinion: {state}\n\n## Leaks\n\n{leaks}\n## Second opinion\n\n{opinion}",
         head_line(&head)

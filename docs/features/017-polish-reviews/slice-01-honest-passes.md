@@ -3,7 +3,11 @@
 **Source**: [`prd.md`](prd.md) → §4 FR-2, §5 FR-3, §2, §13. **Depends on**: — (the first slice. It fixes the two field bugs and touches only the pass accounting and the file list.)
 **Created**: 2026-11-12
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+- **Built:** `body()` no longer counts a killed pass with partial text (unit case flipped). `review::skip` splits numstat rows into kept and skipped (`tool-written` by path shape, `vendored`/`generated` via `git check-attr -z --stdin`, stdin written on a thread). A check-attr failure skips nothing for that reason and says so on the `skipped:` line. `collect()` and `second()` both call it before sizing and grouping. Collect's plan prints the `skipped:` block before `size:`, and with nothing kept the opinion reads `skipped by size: no file left after skipping …`. `second()` prints the block before the first pass, or `unreviewed: no changes against <base> left after skipping …` with exit 2 (AD-2). Stub `sleep_after_assistant` takes `{"<pass>": n}`. `branch()` creates parent directories, and `branch_off` commits files on `main` first.
+- **Tests:** `a_timeout_is_unreviewed_and_keeps_its_partial_text` (replaces `a_timeout_keeps_the_partial_text`), `a_timeout_beside_a_counted_pass_exits_0`, `collect_owes_the_fallback_when_every_pass_timed_out`, `collect_skips_tool_written_and_vendored_files_and_lists_them`, `second_skips_the_same_files_and_lists_them_before_the_passes`, plus unit tests for the path shape, the check-attr parse and the `skipped:` block.
+- **Inner loop:** 2 runs, 1 red, about 3 min. The red run was clippy's `chunks_exact_to_as_chunks` on the check-attr parser.
+- **Prove:** FR-2 and FR-3 rows are left for the checkpoint.
 
 **Slice**: After this slice, a second-opinion pass killed at its timeout never counts. Its partial text is kept, but it is unreviewed, so the fallback fires for it. `review collect` and `review second --diff` drop tool-written feature files (`docs/features/*/log.jsonl`, `docs/features/*/state.toml`) and paths `.gitattributes` marks `linguist-vendored` or `linguist-generated` before grouping. The plan lists them under a `skipped:` line. Hunk splitting is slice 02's, and the settled block and `--since` are slice 03's.
 

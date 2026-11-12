@@ -106,15 +106,25 @@ fn second(a: &SecondArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i3
     let cwd = std::env::current_dir().map_err(io("read the current directory"))?;
 
     // What each pass covers, before anything is spent.
-    let (root, passes) = match &mode {
+    let (root, passes, skipped) = match &mode {
         Mode::Diff(base) => {
             let root = paths::repo_root(&cwd)?;
-            let files = review::numstat(&cwd, base, &a.paths)?;
-            if files.is_empty() {
-                writeln!(out, "unreviewed: no changes against {base}").map_err(io("stdout"))?;
+            let skip = review::skip(&root, review::numstat(&cwd, base, &a.paths)?);
+            if skip.kept.is_empty() {
+                let left = if skip.skipped.is_empty() {
+                    String::new()
+                } else {
+                    format!(" left after skipping {}", skip.names())
+                };
+                writeln!(out, "unreviewed: no changes against {base}{left}")
+                    .map_err(io("stdout"))?;
                 return Ok(2);
             }
-            (root, review::group(&files, cfg.pass_lines))
+            (
+                root,
+                review::group(&skip.kept, cfg.pass_lines),
+                skip.lines(),
+            )
         }
         Mode::Doc(doc, _) => {
             let text = fs::read_to_string(doc).map_err(io(format!("read {}", doc.display())))?;
@@ -123,7 +133,11 @@ fn second(a: &SecondArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i3
                 lines: text.lines().count() as u64,
                 over: false,
             };
-            (paths::repo_root(&cwd).unwrap_or(cwd.clone()), vec![pass])
+            (
+                paths::repo_root(&cwd).unwrap_or(cwd.clone()),
+                vec![pass],
+                String::new(),
+            )
         }
     };
 
@@ -133,6 +147,9 @@ fn second(a: &SecondArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i3
         return Ok(2);
     }
 
+    if !skipped.is_empty() {
+        writeln!(out, "{skipped}").map_err(io("stdout"))?;
+    }
     let ran = review::run_passes(
         &cfg,
         &root,

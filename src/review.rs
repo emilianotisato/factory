@@ -94,6 +94,130 @@ pub fn numstat(cwd: &Path, base: &str, paths: &[String]) -> Result<Vec<(String, 
     Ok(parse_numstat(&out))
 }
 
+/// Changed files split into the ones a reviewer reads and the ones nobody does.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Skip {
+    pub kept: Vec<(String, u64)>,
+    /// Each skipped path with why: `tool-written`, `vendored` or `generated`.
+    pub skipped: Vec<(String, &'static str)>,
+    /// Why vendored and generated files went unchecked, when `git check-attr` failed.
+    pub unchecked: Option<String>,
+}
+
+impl Skip {
+    /// The `skipped:` block, one `- path (reason)` per file; empty when nothing was skipped or unchecked.
+    pub fn lines(&self) -> String {
+        if self.skipped.is_empty() && self.unchecked.is_none() {
+            return String::new();
+        }
+        let mut out = match &self.unchecked {
+            Some(e) => format!("skipped: vendored and generated files not checked ({e})\n"),
+            None => "skipped:\n".to_string(),
+        };
+        for (path, why) in &self.skipped {
+            out.push_str(&format!("- {} ({why})\n", one_line(path)));
+        }
+        out
+    }
+
+    /// The skipped paths, comma-separated.
+    pub fn names(&self) -> String {
+        let paths: Vec<String> = self.skipped.iter().map(|(p, _)| p.clone()).collect();
+        file_list(&paths)
+    }
+}
+
+/// Drops the files factory writes itself and the ones `.gitattributes` in `root` marks vendored or generated.
+pub fn skip(root: &Path, files: Vec<(String, u64)>) -> Skip {
+    let mut out = Skip::default();
+    let checked: Vec<&str> = files
+        .iter()
+        .map(|(p, _)| p.as_str())
+        .filter(|p| !tool_written(p))
+        .collect();
+    let marked = if checked.is_empty() {
+        Vec::new()
+    } else {
+        check_attr(root, &checked).unwrap_or_else(|e| {
+            out.unchecked = Some(e.to_string());
+            Vec::new()
+        })
+    };
+    for (path, n) in files {
+        if tool_written(&path) {
+            out.skipped.push((path, "tool-written"));
+        } else if let Some((_, why)) = marked.iter().find(|(p, _)| *p == path) {
+            out.skipped.push((path, why));
+        } else {
+            out.kept.push((path, n));
+        }
+    }
+    out
+}
+
+/// `docs/features/<dir>/log.jsonl` or `state.toml`, one directory level deep.
+fn tool_written(path: &str) -> bool {
+    matches!(
+        path.split('/').collect::<Vec<_>>()[..],
+        ["docs", "features", dir, "log.jsonl" | "state.toml"] if !dir.is_empty()
+    )
+}
+
+/// The paths among `paths` whose `linguist-vendored` or `linguist-generated` is set, read from the checkout.
+fn check_attr(root: &Path, paths: &[&str]) -> Result<Vec<(String, &'static str)>> {
+    let cmd = "git check-attr -z --stdin linguist-vendored linguist-generated".to_string();
+    let fail = |detail: String| Error::Tool {
+        cmd: cmd.clone(),
+        detail,
+    };
+    let mut child = Command::new("git")
+        .args([
+            "check-attr",
+            "-z",
+            "--stdin",
+            "linguist-vendored",
+            "linguist-generated",
+        ])
+        .current_dir(root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| fail(format!("could not start git: {e}")))?;
+    let input: Vec<u8> = paths.iter().flat_map(|p| p.bytes().chain([0])).collect();
+    let mut stdin = child.stdin.take().expect("stdin is piped");
+    // A long list fills the pipe both ways: the writer runs beside the reader.
+    let writer = std::thread::spawn(move || stdin.write_all(&input));
+    let out = child
+        .wait_with_output()
+        .map_err(|e| fail(format!("could not read git: {e}")))?;
+    let written = writer.join().expect("the stdin writer does not panic");
+    if !out.status.success() {
+        return Err(fail(
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        ));
+    }
+    written.map_err(|e| fail(format!("could not write to git: {e}")))?;
+    Ok(parse_check_attr(&String::from_utf8_lossy(&out.stdout)))
+}
+
+/// `path NUL attr NUL value NUL` triples; `set` or `true` marks the path.
+fn parse_check_attr(text: &str) -> Vec<(String, &'static str)> {
+    let fields: Vec<&str> = text.split('\0').collect();
+    let mut out: Vec<(String, &'static str)> = Vec::new();
+    for [path, attr, value] in fields.as_chunks::<3>().0 {
+        let why = match *attr {
+            "linguist-vendored" => "vendored",
+            "linguist-generated" => "generated",
+            _ => continue,
+        };
+        if matches!(*value, "set" | "true") && !out.iter().any(|(p, _)| p == path) {
+            out.push((path.to_string(), why));
+        }
+    }
+    out
+}
+
 pub fn diff(root: &Path, base: &str, files: &[String]) -> Result<String> {
     let range = format!("{base}...HEAD");
     git(
@@ -537,7 +661,8 @@ fn exit_words(code: Option<i32>) -> String {
     code.map_or("killed by a signal".to_string(), |c| format!("exit {c}"))
 }
 
-/// A kill's partial counts (it had the whole timeout); an exit's does not, or an opening line stops the fallback.
+/// A kill's partial does not count, since the pass did not finish its files; nor does a failed exit's, or an
+/// opening line would stop the fallback.
 fn body(o: &Outcome, timeout_secs: u64) -> (String, bool) {
     let p = &o.parsed;
     if let Some(r) = p.result.as_deref().filter(|r| !r.trim().is_empty()) {
@@ -549,7 +674,7 @@ fn body(o: &Outcome, timeout_secs: u64) -> (String, bool) {
             return match partial {
                 Some(t) => (
                     format!("(timed out after {timeout_secs} s, partial)\n\n{t}\n"),
-                    true,
+                    false,
                 ),
                 None => (
                     format!("unreviewed (timed out after {timeout_secs} s with no text)\n"),
@@ -662,7 +787,7 @@ mod tests {
                 Ended::Killed,
                 vec![OPENING],
                 "(timed out after 9 s, partial)\n\nI'll read the diff.\n",
-                true,
+                false,
             ),
             (
                 Ended::Exited(Some(1)),
@@ -705,6 +830,74 @@ mod tests {
             let got = body(&outcome(ended, &stream, "boom"), 9);
             assert_eq!(got, (want.to_string(), counts), "{ended:?} {stream:?}");
         }
+    }
+
+    #[test]
+    fn tool_written_files_are_one_feature_folder_deep() {
+        for (path, want) in [
+            ("docs/features/001-x/log.jsonl", true),
+            ("docs/features/001-x/state.toml", true),
+            ("docs/features/log.jsonl", false),
+            ("docs/features//state.toml", false),
+            ("docs/features/001-x/sub/log.jsonl", false),
+            ("docs/features/001-x/prd.md", false),
+            ("src/docs/features/001-x/log.jsonl", false),
+        ] {
+            assert_eq!(tool_written(path), want, "{path}");
+        }
+    }
+
+    #[test]
+    fn check_attr_marks_set_or_true_and_names_the_first_reason() {
+        let out = [
+            "a.xsd",
+            "linguist-vendored",
+            "set",
+            "a.xsd",
+            "linguist-generated",
+            "set",
+            "b.rs",
+            "linguist-vendored",
+            "unspecified",
+            "b.rs",
+            "linguist-generated",
+            "true",
+            "c.rs",
+            "linguist-vendored",
+            "unset",
+            "c.rs",
+            "linguist-generated",
+            "false",
+            "",
+        ]
+        .join("\0");
+        assert_eq!(
+            parse_check_attr(&out),
+            [
+                ("a.xsd".to_string(), "vendored"),
+                ("b.rs".to_string(), "generated")
+            ]
+        );
+    }
+
+    #[test]
+    fn the_skipped_block_lists_each_file_and_says_when_attributes_went_unchecked() {
+        let mut s = Skip::default();
+        assert_eq!(s.lines(), "");
+        s.skipped
+            .push(("docs/features/001-x/log.jsonl".into(), "tool-written"));
+        s.skipped.push(("t/a.xsd".into(), "vendored"));
+        assert_eq!(
+            s.lines(),
+            "skipped:\n- docs/features/001-x/log.jsonl (tool-written)\n- t/a.xsd (vendored)\n"
+        );
+        assert_eq!(s.names(), "docs/features/001-x/log.jsonl, t/a.xsd");
+        s.skipped.clear();
+        s.unchecked = Some("boom".into());
+        assert_eq!(
+            s.lines(),
+            "skipped: vendored and generated files not checked (boom)\n"
+        );
     }
 
     fn sized(ns: &[u64]) -> Vec<(String, u64)> {
