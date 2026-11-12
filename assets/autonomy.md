@@ -24,6 +24,8 @@ Ask it of every choice the work forces that nobody wrote down: **does the PRD, t
 
 **Unsure between log and block → block.** A wrong `AD` costs the owner a revert. A silent scope change costs a feature.
 
+**An `AD` may overturn an earlier `AD`**, from any phase. Cite the one it overturns, and put a `**Supersedes:** AD-n` line in the new entry's body: the reviewers' settled block reads it and drops the old one. An `AD` that overturns a `Review: decide` entry is `decide` itself. Never edit the old entry; the log stays append-only.
+
 **Every `AD` carries a `Review:` line with one of three values.** `decide` — the owner must answer before this ships: a deviation from what the slice or an acceptance criterion said, a schema or public interface shape the PRD did not specify, a new runtime dependency. `fyi` — nothing waits on it, but a reviewer reading the diff would miss it: a new dev dependency, a lint or type suppression, a behaviour chosen where the slice was silent. `no` — the rest. The PR body lists `decide` first and `fyi` after. A run that flags forty `fyi` entries has buried the two that mattered; two real runs marked 22 of 46 `decide` and 40 of 70 `fyi`. A helper extracted, a test's shape, a 404 over a 403 the slice hinted at are all visible in the diff, so they are `no`. When unsure between `no` and `fyi`, choose `no`.
 
 <!-- builder: cut -->
@@ -33,6 +35,7 @@ Ask it of every choice the work forces that nobody wrote down: **does the PRD, t
 |---|---|---|
 | `/polish` **Fix** | fix without asking | same |
 | `/polish`, `/ux` **Ask** | one AskUserQuestion round | the test above: an `AD` when local and reversible — taste always lands here — otherwise **block** |
+| `/polish`, `/ux` **Ask** whose fix changes a contract while today's behavior is safe to ship | one AskUserQuestion round | `factory docs idea add` for the owner; it never blocks the run, and this row wins over the **Ask** row above |
 | `/polish`, `/ux` **Park** | `factory docs idea add` or a new slice | `factory docs idea add` only; a new slice changes the plan the owner approved |
 | `prune`, "genuinely in doubt" | ask in-session | **keep the test** and write an `AD` — keeping never loses coverage |
 | `/harness` confirm round | one AskUserQuestion round | take what the code shows; an `AD` for each finding it had to choose between. A test-framework major upgrade the PRD does not name is a **block**: it touches the whole suite |

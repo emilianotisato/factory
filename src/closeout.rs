@@ -22,6 +22,7 @@ use crate::quota::{self, Hold, Limit};
 use crate::review::Progress;
 use crate::run::{Phase, Run, WorkerOutcome, WorkerRef};
 use crate::scheduler::{self, DEATH_CAP, say, short};
+use crate::settled;
 use crate::stream::{Findings, Summary};
 use crate::worker::{self, Exit, Job, Worker};
 use crate::{Result, clock, collect, lanes, metrics, paths, retro};
@@ -202,7 +203,7 @@ fn polish(
             &collect_path(run.dir()),
             out,
         )?;
-        // The collect can outlast a stop by a whole pass; no worker spawns after one.
+        // A stop kills the collect's reviewers; no worker spawns after one.
         run.reload()?;
         if run.state().stop_requested {
             return Ok(Some(Outcome::Stopped));
@@ -362,6 +363,17 @@ fn collected(
         })?;
         return Ok(pack::collected(&text, file));
     }
+    let feature = run.state().feature.clone();
+    let since = settled::last_reviewed(lane_dir, &feature);
+    // Read from disk: `emit` holds `run`, and `factory stop` writes from another process.
+    let run_dir = run.dir().to_path_buf();
+    let stopped = move || crate::run::load_state(&run_dir).is_ok_and(|s| s.stop_requested);
+    let opts = collect::Options {
+        since: since.as_deref(),
+        feature: Some(&feature),
+        cancel: Some(&stopped),
+        ..collect::Options::new(base)
+    };
     let started = Instant::now();
     let mut emit = |p: Progress| -> Result<()> {
         let kind = match p {
@@ -380,7 +392,7 @@ fn collected(
     };
     let written = collect::collect(
         lane_dir,
-        base,
+        &opts,
         review,
         &mut Stamped::new(out),
         Some(&mut emit),

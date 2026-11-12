@@ -4,14 +4,15 @@
 //! `## Second opinion` heading, in that order; the second opinion is last and runs to the end, because
 //! the findings hold headings of their own. The plan's `size:` and `second opinion:` rows, the leaks
 //! `verdict:` and, when the second opinion ran, its `exit:` are lines of their own, and each pass is a
-//! `### Pass n — … — counted` (or `— unreviewed`) heading above its findings.
+//! `### Pass n — … — counted` (or `— unreviewed`) heading above its findings. Files no reviewer reads are a
+//! `skipped:` block in the plan, before `size:`.
 use std::io::Write;
 use std::path::Path;
 
 use crate::config::Review;
 use crate::leaks::{self, Input};
-use crate::review::{Progress, Sink};
-use crate::{Result, ci, paths, review};
+use crate::review::{Cancel, Progress, Range, Sink};
+use crate::{Result, ci, paths, review, settled};
 
 /// One file under this many changed lines needs the local review only.
 pub const LOCAL_ONLY_LINES: u64 = 50;
@@ -26,11 +27,12 @@ fn head_line(head: &str) -> String {
 }
 
 /// Whether a collected `text` may stand in for a fresh collect at `head`. A file from another HEAD reviewed other
-/// code, and one owing a fallback or a leaks scan would carry a failure a rerun may clear.
+/// code, and one owing a fallback, a leaks scan or a stopped pass would carry a failure a rerun may clear.
 pub fn reusable(text: &str, head: &str) -> bool {
     text.lines().next() == Some(head_line(head).as_str())
         && !text.contains(&format!("\nsecond opinion: {FALLBACK_OWED}"))
         && !text.contains(&format!("\nverdict: {DID_NOT_RUN}"))
+        && !text.contains(&format!("\n{}", review::STOPPED))
 }
 
 /// A collected `text`'s pass count and review log dir, from its second opinion's pass headings and `log:` line.
@@ -55,24 +57,64 @@ pub fn needs_second_opinion(files: &[(String, u64)]) -> bool {
     files.len() > 1 || lines >= LOCAL_ONLY_LINES
 }
 
-/// The collected file for `<base>...HEAD` in `root`, the second opinion's progress lines going to `progress`.
+/// What a collect reviews, what its reviewers are told, and when they are stopped.
+#[derive(Clone, Copy)]
+pub struct Options<'a> {
+    /// The branch the leaks scan, and without `since` the second opinion, measure from.
+    pub base: &'a str,
+    /// The second opinion reads only the commits after this one.
+    pub since: Option<&'a str>,
+    /// The feature whose settled block every pass prompt carries.
+    pub feature: Option<&'a str>,
+    /// Kills the second opinion's running reviewers when it fires.
+    pub cancel: Cancel<'a>,
+}
+
+impl<'a> Options<'a> {
+    pub fn new(base: &'a str) -> Options<'a> {
+        Options {
+            base,
+            since: None,
+            feature: None,
+            cancel: None,
+        }
+    }
+
+    fn range(&self) -> Range<'a> {
+        match self.since {
+            Some(c) => Range::Since(c),
+            None => Range::Base(self.base),
+        }
+    }
+}
+
+/// The collected file for `root`'s branch, the second opinion's progress lines going to `progress`.
 /// `sink` hears `Started` once the passes are known, then each pass as it ends.
 /// Only a git error reading HEAD or the changed files, or the sink failing on a skipped second opinion, is the
 /// error: every later part writes its own failure into the file.
 pub fn collect(
     root: &Path,
-    base: &str,
+    opts: &Options,
     cfg: &Review,
     progress: &mut dyn Write,
     mut sink: Sink,
 ) -> Result<String> {
     let head = ci::head(root)?;
-    let files = review::numstat(root, base, &[])?;
+    let range = opts.range();
+    let skip = review::skip(root, review::numstat(root, range, &[])?);
+    let files = &skip.kept;
     let lines: u64 = files.iter().map(|(_, n)| n).sum();
-    let leaks = leaks_part(root, base);
-    let second = needs_second_opinion(&files);
+    let leaks = leaks_part(root, opts.base);
+    let second = needs_second_opinion(files);
     let (state, opinion) = if second {
-        second_opinion(root, base, cfg, &files, progress, sink)
+        let settled = opts.feature.and_then(|f| settled::for_feature(root, f));
+        let reviewing = Reviewing {
+            root,
+            range,
+            settled: settled.as_deref(),
+            cancel: opts.cancel,
+        };
+        second_opinion(&reviewing, cfg, files, progress, sink)
     } else {
         if let Some(sink) = sink.as_mut() {
             sink(Progress::Started {
@@ -80,12 +122,17 @@ pub fn collect(
                 dir: None,
             })?;
         }
+        let why = if files.is_empty() && !skip.skipped.is_empty() {
+            format!("no file left after skipping {}", skip.names())
+        } else {
+            format!(
+                "{} under {LOCAL_ONLY_LINES} changed lines",
+                count(files.len(), "file")
+            )
+        };
         (
             "skipped by size".to_string(),
-            format!(
-                "skipped by size: {} under {LOCAL_ONLY_LINES} changed lines\n",
-                count(files.len(), "file")
-            ),
+            format!("skipped by size: {why}\n"),
         )
     };
 
@@ -94,18 +141,24 @@ pub fn collect(
     } else {
         "local review only"
     };
+    let since = match range {
+        Range::Since(_) => " (since the last review)",
+        Range::Base(_) => "",
+    };
     let mut plan = format!(
-        "changed: {}, {} against {base}...HEAD\n",
+        "changed: {}, {} against {}{since}\n",
         count(files.len(), "file"),
-        count(lines as usize, "line")
+        count(lines as usize, "line"),
+        range.spec()
     );
-    for (file, n) in &files {
+    for (file, n) in files {
         plan.push_str(&format!(
             "- {} ({})\n",
             review::one_line(file),
             count(*n as usize, "line")
         ));
     }
+    plan.push_str(&skip.lines());
     Ok(format!(
         "{}\n\n## Plan\n\n{plan}size: {size}\nsecond opinion: {state}\n\n## Leaks\n\n{leaks}\n## Second opinion\n\n{opinion}",
         head_line(&head)
@@ -133,10 +186,17 @@ fn leaks_part(root: &Path, base: &str) -> String {
     }
 }
 
+/// The checkout, the commits its passes read, and the settled block their prompts carry.
+struct Reviewing<'a> {
+    root: &'a Path,
+    range: Range<'a>,
+    settled: Option<&'a str>,
+    cancel: Cancel<'a>,
+}
+
 /// The plan's state line and the section's text.
 fn second_opinion(
-    root: &Path,
-    base: &str,
+    on: &Reviewing,
     cfg: &Review,
     files: &[(String, u64)],
     progress: &mut dyn Write,
@@ -149,7 +209,8 @@ fn second_opinion(
             format!("exit: 2\nunreviewed: {reason}\n{log}{passes}"),
         )
     };
-    let passes = review::group(files, cfg.pass_lines);
+    let root = on.root;
+    let passes = review::plan(root, on.range, files, cfg.pass_lines);
     let mut started = |dir: Option<&Path>| match sink.as_mut() {
         Some(sink) => sink(Progress::Started {
             passes: passes.len(),
@@ -167,17 +228,27 @@ fn second_opinion(
     if let Err(e) = started(Some(&dir)) {
         return unreviewed(&e.to_string(), Some(&dir), "");
     }
-    if let Err(reason) = review::probe(cfg, &dir) {
+    if let Err(reason) = review::probe(cfg, &dir, on.cancel) {
         return unreviewed(&reason, Some(&dir), "");
+    }
+    if on.cancel.is_some_and(|stop| stop()) {
+        return unreviewed("stopped", Some(&dir), "");
     }
     let ran = match review::run_passes(
         cfg,
         root,
         &dir,
         &passes,
-        |n, pass| review::diff_pass_prompt(root, base, &dir, n, pass),
+        |n, pass| {
+            let prompt = review::diff_pass_prompt(root, on.range, &dir, n, pass)?;
+            Ok(match on.settled {
+                Some(s) => review::with_settled(&prompt, s),
+                None => prompt,
+            })
+        },
         progress,
         sink,
+        on.cancel,
     ) {
         Ok(r) => r,
         Err(e) => return unreviewed(&e.to_string(), Some(&dir), ""),
@@ -232,5 +303,11 @@ mod tests {
         assert!(!reusable(&file("abc", &owed, "clean"), "abc"));
         let errored = format!("{DID_NOT_RUN} — x");
         assert!(!reusable(&file("abc", counted, &errored), "abc"));
+        let stopped = format!(
+            "{}\n### Pass 2 — b.rs (9 lines, 1 s, m) — unreviewed\n\n{}",
+            file("abc", counted, "clean"),
+            review::STOPPED
+        );
+        assert!(!reusable(&stopped, "abc"));
     }
 }

@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use crate::config::Review;
+use crate::docs::{log, state};
 use crate::error::io;
 use crate::{Error, Result, clock, paths};
 
@@ -23,50 +24,206 @@ pub const FLAGS: [&str; 6] = [
     "--stream-partial-output",
 ];
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Pass {
     pub files: Vec<String>,
     pub lines: u64,
     /// One file over the cap, alone in its pass.
     pub over: bool,
+    /// The slice of its one file's diff this pass covers, when the file was split.
+    pub part: Option<Part>,
+}
+
+/// Part `k` of `n` of one file's diff, with its own copy of the file header.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Part {
+    pub k: usize,
+    pub n: usize,
+    pub diff: String,
 }
 
 pub fn group(files: &[(String, u64)], cap: u64) -> Vec<Pass> {
     let mut out = Vec::new();
-    let mut cur = Pass {
-        files: Vec::new(),
-        lines: 0,
-        over: false,
-    };
+    let mut cur = Pass::default();
     for (file, n) in files {
         if !cur.files.is_empty() && (*n > cap || cur.lines + n > cap) {
-            out.push(std::mem::replace(
-                &mut cur,
-                Pass {
-                    files: Vec::new(),
-                    lines: 0,
-                    over: false,
-                },
-            ));
+            out.push(std::mem::take(&mut cur));
         }
         cur.files.push(file.clone());
         cur.lines += n;
         if *n > cap {
             cur.over = true;
-            out.push(std::mem::replace(
-                &mut cur,
-                Pass {
-                    files: Vec::new(),
-                    lines: 0,
-                    over: false,
-                },
-            ));
+            out.push(std::mem::take(&mut cur));
         }
     }
     if !cur.files.is_empty() {
         out.push(cur);
     }
     out
+}
+
+/// The commits a review reads: the branch since it left `Base`, or only the commits after `Since`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Range<'a> {
+    Base(&'a str),
+    Since(&'a str),
+}
+
+impl Range<'_> {
+    /// The git revision range.
+    pub fn spec(&self) -> String {
+        match self {
+            Range::Base(b) => format!("{b}...HEAD"),
+            Range::Since(c) => format!("{c}..HEAD"),
+        }
+    }
+
+    /// How a prompt names what the diff is measured from.
+    fn against(&self) -> String {
+        match self {
+            Range::Base(b) => format!("against {b}"),
+            Range::Since(c) => format!("since commit {c}"),
+        }
+    }
+}
+
+/// `group`'s passes, each file over twice `cap` replaced by one pass per part of its diff over `range`.
+/// A file whose diff cannot be read stays whole, so its pass reports the error.
+pub fn plan(root: &Path, range: Range, files: &[(String, u64)], cap: u64) -> Vec<Pass> {
+    let mut out = Vec::new();
+    for pass in group(files, cap) {
+        let parts = if pass.over && pass.lines > 2 * cap {
+            diff(root, range, &pass.files)
+                .map(|text| split_diff(&text, cap))
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        if parts.len() < 2 {
+            out.push(pass);
+            continue;
+        }
+        let n = parts.len();
+        for (i, (diff, lines)) in parts.into_iter().enumerate() {
+            let part = Part { k: i + 1, n, diff };
+            out.push(Pass {
+                files: pass.files.clone(),
+                lines,
+                over: false,
+                part: Some(part),
+            });
+        }
+    }
+    out
+}
+
+/// One file's diff as parts of whole hunks packed up to `cap` changed lines, each headed by the file header,
+/// with each part's changed lines. A hunk over `cap` is first cut into even chunks of at most `cap`.
+/// A text holding more than one file header, as a file that changed type does, stays whole.
+pub fn split_diff(text: &str, cap: u64) -> Vec<(String, u64)> {
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let starts: Vec<usize> = (0..lines.len())
+        .filter(|&i| lines[i].starts_with("@@"))
+        .collect();
+    let headers = lines
+        .iter()
+        .filter(|l| l.starts_with("diff --git "))
+        .count();
+    let (Some(&first), true) = (starts.first(), headers <= 1) else {
+        return vec![(text.to_string(), 0)];
+    };
+    let header = lines[..first].concat();
+    let mut parts: Vec<(String, u64)> = Vec::new();
+    for (i, &start) in starts.iter().enumerate() {
+        let end = starts.get(i + 1).copied().unwrap_or(lines.len());
+        for (hunk, n) in cut_hunk(lines[start], &lines[start + 1..end], cap) {
+            match parts.last_mut() {
+                Some((text, m)) if *m + n <= cap => {
+                    text.push_str(&hunk);
+                    *m += n;
+                }
+                _ => parts.push((format!("{header}{hunk}"), n)),
+            }
+        }
+    }
+    parts
+}
+
+fn is_change(line: &str) -> bool {
+    line.starts_with('+') || line.starts_with('-')
+}
+
+fn changed(lines: &[&str]) -> u64 {
+    lines.iter().filter(|l| is_change(l)).count() as u64
+}
+
+/// A hunk over `cap` changed lines as chunks with recomputed `@@` headers; a `\ No newline` line stays with the
+/// line before it, and context after a chunk's last change stays with that chunk.
+fn cut_hunk(head: &str, body: &[&str], cap: u64) -> Vec<(String, u64)> {
+    let total = changed(body);
+    let starts = hunk_starts(head);
+    let (Some((mut old, mut new, tail)), true) = (starts, total > cap && cap > 0) else {
+        return vec![(format!("{head}{}", body.concat()), total)];
+    };
+    let size = total.div_ceil(total.div_ceil(cap));
+    let mut chunks: Vec<Vec<&str>> = vec![Vec::new()];
+    let mut n = 0;
+    for line in body {
+        if is_change(line) {
+            if n == size {
+                chunks.push(Vec::new());
+                n = 0;
+            }
+            n += 1;
+        }
+        chunks.last_mut().expect("one chunk at least").push(line);
+    }
+    let mut out = Vec::new();
+    for (i, chunk) in chunks.iter().enumerate() {
+        let olds = chunk
+            .iter()
+            .filter(|l| !l.starts_with('+') && !l.starts_with('\\'))
+            .count() as u64;
+        let news = chunk
+            .iter()
+            .filter(|l| !l.starts_with('-') && !l.starts_with('\\'))
+            .count() as u64;
+        // An empty side names the line before it, as git writes `-0,0` for an added file.
+        let at = |pos: u64, count: u64| {
+            if count == 0 {
+                pos.saturating_sub(1)
+            } else {
+                pos
+            }
+        };
+        let tail = if i == 0 { tail } else { "" };
+        out.push((
+            format!(
+                "@@ -{},{olds} +{},{news} @@{tail}\n{}",
+                at(old, olds),
+                at(new, news),
+                chunk.concat()
+            ),
+            changed(chunk),
+        ));
+        old += olds;
+        new += news;
+    }
+    out
+}
+
+/// The first old and new line a hunk covers, and the text after its closing `@@`.
+fn hunk_starts(head: &str) -> Option<(u64, u64, &str)> {
+    let (old, rest) = head.strip_prefix("@@ -")?.split_once(" +")?;
+    let (new, tail) = rest.split_once(" @@")?;
+    let first = |range: &str| -> Option<u64> {
+        let (start, count) = match range.split_once(',') {
+            Some((s, c)) => (s.parse::<u64>().ok()?, c.parse::<u64>().ok()?),
+            None => (range.parse::<u64>().ok()?, 1),
+        };
+        Some(if count == 0 { start + 1 } else { start })
+    };
+    Some((first(old)?, first(new)?, tail.trim_end_matches('\n')))
 }
 
 pub fn parse_numstat(text: &str) -> Vec<(String, u64)> {
@@ -81,8 +238,8 @@ pub fn parse_numstat(text: &str) -> Vec<(String, u64)> {
 }
 
 /// Paths come back relative to the repo root whatever `cwd` is.
-pub fn numstat(cwd: &Path, base: &str, paths: &[String]) -> Result<Vec<(String, u64)>> {
-    let range = format!("{base}...HEAD");
+pub fn numstat(cwd: &Path, range: Range, paths: &[String]) -> Result<Vec<(String, u64)>> {
+    let range = range.spec();
     let out = git(
         cwd,
         &[
@@ -94,12 +251,145 @@ pub fn numstat(cwd: &Path, base: &str, paths: &[String]) -> Result<Vec<(String, 
     Ok(parse_numstat(&out))
 }
 
-pub fn diff(root: &Path, base: &str, files: &[String]) -> Result<String> {
-    let range = format!("{base}...HEAD");
+/// Changed files split into the ones a reviewer reads and the ones nobody does.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Skip {
+    pub kept: Vec<(String, u64)>,
+    /// Each skipped path with why: `tool-written`, `vendored` or `generated`.
+    pub skipped: Vec<(String, &'static str)>,
+    /// Why vendored and generated files went unchecked, when `git check-attr` failed.
+    pub unchecked: Option<String>,
+}
+
+impl Skip {
+    /// The `skipped:` block, one `- path (reason)` per file; empty when nothing was skipped or unchecked.
+    pub fn lines(&self) -> String {
+        if self.skipped.is_empty() && self.unchecked.is_none() {
+            return String::new();
+        }
+        let mut out = match &self.unchecked {
+            Some(e) => format!("skipped: vendored and generated files not checked ({e})\n"),
+            None => "skipped:\n".to_string(),
+        };
+        for (path, why) in &self.skipped {
+            out.push_str(&format!("- {} ({why})\n", one_line(path)));
+        }
+        out
+    }
+
+    /// The skipped paths, comma-separated.
+    pub fn names(&self) -> String {
+        let paths: Vec<String> = self.skipped.iter().map(|(p, _)| p.clone()).collect();
+        file_list(&paths)
+    }
+}
+
+/// Drops the files factory writes itself and the ones `.gitattributes` in `root` marks vendored or generated.
+pub fn skip(root: &Path, files: Vec<(String, u64)>) -> Skip {
+    let mut out = Skip::default();
+    let checked: Vec<&str> = files
+        .iter()
+        .map(|(p, _)| p.as_str())
+        .filter(|p| !tool_written(p))
+        .collect();
+    let marked = if checked.is_empty() {
+        Vec::new()
+    } else {
+        check_attr(root, &checked).unwrap_or_else(|e| {
+            out.unchecked = Some(e.to_string());
+            Vec::new()
+        })
+    };
+    for (path, n) in files {
+        if tool_written(&path) {
+            out.skipped.push((path, "tool-written"));
+        } else if let Some((_, why)) = marked.iter().find(|(p, _)| *p == path) {
+            out.skipped.push((path, why));
+        } else {
+            out.kept.push((path, n));
+        }
+    }
+    out
+}
+
+/// `docs/features/<dir>/log.jsonl` or `state.toml`, one directory level deep.
+fn tool_written(path: &str) -> bool {
+    matches!(
+        path.split('/').collect::<Vec<_>>()[..],
+        ["docs", "features", dir, file] if !dir.is_empty() && (file == log::FILE || file == state::FILE)
+    )
+}
+
+/// The paths among `paths` whose `linguist-vendored` or `linguist-generated` is set, read from the checkout.
+fn check_attr(root: &Path, paths: &[&str]) -> Result<Vec<(String, &'static str)>> {
+    let cmd = "git check-attr -z --stdin linguist-vendored linguist-generated".to_string();
+    let fail = |detail: String| Error::Tool {
+        cmd: cmd.clone(),
+        detail,
+    };
+    let mut child = Command::new("git")
+        .args([
+            "check-attr",
+            "-z",
+            "--stdin",
+            "linguist-vendored",
+            "linguist-generated",
+        ])
+        .current_dir(root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| fail(format!("could not start git: {e}")))?;
+    let input: Vec<u8> = paths.iter().flat_map(|p| p.bytes().chain([0])).collect();
+    let mut stdin = child.stdin.take().expect("stdin is piped");
+    // A long list fills the pipe both ways: the writer runs beside the reader.
+    let writer = std::thread::spawn(move || stdin.write_all(&input));
+    let out = child
+        .wait_with_output()
+        .map_err(|e| fail(format!("could not read git: {e}")))?;
+    let written = writer.join().expect("the stdin writer does not panic");
+    if !out.status.success() {
+        return Err(fail(
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        ));
+    }
+    written.map_err(|e| fail(format!("could not write to git: {e}")))?;
+    Ok(parse_check_attr(&String::from_utf8_lossy(&out.stdout)))
+}
+
+/// `path NUL attr NUL value NUL` triples; `set` or `true` marks the path.
+fn parse_check_attr(text: &str) -> Vec<(String, &'static str)> {
+    let fields: Vec<&str> = text.split('\0').collect();
+    let mut out: Vec<(String, &'static str)> = Vec::new();
+    for [path, attr, value] in fields.as_chunks::<3>().0 {
+        let why = match *attr {
+            "linguist-vendored" => "vendored",
+            "linguist-generated" => "generated",
+            _ => continue,
+        };
+        if matches!(*value, "set" | "true") && !out.iter().any(|(p, _)| p == path) {
+            out.push((path.to_string(), why));
+        }
+    }
+    out
+}
+
+/// The diff of `files`, named literally, in plain text whatever the user's color or external-diff config.
+pub fn diff(root: &Path, range: Range, files: &[String]) -> Result<String> {
+    let range = range.spec();
     git(
         root,
         &[
-            &["diff", "--no-renames", &range, "--"],
+            &[
+                "--literal-pathspecs",
+                "diff",
+                "--no-color",
+                "--no-ext-diff",
+                "--no-renames",
+                &range,
+                "--",
+            ],
             &str_refs(files)[..],
         ]
         .concat(),
@@ -158,7 +448,13 @@ pub fn new_log_dir(data_dir: &Path) -> Result<PathBuf> {
 pub enum Ended {
     Exited(Option<i32>),
     Killed,
+    Stopped,
 }
+
+/// Asked while a reviewer runs, at most once every [`CANCEL_EVERY`]; `true` kills it. `None` never asks.
+pub type Cancel<'a> = Option<&'a (dyn Fn() -> bool + Sync)>;
+
+pub const CANCEL_EVERY: Duration = Duration::from_secs(1);
 
 /// Each running reviewer's own process group: a Ctrl-C reaches factory alone, so the handler must kill them.
 const SLOTS: usize = 256;
@@ -226,6 +522,7 @@ fn run_logged(
     out: &Path,
     err: &Path,
     timeout: Duration,
+    cancel: Cancel,
 ) -> Result<(Ended, Duration)> {
     let file = |p: &Path| File::create(p).map_err(io(format!("create {}", p.display())));
     cmd.stdin(Stdio::null())
@@ -243,16 +540,27 @@ fn run_logged(
         ))
     })?;
     watched.0.store(child.id() as i32, Ordering::SeqCst);
+    let mut asked: Option<Instant> = None;
     loop {
         if let Some(status) = child.try_wait().map_err(io("poll the reviewer"))? {
             return Ok((Ended::Exited(status.code()), started.elapsed()));
         }
-        if started.elapsed() >= timeout {
+        let ended = if started.elapsed() >= timeout {
+            Some(Ended::Killed)
+        } else if let Some(stop) = cancel
+            && asked.is_none_or(|t| t.elapsed() >= CANCEL_EVERY)
+        {
+            asked = Some(Instant::now());
+            stop().then_some(Ended::Stopped)
+        } else {
+            None
+        };
+        if let Some(ended) = ended {
             // SAFETY: a plain syscall on the group this child leads.
             unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
             let _ = child.kill();
             let _ = child.wait();
-            return Ok((Ended::Killed, started.elapsed()));
+            return Ok((ended, started.elapsed()));
         }
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -261,7 +569,8 @@ fn run_logged(
 /// Listing the models takes about a second; a hung agent must not hold preflight for a whole pass's timeout.
 const PROBE_SECS: u64 = 60;
 
-pub fn probe(cfg: &Review, dir: &Path) -> std::result::Result<(), String> {
+/// `cancel` firing ends the probe as unreviewed, so a stop never waits on a hung agent.
+pub fn probe(cfg: &Review, dir: &Path, cancel: Cancel) -> std::result::Result<(), String> {
     let out = dir.join("list-models.txt");
     let mut cmd = Command::new(&cfg.agent);
     cmd.arg("--list-models");
@@ -271,6 +580,7 @@ pub fn probe(cfg: &Review, dir: &Path) -> std::result::Result<(), String> {
         &out,
         &out.with_extension("err"),
         Duration::from_secs(secs),
+        cancel,
     ) {
         Ok((ended, _)) => ended,
         Err(e) => return Err(e.to_string()),
@@ -287,6 +597,7 @@ pub fn probe(cfg: &Review, dir: &Path) -> std::result::Result<(), String> {
         .unwrap_or("no output")
         .to_string();
     match ended {
+        Ended::Stopped => Err("stopped".to_string()),
         Ended::Killed => Err(format!(
             "{} --list-models timed out after {secs} s",
             cfg.agent
@@ -368,7 +679,14 @@ pub struct Outcome {
     pub stderr: String,
 }
 
-pub fn run_pass(cfg: &Review, cwd: &Path, dir: &Path, n: usize, prompt: &str) -> Result<Outcome> {
+pub fn run_pass(
+    cfg: &Review,
+    cwd: &Path,
+    dir: &Path,
+    n: usize,
+    prompt: &str,
+    cancel: Cancel,
+) -> Result<Outcome> {
     let stream = dir.join(format!("review-{n}.jsonl"));
     let err = dir.join(format!("review-{n}.err"));
     let mut cmd = Command::new(&cfg.agent);
@@ -377,7 +695,8 @@ pub fn run_pass(cfg: &Review, cwd: &Path, dir: &Path, n: usize, prompt: &str) ->
         .args(["--model", &cfg.model])
         .arg(prompt)
         .current_dir(cwd);
-    let (ended, elapsed) = run_logged(cmd, &stream, &err, Duration::from_secs(cfg.timeout_secs))?;
+    let timeout = Duration::from_secs(cfg.timeout_secs);
+    let (ended, elapsed) = run_logged(cmd, &stream, &err, timeout, cancel)?;
     let text = fs::read(&stream).map_err(io(format!("read {}", stream.display())))?;
     let stderr = fs::read_to_string(&err)
         .unwrap_or_default()
@@ -415,6 +734,8 @@ pub type Sink<'a> = Option<&'a mut dyn FnMut(Progress) -> Result<()>>;
 
 /// Starts every pass at once, writing each one's progress line to `progress` as it starts; returns in pass order.
 /// `sink` hears each pass end as it ends; its first error is returned once every pass has ended.
+/// `cancel` firing kills every pass still running, each then ending [`Ended::Stopped`].
+#[allow(clippy::too_many_arguments)]
 pub fn run_passes(
     cfg: &Review,
     cwd: &Path,
@@ -423,6 +744,7 @@ pub fn run_passes(
     prompt: impl Fn(usize, &Pass) -> Result<String> + Sync,
     progress: &mut dyn Write,
     mut sink: Sink,
+    cancel: Cancel,
 ) -> Result<Vec<Ran>> {
     // Written before any spawn: a failed write must not leave reviewers running for nothing.
     for (i, pass) in passes.iter().enumerate() {
@@ -431,7 +753,7 @@ pub fn run_passes(
             "review pass {}/{}: {} ({} lines)",
             i + 1,
             passes.len(),
-            file_list(&pass.files),
+            covers(pass),
             pass.lines
         )
         .map_err(io("review progress"))?;
@@ -446,7 +768,7 @@ pub fn run_passes(
             let ended = ended.clone();
             running.push(s.spawn(move || {
                 let started = Instant::now();
-                let outcome = prompt(n, pass).and_then(|p| run_pass(cfg, cwd, dir, n, &p));
+                let outcome = prompt(n, pass).and_then(|p| run_pass(cfg, cwd, dir, n, &p, cancel));
                 let elapsed = outcome.as_ref().map_or(started.elapsed(), |o| o.elapsed);
                 let _ = ended.send((n, elapsed));
                 Ran { outcome, elapsed }
@@ -487,6 +809,14 @@ pub fn one_line(path: &str) -> String {
     line
 }
 
+/// The pass's files, and which part of the file's diff when it covers one.
+fn covers(pass: &Pass) -> String {
+    match &pass.part {
+        Some(p) => format!("{} (part {} of {})", file_list(&pass.files), p.k, p.n),
+        None => file_list(&pass.files),
+    }
+}
+
 fn file_list(files: &[String]) -> String {
     files
         .iter()
@@ -512,33 +842,54 @@ pub fn pass_header(n: usize, pass: &Pass, ran: &Ran, cfg: &Review) -> String {
     };
     format!(
         "Pass {n} — {}{over} ({} lines, {} s, {})",
-        file_list(&pass.files),
+        covers(pass),
         pass.lines,
         ran.elapsed.as_secs(),
         cfg.model
     )
 }
 
-/// Writes the pass's slice of `<base>...HEAD` into the log dir and asks the reviewer to read it.
+/// Writes the pass's slice of `range` into the log dir and asks the reviewer to read it.
 pub fn diff_pass_prompt(
     root: &Path,
-    base: &str,
+    range: Range,
     dir: &Path,
     n: usize,
     pass: &Pass,
 ) -> Result<String> {
     let file = dir.join(format!("review-{n}.diff"));
-    fs::write(&file, diff(root, base, &pass.files)?)
-        .map_err(io(format!("write {}", file.display())))?;
-    Ok(diff_prompt(&pass.files, base, &file))
+    let (text, what) = match &pass.part {
+        Some(p) => (
+            p.diff.clone(),
+            format!(
+                "Part {} of {} of the diff of {}",
+                p.k,
+                p.n,
+                pass.files.join(" ")
+            ),
+        ),
+        None => (
+            diff(root, range, &pass.files)?,
+            format!("The diff of {}", pass.files.join(" ")),
+        ),
+    };
+    fs::write(&file, text).map_err(io(format!("write {}", file.display())))?;
+    Ok(diff_prompt(&what, &range.against(), &file))
 }
 
 fn exit_words(code: Option<i32>) -> String {
     code.map_or("killed by a signal".to_string(), |c| format!("exit {c}"))
 }
 
-/// A kill's partial counts (it had the whole timeout); an exit's does not, or an opening line stops the fallback.
+/// The body of a pass a stop killed.
+pub const STOPPED: &str = "unreviewed (stopped)";
+
+/// A kill's partial does not count, since the pass did not finish its files; nor does a failed exit's, or an
+/// opening line would stop the fallback.
 fn body(o: &Outcome, timeout_secs: u64) -> (String, bool) {
+    if o.ended == Ended::Stopped {
+        return (format!("{STOPPED}\n"), false);
+    }
     let p = &o.parsed;
     if let Some(r) = p.result.as_deref().filter(|r| !r.trim().is_empty()) {
         return (format!("{}\n", r.trim_end()), true);
@@ -549,7 +900,7 @@ fn body(o: &Outcome, timeout_secs: u64) -> (String, bool) {
             return match partial {
                 Some(t) => (
                     format!("(timed out after {timeout_secs} s, partial)\n\n{t}\n"),
-                    true,
+                    false,
                 ),
                 None => (
                     format!("unreviewed (timed out after {timeout_secs} s with no text)\n"),
@@ -558,6 +909,7 @@ fn body(o: &Outcome, timeout_secs: u64) -> (String, bool) {
             };
         }
         Ended::Exited(code) => code,
+        Ended::Stopped => unreachable!("returned above"),
     };
     let words = exit_words(code);
     let mut text = match &p.error {
@@ -589,10 +941,10 @@ fn body(o: &Outcome, timeout_secs: u64) -> (String, bool) {
     (text, false)
 }
 
-pub fn diff_prompt(files: &[String], base: &str, diff_file: &Path) -> String {
+/// `what` names the diff, as `The diff of a.rs b.rs`, and `against` its range, as `against main`.
+pub fn diff_prompt(what: &str, against: &str, diff_file: &Path) -> String {
     format!(
-        "Adversarial code review. The diff of {} against {base} is in {}: read it, and read any file in the repository you need for context. Report only defects you can point to at file:line with a failure scenario; no praise, no style. Do not edit anything.",
-        files.join(" "),
+        "Adversarial code review. {what} {against} is in {}: read it, and read any file in the repository you need for context. Report only defects you can point to at file:line with a failure scenario; no praise, no style. Do not edit anything.",
         diff_file.display()
     )
 }
@@ -602,6 +954,14 @@ pub fn doc_prompt(text: &str, doc: &Path) -> String {
         "{}\n\nThe document is {}: read it, and read any file in the repository you need for context. Do not edit anything.",
         text.trim_end(),
         doc.display()
+    )
+}
+
+/// `settled` is the feature's settled block, appended with the rule for contradicting it.
+pub fn with_settled(prompt: &str, settled: &str) -> String {
+    format!(
+        "{prompt}\n\nSettled for this feature: a finding that contradicts an entry below must name the entry and say why it is wrong.\n\n{}",
+        settled.trim_end()
     )
 }
 
@@ -662,7 +1022,13 @@ mod tests {
                 Ended::Killed,
                 vec![OPENING],
                 "(timed out after 9 s, partial)\n\nI'll read the diff.\n",
-                true,
+                false,
+            ),
+            (
+                Ended::Stopped,
+                vec![OPENING, DONE],
+                "unreviewed (stopped)\n",
+                false,
             ),
             (
                 Ended::Exited(Some(1)),
@@ -705,6 +1071,74 @@ mod tests {
             let got = body(&outcome(ended, &stream, "boom"), 9);
             assert_eq!(got, (want.to_string(), counts), "{ended:?} {stream:?}");
         }
+    }
+
+    #[test]
+    fn tool_written_files_are_one_feature_folder_deep() {
+        for (path, want) in [
+            ("docs/features/001-x/log.jsonl", true),
+            ("docs/features/001-x/state.toml", true),
+            ("docs/features/log.jsonl", false),
+            ("docs/features//state.toml", false),
+            ("docs/features/001-x/sub/log.jsonl", false),
+            ("docs/features/001-x/prd.md", false),
+            ("src/docs/features/001-x/log.jsonl", false),
+        ] {
+            assert_eq!(tool_written(path), want, "{path}");
+        }
+    }
+
+    #[test]
+    fn check_attr_marks_set_or_true_and_names_the_first_reason() {
+        let out = [
+            "a.xsd",
+            "linguist-vendored",
+            "set",
+            "a.xsd",
+            "linguist-generated",
+            "set",
+            "b.rs",
+            "linguist-vendored",
+            "unspecified",
+            "b.rs",
+            "linguist-generated",
+            "true",
+            "c.rs",
+            "linguist-vendored",
+            "unset",
+            "c.rs",
+            "linguist-generated",
+            "false",
+            "",
+        ]
+        .join("\0");
+        assert_eq!(
+            parse_check_attr(&out),
+            [
+                ("a.xsd".to_string(), "vendored"),
+                ("b.rs".to_string(), "generated")
+            ]
+        );
+    }
+
+    #[test]
+    fn the_skipped_block_lists_each_file_and_says_when_attributes_went_unchecked() {
+        let mut s = Skip::default();
+        assert_eq!(s.lines(), "");
+        s.skipped
+            .push(("docs/features/001-x/log.jsonl".into(), "tool-written"));
+        s.skipped.push(("t/a.xsd".into(), "vendored"));
+        assert_eq!(
+            s.lines(),
+            "skipped:\n- docs/features/001-x/log.jsonl (tool-written)\n- t/a.xsd (vendored)\n"
+        );
+        assert_eq!(s.names(), "docs/features/001-x/log.jsonl, t/a.xsd");
+        s.skipped.clear();
+        s.unchecked = Some("boom".into());
+        assert_eq!(
+            s.lines(),
+            "skipped: vendored and generated files not checked (boom)\n"
+        );
     }
 
     fn sized(ns: &[u64]) -> Vec<(String, u64)> {
@@ -800,5 +1234,185 @@ mod tests {
         for text in ["grok-4.7-high-max", "xgrok-4.7-high", "grok-4.7", ""] {
             assert!(!lists_model(text, "grok-4.7-high"), "{text}");
         }
+    }
+
+    fn run_git(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// `git diff` of `f` in a fresh repo at `dir`: from `before` to `after`, or added as `after` when `before` is `None`.
+    fn real_diff(dir: &Path, before: Option<&str>, after: &str) -> String {
+        run_git(dir, &["init", "-q"]);
+        let f = dir.join("f");
+        let diff = [
+            "diff",
+            "--no-color",
+            "--no-ext-diff",
+            "-U3",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+        ];
+        match before {
+            Some(b) => {
+                fs::write(&f, b).unwrap();
+                run_git(dir, &["add", "f"]);
+                fs::write(&f, after).unwrap();
+                run_git(dir, &diff)
+            }
+            None => {
+                fs::write(&f, after).unwrap();
+                run_git(dir, &["add", "f"]);
+                run_git(dir, &[&diff[..], &["--cached"]].concat())
+            }
+        }
+    }
+
+    fn numbered(prefix: &str, range: std::ops::RangeInclusive<usize>) -> String {
+        range.map(|i| format!("{prefix}{i}\n")).collect()
+    }
+
+    /// The `+` and `-` lines after the file header.
+    fn changes(text: &str) -> u64 {
+        let hunks = &text[text.find("\n@@").unwrap()..];
+        changed(&hunks.split_inclusive('\n').collect::<Vec<_>>())
+    }
+
+    fn hunk_heads(text: &str) -> Vec<&str> {
+        text.lines().filter(|l| l.starts_with("@@")).collect()
+    }
+
+    #[test]
+    fn a_huge_hunk_splits_with_headers_git_can_apply() {
+        let cases = [
+            (
+                "changes between short runs of context",
+                numbered("a", 1..=40),
+                [
+                    numbered("a", 1..=5),
+                    numbered("b", 6..=10),
+                    numbered("a", 11..=14),
+                    numbered("c", 1..=20),
+                    numbered("a", 31..=40),
+                ]
+                .concat(),
+            ),
+            (
+                "a last line without a newline",
+                numbered("a", 1..=30).trim_end().to_string(),
+                [numbered("a", 1..=5), numbered("b", 1..=41)]
+                    .concat()
+                    .trim_end()
+                    .to_string(),
+            ),
+            (
+                "lines added between kept ones",
+                numbered("a", 1..=20),
+                [
+                    numbered("a", 1..=10),
+                    numbered("n", 1..=35),
+                    numbered("a", 11..=20),
+                ]
+                .concat(),
+            ),
+        ];
+        for (what, before, after) in cases {
+            let repo = tempfile::tempdir().unwrap();
+            let text = real_diff(repo.path(), Some(&before), &after);
+            assert_eq!(hunk_heads(&text).len(), 1, "{what}: {text}");
+            let total = changes(&text);
+            let parts = split_diff(&text, 10);
+            assert!(parts.len() > 1, "{what}: {parts:?}");
+            for (part, n) in &parts {
+                assert!(*n <= 10, "{what}: {part}");
+                assert_eq!(*n, changes(part), "{what}: {part}");
+            }
+            assert_eq!(parts.iter().map(|(_, n)| n).sum::<u64>(), total, "{what}");
+
+            fs::write(repo.path().join("f"), &before).unwrap();
+            let patches = tempfile::tempdir().unwrap();
+            for (k, (part, _)) in parts.iter().enumerate() {
+                let p = patches.path().join(format!("{k}.diff"));
+                fs::write(&p, part).unwrap();
+                let p = p.to_str().unwrap();
+                run_git(repo.path(), &["apply", "--check", "--unidiff-zero", p]);
+                run_git(repo.path(), &["apply", "--unidiff-zero", p]);
+            }
+            let got = fs::read_to_string(repo.path().join("f")).unwrap();
+            assert_eq!(got, after, "{what}: {parts:?}");
+        }
+    }
+
+    #[test]
+    fn whole_hunks_pack_up_to_the_cap() {
+        let mut after = String::new();
+        for i in 1..=100 {
+            let edited = (0..6).any(|e| i == 5 + 15 * e || i == 6 + 15 * e);
+            after.push_str(&format!("{}{i}\n", if edited { "b" } else { "a" }));
+        }
+        let repo = tempfile::tempdir().unwrap();
+        let text = real_diff(repo.path(), Some(&numbered("a", 1..=100)), &after);
+        let heads = hunk_heads(&text);
+        assert_eq!(heads.len(), 6, "{text}");
+        let parts = split_diff(&text, 10);
+        let got: Vec<(Vec<&str>, u64)> = parts.iter().map(|(p, n)| (hunk_heads(p), *n)).collect();
+        assert_eq!(
+            got,
+            [
+                (heads[0..2].to_vec(), 8),
+                (heads[2..4].to_vec(), 8),
+                (heads[4..6].to_vec(), 8)
+            ]
+        );
+        assert_eq!(split_diff(&text, 24), [(text.clone(), 24)]);
+    }
+
+    #[test]
+    fn a_diff_with_two_file_headers_stays_whole() {
+        let repo = tempfile::tempdir().unwrap();
+        let one = real_diff(repo.path(), None, &numbered("n", 1..=30));
+        let two = format!("{one}{one}");
+        assert_eq!(split_diff(&two, 10), [(two.clone(), 0)]);
+    }
+
+    #[test]
+    fn the_file_header_heads_every_part() {
+        let repo = tempfile::tempdir().unwrap();
+        let text = real_diff(repo.path(), None, &numbered("n", 1..=30));
+        let header = &text[..text.find("\n@@").unwrap() + 1];
+        assert!(
+            header.starts_with("diff --git a/f b/f\nnew file mode "),
+            "{header}"
+        );
+        assert!(header.ends_with("--- /dev/null\n+++ b/f\n"), "{header}");
+        let parts = split_diff(&text, 10);
+        let heads: Vec<Vec<&str>> = parts.iter().map(|(p, _)| hunk_heads(p)).collect();
+        assert_eq!(
+            heads,
+            [
+                ["@@ -0,0 +1,10 @@"],
+                ["@@ -0,0 +11,10 @@"],
+                ["@@ -0,0 +21,10 @@"]
+            ]
+        );
+        for (part, _) in &parts {
+            assert!(part.starts_with(header), "{part}");
+        }
+        let added: String = parts
+            .iter()
+            .flat_map(|(p, _)| p.lines().filter_map(|l| l.strip_prefix('+')))
+            .filter(|l| !l.starts_with("++ "))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        assert_eq!(added, numbered("n", 1..=30));
     }
 }

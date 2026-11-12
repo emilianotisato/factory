@@ -24,21 +24,57 @@ fn fixture(name: &str, timeout: u64) -> Fixture {
 
 /// `feat/review` off `main`, committing each file with its number of lines.
 fn branch(name: &str, timeout: u64, files: &[(&str, usize)]) -> Fixture {
+    branch_off(name, timeout, &[], files)
+}
+
+/// `branch`, after committing each `on_main` file with its text on `main`.
+fn branch_off(
+    name: &str,
+    timeout: u64,
+    on_main: &[(&str, &str)],
+    files: &[(&str, usize)],
+) -> Fixture {
     let fx = Fixture::new(name);
+    if !on_main.is_empty() {
+        for (f, text) in on_main {
+            fs::write(fx.path().join(f), text).unwrap();
+            fx.git(&["add", f]);
+        }
+        fx.git(&["commit", "-q", "-m", "chore: on main"]);
+    }
     fx.git(&["checkout", "-q", "-b", "feat/review"]);
     for (f, n) in files {
         let body: String = (1..=*n).map(|i| format!("{f} line {i}\n")).collect();
-        fs::write(fx.path().join(f), body).unwrap();
+        let path = fx.path().join(f);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, body).unwrap();
         fx.git(&["add", f]);
     }
     fx.git(&["commit", "-q", "-m", "feat: the branch"]);
+    configure(&fx, timeout);
+    fx
+}
+
+/// `feat/review` off `main`, where `path` holds `before` on `main` and `after` on the branch.
+fn edited(name: &str, path: &str, before: &str, after: &str) -> Fixture {
+    let fx = Fixture::new(name);
+    fs::write(fx.path().join(path), before).unwrap();
+    fx.git(&["add", path]);
+    fx.git(&["commit", "-q", "-m", "chore: on main"]);
+    fx.git(&["checkout", "-q", "-b", "feat/review"]);
+    fs::write(fx.path().join(path), after).unwrap();
+    fx.git(&["commit", "-q", "-am", "feat: the branch"]);
+    configure(&fx, 20);
+    fx
+}
+
+fn configure(fx: &Fixture, timeout: u64) {
     let cfg = PathBuf::from(&fx.env()["FACTORY_CONFIG_DIR"]);
     fs::write(
         cfg.join("config.toml"),
         format!("[review]\ntimeout_secs = {timeout}\n"),
     )
     .unwrap();
-    fx
 }
 
 fn scenario(fx: &Fixture, v: Value) {
@@ -241,20 +277,33 @@ fn a_dead_auth_or_a_missing_model_spends_nothing_and_exits_2() {
 }
 
 #[test]
-fn a_timeout_keeps_the_partial_text() {
+fn a_timeout_is_unreviewed_and_keeps_its_partial_text() {
     let fx = fixture("review-timeout", 2);
     scenario(&fx, json!({"sleep_after_assistant": 2}));
     let started = Instant::now();
     let o = review(&fx, &["--diff", "main", "--", "a", "b"]);
     let took = started.elapsed();
     let out = stdout(&o);
-    assert_eq!(o.status.code(), Some(0), "{out}");
+    assert_eq!(o.status.code(), Some(2), "{out}");
     assert!(took < Duration::from_secs(10), "took {took:?}");
     assert!(out.contains("(timed out after 2 s, partial)"), "{out}");
     let partial = format!("{}{}", assistant_text(7), assistant_text(14));
     assert!(out.contains(&partial), "{out}");
     let third: String = assistant_text(15).chars().take(40).collect();
     assert!(!out.contains(&third), "{out}");
+}
+
+#[test]
+fn a_timeout_beside_a_counted_pass_exits_0() {
+    let fx = fixture("review-timeout-beside", 5);
+    scenario(&fx, json!({"sleep_after_assistant": {"2": 2}}));
+    let o = review(&fx, &["--diff", "main", "--", "a", "b", "d"]);
+    let out = stdout(&o);
+    assert_eq!(o.status.code(), Some(0), "{out}");
+    assert!(section(&out, 1).contains("(replayed for pass 1)"), "{out}");
+    let two = section(&out, 2);
+    assert!(two.contains("(timed out after 5 s, partial)"), "{two}");
+    assert!(two.contains(&assistant_text(7)), "{two}");
 }
 
 #[test]
@@ -615,4 +664,507 @@ fn collect_without_a_base_or_with_a_dash_base_is_a_usage_error() {
     }
     assert!(!fx.path().join("f.md").exists());
     assert!(calls(&fx).is_empty());
+}
+
+#[test]
+fn collect_counts_a_pass_beside_a_timed_out_one() {
+    let fx = branch("collect-timeout-one", 5, &[("a", 400), ("b", 300)]);
+    scenario(&fx, json!({"sleep_after_assistant": {"2": 2}}));
+    let file = collected(&fx);
+    let plan = part(&file, "Plan");
+    assert!(
+        plan.contains("\nsecond opinion: reviewed, 1 of 2 passes counted\n"),
+        "{plan}"
+    );
+    let second = part(&file, "Second opinion");
+    let passes: Vec<&str> = second
+        .lines()
+        .filter(|l| l.starts_with("### Pass"))
+        .collect();
+    assert_eq!(passes.len(), 2, "{second}");
+    assert!(passes[0].ends_with(" — counted"), "{}", passes[0]);
+    assert!(passes[1].ends_with(" — unreviewed"), "{}", passes[1]);
+    assert!(
+        second.contains("(timed out after 5 s, partial)"),
+        "{second}"
+    );
+}
+
+#[test]
+fn collect_owes_the_fallback_when_every_pass_timed_out() {
+    let fx = branch("collect-timeout-all", 2, &[("a", 400), ("b", 300)]);
+    scenario(&fx, json!({"sleep_after_assistant": 2}));
+    let file = collected(&fx);
+    let plan = part(&file, "Plan");
+    assert!(
+        plan.contains("\nsecond opinion: fallback owed — unreviewed: no pass of 2 counted\n"),
+        "{plan}"
+    );
+    let second = part(&file, "Second opinion");
+    assert!(second.contains("\nexit: 2\n"), "{second}");
+    assert_eq!(
+        second.matches("(timed out after 2 s, partial)").count(),
+        2,
+        "{second}"
+    );
+    assert!(
+        second
+            .lines()
+            .filter(|l| l.starts_with("### Pass"))
+            .all(|l| l.ends_with(" — unreviewed")),
+        "{second}"
+    );
+}
+
+const LOG: &str = "docs/features/001-x/log.jsonl";
+const STATE: &str = "docs/features/001-x/state.toml";
+const VENDORED: &[(&str, &str)] = &[(".gitattributes", "testdata/** linguist-vendored\n")];
+
+#[test]
+fn collect_skips_tool_written_and_vendored_files_and_lists_them() {
+    let fx = branch_off(
+        "collect-skip",
+        20,
+        VENDORED,
+        &[
+            (LOG, 10),
+            (STATE, 5),
+            ("testdata/a.xsd", 30),
+            ("src/a.rs", 400),
+        ],
+    );
+    let file = collected(&fx);
+    let plan = part(&file, "Plan");
+    assert!(
+        plan.contains(
+            "changed: 1 file, 400 lines against main...HEAD\n- src/a.rs (400 lines)\nskipped:\n\
+             - docs/features/001-x/log.jsonl (tool-written)\n\
+             - docs/features/001-x/state.toml (tool-written)\n\
+             - testdata/a.xsd (vendored)\nsize: "
+        ),
+        "{plan}"
+    );
+    assert!(
+        plan.contains("\nsecond opinion: reviewed, 1 of 1 passes counted\n"),
+        "{plan}"
+    );
+    let reviews = review_calls(&fx);
+    assert_eq!(reviews.len(), 1, "{reviews:?}");
+    let second = part(&file, "Second opinion");
+    let dir = PathBuf::from(
+        second
+            .lines()
+            .find_map(|l| l.strip_prefix("log: "))
+            .unwrap_or_else(|| panic!("no log: {second}")),
+    );
+    let diff = fs::read_to_string(dir.join("review-1.diff")).unwrap();
+    assert!(diff.contains("+++ b/src/a.rs"), "{diff}");
+    for f in [LOG, STATE, "testdata/a.xsd"] {
+        assert!(!diff.contains(f), "{f} in {diff}");
+    }
+
+    let fx = branch_off("collect-skip-all", 20, VENDORED, &[(LOG, 10), (STATE, 5)]);
+    let file = collected(&fx);
+    let plan = part(&file, "Plan");
+    assert!(
+        plan.contains("\nsize: local review only\nsecond opinion: skipped by size\n"),
+        "{plan}"
+    );
+    assert!(
+        part(&file, "Second opinion").contains(&format!(
+            "skipped by size: no file left after skipping {LOG}, {STATE}\n"
+        )),
+        "{file}"
+    );
+    assert!(calls(&fx).is_empty(), "{:?}", calls(&fx));
+}
+
+#[test]
+fn second_skips_the_same_files_and_lists_them_before_the_passes() {
+    let fx = branch_off(
+        "review-skip",
+        20,
+        VENDORED,
+        &[(LOG, 10), ("testdata/a.xsd", 30), ("src/a.rs", 400)],
+    );
+    let o = review(&fx, &["--diff", "main"]);
+    let out = stdout(&o);
+    assert_eq!(o.status.code(), Some(0), "{out}");
+    assert!(
+        out.starts_with(&format!(
+            "skipped:\n- {LOG} (tool-written)\n- testdata/a.xsd (vendored)\n\n## Pass 1 — src/a.rs (400 lines,"
+        )),
+        "{out}"
+    );
+    assert_eq!(review_calls(&fx).len(), 1);
+
+    let fx = branch_off("review-skip-all", 20, VENDORED, &[(LOG, 10)]);
+    let o = review(&fx, &["--diff", "main"]);
+    let out = stdout(&o);
+    assert_eq!(o.status.code(), Some(2), "{out}");
+    assert_eq!(
+        out,
+        format!("unreviewed: no changes against main left after skipping {LOG}\n")
+    );
+    assert!(calls(&fx).is_empty(), "{:?}", calls(&fx));
+}
+
+/// The second opinion's pass headings and its log dir.
+fn passes_and_dir(file: &str) -> (Vec<&str>, PathBuf) {
+    let second = part(file, "Second opinion");
+    let heads = second
+        .lines()
+        .filter(|l| l.starts_with("### Pass"))
+        .collect();
+    let dir = second
+        .lines()
+        .find_map(|l| l.strip_prefix("log: "))
+        .unwrap_or_else(|| panic!("no log: {second}"));
+    (heads, PathBuf::from(dir))
+}
+
+fn hunk_heads(diff: &str) -> Vec<&str> {
+    diff.lines().filter(|l| l.starts_with("@@")).collect()
+}
+
+/// The `+` and `-` lines below the file header.
+fn changes(diff: &str) -> usize {
+    let hunks = &diff[diff
+        .find("\n@@")
+        .unwrap_or_else(|| panic!("no hunk: {diff}"))..];
+    hunks
+        .lines()
+        .filter(|l| l.starts_with('+') || l.starts_with('-'))
+        .count()
+}
+
+#[test]
+fn a_huge_file_splits_at_hunks() {
+    let blocks = |word: &str| -> String {
+        (1..=10)
+            .flat_map(|b| {
+                let changed = (1..=100).map(move |i| format!("{word} {b} {i}\n"));
+                changed.chain((1..=10).map(move |i| format!("keep {b} {i}\n")))
+            })
+            .collect()
+    };
+    let fx = edited("split-hunks", "big", &blocks("old"), &blocks("new"));
+    let file = collected(&fx);
+    assert!(
+        part(&file, "Plan").contains("\n- big (2000 lines)\n"),
+        "{file}"
+    );
+    let (heads, dir) = passes_and_dir(&file);
+    assert_eq!(heads.len(), 4, "{file}");
+    for (k, (head, lines)) in heads.iter().zip([600, 600, 600, 200]).enumerate() {
+        let k = k + 1;
+        let want = format!("### Pass {k} — big (part {k} of 4) ({lines} lines, ");
+        assert!(head.starts_with(&want), "{head}");
+        assert!(head.ends_with(" — counted"), "{head}");
+    }
+    assert_eq!(review_calls(&fx).len(), 4);
+
+    let whole = fx.git(&["diff", "--no-renames", "main...HEAD", "--", "big"]);
+    let header = &whole[..whole.find("\n@@").unwrap() + 1];
+    let mut seen = Vec::new();
+    for n in 1..=4 {
+        let diff = fs::read_to_string(dir.join(format!("review-{n}.diff"))).unwrap();
+        assert!(diff.starts_with(header), "part {n}: {diff}");
+        assert!(changes(&diff) <= 600, "part {n}: {}", changes(&diff));
+        for head in hunk_heads(&diff) {
+            let at = whole.find(&format!("\n{head}\n")).unwrap();
+            let rest = &whole[at + 1..];
+            let hunk = &rest[..rest[1..].find("\n@@").map_or(rest.len(), |e| e + 2)];
+            assert!(diff.contains(hunk), "part {n} cuts {head}: {diff}");
+            seen.extend([head.to_string()]);
+        }
+    }
+    assert_eq!(seen, hunk_heads(&whole), "{whole}");
+    assert_eq!(seen.len(), 10);
+}
+
+#[test]
+fn a_file_under_twice_the_cap_stays_whole() {
+    for n in [900, 1200] {
+        let fx = branch(&format!("split-under-{n}"), 20, &[("a", n)]);
+        let file = collected(&fx);
+        let (heads, dir) = passes_and_dir(&file);
+        assert_eq!(heads.len(), 1, "{file}");
+        let want = format!("### Pass 1 — a (over 600, alone) ({n} lines, ");
+        assert!(heads[0].starts_with(&want), "{}", heads[0]);
+        let diff = fs::read_to_string(dir.join("review-1.diff")).unwrap();
+        assert_eq!(hunk_heads(&diff), [format!("@@ -0,0 +1,{n} @@")], "{diff}");
+        assert_eq!(review_calls(&fx).len(), 1);
+    }
+}
+
+#[test]
+fn an_added_huge_file_splits_at_lines() {
+    let fx = branch("split-lines", 20, &[("big", 1500)]);
+    let file = collected(&fx);
+    let (heads, dir) = passes_and_dir(&file);
+    assert_eq!(heads.len(), 3, "{file}");
+    let mut added = Vec::new();
+    for k in 1..=3 {
+        let want = format!("### Pass {k} — big (part {k} of 3) (500 lines, ");
+        assert!(heads[k - 1].starts_with(&want), "{}", heads[k - 1]);
+        let diff = fs::read_to_string(dir.join(format!("review-{k}.diff"))).unwrap();
+        assert!(
+            diff.starts_with("diff --git a/big b/big\nnew file mode "),
+            "{diff}"
+        );
+        let first = 1 + 500 * (k - 1);
+        assert_eq!(
+            hunk_heads(&diff),
+            [format!("@@ -0,0 +{first},500 @@")],
+            "{diff}"
+        );
+        let hunk = &diff[diff.find("\n@@").unwrap() + 1..];
+        added.extend(
+            hunk.lines()
+                .skip(1)
+                .map(|l| format!("{}\n", l.strip_prefix('+').unwrap_or_else(|| panic!("{l}")))),
+        );
+    }
+    let body: Vec<String> = (1..=1500).map(|i| format!("big line {i}\n")).collect();
+    assert_eq!(added, body);
+    assert_eq!(review_calls(&fx).len(), 3);
+}
+
+/// A feature folder `042-settled` in the fixture's checkout: two decisions, the second overturning the first,
+/// and a PRD with a Decisions log and a Non-goals section.
+fn settled_feature(fx: &Fixture) {
+    let dir = fx.path().join("docs/features/042-settled");
+    fs::create_dir_all(&dir).unwrap();
+    let decision = |id: &str, title: &str, body: &str| {
+        json!({"id": id, "kind": "decision", "ts": "2026-11-12T10:00:00Z", "title": title, "body": body})
+            .to_string()
+    };
+    fs::write(
+        dir.join("log.jsonl"),
+        [
+            decision(
+                "AD-1",
+                "Keep three retries",
+                "**Chose:** three retries, then fail\n**Over:** one",
+            ),
+            decision(
+                "AD-2",
+                "Keep five retries",
+                "**Chose:** five retries, the queue backs off\n**Supersedes:** AD-1\n**Over:** three",
+            ),
+        ]
+        .join("\n")
+            + "\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("prd.md"),
+        "# PRD-042\n\n## 1. Why\n\nwhy\n\n## 9. Decisions log\n\n- the queue stays in memory\n\n## 11. Non-goals\n\n- no web dashboard for the queue\n\n## 12. Notes\n\nunrelated notes\n",
+    )
+    .unwrap();
+}
+
+fn assert_settled(prompt: &str) {
+    for want in [
+        "- AD-2 — Keep five retries: five retries, the queue backs off",
+        "the queue stays in memory",
+        "no web dashboard for the queue",
+        "must name the entry and say why it is wrong",
+    ] {
+        assert!(prompt.contains(want), "{want}: {prompt}");
+    }
+    for gone in ["AD-1", "three retries", "unrelated notes"] {
+        assert!(!prompt.contains(gone), "{gone}: {prompt}");
+    }
+}
+
+#[test]
+fn feature_puts_settled_decisions_in_every_pass_prompt() {
+    let fx = fixture("collect-settled", 20);
+    settled_feature(&fx);
+    let o = collect(
+        &fx,
+        &["--base", "main", "--feature", "042", "--out", "f.md"],
+    );
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    let reviews = review_calls(&fx);
+    assert_eq!(reviews.len(), 3);
+    for argv in &reviews {
+        assert_settled(argv.last().unwrap());
+    }
+
+    let o = review(&fx, &["--diff", "main", "--feature", "042"]);
+    assert_eq!(o.status.code(), Some(0), "{}", stdout(&o));
+    let reviews = review_calls(&fx);
+    assert_eq!(reviews.len(), 6);
+    for argv in &reviews[3..] {
+        assert_settled(argv.last().unwrap());
+    }
+}
+
+#[test]
+fn no_feature_keeps_the_prompt_as_today() {
+    let fx = fixture("collect-no-feature", 20);
+    settled_feature(&fx);
+    collected(&fx);
+    let o = collect(
+        &fx,
+        &["--base", "main", "--feature", "999", "--out", "g.md"],
+    );
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    let reviews = review_calls(&fx);
+    assert_eq!(reviews.len(), 6);
+    for argv in &reviews {
+        let prompt = argv.last().unwrap();
+        let (what, rest) = prompt
+            .strip_prefix("Adversarial code review. ")
+            .and_then(|p| p.split_once(" against main is in "))
+            .unwrap_or_else(|| panic!("{prompt}"));
+        let file = rest.split_once(": read it").unwrap().0;
+        assert_eq!(
+            *prompt,
+            format!(
+                "Adversarial code review. {what} against main is in {file}: read it, and read any file in the repository you need for context. Report only defects you can point to at file:line with a failure scenario; no praise, no style. Do not edit anything."
+            )
+        );
+    }
+}
+
+/// `feat/review` with `before.txt` and a leaked plan reference in `src/early.rs`, then commit `R`'s two later
+/// files. Returns `R`.
+fn reviewed_branch(name: &str) -> (Fixture, String) {
+    let fx = Fixture::new(name);
+    fx.git(&["checkout", "-q", "-b", "feat/review"]);
+    let write = |f: &str, body: &str| {
+        let path = fx.path().join(f);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, body).unwrap();
+        fx.git(&["add", f]);
+    };
+    let lines = |f: &str| -> String { (1..=100).map(|i| format!("{f} line {i}\n")).collect() };
+    write("before.txt", &lines("before"));
+    write(
+        "src/early.rs",
+        "// FR-1: the plan named in code\npub fn early() {}\n",
+    );
+    fx.git(&["commit", "-q", "-m", "feat: reviewed already"]);
+    let r = fx.git(&["rev-parse", "HEAD"]).trim().to_string();
+    write("later-b.txt", &lines("b"));
+    fx.git(&["commit", "-q", "-m", "fix: after the review"]);
+    write("later-c.txt", &lines("c"));
+    fx.git(&["commit", "-q", "-m", "fix: and another"]);
+    configure(&fx, 20);
+    (fx, r)
+}
+
+#[test]
+fn collect_since_reviews_only_later_commits() {
+    let (fx, r) = reviewed_branch("collect-since");
+    let o = collect(&fx, &["--base", "main", "--since", &r, "--out", "f.md"]);
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    let file = fx.read("f.md");
+    let plan = part(&file, "Plan");
+    assert!(
+        plan.contains(&format!(
+            "changed: 2 files, 200 lines against {r}..HEAD (since the last review)\n"
+        )),
+        "{plan}"
+    );
+    assert!(
+        !plan.contains("before.txt") && !plan.contains("early.rs"),
+        "{plan}"
+    );
+    let reviews = review_calls(&fx);
+    assert!(!reviews.is_empty());
+    let mut seen = String::new();
+    for argv in &reviews {
+        let prompt = argv.last().unwrap();
+        assert!(
+            prompt.contains(&format!(" since commit {r} is in ")),
+            "{prompt}"
+        );
+        let path = prompt
+            .split_once(" is in ")
+            .unwrap()
+            .1
+            .split_once(": read it")
+            .unwrap()
+            .0;
+        seen.push_str(&fs::read_to_string(path).unwrap());
+    }
+    assert!(
+        seen.contains("+++ b/later-b.txt") && seen.contains("+++ b/later-c.txt"),
+        "{seen}"
+    );
+    assert!(
+        !seen.contains("before.txt") && !seen.contains("early.rs"),
+        "{seen}"
+    );
+}
+
+#[test]
+fn collect_since_still_scans_leaks_on_the_whole_branch() {
+    let (fx, r) = reviewed_branch("collect-since-leaks");
+    let o = collect(&fx, &["--base", "main", "--since", &r, "--out", "f.md"]);
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    let leaks = part(&fx.read("f.md"), "Leaks").to_string();
+    assert!(!leaks.contains("verdict: clean"), "{leaks}");
+    assert!(leaks.contains("src/early.rs"), "{leaks}");
+}
+
+#[test]
+fn collect_since_starting_with_a_dash_is_a_usage_error() {
+    let (fx, _) = reviewed_branch("collect-since-dash");
+    let o = collect(&fx, &["--base", "main", "--since", "--output=x"]);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("[--since <commit>]"));
+    assert!(calls(&fx).is_empty());
+}
+
+#[test]
+fn last_reviewed_commit_is_the_one_that_set_reviewed() {
+    let fx = Fixture::new("last-reviewed");
+    assert_eq!(factory::settled::last_reviewed(fx.path(), "001"), None);
+    fx.docs(&["set", "001", "reviewed=2026-11-12"]);
+    fx.git(&["add", "-A"]);
+    fx.git(&["commit", "-q", "-m", "docs: reviewed"]);
+    let r = fx.git(&["rev-parse", "HEAD"]).trim().to_string();
+    fs::write(fx.path().join("unrelated.txt"), "x\n").unwrap();
+    fx.docs(&["set", "001", "status=in-progress"]);
+    fx.git(&["add", "-A"]);
+    fx.git(&["commit", "-q", "-m", "chore: status and unrelated"]);
+    assert_eq!(factory::settled::last_reviewed(fx.path(), "001"), Some(r));
+}
+
+#[test]
+fn clearing_reviewed_asks_for_the_whole_branch() {
+    let fx = Fixture::new("reviewed-cleared");
+    fx.docs(&["set", "001", "reviewed=2026-11-12"]);
+    fx.git(&["add", "-A"]);
+    fx.git(&["commit", "-q", "-m", "docs: reviewed"]);
+    fx.docs(&["set", "001", "reviewed="]);
+    fx.git(&["add", "-A"]);
+    fx.git(&["commit", "-q", "-m", "docs: review again"]);
+    assert_eq!(factory::settled::last_reviewed(fx.path(), "001"), None);
 }

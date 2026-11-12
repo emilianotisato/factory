@@ -30,7 +30,7 @@ Create a working file in your scratchpad directory (`findings.md`). **Everything
 
 **Every reviewer on a one-line bugfix is theatre, and a ritual that always costs an hour gets skipped entirely.** The mechanical part (the plan, the leaks scan and the second opinion) comes from one collected file. The model reviewers come from the table below: pick the set from the diff and its blast radius, say which set you picked and why, then run only those.
 
-**Start from the collected file.** Inside a `factory` run, the pack's `# Collected` section names it and holds its plan, its leaks verdict and each second-opinion pass's status line. With no `# Collected` section, attended, or when it says `collect failed`, run `factory review collect --base <base-branch> --out <scratchpad>/collect.md` **in the background**, since it can outlast a Bash call, and read the file when it exits; the local review can run meanwhile. A collect that leaves no file (an error, or a binary without the verb) → say so out loud and take the last resort at the end of this section.
+**Start from the collected file.** Inside a `factory` run, the pack's `# Collected` section names it and holds its plan, its leaks verdict and each second-opinion pass's status line. With no `# Collected` section, attended, or when it says `collect failed`, run `factory review collect --base <base-branch> --out <scratchpad>/collect.md` **in the background**, since it can outlast a Bash call, and read the file when it exits; the local review can run meanwhile. On a feature's branch add `--feature <NNN>`, so every pass prompt carries what is settled. When the feature's `state.toml` has `reviewed` set, add `--since <commit>` too, the commit from `git log -1 --format=%H -G '^reviewed' -- docs/features/<NNN>-*/state.toml`: a later round then reviews only what changed since the last one. No such commit, or the owner asks for the whole branch → leave `--since` out and the full diff is reviewed. A collect that leaves no file (an error, or a binary without the verb) → say so out loud and take the last resort at the end of this section.
 
 **Read only the plan, the leaks verdict and each pass's status line now.** The findings text under `## Second opinion` waits for step 2, so the local review runs first and unanchored.
 
@@ -44,6 +44,8 @@ Create a working file in your scratchpad directory (`findings.md`). **Everything
 
 Two rules override the table. **Anything security-sensitive gets the security pass**, however small — a one-line change to a permission check is the whole attack. **Anything user-visible gets the UX pass**, however small — a one-line CSS change is exactly where a state breaks.
 
+**Start `/ux` first, before anything that runs tests**, when the diff earns it. The app it drives and the test suite can share one database, as they do in a lane, so a test run mid-drive changes what it sees. **Run no test and no fix in that checkout until the UX pass returns.** The local review, the security pass and the second opinion are read-only, so they run meanwhile, in the order below.
+
 **Every reviewer is read-only on the checkout: no `git switch`, no `checkout`, no `stash`, ever.** Reviewers run side by side, and one that moves HEAD to compare against the base branch pulls the tree out from under the others mid-read — it happened. A reviewer that needs the base tree gets a worktree (`git worktree add`), never the shared checkout. Say this in every reviewer's prompt.
 
 **Local review first**, always. Invoke the `code-review` skill. It has full repository context and its findings are the higher-signal set; leaving the second opinion's findings unread until step 2 also stops their noise from anchoring the local pass.
@@ -52,9 +54,9 @@ Its prompt carries a reader's questions, because a rule table cannot ask them. O
 
 **Then the leaks verdict, on every polish, whatever the diff size.** The `## Leaks` part checked the branch's added lines and paths against one rule table and prints each hit under its rule's fix line. **Read its `verdict:` line.** `clean` is clean. `n fix hit(s)` is hits. `did not run` means the check did not run: say so out loud, and never report it as *no hits*. Its hits are findings like any reviewer's: step 2 verifies them and they land in the **Fix** bucket, with no question to the owner. Each hit's fix line is its instruction.
 
-**Then `security-review`, when the diff touches security-sensitive code** — authentication or authorization, a permission or tenancy check, parsing or validating outside input, raw queries, file paths or shell commands built from input, a read, write or delete through a path the repo itself controls (a symlink in a cloned repo can redirect it outside), deserialization, crypto, secrets or config, CORS, headers or cookies, or logging that could carry user data. The general review does not look through that lens. Skip it only when none of that changed, and say so. Its findings join the same triage. **Run it as its own subagent**: its contract ends the turn on a report, which is right for a standalone review and wrong for a collector in the middle of a ritual.
+**Then `security-review`, when the diff touches security-sensitive code** — authentication or authorization, a permission or tenancy check, parsing or validating outside input, raw queries, file paths or shell commands built from input, a read, write or delete through a path the repo itself controls (a symlink in a cloned repo can redirect it outside), deserialization, crypto, secrets or config, CORS, headers or cookies, or logging that could carry user data. The general review does not look through that lens. Skip it only when none of that changed, and say so. Its findings join the same triage. **Run it as its own subagent**: its contract ends the turn on a report, which is right for a standalone review and wrong for a collector in the middle of a ritual. **Brief it with the range yourself: `git diff <base>...HEAD`**, `<base>` being the polish base branch, with the lens above. Tell it not to take its range from the built-in skill's own git commands: they diff `origin/HEAD...`, which is not the polish base and fails outright in a repo with no `origin/HEAD`. Its report names the range it reviewed. A subagent that reviewed nothing says so, and you report the security pass as not run, never as *no findings*.
 
-**Then `/ux`, when the diff touches anything a user sees** — pages, components, templates, styles, or the server code deciding what a page renders. It drives the app through the verify skill, captures every state (empty, loading, error, focus, narrow, long content) and checks them against `docs/ux-rubric.md`. It is a **collector like the others**: its findings join the same triage, not a separate ritual.
+**`/ux`, started first as above, when the diff touches anything a user sees** — pages, components, templates, styles, or the server code deciding what a page renders. It drives the app through the verify skill, captures every state (empty, loading, error, focus, narrow, long content) and checks them against `docs/ux-rubric.md`. It is a **collector like the others**: its findings join the same triage, not a separate ritual.
 
 Skip it only when nothing user-visible changed, and say so. No harness (`.claude/skills/verify-*` missing) → say that instead, and that the UI went unreviewed; do not substitute reading the source. A Claude Code mod is the exception: `claude plugin validate` and `claude plugin test` are its harness, so run them and report what they cannot show (how the band, pane or status line look in a live session) for the owner's QA row.
 
@@ -65,9 +67,20 @@ Skip it only when nothing user-visible changed, and say so. No harness (`.claude
 **The last resort, when the collect left no file:** today's two commands, by hand.
 
 - **`factory leaks --base <base-branch>`.** **Read its exit code.** `0` is clean. `1` is hits. Anything else means the check did not run: say so out loud, and never report it as *no hits*. Its hits land in the **Fix** bucket, as above.
-- **`factory review second --diff <base-branch>`**, unless the diff is one file under 50 changed lines. It checks `--list-models` before it spends anything, splits the diff into passes of about 600 changed lines, runs each pass read-only under a timeout, and prints one section per pass with the log path last. Scope it with `-- <paths>` when the diff mixes risky and trivial files. When the local review or the security pass found high-severity defects, write their one-line summaries to a file and add `--others <file>`: the reviewer is then asked what fixing those would still miss, which is how Cursor found three escalation paths two Claude reviewers had missed. The agent and the model are `[review]` in `~/.config/factory/config.toml`, never this file. **Read its exit code.** `0` is findings: claims to verify in step 2. `2` is unreviewed (the auth is gone, the model is missing, or no pass returned text), so the fallback below starts now, said out loud. `1` is a usage error: fix the command and run it again. A pass marked `unreviewed`, or `timed out … partial`, is never *no findings*: name the files it did not finish.
+- **`factory review second --diff <base-branch>`**, with `--feature <NNN>` on a feature's branch, unless the diff is one file under 50 changed lines. It checks `--list-models` before it spends anything, splits the diff into passes of about 600 changed lines, runs each pass read-only under a timeout, and prints one section per pass with the log path last. Scope it with `-- <paths>` when the diff mixes risky and trivial files. When the local review or the security pass found high-severity defects, write their one-line summaries to a file and add `--others <file>`: the reviewer is then asked what fixing those would still miss, which is how Cursor found three escalation paths two Claude reviewers had missed. The agent and the model are `[review]` in `~/.config/factory/config.toml`, never this file. **Read its exit code.** `0` is findings: claims to verify in step 2. `2` is unreviewed (the auth is gone, the model is missing, or no pass returned text), so the fallback below starts now, said out loud. `1` is a usage error: fix the command and run it again. A pass marked `unreviewed`, or `timed out … partial`, is never *no findings*: name the files it did not finish.
 
-The file says `fallback owed`, or the last resort's run fails → a fresh agent on the judgment model with **no inherited context**, never a `fork`, **one per pass of about 600 changed lines** (`[review] pass_lines`), the same passes the command would have run: one agent over a whole feature diff skims. Either way its findings are claims to verify in step 2, and you say which reviewer produced them.
+The file says `fallback owed`, or the last resort's run fails → a fresh agent on the judgment model with **no inherited context**, never a `fork`, **one per pass of about 600 changed lines** (`[review] pass_lines`), the same passes the command would have run: one agent over a whole feature diff skims. Brief each one from this template:
+
+```
+Review these files: <the pass's files>
+Range: git diff <base>...HEAD -- <the pass's files>   (<since>..HEAD on a later round)
+Read-only: no git switch, checkout or stash.
+Settled (the feature's ADs, the PRD's Decisions log and Non-goals):
+<the settled block>
+A finding that contradicts an entry names it and says why the entry is wrong.
+```
+
+Either way its findings are claims to verify in step 2, and you say which reviewer produced them.
 
 ## 2. Verify and dedup — one pass over every set
 
@@ -86,7 +99,7 @@ A leaks verdict with hits → read the `## Leaks` part too: each hit sits under 
 For every external finding:
 
 - **Verify it against the actual code**, at `file:line`. A finding that misreads the code gets a **one-line rebuttal recorded in the report, not silently dropped** — the user must be able to disagree with your pushback.
-- **Check it against the PRD's decisions log and `docs/decisions.md`.** A finding that contradicts a settled `OPEN-n` or a decision in `docs/decisions.md` is not a bug — it is re-litigating a decision. Flag it as such, with the citation. This is the single most common false-positive class from a context-less reviewer.
+- **Check it against what is settled: five sources.** A settled `OPEN-n` in the PRD's Decisions log, a decision in `docs/decisions.md`, the slice task text that ordered the code, an earlier AD in the feature's log (unless a later one supersedes it), and the PRD's Non-goals. A finding that contradicts any of them is not a bug — it is re-litigating a decision. Flag it as such, with the citation. This is the single most common false-positive class from a context-less reviewer.
 - **Dedup against the local findings.** The two reviewers overlap. Merge duplicates into one entry keeping the better explanation, so nothing gets considered — or fixed — twice.
 
 Triage the merged set **once**, not each batch separately.
@@ -118,7 +131,7 @@ Follow-up questions only if an answer opens a genuinely new fork.
 
 ## 5. Fix
 
-Apply the Fix bucket plus the user's answers. **Write regression tests freely** — do not economise on them here. That is what step 7 is for.
+**Fixes start after the UX pass returns**, never while it drives the app. Apply the Fix bucket plus the user's answers. **Write regression tests freely** — do not economise on them here. That is what step 7 is for.
 
 A long Fix list may go to subagents, **one at a time, never two at once**: each fixer starts once the one before it has returned. Give each fixer these rules in its prompt:
 
@@ -152,7 +165,7 @@ Invoke the `prune` skill in **`pr` mode** (only tests added or changed on this b
 - **Parked** → already handled in step 6.
 - **Rebutted** → keep the one-line rebuttals in your report to the user. They do not need a permanent home, but the user must see them.
 
-Then set `reviewed: {date}` in the PRD's frontmatter.
+Then set `factory docs set <NNN> reviewed=<date>`. Its commit is where the next round's `--since` starts.
 
 ### The correction loop — one question, every time
 
