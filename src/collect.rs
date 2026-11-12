@@ -11,7 +11,7 @@ use std::path::Path;
 
 use crate::config::Review;
 use crate::leaks::{self, Input};
-use crate::review::{Progress, Range, Sink};
+use crate::review::{Cancel, Progress, Range, Sink};
 use crate::{Result, ci, paths, review, settled};
 
 /// One file under this many changed lines needs the local review only.
@@ -56,8 +56,8 @@ pub fn needs_second_opinion(files: &[(String, u64)]) -> bool {
     files.len() > 1 || lines >= LOCAL_ONLY_LINES
 }
 
-/// What a collect reviews and what its reviewers are told.
-#[derive(Debug, Clone)]
+/// What a collect reviews, what its reviewers are told, and when they are stopped.
+#[derive(Clone, Copy)]
 pub struct Options<'a> {
     /// The branch the leaks scan, and without `since` the second opinion, measure from.
     pub base: &'a str,
@@ -65,6 +65,8 @@ pub struct Options<'a> {
     pub since: Option<&'a str>,
     /// The feature whose settled block every pass prompt carries.
     pub feature: Option<&'a str>,
+    /// Kills the second opinion's running reviewers when it fires.
+    pub cancel: Cancel<'a>,
 }
 
 impl<'a> Options<'a> {
@@ -73,6 +75,7 @@ impl<'a> Options<'a> {
             base,
             since: None,
             feature: None,
+            cancel: None,
         }
     }
 
@@ -108,6 +111,7 @@ pub fn collect(
             root,
             range,
             settled: settled.as_deref(),
+            cancel: opts.cancel,
         };
         second_opinion(&reviewing, cfg, files, progress, sink)
     } else {
@@ -186,6 +190,7 @@ struct Reviewing<'a> {
     root: &'a Path,
     range: Range<'a>,
     settled: Option<&'a str>,
+    cancel: Cancel<'a>,
 }
 
 /// The plan's state line and the section's text.
@@ -239,6 +244,7 @@ fn second_opinion(
         },
         progress,
         sink,
+        on.cancel,
     ) {
         Ok(r) => r,
         Err(e) => return unreviewed(&e.to_string(), Some(&dir), ""),

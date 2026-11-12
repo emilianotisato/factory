@@ -433,7 +433,13 @@ pub fn new_log_dir(data_dir: &Path) -> Result<PathBuf> {
 pub enum Ended {
     Exited(Option<i32>),
     Killed,
+    Stopped,
 }
+
+/// Asked while a reviewer runs, at most once every [`CANCEL_EVERY`]; `true` kills it. `None` never asks.
+pub type Cancel<'a> = Option<&'a (dyn Fn() -> bool + Sync)>;
+
+pub const CANCEL_EVERY: Duration = Duration::from_secs(1);
 
 /// Each running reviewer's own process group: a Ctrl-C reaches factory alone, so the handler must kill them.
 const SLOTS: usize = 256;
@@ -501,6 +507,7 @@ fn run_logged(
     out: &Path,
     err: &Path,
     timeout: Duration,
+    cancel: Cancel,
 ) -> Result<(Ended, Duration)> {
     let file = |p: &Path| File::create(p).map_err(io(format!("create {}", p.display())));
     cmd.stdin(Stdio::null())
@@ -518,16 +525,27 @@ fn run_logged(
         ))
     })?;
     watched.0.store(child.id() as i32, Ordering::SeqCst);
+    let mut asked: Option<Instant> = None;
     loop {
         if let Some(status) = child.try_wait().map_err(io("poll the reviewer"))? {
             return Ok((Ended::Exited(status.code()), started.elapsed()));
         }
-        if started.elapsed() >= timeout {
+        let ended = if started.elapsed() >= timeout {
+            Some(Ended::Killed)
+        } else if let Some(stop) = cancel
+            && asked.is_none_or(|t| t.elapsed() >= CANCEL_EVERY)
+        {
+            asked = Some(Instant::now());
+            stop().then_some(Ended::Stopped)
+        } else {
+            None
+        };
+        if let Some(ended) = ended {
             // SAFETY: a plain syscall on the group this child leads.
             unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
             let _ = child.kill();
             let _ = child.wait();
-            return Ok((Ended::Killed, started.elapsed()));
+            return Ok((ended, started.elapsed()));
         }
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -546,6 +564,7 @@ pub fn probe(cfg: &Review, dir: &Path) -> std::result::Result<(), String> {
         &out,
         &out.with_extension("err"),
         Duration::from_secs(secs),
+        None,
     ) {
         Ok((ended, _)) => ended,
         Err(e) => return Err(e.to_string()),
@@ -643,7 +662,14 @@ pub struct Outcome {
     pub stderr: String,
 }
 
-pub fn run_pass(cfg: &Review, cwd: &Path, dir: &Path, n: usize, prompt: &str) -> Result<Outcome> {
+pub fn run_pass(
+    cfg: &Review,
+    cwd: &Path,
+    dir: &Path,
+    n: usize,
+    prompt: &str,
+    cancel: Cancel,
+) -> Result<Outcome> {
     let stream = dir.join(format!("review-{n}.jsonl"));
     let err = dir.join(format!("review-{n}.err"));
     let mut cmd = Command::new(&cfg.agent);
@@ -652,7 +678,8 @@ pub fn run_pass(cfg: &Review, cwd: &Path, dir: &Path, n: usize, prompt: &str) ->
         .args(["--model", &cfg.model])
         .arg(prompt)
         .current_dir(cwd);
-    let (ended, elapsed) = run_logged(cmd, &stream, &err, Duration::from_secs(cfg.timeout_secs))?;
+    let timeout = Duration::from_secs(cfg.timeout_secs);
+    let (ended, elapsed) = run_logged(cmd, &stream, &err, timeout, cancel)?;
     let text = fs::read(&stream).map_err(io(format!("read {}", stream.display())))?;
     let stderr = fs::read_to_string(&err)
         .unwrap_or_default()
@@ -690,6 +717,8 @@ pub type Sink<'a> = Option<&'a mut dyn FnMut(Progress) -> Result<()>>;
 
 /// Starts every pass at once, writing each one's progress line to `progress` as it starts; returns in pass order.
 /// `sink` hears each pass end as it ends; its first error is returned once every pass has ended.
+/// `cancel` firing kills every pass still running, each then ending [`Ended::Stopped`].
+#[allow(clippy::too_many_arguments)]
 pub fn run_passes(
     cfg: &Review,
     cwd: &Path,
@@ -698,6 +727,7 @@ pub fn run_passes(
     prompt: impl Fn(usize, &Pass) -> Result<String> + Sync,
     progress: &mut dyn Write,
     mut sink: Sink,
+    cancel: Cancel,
 ) -> Result<Vec<Ran>> {
     // Written before any spawn: a failed write must not leave reviewers running for nothing.
     for (i, pass) in passes.iter().enumerate() {
@@ -721,7 +751,7 @@ pub fn run_passes(
             let ended = ended.clone();
             running.push(s.spawn(move || {
                 let started = Instant::now();
-                let outcome = prompt(n, pass).and_then(|p| run_pass(cfg, cwd, dir, n, &p));
+                let outcome = prompt(n, pass).and_then(|p| run_pass(cfg, cwd, dir, n, &p, cancel));
                 let elapsed = outcome.as_ref().map_or(started.elapsed(), |o| o.elapsed);
                 let _ = ended.send((n, elapsed));
                 Ran { outcome, elapsed }
@@ -837,6 +867,9 @@ fn exit_words(code: Option<i32>) -> String {
 /// A kill's partial does not count, since the pass did not finish its files; nor does a failed exit's, or an
 /// opening line would stop the fallback.
 fn body(o: &Outcome, timeout_secs: u64) -> (String, bool) {
+    if o.ended == Ended::Stopped {
+        return ("unreviewed (stopped)\n".to_string(), false);
+    }
     let p = &o.parsed;
     if let Some(r) = p.result.as_deref().filter(|r| !r.trim().is_empty()) {
         return (format!("{}\n", r.trim_end()), true);
@@ -856,6 +889,7 @@ fn body(o: &Outcome, timeout_secs: u64) -> (String, bool) {
             };
         }
         Ended::Exited(code) => code,
+        Ended::Stopped => unreachable!("returned above"),
     };
     let words = exit_words(code);
     let mut text = match &p.error {

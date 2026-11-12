@@ -2442,3 +2442,57 @@ fn the_polish_collect_tells_its_reviewers_what_the_feature_settled() {
         );
     }
 }
+
+#[test]
+fn stop_kills_a_running_collects_reviewers() {
+    let fx = Fixture::new("closeout-stop-collect");
+    fx.chain();
+    fx.write_plan(&plan_with(&[step("polish")]));
+    fs::write(
+        fx.stub_dir().join("cursor-agent.json"),
+        json!({"sleep_secs": 60}).to_string(),
+    )
+    .unwrap();
+    let dir = start(&fx);
+    wait_until(&fx, &dir, "collect_started", 90, || {
+        !of_kind(&dir, "collect_started").is_empty()
+    });
+    let passes = of_kind(&dir, "collect_started")[0]["passes"]
+        .as_u64()
+        .unwrap() as usize;
+    assert!(passes > 0, "{:?}", kinds(&dir));
+    let pid = |n: usize| -> Option<u32> {
+        fs::read_to_string(fx.stub_dir().join(format!("cursor-agent-{n}.pid")))
+            .ok()?
+            .trim()
+            .parse()
+            .ok()
+    };
+    wait_until(&fx, &dir, "every reviewer to start", 30, || {
+        (1..=passes).all(|n| pid(n).is_some())
+    });
+    let pids: Vec<u32> = (1..=passes).map(|n| pid(n).unwrap()).collect();
+    assert!(pids.iter().all(|p| factory::run::pid_alive(*p)), "{pids:?}");
+
+    let out = factory(&fx, &["stop", &run_id(&dir)]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    wait_phase(&fx, &dir, "finished", 10);
+
+    let alive: Vec<&u32> = pids
+        .iter()
+        .filter(|p| factory::run::pid_alive(**p))
+        .collect();
+    assert!(alive.is_empty(), "reviewers outlived the stop: {alive:?}");
+    let collected = fs::read_to_string(dir.join("collect.md")).unwrap();
+    assert_eq!(
+        collected.matches("unreviewed (stopped)").count(),
+        passes,
+        "{collected}"
+    );
+    assert_eq!(state(&dir)["stopped"], true);
+    assert!(
+        of_kind(&dir, "polish_spawned").is_empty(),
+        "{:?}",
+        kinds(&dir)
+    );
+}

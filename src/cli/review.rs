@@ -183,6 +183,7 @@ fn second(a: &SecondArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i3
         },
         err,
         None,
+        None,
     )?;
     let mut reviewed = 0;
     for (i, (pass, ran)) in passes.iter().zip(&ran).enumerate() {

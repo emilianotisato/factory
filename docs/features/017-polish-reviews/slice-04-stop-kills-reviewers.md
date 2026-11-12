@@ -3,7 +3,7 @@
 **Source**: [`prd.md`](prd.md) → §11 FR-9, §13. **Depends on**: 03 (this slice adds a cancel check to the collect options struct 03 introduces, and threads it through `run_passes`, which 02 and 03 already touched)
 **Created**: 2026-11-12
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**: built. `run_logged` takes a `Cancel` (`Option<&(dyn Fn() -> bool + Sync)>`), asks it at most once a second, and on `true` kills the reviewer's group and ends `Ended::Stopped`, which `body()` turns into `unreviewed (stopped)`. `run_pass`, `run_passes` and `collect::Options` (now `Clone, Copy`, no `Debug`) carry it; `review second` and `review collect` pass `None`. In `collected()` the driver's check reads `stop_requested` through `run::load_state` on the run dir. Tests: `a_cancel_check_kills_every_running_pass` (new binary `tests/review_stop.rs`, about 1 s) and `stop_kills_a_running_collects_reviewers` (`tests/closeout.rs`, about 3 s). Inner loop: 1 run, 0 red, about 2.5 min. One deviation, AD-6 (fyi): the cancel test is its own binary instead of living in `tests/review.rs`. The FR-9 row is left for the checkpoint.
 
 **Slice**: After this slice, `factory stop` during the driver's polish collect kills every running second-opinion reviewer within about a second. Each one reads `unreviewed (stopped)` in the collected file, and the driver returns `Stopped` as it does today. The CLI verbs pass no cancel check and behave as before.
 
