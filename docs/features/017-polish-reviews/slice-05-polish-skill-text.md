@@ -98,3 +98,9 @@ prd §13 rows:
 They are proven below the UI: the checkpoint runs them and keeps the transcript.
 
 **Acceptance:** after the checkpoint, the transcript is in Progress.
+
+**Code-review fixes (2026-11-12).**
+
+- Polish §8 still said to set `reviewed` in the PRD's frontmatter, which nothing reads, so an attended round left `--since` with no commit to find. It now says `factory docs set <NNN> reviewed=<date>`.
+- The new safe-contract Ask row and the general Ask row both matched one case. The row now says it wins over the Ask row.
+- The overturn rule let a `fyi` AD overturn a `decide` one with no owner question. Such an AD is now `decide` itself (AD-8). The bundle lock was rewritten under 0.13.3.

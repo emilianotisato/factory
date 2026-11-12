@@ -55,3 +55,10 @@ In `collected()`, build the check from the run dir with `run::load_state` and `s
 prd §13 row **FR-9** (`stop_kills_a_running_collects_reviewers`). It is proven below the UI: the checkpoint runs it and keeps the transcript.
 
 **Acceptance:** after the checkpoint, the transcript is in Progress.
+
+**Code-review fixes (2026-11-12).**
+
+- A stop that killed some passes after others counted left a collected file that a resume at the same HEAD reused, so the stopped passes never ran. `collect::reusable` now refuses a file holding a stopped pass.
+- The reviewer probe ignored the cancel check, so a stop could wait up to 60 s on a hung `--list-models` and then start every pass only to kill it. The probe now takes the check, and collect does not start the passes once it fires.
+- `a_cancel_check_kills_every_running_pass` checked only the direct child's pid, which `run_logged` has always reaped by then, so the test passed with the process-group kill removed. The stub's new `spawn_child` key starts a grandchild in the reviewer's group, and the test now waits for every pid file before it stops and asserts the grandchild is gone. Removing the group kill now fails the test.
+- AD-6's "a stopped pass is unreviewed even with a result in its stream" had no test. It is now a case in `body`'s table.

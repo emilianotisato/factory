@@ -295,14 +295,14 @@ fn a_timeout_is_unreviewed_and_keeps_its_partial_text() {
 
 #[test]
 fn a_timeout_beside_a_counted_pass_exits_0() {
-    let fx = fixture("review-timeout-beside", 2);
+    let fx = fixture("review-timeout-beside", 5);
     scenario(&fx, json!({"sleep_after_assistant": {"2": 2}}));
     let o = review(&fx, &["--diff", "main", "--", "a", "b", "d"]);
     let out = stdout(&o);
     assert_eq!(o.status.code(), Some(0), "{out}");
     assert!(section(&out, 1).contains("(replayed for pass 1)"), "{out}");
     let two = section(&out, 2);
-    assert!(two.contains("(timed out after 2 s, partial)"), "{two}");
+    assert!(two.contains("(timed out after 5 s, partial)"), "{two}");
     assert!(two.contains(&assistant_text(7)), "{two}");
 }
 
@@ -667,8 +667,8 @@ fn collect_without_a_base_or_with_a_dash_base_is_a_usage_error() {
 }
 
 #[test]
-fn collect_owes_the_fallback_when_every_pass_timed_out() {
-    let fx = branch("collect-timeout-one", 2, &[("a", 400), ("b", 300)]);
+fn collect_counts_a_pass_beside_a_timed_out_one() {
+    let fx = branch("collect-timeout-one", 5, &[("a", 400), ("b", 300)]);
     scenario(&fx, json!({"sleep_after_assistant": {"2": 2}}));
     let file = collected(&fx);
     let plan = part(&file, "Plan");
@@ -685,10 +685,13 @@ fn collect_owes_the_fallback_when_every_pass_timed_out() {
     assert!(passes[0].ends_with(" — counted"), "{}", passes[0]);
     assert!(passes[1].ends_with(" — unreviewed"), "{}", passes[1]);
     assert!(
-        second.contains("(timed out after 2 s, partial)"),
+        second.contains("(timed out after 5 s, partial)"),
         "{second}"
     );
+}
 
+#[test]
+fn collect_owes_the_fallback_when_every_pass_timed_out() {
     let fx = branch("collect-timeout-all", 2, &[("a", 400), ("b", 300)]);
     scenario(&fx, json!({"sleep_after_assistant": 2}));
     let file = collected(&fx);
@@ -1148,7 +1151,20 @@ fn last_reviewed_commit_is_the_one_that_set_reviewed() {
     fx.git(&["commit", "-q", "-m", "docs: reviewed"]);
     let r = fx.git(&["rev-parse", "HEAD"]).trim().to_string();
     fs::write(fx.path().join("unrelated.txt"), "x\n").unwrap();
-    fx.git(&["add", "unrelated.txt"]);
-    fx.git(&["commit", "-q", "-m", "chore: unrelated"]);
+    fx.docs(&["set", "001", "status=in-progress"]);
+    fx.git(&["add", "-A"]);
+    fx.git(&["commit", "-q", "-m", "chore: status and unrelated"]);
     assert_eq!(factory::settled::last_reviewed(fx.path(), "001"), Some(r));
+}
+
+#[test]
+fn clearing_reviewed_asks_for_the_whole_branch() {
+    let fx = Fixture::new("reviewed-cleared");
+    fx.docs(&["set", "001", "reviewed=2026-11-12"]);
+    fx.git(&["add", "-A"]);
+    fx.git(&["commit", "-q", "-m", "docs: reviewed"]);
+    fx.docs(&["set", "001", "reviewed="]);
+    fx.git(&["add", "-A"]);
+    fx.git(&["commit", "-q", "-m", "docs: review again"]);
+    assert_eq!(factory::settled::last_reviewed(fx.path(), "001"), None);
 }

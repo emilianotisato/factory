@@ -92,3 +92,9 @@ One function, given a checkout and a feature, returns the last-reviewed commit o
 prd §13 rows **FR-5**: the Rust tests `feature_puts_settled_decisions_in_every_pass_prompt`, `a_superseded_decision_is_left_out` and `no_feature_keeps_the_prompt_as_today`. `polish_lists_five_settled_sources` is slice 05's. Rows **FR-6**: `collect_since_reviews_only_later_commits`, `collect_since_still_scans_leaks_on_the_whole_branch` and `last_reviewed_commit_is_the_one_that_set_reviewed`. They are proven below the UI: the checkpoint runs them and keeps the transcript.
 
 **Acceptance:** after the checkpoint, the transcript is in Progress.
+
+**Code-review fixes (2026-11-12).**
+
+- `last_reviewed` also matched the commit that cleared `reviewed`. An owner who cleared it to ask for a full re-review got only the commits after the clearing, often none. It now returns no commit unless `reviewed` is set (`clearing_reviewed_asks_for_the_whole_branch`). `last_reviewed_commit_is_the_one_that_set_reviewed` now adds a later status-only `state.toml` commit, so it fails if `-G '^reviewed'` is dropped.
+- A decision the owner reviewed as `changed` still showed its old Chose line as settled, against FR-5's "never two contradicting choices". It now shows `changed by the owner — <text>` (AD-7, `a_decision_the_owner_changed_shows_the_change`).
+- `pack::cut_titled` copied `cut_section`'s scan loop. Both now share `cut_where`.

@@ -73,3 +73,9 @@ A `check-attr` failure is not fatal. Skip nothing for that reason and say so on 
 prd §13 rows **FR-2** (`a_timeout_is_unreviewed_and_keeps_its_partial_text`, `a_timeout_beside_a_counted_pass_exits_0`, `collect_owes_the_fallback_when_every_pass_timed_out`) and **FR-3** (`collect_skips_tool_written_and_vendored_files_and_lists_them`). They are proven below the UI: the checkpoint runs them and keeps the transcript.
 
 **Acceptance:** after the checkpoint, the transcript of each named test is in Progress.
+
+**Code-review fixes (2026-11-12).**
+
+- `tool_written` matched the literal names `log.jsonl` and `state.toml`, so a rename of either file would quietly put it back into review passes. It now matches `docs::log::FILE` and `docs::state::FILE`.
+- The collect test that checked a timed-out pass beside a counted one shared its name with the every-pass-timed-out case, so a failure in its first half pointed at the wrong behaviour. That half is now its own test, `collect_counts_a_pass_beside_a_timed_out_one`.
+- Both beside-a-counted-pass tests gave the finishing pass only 2 s to cold-start the node stub, so a loaded machine could fail them. They now use a 5 s timeout. The pass that must time out still sleeps 60 s.

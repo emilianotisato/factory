@@ -947,20 +947,9 @@ pub fn cited_sections(slice_text: &str) -> Vec<u32> {
 
 pub fn cut_section(prd: &str, n: u32) -> Option<&str> {
     let prefix = format!("## {n}.");
-    let mut start = None;
-    let mut offset = 0;
-    for line in prd.split_inclusive('\n') {
-        if let Some(s) = start
-            && line.starts_with("## ")
-        {
-            return Some(&prd[s..offset]);
-        }
-        if start.is_none() && (line.starts_with(&prefix) || line.trim_end() == format!("## {n}")) {
-            start = Some(offset);
-        }
-        offset += line.len();
-    }
-    start.map(|s| &prd[s..])
+    cut_where(prd, |line| {
+        line.starts_with(&prefix) || line.trim_end() == format!("## {n}")
+    })
 }
 
 /// The `## ` section whose title, past any `N.` number, is `title`, ignoring case; heading line included.
@@ -975,6 +964,11 @@ pub fn cut_titled<'a>(prd: &'a str, title: &str) -> Option<&'a str> {
             h.trim().eq_ignore_ascii_case(title)
         })
     };
+    cut_where(prd, titled)
+}
+
+/// From the first line `starts` matches up to the next `## ` heading, heading line included.
+fn cut_where(prd: &str, starts: impl Fn(&str) -> bool) -> Option<&str> {
     let mut start = None;
     let mut offset = 0;
     for line in prd.split_inclusive('\n') {
@@ -983,7 +977,7 @@ pub fn cut_titled<'a>(prd: &'a str, title: &str) -> Option<&'a str> {
         {
             return Some(&prd[s..offset]);
         }
-        if start.is_none() && titled(line) {
+        if start.is_none() && starts(line) {
             start = Some(offset);
         }
         offset += line.len();

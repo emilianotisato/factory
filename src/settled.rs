@@ -27,11 +27,12 @@ pub fn block(dir: &Path) -> Option<String> {
     )
 }
 
-/// The newest commit that changed the `reviewed` line of `feature`'s state file, in `checkout`.
+/// The newest commit that changed the `reviewed` line of `feature`'s state file, in `checkout`, while `reviewed`
+/// is set: clearing it asks for the whole branch again.
 pub fn last_reviewed(checkout: &Path, feature: &str) -> Option<String> {
-    let file = retro::feature_dir(checkout, feature)
-        .ok()?
-        .join(state::FILE);
+    let dir = retro::feature_dir(checkout, feature).ok()?;
+    state::read(&dir).ok()??.reviewed?;
+    let file = dir.join(state::FILE);
     let file = file.strip_prefix(checkout).unwrap_or(&file);
     let out = Command::new("git")
         .args(["log", "-1", "--format=%H", "-G", "^reviewed", "--"])
@@ -64,12 +65,24 @@ fn decisions(dir: &Path) -> Vec<(String, String)> {
             if overturned.get(&id).is_some_and(|&by| by > i) {
                 return None;
             }
-            let chose = e
-                .body
-                .lines()
-                .find_map(|l| l.trim().strip_prefix("**Chose:**"))
-                .map(str::trim)
-                .filter(|c| !c.is_empty());
+            let owner = entries.iter().rev().find(|r| {
+                r.kind == log::Kind::Review
+                    && r.reference.as_deref() == Some(id.as_str())
+                    && r.verdict == Some(log::Verdict::Changed)
+            });
+            let chose = match owner {
+                Some(r) => Some(match r.body.trim() {
+                    "" => "changed by the owner".to_string(),
+                    b => format!("changed by the owner — {b}"),
+                }),
+                None => e
+                    .body
+                    .lines()
+                    .find_map(|l| l.trim().strip_prefix("**Chose:**"))
+                    .map(str::trim)
+                    .filter(|c| !c.is_empty())
+                    .map(str::to_string),
+            };
             let line = match chose {
                 Some(c) => format!("- {id} — {}: {c}", e.title.trim()),
                 None => format!("- {id} — {}", e.title.trim()),
@@ -223,6 +236,33 @@ mod tests {
             "{block}"
         );
         assert!(!block.contains(&id(1)), "{block}");
+        assert!(!block.contains("three retries"), "{block}");
+    }
+
+    #[test]
+    fn a_decision_the_owner_changed_shows_the_change() {
+        let review = |verdict: log::Verdict, body: &str| {
+            let mut e = Entry::new(Kind::Review, "", body);
+            e.reference = Some(id(1));
+            e.verdict = Some(verdict);
+            serde_json::to_string(&e).unwrap()
+        };
+        let dir = feature(
+            &[
+                decision(&id(1), "Retry three times", "**Chose:** three retries"),
+                review(log::Verdict::Kept, ""),
+                review(log::Verdict::Changed, "retry five times"),
+            ],
+            None,
+        );
+        let block = block(dir.path()).unwrap();
+        assert!(
+            block.contains(&format!(
+                "- {} — Retry three times: changed by the owner — retry five times",
+                id(1)
+            )),
+            "{block}"
+        );
         assert!(!block.contains("three retries"), "{block}");
     }
 

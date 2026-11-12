@@ -27,11 +27,12 @@ fn head_line(head: &str) -> String {
 }
 
 /// Whether a collected `text` may stand in for a fresh collect at `head`. A file from another HEAD reviewed other
-/// code, and one owing a fallback or a leaks scan would carry a failure a rerun may clear.
+/// code, and one owing a fallback, a leaks scan or a stopped pass would carry a failure a rerun may clear.
 pub fn reusable(text: &str, head: &str) -> bool {
     text.lines().next() == Some(head_line(head).as_str())
         && !text.contains(&format!("\nsecond opinion: {FALLBACK_OWED}"))
         && !text.contains(&format!("\nverdict: {DID_NOT_RUN}"))
+        && !text.contains(&format!("\n{}", review::STOPPED))
 }
 
 /// A collected `text`'s pass count and review log dir, from its second opinion's pass headings and `log:` line.
@@ -227,8 +228,11 @@ fn second_opinion(
     if let Err(e) = started(Some(&dir)) {
         return unreviewed(&e.to_string(), Some(&dir), "");
     }
-    if let Err(reason) = review::probe(cfg, &dir) {
+    if let Err(reason) = review::probe(cfg, &dir, on.cancel) {
         return unreviewed(&reason, Some(&dir), "");
+    }
+    if on.cancel.is_some_and(|stop| stop()) {
+        return unreviewed("stopped", Some(&dir), "");
     }
     let ran = match review::run_passes(
         cfg,
@@ -299,5 +303,11 @@ mod tests {
         assert!(!reusable(&file("abc", &owed, "clean"), "abc"));
         let errored = format!("{DID_NOT_RUN} — x");
         assert!(!reusable(&file("abc", counted, &errored), "abc"));
+        let stopped = format!(
+            "{}\n### Pass 2 — b.rs (9 lines, 1 s, m) — unreviewed\n\n{}",
+            file("abc", counted, "clean"),
+            review::STOPPED
+        );
+        assert!(!reusable(&stopped, "abc"));
     }
 }

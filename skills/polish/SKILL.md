@@ -165,7 +165,7 @@ Invoke the `prune` skill in **`pr` mode** (only tests added or changed on this b
 - **Parked** → already handled in step 6.
 - **Rebutted** → keep the one-line rebuttals in your report to the user. They do not need a permanent home, but the user must see them.
 
-Then set `reviewed: {date}` in the PRD's frontmatter.
+Then set `factory docs set <NNN> reviewed=<date>`. Its commit is where the next round's `--since` starts.
 
 ### The correction loop — one question, every time
 

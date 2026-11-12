@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use crate::config::Review;
+use crate::docs::{log, state};
 use crate::error::io;
 use crate::{Error, Result, clock, paths};
 
@@ -118,12 +119,17 @@ pub fn plan(root: &Path, range: Range, files: &[(String, u64)], cap: u64) -> Vec
 
 /// One file's diff as parts of whole hunks packed up to `cap` changed lines, each headed by the file header,
 /// with each part's changed lines. A hunk over `cap` is first cut into even chunks of at most `cap`.
+/// A text holding more than one file header, as a file that changed type does, stays whole.
 pub fn split_diff(text: &str, cap: u64) -> Vec<(String, u64)> {
     let lines: Vec<&str> = text.split_inclusive('\n').collect();
     let starts: Vec<usize> = (0..lines.len())
         .filter(|&i| lines[i].starts_with("@@"))
         .collect();
-    let Some(&first) = starts.first() else {
+    let headers = lines
+        .iter()
+        .filter(|l| l.starts_with("diff --git "))
+        .count();
+    let (Some(&first), true) = (starts.first(), headers <= 1) else {
         return vec![(text.to_string(), 0)];
     };
     let header = lines[..first].concat();
@@ -310,7 +316,7 @@ pub fn skip(root: &Path, files: Vec<(String, u64)>) -> Skip {
 fn tool_written(path: &str) -> bool {
     matches!(
         path.split('/').collect::<Vec<_>>()[..],
-        ["docs", "features", dir, "log.jsonl" | "state.toml"] if !dir.is_empty()
+        ["docs", "features", dir, file] if !dir.is_empty() && (file == log::FILE || file == state::FILE)
     )
 }
 
@@ -369,12 +375,21 @@ fn parse_check_attr(text: &str) -> Vec<(String, &'static str)> {
     out
 }
 
+/// The diff of `files`, named literally, in plain text whatever the user's color or external-diff config.
 pub fn diff(root: &Path, range: Range, files: &[String]) -> Result<String> {
     let range = range.spec();
     git(
         root,
         &[
-            &["diff", "--no-renames", &range, "--"],
+            &[
+                "--literal-pathspecs",
+                "diff",
+                "--no-color",
+                "--no-ext-diff",
+                "--no-renames",
+                &range,
+                "--",
+            ],
             &str_refs(files)[..],
         ]
         .concat(),
@@ -554,7 +569,8 @@ fn run_logged(
 /// Listing the models takes about a second; a hung agent must not hold preflight for a whole pass's timeout.
 const PROBE_SECS: u64 = 60;
 
-pub fn probe(cfg: &Review, dir: &Path) -> std::result::Result<(), String> {
+/// `cancel` firing ends the probe as unreviewed, so a stop never waits on a hung agent.
+pub fn probe(cfg: &Review, dir: &Path, cancel: Cancel) -> std::result::Result<(), String> {
     let out = dir.join("list-models.txt");
     let mut cmd = Command::new(&cfg.agent);
     cmd.arg("--list-models");
@@ -564,7 +580,7 @@ pub fn probe(cfg: &Review, dir: &Path) -> std::result::Result<(), String> {
         &out,
         &out.with_extension("err"),
         Duration::from_secs(secs),
-        None,
+        cancel,
     ) {
         Ok((ended, _)) => ended,
         Err(e) => return Err(e.to_string()),
@@ -581,6 +597,7 @@ pub fn probe(cfg: &Review, dir: &Path) -> std::result::Result<(), String> {
         .unwrap_or("no output")
         .to_string();
     match ended {
+        Ended::Stopped => Err("stopped".to_string()),
         Ended::Killed => Err(format!(
             "{} --list-models timed out after {secs} s",
             cfg.agent
@@ -864,11 +881,14 @@ fn exit_words(code: Option<i32>) -> String {
     code.map_or("killed by a signal".to_string(), |c| format!("exit {c}"))
 }
 
+/// The body of a pass a stop killed.
+pub const STOPPED: &str = "unreviewed (stopped)";
+
 /// A kill's partial does not count, since the pass did not finish its files; nor does a failed exit's, or an
 /// opening line would stop the fallback.
 fn body(o: &Outcome, timeout_secs: u64) -> (String, bool) {
     if o.ended == Ended::Stopped {
-        return ("unreviewed (stopped)\n".to_string(), false);
+        return (format!("{STOPPED}\n"), false);
     }
     let p = &o.parsed;
     if let Some(r) = p.result.as_deref().filter(|r| !r.trim().is_empty()) {
@@ -1002,6 +1022,12 @@ mod tests {
                 Ended::Killed,
                 vec![OPENING],
                 "(timed out after 9 s, partial)\n\nI'll read the diff.\n",
+                false,
+            ),
+            (
+                Ended::Stopped,
+                vec![OPENING, DONE],
+                "unreviewed (stopped)\n",
                 false,
             ),
             (
@@ -1348,6 +1374,14 @@ mod tests {
             ]
         );
         assert_eq!(split_diff(&text, 24), [(text.clone(), 24)]);
+    }
+
+    #[test]
+    fn a_diff_with_two_file_headers_stays_whole() {
+        let repo = tempfile::tempdir().unwrap();
+        let one = real_diff(repo.path(), None, &numbered("n", 1..=30));
+        let two = format!("{one}{one}");
+        assert_eq!(split_diff(&two, 10), [(two.clone(), 0)]);
     }
 
     #[test]

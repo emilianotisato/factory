@@ -68,3 +68,8 @@ Add `part: Option<Part>` to `Pass`, where `Part` holds `k`, `n` and the part's d
 prd §13 row **FR-4** (`a_huge_file_splits_at_hunks`, `a_file_under_twice_the_cap_stays_whole`, `an_added_huge_file_splits_at_lines`). It is proven below the UI: the checkpoint runs these and keeps the transcript.
 
 **Acceptance:** after the checkpoint, the transcript is in Progress.
+
+**Code-review fixes (2026-11-12).**
+
+- `review::diff` ran plain `git diff`, so `color.diff=always` or a `diff.external` tool hid every `@@` line from the splitter. The file then went to the reviewer as one oversized pass, the very case this slice exists to remove. Its paths were also git pathspecs, so `a[1].rs` pulled in `a1.rs`'s diff too. It now runs `git --literal-pathspecs diff --no-color --no-ext-diff`.
+- A file that changed type (to or from a symlink) prints two file headers, and `split_diff` cut the second one into the first one's last hunk with wrong `@@` counts. Such a diff now stays whole (`a_diff_with_two_file_headers_stays_whole`).

@@ -17,7 +17,7 @@ fn a_cancel_check_kills_every_running_pass() {
     let fx = Fixture::new("review-stop");
     fs::write(
         fx.stub_dir().join("cursor-agent.json"),
-        json!({"sleep_secs": 60}).to_string(),
+        json!({"sleep_secs": 60, "spawn_child": true}).to_string(),
     )
     .unwrap();
     for (k, v) in fx.env() {
@@ -39,8 +39,11 @@ fn a_cancel_check_kills_every_running_pass() {
         .collect();
     let dir = fx.path().join("reviews");
     fs::create_dir(&dir).unwrap();
+    let pid_file = |k: usize, kind: &str| fx.stub_dir().join(format!("cursor-agent-{k}.{kind}"));
+    let children: Vec<_> = (1..=3).map(|k| pid_file(k, "child.pid")).collect();
     let started = Instant::now();
-    let stop = move || started.elapsed() >= Duration::from_secs(1);
+    let stop =
+        move || children.iter().all(|p| p.exists()) || started.elapsed() >= Duration::from_secs(20);
 
     let ran = review::run_passes(
         &cfg,
@@ -69,12 +72,17 @@ fn a_cancel_check_kills_every_running_pass() {
             review::pass_text(r, cfg.timeout_secs),
             ("unreviewed (stopped)\n".to_string(), false)
         );
-        let pid_file = fx.stub_dir().join(format!("cursor-agent-{}.pid", i + 1));
-        let pid: u32 = fs::read_to_string(&pid_file)
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
-        assert!(!pid_alive(pid), "pass {} reviewer {pid} still runs", i + 1);
+        for kind in ["pid", "child.pid"] {
+            let pid: u32 = fs::read_to_string(pid_file(i + 1, kind))
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            let gone = Instant::now();
+            while pid_alive(pid) && gone.elapsed() < Duration::from_secs(5) {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            assert!(!pid_alive(pid), "pass {} {kind} {pid} still runs", i + 1);
+        }
     }
 }

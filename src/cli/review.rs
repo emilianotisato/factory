@@ -161,7 +161,7 @@ fn second(a: &SecondArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i3
         _ => None,
     };
     let dir = review::new_log_dir(&paths::data_dir())?;
-    if let Err(reason) = review::probe(&cfg, &dir) {
+    if let Err(reason) = review::probe(&cfg, &dir, None) {
         writeln!(out, "unreviewed: {reason}\n\nlog: {}", dir.display()).map_err(io("stdout"))?;
         return Ok(2);
     }

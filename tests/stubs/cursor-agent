@@ -18,6 +18,9 @@
 //   sleep_secs: n | {"<pass>": n}
 //     a review call sleeps n seconds (or its own pass's n), then replays and
 //     exits as it would without this key.
+//   spawn_child: true
+//     a review call starts `sleep 600` in its own process group and writes
+//     the child's pid to $FACTORY_STUB_DIR/cursor-agent-n.child.pid.
 //   unlink_stream_on_call: n
 //     the review call for pass n deletes its own stream file (under
 //     $FACTORY_DATA_DIR/reviews/) and exits 1, so reading it back fails.
@@ -59,6 +62,10 @@ const pass = named ? Number(named[1]) : undefined
 if (stubDir) {
   const pidFile = pass === undefined ? 'cursor-agent.pid' : `cursor-agent-${pass}.pid`
   fs.writeFileSync(path.join(stubDir, pidFile), `${process.pid}\n`)
+  if (scenario.spawn_child && pass !== undefined) {
+    const child = require('node:child_process').spawn('sleep', ['600'], { stdio: 'ignore' })
+    fs.writeFileSync(path.join(stubDir, `cursor-agent-${pass}.child.pid`), `${child.pid}\n`)
+  }
 }
 
 const unlinkOn = scenario.unlink_stream_on_call
