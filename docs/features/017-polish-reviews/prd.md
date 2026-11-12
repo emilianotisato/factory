@@ -261,7 +261,17 @@ No row needs a human, so there is no `qa-guide.md`. Whether the settled block ac
 
 ## 14. Slices
 
-_Filled by `/slice`._
+Five slices, sliced 2026-11-12.
+
+- **01, honest passes (FR-2, FR-3).** A timed-out pass is unreviewed, and tool-written and `.gitattributes`-vendored files are skipped and listed. It goes first: it fixes the two field bugs and every later Rust slice builds on its file list.
+- **02, split a huge file (FR-4).** This is the riskiest slice, because it parses diffs. It depends on 01, since both change what reaches `group` and the `second()` flow.
+- **03, settled decisions and since-last-review (FR-5, FR-6, Rust and driver).** It depends on 02, because it threads a range through the `diff` and part fetch 02 just changed. It also introduces the collect options struct.
+- **04, stop kills reviewers (FR-9).** It depends on 03, because it adds the cancel check to that struct.
+- **05, polish skill and autonomy text (FR-1, FR-7, FR-8, and the skill halves of FR-5 and FR-6).** It is independent, since text compiles against nothing.
+
+01 and 05 build in parallel, then the 02 → 03 → 04 chain. Checkpoints fall every 2 done slices: after 01 and 05, after 02 and 03, and a final one after 04. Each Prove task is proven below the UI by running its named tests.
+
+Workflow: one branch, `feat/polish-reviews`, one PR, one commit per slice. No QA row needs a human, so there is no `qa-guide.md`.
 
 ## 15. Non-goals
 
