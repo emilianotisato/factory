@@ -186,7 +186,7 @@ fn open_collect(events: &[Event]) -> Option<usize> {
 }
 
 /// The newest CI event when it is `ci_waiting` or `ci_no_checks`; else, in closeout, the newest head when no verdict
-/// followed it, which covers the grace window before checks register, a head lag and a rerun (AD-16).
+/// followed it, which covers the grace window before checks register, a head lag and a rerun.
 fn ci_wait(ctx: &Ctx) -> Option<(&Event, String)> {
     let events = &ctx.events;
     if let Some(e) = events.iter().rev().find(|e| is_ci(&e.kind)) {

@@ -181,7 +181,7 @@ fn matches(rule: usize, text: &str) -> bool {
     }
 }
 
-/// A name with a space in it, a Kotlin backtick name or a path, reads like prose, so `slice 4` is an id there too.
+/// A name with a space in it, a Kotlin backtick name or a path, reads like prose, so a slice number there is an id too.
 static SPACED_ID: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(concat!("(?i)", ids!())).expect("id pattern"));
 
