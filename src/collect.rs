@@ -11,8 +11,8 @@ use std::path::Path;
 
 use crate::config::Review;
 use crate::leaks::{self, Input};
-use crate::review::{Progress, Sink};
-use crate::{Result, ci, paths, review};
+use crate::review::{Progress, Range, Sink};
+use crate::{Result, ci, paths, review, settled};
 
 /// One file under this many changed lines needs the local review only.
 pub const LOCAL_ONLY_LINES: u64 = 50;
@@ -56,25 +56,60 @@ pub fn needs_second_opinion(files: &[(String, u64)]) -> bool {
     files.len() > 1 || lines >= LOCAL_ONLY_LINES
 }
 
-/// The collected file for `<base>...HEAD` in `root`, the second opinion's progress lines going to `progress`.
+/// What a collect reviews and what its reviewers are told.
+#[derive(Debug, Clone)]
+pub struct Options<'a> {
+    /// The branch the leaks scan, and without `since` the second opinion, measure from.
+    pub base: &'a str,
+    /// The second opinion reads only the commits after this one.
+    pub since: Option<&'a str>,
+    /// The feature whose settled block every pass prompt carries.
+    pub feature: Option<&'a str>,
+}
+
+impl<'a> Options<'a> {
+    pub fn new(base: &'a str) -> Options<'a> {
+        Options {
+            base,
+            since: None,
+            feature: None,
+        }
+    }
+
+    fn range(&self) -> Range<'a> {
+        match self.since {
+            Some(c) => Range::Since(c),
+            None => Range::Base(self.base),
+        }
+    }
+}
+
+/// The collected file for `root`'s branch, the second opinion's progress lines going to `progress`.
 /// `sink` hears `Started` once the passes are known, then each pass as it ends.
 /// Only a git error reading HEAD or the changed files, or the sink failing on a skipped second opinion, is the
 /// error: every later part writes its own failure into the file.
 pub fn collect(
     root: &Path,
-    base: &str,
+    opts: &Options,
     cfg: &Review,
     progress: &mut dyn Write,
     mut sink: Sink,
 ) -> Result<String> {
     let head = ci::head(root)?;
-    let skip = review::skip(root, review::numstat(root, base, &[])?);
+    let range = opts.range();
+    let skip = review::skip(root, review::numstat(root, range, &[])?);
     let files = &skip.kept;
     let lines: u64 = files.iter().map(|(_, n)| n).sum();
-    let leaks = leaks_part(root, base);
+    let leaks = leaks_part(root, opts.base);
     let second = needs_second_opinion(files);
     let (state, opinion) = if second {
-        second_opinion(root, base, cfg, files, progress, sink)
+        let settled = opts.feature.and_then(|f| settled::for_feature(root, f));
+        let reviewing = Reviewing {
+            root,
+            range,
+            settled: settled.as_deref(),
+        };
+        second_opinion(&reviewing, cfg, files, progress, sink)
     } else {
         if let Some(sink) = sink.as_mut() {
             sink(Progress::Started {
@@ -101,10 +136,15 @@ pub fn collect(
     } else {
         "local review only"
     };
+    let since = match range {
+        Range::Since(_) => " (since the last review)",
+        Range::Base(_) => "",
+    };
     let mut plan = format!(
-        "changed: {}, {} against {base}...HEAD\n",
+        "changed: {}, {} against {}{since}\n",
         count(files.len(), "file"),
-        count(lines as usize, "line")
+        count(lines as usize, "line"),
+        range.spec()
     );
     for (file, n) in files {
         plan.push_str(&format!(
@@ -141,10 +181,16 @@ fn leaks_part(root: &Path, base: &str) -> String {
     }
 }
 
+/// The checkout, the commits its passes read, and the settled block their prompts carry.
+struct Reviewing<'a> {
+    root: &'a Path,
+    range: Range<'a>,
+    settled: Option<&'a str>,
+}
+
 /// The plan's state line and the section's text.
 fn second_opinion(
-    root: &Path,
-    base: &str,
+    on: &Reviewing,
     cfg: &Review,
     files: &[(String, u64)],
     progress: &mut dyn Write,
@@ -157,7 +203,8 @@ fn second_opinion(
             format!("exit: 2\nunreviewed: {reason}\n{log}{passes}"),
         )
     };
-    let passes = review::plan(root, base, files, cfg.pass_lines);
+    let root = on.root;
+    let passes = review::plan(root, on.range, files, cfg.pass_lines);
     let mut started = |dir: Option<&Path>| match sink.as_mut() {
         Some(sink) => sink(Progress::Started {
             passes: passes.len(),
@@ -183,7 +230,13 @@ fn second_opinion(
         root,
         &dir,
         &passes,
-        |n, pass| review::diff_pass_prompt(root, base, &dir, n, pass),
+        |n, pass| {
+            let prompt = review::diff_pass_prompt(root, on.range, &dir, n, pass)?;
+            Ok(match on.settled {
+                Some(s) => review::with_settled(&prompt, s),
+                None => prompt,
+            })
+        },
         progress,
         sink,
     ) {

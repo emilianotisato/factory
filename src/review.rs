@@ -61,13 +61,38 @@ pub fn group(files: &[(String, u64)], cap: u64) -> Vec<Pass> {
     out
 }
 
-/// `group`'s passes, each file over twice `cap` replaced by one pass per part of its `<base>...HEAD` diff.
+/// The commits a review reads: the branch since it left `Base`, or only the commits after `Since`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Range<'a> {
+    Base(&'a str),
+    Since(&'a str),
+}
+
+impl Range<'_> {
+    /// The git revision range.
+    pub fn spec(&self) -> String {
+        match self {
+            Range::Base(b) => format!("{b}...HEAD"),
+            Range::Since(c) => format!("{c}..HEAD"),
+        }
+    }
+
+    /// How a prompt names what the diff is measured from.
+    fn against(&self) -> String {
+        match self {
+            Range::Base(b) => format!("against {b}"),
+            Range::Since(c) => format!("since commit {c}"),
+        }
+    }
+}
+
+/// `group`'s passes, each file over twice `cap` replaced by one pass per part of its diff over `range`.
 /// A file whose diff cannot be read stays whole, so its pass reports the error.
-pub fn plan(root: &Path, base: &str, files: &[(String, u64)], cap: u64) -> Vec<Pass> {
+pub fn plan(root: &Path, range: Range, files: &[(String, u64)], cap: u64) -> Vec<Pass> {
     let mut out = Vec::new();
     for pass in group(files, cap) {
         let parts = if pass.over && pass.lines > 2 * cap {
-            diff(root, base, &pass.files)
+            diff(root, range, &pass.files)
                 .map(|text| split_diff(&text, cap))
                 .unwrap_or_default()
         } else {
@@ -207,8 +232,8 @@ pub fn parse_numstat(text: &str) -> Vec<(String, u64)> {
 }
 
 /// Paths come back relative to the repo root whatever `cwd` is.
-pub fn numstat(cwd: &Path, base: &str, paths: &[String]) -> Result<Vec<(String, u64)>> {
-    let range = format!("{base}...HEAD");
+pub fn numstat(cwd: &Path, range: Range, paths: &[String]) -> Result<Vec<(String, u64)>> {
+    let range = range.spec();
     let out = git(
         cwd,
         &[
@@ -344,8 +369,8 @@ fn parse_check_attr(text: &str) -> Vec<(String, &'static str)> {
     out
 }
 
-pub fn diff(root: &Path, base: &str, files: &[String]) -> Result<String> {
-    let range = format!("{base}...HEAD");
+pub fn diff(root: &Path, range: Range, files: &[String]) -> Result<String> {
+    let range = range.spec();
     git(
         root,
         &[
@@ -777,10 +802,10 @@ pub fn pass_header(n: usize, pass: &Pass, ran: &Ran, cfg: &Review) -> String {
     )
 }
 
-/// Writes the pass's slice of `<base>...HEAD` into the log dir and asks the reviewer to read it.
+/// Writes the pass's slice of `range` into the log dir and asks the reviewer to read it.
 pub fn diff_pass_prompt(
     root: &Path,
-    base: &str,
+    range: Range,
     dir: &Path,
     n: usize,
     pass: &Pass,
@@ -797,12 +822,12 @@ pub fn diff_pass_prompt(
             ),
         ),
         None => (
-            diff(root, base, &pass.files)?,
+            diff(root, range, &pass.files)?,
             format!("The diff of {}", pass.files.join(" ")),
         ),
     };
     fs::write(&file, text).map_err(io(format!("write {}", file.display())))?;
-    Ok(diff_prompt(&what, base, &file))
+    Ok(diff_prompt(&what, &range.against(), &file))
 }
 
 fn exit_words(code: Option<i32>) -> String {
@@ -862,10 +887,10 @@ fn body(o: &Outcome, timeout_secs: u64) -> (String, bool) {
     (text, false)
 }
 
-/// `what` names the diff, as `The diff of a.rs b.rs`.
-pub fn diff_prompt(what: &str, base: &str, diff_file: &Path) -> String {
+/// `what` names the diff, as `The diff of a.rs b.rs`, and `against` its range, as `against main`.
+pub fn diff_prompt(what: &str, against: &str, diff_file: &Path) -> String {
     format!(
-        "Adversarial code review. {what} against {base} is in {}: read it, and read any file in the repository you need for context. Report only defects you can point to at file:line with a failure scenario; no praise, no style. Do not edit anything.",
+        "Adversarial code review. {what} {against} is in {}: read it, and read any file in the repository you need for context. Report only defects you can point to at file:line with a failure scenario; no praise, no style. Do not edit anything.",
         diff_file.display()
     )
 }
@@ -875,6 +900,14 @@ pub fn doc_prompt(text: &str, doc: &Path) -> String {
         "{}\n\nThe document is {}: read it, and read any file in the repository you need for context. Do not edit anything.",
         text.trim_end(),
         doc.display()
+    )
+}
+
+/// `settled` is the feature's settled block, appended with the rule for contradicting it.
+pub fn with_settled(prompt: &str, settled: &str) -> String {
+    format!(
+        "{prompt}\n\nSettled for this feature: a finding that contradicts an entry below must name the entry and say why it is wrong.\n\n{}",
+        settled.trim_end()
     )
 }
 

@@ -43,7 +43,14 @@ fn review_passes_report_as_they_finish() {
         Ok(())
     };
     let mut progress = Vec::new();
-    let text = collect::collect(fx.path(), "main", &cfg, &mut progress, Some(&mut sink)).unwrap();
+    let text = collect::collect(
+        fx.path(),
+        &collect::Options::new("main"),
+        &cfg,
+        &mut progress,
+        Some(&mut sink),
+    )
+    .unwrap();
     assert!(text.contains("second opinion: reviewed, 2 of 2"), "{text}");
 
     println!("{heard:#?}");
@@ -75,8 +82,14 @@ fn review_passes_report_as_they_finish() {
         Progress::PassDone { .. } => Err(factory::Error::Msg("the sink broke".into())),
     };
     let started = Instant::now();
-    let text =
-        collect::collect(fx.path(), "main", &cfg, &mut progress, Some(&mut failing)).unwrap();
+    let text = collect::collect(
+        fx.path(),
+        &collect::Options::new("main"),
+        &cfg,
+        &mut progress,
+        Some(&mut failing),
+    )
+    .unwrap();
     assert!(started.elapsed() >= Duration::from_secs(2), "{text}");
     assert!(
         text.contains("second opinion: fallback owed — unreviewed: the sink broke"),

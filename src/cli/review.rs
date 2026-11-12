@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use clap::{Args, Subcommand};
 
 use crate::error::io;
-use crate::review::{self, Pass};
-use crate::{Result, collect, config, paths};
+use crate::review::{self, Pass, Range};
+use crate::{Result, collect, config, paths, settled};
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum ReviewVerb {
@@ -33,6 +33,9 @@ pub struct SecondArgs {
     /// The other reviewers' one-line findings, asked what fixing them misses
     #[arg(long, value_name = "FILE")]
     pub others: Option<PathBuf>,
+    /// Put this feature's settled decisions and non-goals in every --diff pass prompt
+    #[arg(long, value_name = "NNN")]
+    pub feature: Option<String>,
     /// Scope --diff to these paths
     #[arg(last = true, value_name = "PATHS")]
     pub paths: Vec<String>,
@@ -46,9 +49,15 @@ pub struct CollectArgs {
     /// Write the file here instead of stdout
     #[arg(long, value_name = "FILE")]
     pub out: Option<PathBuf>,
+    /// Second-opinion only `<commit>..HEAD`, the commits after the last review; leaks still scans the branch
+    #[arg(long, value_name = "COMMIT", allow_hyphen_values = true)]
+    pub since: Option<String>,
+    /// Put this feature's settled decisions and non-goals in every pass prompt
+    #[arg(long, value_name = "NNN")]
+    pub feature: Option<String>,
 }
 
-const USAGE: &str = "usage: factory review second --diff <base> [--others <file>] [-- <paths>]\n       factory review second --doc <file> --prompt <text> [--others <file>]\n       factory review collect --base <branch> [--out <file>]";
+const USAGE: &str = "usage: factory review second --diff <base> [--feature <NNN>] [--others <file>] [-- <paths>]\n       factory review second --doc <file> --prompt <text> [--others <file>]\n       factory review collect --base <branch> [--out <file>] [--since <commit>] [--feature <NNN>]";
 
 enum Mode {
     Diff(String),
@@ -80,10 +89,18 @@ fn collect_file(a: &CollectArgs, out: &mut dyn Write, err: &mut dyn Write) -> Re
     let Some(base) = a.base.as_deref().filter(|b| !b.starts_with('-')) else {
         return usage(err);
     };
+    if a.since.as_deref().is_some_and(|c| c.starts_with('-')) {
+        return usage(err);
+    }
     let cfg = load_review(err)?;
     let cwd = std::env::current_dir().map_err(io("read the current directory"))?;
     let root = paths::repo_root(&cwd)?;
-    let text = collect::collect(&root, base, &cfg, err, None)?;
+    let opts = collect::Options {
+        since: a.since.as_deref(),
+        feature: a.feature.as_deref(),
+        ..collect::Options::new(base)
+    };
+    let text = collect::collect(&root, &opts, &cfg, err, None)?;
     match &a.out {
         Some(p) => fs::write(p, text).map_err(io(format!("write {}", p.display())))?,
         None => out.write_all(text.as_bytes()).map_err(io("stdout"))?,
@@ -109,7 +126,7 @@ fn second(a: &SecondArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i3
     let (root, passes, skipped) = match &mode {
         Mode::Diff(base) => {
             let root = paths::repo_root(&cwd)?;
-            let skip = review::skip(&root, review::numstat(&cwd, base, &a.paths)?);
+            let skip = review::skip(&root, review::numstat(&cwd, Range::Base(base), &a.paths)?);
             if skip.kept.is_empty() {
                 let left = if skip.skipped.is_empty() {
                     String::new()
@@ -120,7 +137,7 @@ fn second(a: &SecondArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i3
                     .map_err(io("stdout"))?;
                 return Ok(2);
             }
-            let passes = review::plan(&root, base, &skip.kept, cfg.pass_lines);
+            let passes = review::plan(&root, Range::Base(base), &skip.kept, cfg.pass_lines);
             (root, passes, skip.lines())
         }
         Mode::Doc(doc, _) => {
@@ -139,6 +156,10 @@ fn second(a: &SecondArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i3
         }
     };
 
+    let settled = match (&mode, &a.feature) {
+        (Mode::Diff(_), Some(f)) => settled::for_feature(&root, f),
+        _ => None,
+    };
     let dir = review::new_log_dir(&paths::data_dir())?;
     if let Err(reason) = review::probe(&cfg, &dir) {
         writeln!(out, "unreviewed: {reason}\n\nlog: {}", dir.display()).map_err(io("stdout"))?;
@@ -153,7 +174,13 @@ fn second(a: &SecondArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i3
         &root,
         &dir,
         &passes,
-        |n, pass| prompt(&mode, &root, &dir, others.as_deref(), n, pass),
+        |n, pass| {
+            let extra = Extra {
+                settled: settled.as_deref(),
+                others: others.as_deref(),
+            };
+            prompt(&mode, &root, &dir, &extra, n, pass)
+        },
         err,
         None,
     )?;
@@ -169,22 +196,32 @@ fn second(a: &SecondArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i3
     Ok(if reviewed > 0 { 0 } else { 2 })
 }
 
+/// What every pass prompt carries beyond its own diff or document.
+struct Extra<'a> {
+    settled: Option<&'a str>,
+    others: Option<&'a str>,
+}
+
 fn prompt(
     mode: &Mode,
     root: &Path,
     dir: &Path,
-    others: Option<&str>,
+    extra: &Extra,
     n: usize,
     pass: &Pass,
 ) -> Result<String> {
     let prompt = match mode {
-        Mode::Diff(base) => review::diff_pass_prompt(root, base, dir, n, pass)?,
+        Mode::Diff(base) => review::diff_pass_prompt(root, Range::Base(base), dir, n, pass)?,
         Mode::Doc(doc, text) => {
             let abs = fs::canonicalize(doc).map_err(io(format!("resolve {}", doc.display())))?;
             review::doc_prompt(text, &abs)
         }
     };
-    Ok(match others {
+    let prompt = match extra.settled {
+        Some(s) => review::with_settled(&prompt, s),
+        None => prompt,
+    };
+    Ok(match extra.others {
         Some(o) => review::with_others(&prompt, o),
         None => prompt,
     })

@@ -927,3 +927,228 @@ fn an_added_huge_file_splits_at_lines() {
     assert_eq!(added, body);
     assert_eq!(review_calls(&fx).len(), 3);
 }
+
+/// A feature folder `042-settled` in the fixture's checkout: two decisions, the second overturning the first,
+/// and a PRD with a Decisions log and a Non-goals section.
+fn settled_feature(fx: &Fixture) {
+    let dir = fx.path().join("docs/features/042-settled");
+    fs::create_dir_all(&dir).unwrap();
+    let decision = |id: &str, title: &str, body: &str| {
+        json!({"id": id, "kind": "decision", "ts": "2026-11-12T10:00:00Z", "title": title, "body": body})
+            .to_string()
+    };
+    fs::write(
+        dir.join("log.jsonl"),
+        [
+            decision(
+                "AD-1",
+                "Keep three retries",
+                "**Chose:** three retries, then fail\n**Over:** one",
+            ),
+            decision(
+                "AD-2",
+                "Keep five retries",
+                "**Chose:** five retries, the queue backs off\n**Supersedes:** AD-1\n**Over:** three",
+            ),
+        ]
+        .join("\n")
+            + "\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("prd.md"),
+        "# PRD-042\n\n## 1. Why\n\nwhy\n\n## 9. Decisions log\n\n- the queue stays in memory\n\n## 11. Non-goals\n\n- no web dashboard for the queue\n\n## 12. Notes\n\nunrelated notes\n",
+    )
+    .unwrap();
+}
+
+fn assert_settled(prompt: &str) {
+    for want in [
+        "- AD-2 — Keep five retries: five retries, the queue backs off",
+        "the queue stays in memory",
+        "no web dashboard for the queue",
+        "must name the entry and say why it is wrong",
+    ] {
+        assert!(prompt.contains(want), "{want}: {prompt}");
+    }
+    for gone in ["AD-1", "three retries", "unrelated notes"] {
+        assert!(!prompt.contains(gone), "{gone}: {prompt}");
+    }
+}
+
+#[test]
+fn feature_puts_settled_decisions_in_every_pass_prompt() {
+    let fx = fixture("collect-settled", 20);
+    settled_feature(&fx);
+    let o = collect(
+        &fx,
+        &["--base", "main", "--feature", "042", "--out", "f.md"],
+    );
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    let reviews = review_calls(&fx);
+    assert_eq!(reviews.len(), 3);
+    for argv in &reviews {
+        assert_settled(argv.last().unwrap());
+    }
+
+    let o = review(&fx, &["--diff", "main", "--feature", "042"]);
+    assert_eq!(o.status.code(), Some(0), "{}", stdout(&o));
+    let reviews = review_calls(&fx);
+    assert_eq!(reviews.len(), 6);
+    for argv in &reviews[3..] {
+        assert_settled(argv.last().unwrap());
+    }
+}
+
+#[test]
+fn no_feature_keeps_the_prompt_as_today() {
+    let fx = fixture("collect-no-feature", 20);
+    settled_feature(&fx);
+    collected(&fx);
+    let o = collect(
+        &fx,
+        &["--base", "main", "--feature", "999", "--out", "g.md"],
+    );
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    let reviews = review_calls(&fx);
+    assert_eq!(reviews.len(), 6);
+    for argv in &reviews {
+        let prompt = argv.last().unwrap();
+        let (what, rest) = prompt
+            .strip_prefix("Adversarial code review. ")
+            .and_then(|p| p.split_once(" against main is in "))
+            .unwrap_or_else(|| panic!("{prompt}"));
+        let file = rest.split_once(": read it").unwrap().0;
+        assert_eq!(
+            *prompt,
+            format!(
+                "Adversarial code review. {what} against main is in {file}: read it, and read any file in the repository you need for context. Report only defects you can point to at file:line with a failure scenario; no praise, no style. Do not edit anything."
+            )
+        );
+    }
+}
+
+/// `feat/review` with `before.txt` and a leaked plan reference in `src/early.rs`, then commit `R`'s two later
+/// files. Returns `R`.
+fn reviewed_branch(name: &str) -> (Fixture, String) {
+    let fx = Fixture::new(name);
+    fx.git(&["checkout", "-q", "-b", "feat/review"]);
+    let write = |f: &str, body: &str| {
+        let path = fx.path().join(f);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, body).unwrap();
+        fx.git(&["add", f]);
+    };
+    let lines = |f: &str| -> String { (1..=100).map(|i| format!("{f} line {i}\n")).collect() };
+    write("before.txt", &lines("before"));
+    write(
+        "src/early.rs",
+        "// FR-1: the plan named in code\npub fn early() {}\n",
+    );
+    fx.git(&["commit", "-q", "-m", "feat: reviewed already"]);
+    let r = fx.git(&["rev-parse", "HEAD"]).trim().to_string();
+    write("later-b.txt", &lines("b"));
+    fx.git(&["commit", "-q", "-m", "fix: after the review"]);
+    write("later-c.txt", &lines("c"));
+    fx.git(&["commit", "-q", "-m", "fix: and another"]);
+    configure(&fx, 20);
+    (fx, r)
+}
+
+#[test]
+fn collect_since_reviews_only_later_commits() {
+    let (fx, r) = reviewed_branch("collect-since");
+    let o = collect(&fx, &["--base", "main", "--since", &r, "--out", "f.md"]);
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    let file = fx.read("f.md");
+    let plan = part(&file, "Plan");
+    assert!(
+        plan.contains(&format!(
+            "changed: 2 files, 200 lines against {r}..HEAD (since the last review)\n"
+        )),
+        "{plan}"
+    );
+    assert!(
+        !plan.contains("before.txt") && !plan.contains("early.rs"),
+        "{plan}"
+    );
+    let reviews = review_calls(&fx);
+    assert!(!reviews.is_empty());
+    let mut seen = String::new();
+    for argv in &reviews {
+        let prompt = argv.last().unwrap();
+        assert!(
+            prompt.contains(&format!(" since commit {r} is in ")),
+            "{prompt}"
+        );
+        let path = prompt
+            .split_once(" is in ")
+            .unwrap()
+            .1
+            .split_once(": read it")
+            .unwrap()
+            .0;
+        seen.push_str(&fs::read_to_string(path).unwrap());
+    }
+    assert!(
+        seen.contains("+++ b/later-b.txt") && seen.contains("+++ b/later-c.txt"),
+        "{seen}"
+    );
+    assert!(
+        !seen.contains("before.txt") && !seen.contains("early.rs"),
+        "{seen}"
+    );
+}
+
+#[test]
+fn collect_since_still_scans_leaks_on_the_whole_branch() {
+    let (fx, r) = reviewed_branch("collect-since-leaks");
+    let o = collect(&fx, &["--base", "main", "--since", &r, "--out", "f.md"]);
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    let leaks = part(&fx.read("f.md"), "Leaks").to_string();
+    assert!(!leaks.contains("verdict: clean"), "{leaks}");
+    assert!(leaks.contains("src/early.rs"), "{leaks}");
+}
+
+#[test]
+fn collect_since_starting_with_a_dash_is_a_usage_error() {
+    let (fx, _) = reviewed_branch("collect-since-dash");
+    let o = collect(&fx, &["--base", "main", "--since", "--output=x"]);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("[--since <commit>]"));
+    assert!(calls(&fx).is_empty());
+}
+
+#[test]
+fn last_reviewed_commit_is_the_one_that_set_reviewed() {
+    let fx = Fixture::new("last-reviewed");
+    assert_eq!(factory::settled::last_reviewed(fx.path(), "001"), None);
+    fx.docs(&["set", "001", "reviewed=2026-11-12"]);
+    fx.git(&["add", "-A"]);
+    fx.git(&["commit", "-q", "-m", "docs: reviewed"]);
+    let r = fx.git(&["rev-parse", "HEAD"]).trim().to_string();
+    fs::write(fx.path().join("unrelated.txt"), "x\n").unwrap();
+    fx.git(&["add", "unrelated.txt"]);
+    fx.git(&["commit", "-q", "-m", "chore: unrelated"]);
+    assert_eq!(factory::settled::last_reviewed(fx.path(), "001"), Some(r));
+}

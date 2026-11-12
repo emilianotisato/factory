@@ -22,6 +22,7 @@ use crate::quota::{self, Hold, Limit};
 use crate::review::Progress;
 use crate::run::{Phase, Run, WorkerOutcome, WorkerRef};
 use crate::scheduler::{self, DEATH_CAP, say, short};
+use crate::settled;
 use crate::stream::{Findings, Summary};
 use crate::worker::{self, Exit, Job, Worker};
 use crate::{Result, clock, collect, lanes, metrics, paths, retro};
@@ -362,6 +363,13 @@ fn collected(
         })?;
         return Ok(pack::collected(&text, file));
     }
+    let feature = run.state().feature.clone();
+    let since = settled::last_reviewed(lane_dir, &feature);
+    let opts = collect::Options {
+        since: since.as_deref(),
+        feature: Some(&feature),
+        ..collect::Options::new(base)
+    };
     let started = Instant::now();
     let mut emit = |p: Progress| -> Result<()> {
         let kind = match p {
@@ -380,7 +388,7 @@ fn collected(
     };
     let written = collect::collect(
         lane_dir,
-        base,
+        &opts,
         review,
         &mut Stamped::new(out),
         Some(&mut emit),

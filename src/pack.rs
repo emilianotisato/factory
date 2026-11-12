@@ -963,6 +963,34 @@ pub fn cut_section(prd: &str, n: u32) -> Option<&str> {
     start.map(|s| &prd[s..])
 }
 
+/// The `## ` section whose title, past any `N.` number, is `title`, ignoring case; heading line included.
+pub fn cut_titled<'a>(prd: &'a str, title: &str) -> Option<&'a str> {
+    let titled = |line: &str| {
+        line.strip_prefix("## ").is_some_and(|h| {
+            let h = h.trim();
+            let h = h
+                .split_once(". ")
+                .filter(|(n, _)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+                .map_or(h, |(_, rest)| rest);
+            h.trim().eq_ignore_ascii_case(title)
+        })
+    };
+    let mut start = None;
+    let mut offset = 0;
+    for line in prd.split_inclusive('\n') {
+        if let Some(s) = start
+            && line.starts_with("## ")
+        {
+            return Some(&prd[s..offset]);
+        }
+        if start.is_none() && titled(line) {
+            start = Some(offset);
+        }
+        offset += line.len();
+    }
+    start.map(|s| &prd[s..])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

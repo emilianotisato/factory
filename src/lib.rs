@@ -31,6 +31,7 @@ pub mod retro;
 pub mod review;
 pub mod run;
 pub mod scheduler;
+pub mod settled;
 pub mod shell;
 pub mod skills;
 pub mod stream;
