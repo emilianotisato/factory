@@ -271,3 +271,88 @@ fn every_doctor_step_links_the_stale_tooling_rule() {
         assert!(rule.contains(needle), "{needle:?} missing");
     }
 }
+
+fn polish_section(heading: &str, next: &str) -> String {
+    let text = fs::read_to_string(root().join("skills/polish/SKILL.md")).unwrap();
+    let start = text.find(heading).unwrap_or_else(|| panic!("{heading}"));
+    let end = start + text[start..].find(next).unwrap_or_else(|| panic!("{next}"));
+    text[start..end].to_string()
+}
+
+#[test]
+fn polish_security_pass_reviews_the_base_range() {
+    let collect = polish_section("## 1.", "## 2.");
+    let security = collect
+        .split("\n\n")
+        .find(|p| p.contains("**Then `security-review`"))
+        .expect("the security paragraph");
+    for keep in [
+        "`git diff <base>...HEAD`",
+        "not to take its range from the built-in skill",
+        "names the range it reviewed",
+        "reviewed nothing",
+    ] {
+        assert!(security.contains(keep), "{keep:?} not in:\n{security}");
+    }
+}
+
+#[test]
+fn polish_starts_ux_first_and_holds_tests() {
+    let collect = polish_section("## 1.", "## 2.");
+    let first = collect.find("**Start `/ux` first").expect("ux first");
+    let local = collect.find("**Local review first**").expect("local");
+    assert!(first < local, "the UX start comes after the local review");
+    assert!(
+        collect.contains("Run no test and no fix in that checkout until the UX pass returns"),
+        "{collect}"
+    );
+    let fix = polish_section("## 5. Fix", "## 6.");
+    assert!(
+        fix.contains("Fixes start after the UX pass returns"),
+        "{fix}"
+    );
+}
+
+#[test]
+fn polish_lists_five_settled_sources() {
+    let verify = polish_section("## 2.", "## 3.");
+    for source in [
+        "`OPEN-n`",
+        "`docs/decisions.md`",
+        "slice task text",
+        "earlier AD",
+        "Non-goals",
+    ] {
+        assert!(verify.contains(source), "{source:?} not settled in §2");
+    }
+    let collect = polish_section("## 1.", "## 2.");
+    for keep in [
+        "--feature <NNN>",
+        "--since <commit>",
+        "git log -1 --format=%H -G '^reviewed' -- docs/features/<NNN>-*/state.toml",
+        "A finding that contradicts an entry names it",
+    ] {
+        assert!(collect.contains(keep), "{keep:?} not in polish §1");
+    }
+}
+
+#[test]
+fn autonomy_has_the_overturn_and_safe_contract_rows() {
+    let builder = factory::pack::builder_autonomy();
+    let overturn = builder
+        .lines()
+        .find(|l| l.contains("may overturn an earlier `AD`"))
+        .expect("the overturn rule reaches builders");
+    assert!(overturn.contains("**Supersedes:** AD-n"), "{overturn}");
+
+    let full = factory::pack::autonomy();
+    let start = full.find("## Mapping").expect("mapping");
+    let end = start + full[start..].find("\n## ").expect("after mapping");
+    let mapping = &full[start..end];
+    let row = mapping
+        .lines()
+        .find(|l| l.contains("changes a contract while today's behavior is safe"))
+        .expect("the safe-contract row sits in the Mapping");
+    assert!(row.contains("`factory docs idea add`"), "{row}");
+    assert!(row.contains("never blocks"), "{row}");
+}

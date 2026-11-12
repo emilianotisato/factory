@@ -3,7 +3,12 @@
 **Source**: [`prd.md`](prd.md) → §3 FR-1, §7 FR-5 (the skill half), §8 FR-6 (the skill half), §9 FR-7, §10 FR-8, §2, §13. **Depends on**: — (independent: text only. It names `--feature` and `--since`, which slice 03 builds, but nothing compiles against them, and both land on the same branch and PR.)
 **Created**: 2026-11-12
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+
+- **Built.** In `/polish` §1: the security brief names `git diff <base>...HEAD`, tells the subagent not to take its range from the built-in skill, and reports the range, with an empty review reported as not run. `/ux` starts first, and no test or fix runs in the checkout until it returns. The collect gains `--feature <NNN>` and `--since <commit>` with its `git log -G '^reviewed'` command. The last resort gains `--feature <NNN>`. The fallback has a brief template. §2 lists five settled sources. §5 opens with "Fixes start after the UX pass returns". `assets/autonomy.md` gains the overturn rule outside the builder cut and the safe-contract Ask row in the Mapping. Four tests in `tests/skills_bundle.rs` pin these passages.
+- **Inner loop.** 3 runs, 1 red, about 7 min. The red run was a stale `skills/bundle.lock` after a second skill edit under the version this slice had already bumped. Restoring the lock and rewriting it once fixed it.
+- **Deviation.** The skill edit needed a version bump to 0.13.3 (`bundle_lock_matches`), and that bump also moves the cockpit mod's three version pins (`cockpit_mod`). This is AD-1 (fyi).
+- **Prove.** The FR-1, FR-5 (skill row), FR-7 and FR-8 rows are left for the checkpoint.
 
 **Slice**: After this slice, `/polish` §1:
 
