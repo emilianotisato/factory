@@ -276,7 +276,7 @@ Three such tests passed after the rule they guard was deleted, because another l
 | FR-4 | run `pr_body_names_full_gate_runs_and_inner_loops` | no |
 | FR-5 | run `polish_skips_ux_on_an_api_only_change` (both passages) | no |
 | FR-6 | run `autonomy_names_research_notes_runbooks_and_sign_offs` | no |
-| FR-7 | run `prove_takes_its_expected_result_from_the_spec` and `a_behavioural_test_is_seen_red_once` | no |
+| FR-7 | run `prove_takes_its_expected_result_from_the_spec`, `checkpoint_takes_its_expected_result_from_the_spec` and `a_behavioural_test_is_seen_red_once` | no |
 | FR-8 | run `prune_lets_a_cited_name_go` and `prune_pr_mode_reuses_the_polish_gate` | no |
 | FR-9 | run `slices_that_write_one_file_are_linked` | no |
 | FR-10 | run `checkpoint_repairs_the_drive_a_covered_slice_broke` | no |
@@ -284,7 +284,14 @@ Three such tests passed after the rule they guard was deleted, because another l
 
 ## 16. Slices
 
-_Not sliced yet: `/slice` fills this._
+Four slices, one branch (`feat/skill-wording`), one PR, one commit per slice, and Prove at the checkpoints. Every Prove row is a skill-text test run below the UI. No row is Human, so there is no `qa-guide.md`.
+
+- **01, unique-passage helper** (FR-11, the helper and the conversion). The spine: every later slice's tests call the helper. It is also the riskiest slice, since every existing passage assertion moves to the helper without being weakened. It edits no skill text, so it needs no bump.
+- **02, polish and prune text** (FR-1, FR-3, FR-5, FR-8). It depends on 01, because it adds tests to `tests/skills_bundle.rs`, which 01 rewrites. As the first skill edit, it bumps to 0.13.4 with the cockpit pins.
+- **03, autonomy, contracts and the PR body** (FR-4, FR-6, FR-7's contract half, FR-10). It depends on 01 for the helper only. It edits `assets/`, which is outside the skills bundle, and puts its tests in a new `tests/asset_text.rs`, so it runs beside 02.
+- **04, slice skill and the UTC date** (FR-2, FR-7's `/slice` half, FR-9, FR-11's `/slice` §4 sentence). It depends on 02, because both edit the polish skill, `skills/bundle.lock` and `tests/skills_bundle.rs`. It only relocks: it restores the base lock, then rewrites it once under 0.13.4.
+
+Checkpoints fall every 2 done slices: after the second of 01/02/03 to land, and once at the end. The board is `factory docs status 018`.
 
 ## 17. Non-goals
 
