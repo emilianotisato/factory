@@ -46,3 +46,31 @@ Leaks: nothing the check should have caught. The verdict was clean before and af
 ## Score
 
 3/5. Every FR landed and every gate was green. But two checkpoints silently dropped three Prove rows, and the run's only high, in contract text, got past both checkpoints and surfaced only through the fallback second opinion.
+
+## Numbers
+
+<!-- factory:numbers -->
+| role | workers | own | subagents | weighted | minutes | turns |
+|---|---:|---:|---:|---:|---:|---:|
+| build | 4 | 655962 | 0 | 655962 | 20 | 68 |
+| checkpoint | 2 | 224844 | 0 | 224844 | 1 | 17 |
+| polish | 1 | 37365 | 1325724 | 1363089 | 0 | 39 |
+| total | 7 | 918169 | 1325724 | 2243893 | 21 | 124 |
+
+Knobs: build opus/high default · fix opus/high default · checkpoint opus/high default · polish opus/high default · budget 30000000 default · lanes 4 · factory 0.13.3 · claude 2.1.316
+
+Hypothesis: none
+
+quality: gate_red 0 · worker_gate_red 0 · fix_commits 0 · ci_red_rounds 0 · ci_reruns 0 · findings high=1 medium=4 low=21 fixed=14 parked=0 · decisions 3 decide 0 blocks 0
+
+Pack (build): slice 6914 · prd_sections 7507 · log 741 · outline 7693 · lookup 1115 · contract 3095 · autonomy 8941 · inner_loop 86 · total 36091 · start_context 22330
+
+Compared with:
+
+| run | feature | weighted | slices | per slice | lines changed | per line | comment share | id hits |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 018-20261112-68dc (this run) | 018 | 2243893 | 4 | 560973 | 1343 | 1671 | 1.2% | 0 |
+| 017-20261112-a618 | 017 | 5703646 | 5 | 1140729 | 3138 | 1818 | 4.1% | 0 |
+| 024-20261107-2f04 | 024 | 6104793 | 9 | 678310 | 7078 | 863 | 3.0% | 0 |
+| 023-20261106-360f | 023 | 1594857 | 2 | 797429 | 1500 | 1063 | 1.2% | 0 |
+<!-- /factory:numbers -->
