@@ -152,6 +152,21 @@ pub fn folder_name(name: &str) -> Option<(u32, &str)> {
 
 /// A `state.toml` that does not parse is kept as its error on the feature, never a reason to fail.
 pub fn scan_folder(base: &Path, kind: Kind) -> Result<Vec<Feature>> {
+    scan_folder_on(base, kind, None)
+}
+
+/// The folder the board files (`state.toml`, `log.jsonl`) of `dir` are read from: its namesake under `board`
+/// when that exists, else `dir` itself.
+pub fn board_dir(board: Option<&Path>, dir: &Path) -> PathBuf {
+    board
+        .zip(dir.file_name())
+        .map(|(b, name)| b.join(name))
+        .filter(|d| d.is_dir())
+        .unwrap_or_else(|| dir.to_path_buf())
+}
+
+/// As `scan_folder`, reading each `state.toml` through `board_dir`.
+pub fn scan_folder_on(base: &Path, kind: Kind, board: Option<&Path>) -> Result<Vec<Feature>> {
     let Ok(rd) = fs::read_dir(base) else {
         return Ok(Vec::new());
     };
@@ -171,7 +186,7 @@ pub fn scan_folder(base: &Path, kind: Kind) -> Result<Vec<Feature>> {
             Ok(text) => Some((frontmatter::parse(&text), text)),
             Err(_) => None,
         };
-        let state = state::read(&dir).map_err(|e| e.to_string());
+        let state = state::read(&board_dir(board, &dir)).map_err(|e| e.to_string());
         out.push(Feature {
             kind,
             number,

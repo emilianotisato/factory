@@ -212,8 +212,8 @@ const REMOVED: [(&str, &str); 3] = [
 
 pub fn docs(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Result<i32> {
     match route(args, out, err) {
-        Err(Error::Msg(m)) => {
-            writeln!(err, "{m}").map_err(io("write stderr"))?;
+        Err(e) => {
+            writeln!(err, "{e}").map_err(io("write stderr"))?;
             Ok(2)
         }
         r => r,
@@ -249,15 +249,19 @@ fn route(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Result<i3
     )))
 }
 
-/// The same-repo check keeps a fixture's `docs set`, run by `cargo test` inside a worker, off that worker's board.
 fn board_root(root: &Path, args: &[String]) -> Option<PathBuf> {
     let verb: Vec<&str> = args.iter().take(2).map(String::as_str).collect();
     if !matches!(
         verb.as_slice(),
-        ["set" | "retro" | "status", ..] | ["log", "add"]
+        ["set" | "retro" | "status", ..] | ["log", "add" | "show"]
     ) {
         return None;
     }
+    board_tree(root)
+}
+
+/// The same-repo check keeps a fixture's `docs set`, run by `cargo test` inside a worker, off that worker's board.
+fn board_tree(root: &Path) -> Option<PathBuf> {
     let board = std::env::var_os(crate::worker::BOARD_ENV).filter(|v| !v.is_empty())?;
     let board = paths::repo_root(Path::new(&board)).ok()?;
     let same = paths::git_common_dir(&board)? == paths::git_common_dir(root)?;
@@ -289,7 +293,7 @@ fn native(root: &Path, args: &[String], out: &mut dyn Write, err: &mut dyn Write
     match cli.verb {
         Verb::Retro { feature, set } => retro(root, &feature, set.as_deref(), out, err),
         Verb::Check => {
-            let report = check::run(root);
+            let report = check::run_on(root, board_tree(root).as_deref());
             if report.is_clean() {
                 print(out, "docs check: clean")?;
             } else {
@@ -420,7 +424,11 @@ fn dispatch(root: &Path, verb: Verb, out: &mut dyn Write, err: &mut dyn Write) -
                     ..log::Entry::new(kind, &title, &body)
                 };
                 let dir = live_dir(root, &feature)?;
-                match log::add(&dir, entry)? {
+                let id = log::add(&dir, entry)?;
+                if let Some(path) = outside_cwd(&dir.join(log::FILE)) {
+                    writeln!(err, "{path} updated").map_err(io("write stderr"))?;
+                }
+                match id {
                     Some(id) => print(out, &id),
                     None => Ok(()),
                 }
@@ -702,6 +710,15 @@ fn set(root: &Path, feature: &str, pairs: &[String], out: &mut dyn Write) -> Res
         kv.push(pair);
     }
     state::set(&dir, &kv)?;
-    let name = dir.file_name().unwrap_or_default().to_string_lossy();
-    print(out, &format!("docs/features/{name}/state.toml updated"))
+    let shown = outside_cwd(&dir.join(state::FILE)).unwrap_or_else(|| {
+        let name = dir.file_name().unwrap_or_default().to_string_lossy();
+        format!("docs/features/{name}/{}", state::FILE)
+    });
+    print(out, &format!("{shown} updated"))
+}
+
+/// The absolute path of a write that landed outside the cwd's repo, as one through `FACTORY_BOARD` does.
+fn outside_cwd(path: &Path) -> Option<String> {
+    let cwd = paths::repo_root(Path::new(".")).ok()?;
+    (!path.starts_with(&cwd)).then(|| path.display().to_string())
 }

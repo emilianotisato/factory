@@ -80,6 +80,11 @@ impl Report {
 }
 
 pub fn run(root: &Path) -> Report {
+    run_on(root, None)
+}
+
+/// As `run`, but each live feature's `state.toml` and `log.jsonl` come from its namesake in `board`'s tree.
+pub fn run_on(root: &Path, board: Option<&Path>) -> Report {
     let mut r = Report::default();
     let rel = |p: &Path| p.strip_prefix(root).unwrap_or(p).display().to_string();
     let project = read_project(root, &mut r);
@@ -103,11 +108,15 @@ pub fn run(root: &Path) -> Report {
         gate_failure: Vec::new(),
     });
     let docs = root.join("docs");
-    let mut folder = |name: &str, kind: Kind| match board::scan_folder(&docs.join(name), kind) {
-        Ok(f) => f,
-        Err(e) => {
-            r.err("E-FM-INVALID", format!("docs/{name}: {e}"));
-            Vec::new()
+    let board_features = board.map(|b| b.join("docs/features"));
+    let mut folder = |name: &str, kind: Kind| {
+        let on = board_features.as_deref().filter(|_| kind == Kind::Live);
+        match board::scan_folder_on(&docs.join(name), kind, on) {
+            Ok(f) => f,
+            Err(e) => {
+                r.err("E-FM-INVALID", format!("docs/{name}: {e}"));
+                Vec::new()
+            }
         }
     };
     let live = folder("features", Kind::Live);
@@ -129,7 +138,8 @@ pub fn run(root: &Path) -> Report {
         }
     }
     for f in &live {
-        feature(root, &limits, f, &mut r);
+        let board_dir = board::board_dir(board_features.as_deref(), &f.dir);
+        feature(root, &board_dir, &limits, f, &mut r);
     }
     for f in &archived {
         let own = f
@@ -268,7 +278,7 @@ fn kind_of(key: &str) -> &'static str {
     }
 }
 
-fn feature(root: &Path, limits: &Project, f: &Feature, r: &mut Report) {
+fn feature(root: &Path, board_dir: &Path, limits: &Project, f: &Feature, r: &mut Report) {
     let dir = format!("docs/features/{}", f.dir_name);
     let nnn = format!("{:03}", f.number);
     let prd = format!("{dir}/prd.md");
@@ -277,7 +287,16 @@ fn feature(root: &Path, limits: &Project, f: &Feature, r: &mut Report) {
 
     let st = match &f.state {
         Err(e) => {
-            let e = e.replace(&format!("{}/", root.display()), "");
+            let tree = board_dir
+                .parent()
+                .and_then(Path::parent)
+                .and_then(Path::parent);
+            let e = [Some(root), tree]
+                .into_iter()
+                .flatten()
+                .fold(e.clone(), |e, t| {
+                    e.replace(&format!("{}/", t.display()), "")
+                });
             r.err("E-STATE-INVALID", e);
             None
         }
@@ -367,7 +386,7 @@ fn feature(root: &Path, limits: &Project, f: &Feature, r: &mut Report) {
     if let Some(s) = st {
         state_rules(&dir, &state_rel, &nnn, f, s, r);
     }
-    log_rules(&dir, &nnn, f, st, r);
+    log_rules(&dir, &nnn, board_dir, st, r);
 }
 
 fn prd_keys(f: &Feature, prd: &str, r: &mut Report) {
@@ -604,9 +623,9 @@ fn id_number(id: &str) -> Option<(&str, u32)> {
     Some((prefix, n.parse().ok()?))
 }
 
-fn log_rules(dir: &str, nnn: &str, f: &Feature, st: Option<&State>, r: &mut Report) {
+fn log_rules(dir: &str, nnn: &str, board_dir: &Path, st: Option<&State>, r: &mut Report) {
     let log_rel = format!("{dir}/{}", log::FILE);
-    let (entries, skipped) = match log::entries(&f.dir) {
+    let (entries, skipped) = match log::entries(board_dir) {
         Ok(x) => x,
         Err(e) => {
             r.err("E-LOG-PARSE", format!("{log_rel}: {e}"));

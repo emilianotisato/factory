@@ -5,7 +5,21 @@
 
 **Highest risk in the feature**: FR-1. `check` must read prose from the lane and only `state.toml` and `log.jsonl` from the main tree, without breaking the other-repo guard or the whole-root verbs.
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+
+- **Built:**
+  - `board_root` adds `log show` to the whole-root verbs. The env and same-repo guard moved into `board_tree`, which `check` also uses.
+  - `check::run_on(root, board)` reads each live feature's `state.toml` and `log.jsonl` from `board::board_dir`. That is the same-named folder under the main tree, or the lane's own folder when main has none (AD-4).
+  - `check::run(root)` is `run_on(root, None)`, so the driver, preflight and doctor are unchanged. `board::scan_folder_on` gives the scan its optional board base.
+  - `set` prints the absolute `state.toml` path when it wrote outside the cwd's repo.
+  - `log add` prints the absolute `log.jsonl` path on stderr and keeps the id alone on stdout (AD-3).
+  - `retro --set` needed no change: its row already prints `repo: <main tree>`, and the new test asserts that.
+  - `docs` maps every `Err` to exit 2.
+- **Inner loop:** 3 runs, 1 red, about 4 minutes. The red was clippy on a `log_rules` parameter left unused.
+- **Deliberate reds**, each restored and green after:
+  - `a_lane_reads_the_board_files_it_wrote`: with `check` passed no board, it failed at the `W-READY-TO-SHIP` assertion. With `log show` dropped from the whole-root list, it failed at the `log show` assertion.
+  - `a_docs_verb_exits_2_when_it_cannot_read_a_file`: with the mapping back to `Msg` only, it exited `Some(1)` where `Some(2)` was expected.
+- **Prove:** the FR-1 and FR-6 rows are left for the checkpoint.
 
 **Slice**: After this slice:
 
