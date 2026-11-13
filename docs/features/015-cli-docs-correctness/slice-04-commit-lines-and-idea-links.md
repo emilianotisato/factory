@@ -10,6 +10,8 @@
 - **Seen red once each.** Without the ` -- {dirs}` suffix, the commit test fails at the "only skill dirs" assertion: `src/x.rs` rode along. With the body pasted unrebased, the links test fails at the `](../../reference/x.md` assertion. With fence skipping disabled, it fails at the fenced-block byte-for-byte assertion. Each test is green again after the restore.
 - **Inner loop:** 1 run, 0 red, 2 min (`cargo fmt && cargo clippy --all-targets -- -D warnings && cargo test -q`, 116 s). Caught nothing.
 - **Prove (checkpoint):** FR-4 `run the_printed_commit_line_leaves_other_staged_files_alone`, FR-5 `run a_from_idea_prd_keeps_its_relative_links`. Transcripts land here after the checkpoint.
+- **Proven (checkpoint 1):** FR-4 `the_printed_commit_line_leaves_other_staged_files_alone` passed — `cp-1/fr4-tests.txt`
+- **Proven (checkpoint 1):** FR-5 `a_from_idea_prd_keeps_its_relative_links` passed — `cp-1/fr5-tests.txt`
 
 **Slice**: After this slice:
 

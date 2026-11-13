@@ -11,6 +11,7 @@
 - **Deliberate reds**: `an_untagged_version_relocks_and_a_tagged_one_refuses` went red with the same-version-untagged arm removed (`Err(bump…)` where `Ok(0.2.0, bb)` was expected). `relock_refuses_when_origin_cannot_be_reached` went red with every non-zero `ls-remote` exit mapped to untagged, the `release.sh` trap (`No` where `Unknown` was expected).
 - **Prove (checkpoint)**: FR-3 row, both `run` tests.
 - **Deviations**: none.
+- **Proven (checkpoint 1)**: FR-3 `an_untagged_version_relocks_and_a_tagged_one_refuses` and `relock_refuses_when_origin_cannot_be_reached` passed — `cp-1/fr3-tests.txt`
 
 **Slice**: After this slice, `FACTORY_BUNDLE_WRITE=1 cargo test` relocks a changed skills bundle at the same version when `v<version>` is tagged neither locally nor on origin. It refuses once either holds the tag. When origin cannot be reached, it refuses and says to retry online or bump. The second-skill-edit trip that PRD-005, 007, 008, 012, 017 and 018 hit is gone.
 

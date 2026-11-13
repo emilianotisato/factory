@@ -177,7 +177,7 @@ fn cut(number: u32, kind: &str, text: &str) -> String {
     }
     let start = prefix.chars().count();
     let fits: Vec<char> = full.chars().take(SUBJECT_MAX + 1).collect();
-    // A cut after the text's first word alone (`CI`, `slice-07`) would say nothing.
+    // A cut after the text's first word alone would say nothing.
     let at_word = (start + 1..=SUBJECT_MAX).rev().find(|&i| {
         fits[i] == ' '
             && fits[start..i]
@@ -352,14 +352,14 @@ mod tests {
 
     #[test]
     fn a_long_subject_is_cut_at_a_word_with_the_rest_in_the_body() {
-        let title = "slice-04 Parked runs resume at their last answer, not relanded";
+        let title = "Upgrade: Parked runs resume at their last answer, not relanded";
         let full = format!("feat(015): {title}");
         assert_eq!(full.chars().count(), 73);
         let subject = cut(15, "feat", title);
         assert!(subject.chars().count() <= SUBJECT_MAX, "{subject}");
         assert!(full.starts_with(&subject));
         assert_eq!(full[subject.len()..].chars().next(), Some(' '), "{subject}");
-        assert_eq!(subject, "feat(015): slice-04 Parked runs resume at their");
+        assert_eq!(subject, "feat(015): Upgrade: Parked runs resume at their");
         assert_eq!(
             message_of(15, "feat", title),
             format!("{subject}\n\n{title}")
@@ -376,12 +376,12 @@ mod tests {
         );
         assert_eq!(cut(15, "fix", &check), subject);
 
-        let dashed = "slice-07 Cards—tabs—sheets—dialogs—menus—toasts—popovers";
+        let dashed = "Widgets: Cards—tabs—sheets—dialogs—menus—toasts—popovers";
         let subject = cut(15, "feat", dashed);
         assert!(subject.chars().count() <= SUBJECT_MAX, "{subject}");
         assert_eq!(
             subject,
-            "feat(015): slice-07 Cards—tabs—sheets—dialogs—menu"
+            "feat(015): Widgets: Cards—tabs—sheets—dialogs—menu"
         );
         let spaceless = "—".repeat(60);
         assert_eq!(cut(15, "feat", &spaceless).chars().count(), SUBJECT_MAX);

@@ -14,6 +14,7 @@
   - `a_long_slice_title_lands_under_a_short_subject`: with the cut stubbed out, the subject list held only the 80-char subject; with the body dropped, `%b`'s first line was `""`.
 - Deviation: AD-2 (fyi). A space counts as a cut point only after the text's first word, so a spaceless CI check name cuts at 50 as the slice's acceptance says, not at `fix(015): CI`.
 - Prove (at the checkpoint): run `a_long_subject_is_cut_at_a_word_with_the_rest_in_the_body` and `a_long_slice_title_lands_under_a_short_subject`.
+- Proven (checkpoint 1): FR-2 `a_long_subject_is_cut_at_a_word_with_the_rest_in_the_body` and `a_long_slice_title_lands_under_a_short_subject` passed — `cp-1/fr2-tests.txt`
 
 **Slice**: After this slice, every subject `commit::subject` returns is at most 50 characters. An overflowing text is cut at the last space that fits, or at 50 chars when no space after the prefix fits. The full text becomes the commit body's first line. Slice, checkpoint, polish, CI-fix and ship commits all go through it.
 

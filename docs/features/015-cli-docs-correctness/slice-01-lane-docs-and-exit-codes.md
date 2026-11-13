@@ -20,6 +20,8 @@
   - `a_lane_reads_the_board_files_it_wrote`: with `check` passed no board, it failed at the `W-READY-TO-SHIP` assertion. With `log show` dropped from the whole-root list, it failed at the `log show` assertion.
   - `a_docs_verb_exits_2_when_it_cannot_read_a_file`: with the mapping back to `Msg` only, it exited `Some(1)` where `Some(2)` was expected.
 - **Prove:** the FR-1 and FR-6 rows are left for the checkpoint.
+- **Proven (checkpoint 1):** FR-1 `a_lane_reads_the_board_files_it_wrote` passed — `cp-1/fr1-tests.txt`
+- **Proven (checkpoint 1):** FR-6 `a_docs_verb_exits_2_when_it_cannot_read_a_file` passed — `cp-1/fr6-tests.txt`
 
 **Slice**: After this slice:
 
