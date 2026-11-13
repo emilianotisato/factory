@@ -377,7 +377,7 @@ fn init_prints_the_commit_line_and_commits_nothing() {
     let said = init(root);
     let version = env!("CARGO_PKG_VERSION");
     let commit = format!(
-        "commit: git add docs .claude/skills .agents/skills CLAUDE.md AGENTS.md && git commit -m \"chore: factory init (skills {version})\""
+        "commit: git add docs .claude/skills .agents/skills CLAUDE.md AGENTS.md && git commit -m \"chore: factory init (skills {version})\" -- docs .claude/skills .agents/skills CLAUDE.md AGENTS.md"
     );
     let line = said
         .lines()

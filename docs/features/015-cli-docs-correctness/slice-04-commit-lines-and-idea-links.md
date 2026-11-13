@@ -3,7 +3,13 @@
 **Source**: [`prd.md`](prd.md) → §6 FR-4, §7 FR-5, §12. **Depends on**: —. Both FRs edit `src/docs/scaffold.rs` (`:131` and `with_idea` at `:349-370`), so they are one slice. It is independent of 01-03 and 05.
 **Created**: 2026-11-12
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+
+- **Built.** The `commit:` lines from `factory skills update` (`src/cli/skills.rs:94`) and `factory init` (`src/docs/scaffold.rs:132`) now end `-- <same dirs>`, and `tests/init.rs`'s whole-line assertion moved with them. `factory docs new --from-idea` passes the idea body through `migrate::rebase_links(body, idea dir, PRD dir)`. It rebases each relative link outside fenced blocks with `edit_links` and keeps anchors and titles. `edit_links`'s callback also receives the whole link source now. AD-1 (fyi) covers what stays as written beyond URLs, anchors and fences.
+- **Tests.** `the_printed_commit_line_leaves_other_staged_files_alone` (`tests/skills_fence.rs`) and `a_from_idea_prd_keeps_its_relative_links` (`tests/docs_ideas.rs`). The sibling idea is a real `idea add` file linked as `./{id}.md`, because `docs check` validates every file in `docs/ideas/`.
+- **Seen red once each.** Without the ` -- {dirs}` suffix, the commit test fails at the "only skill dirs" assertion: `src/x.rs` rode along. With the body pasted unrebased, the links test fails at the `](../../reference/x.md` assertion. With fence skipping disabled, it fails at the fenced-block byte-for-byte assertion. Each test is green again after the restore.
+- **Inner loop:** 1 run, 0 red, 2 min (`cargo fmt && cargo clippy --all-targets -- -D warnings && cargo test -q`, 116 s). Caught nothing.
+- **Prove (checkpoint):** FR-4 `run the_printed_commit_line_leaves_other_staged_files_alone`, FR-5 `run a_from_idea_prd_keeps_its_relative_links`. Transcripts land here after the checkpoint.
 
 **Slice**: After this slice:
 

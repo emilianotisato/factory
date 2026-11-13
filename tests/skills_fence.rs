@@ -292,6 +292,45 @@ fn update_renders_a_behind_repo_and_drops_what_the_bundle_lost() {
 }
 
 #[test]
+fn the_printed_commit_line_leaves_other_staged_files_alone() {
+    let dir = fixture("behind");
+    let root = dir.path();
+    fs::create_dir_all(skill(root, "old")).unwrap();
+    fs::write(skill(root, "old/SKILL.md"), "retired\n").unwrap();
+    edit_manifest(root, |m| {
+        m.files
+            .insert("old/SKILL.md".into(), skills::file_hash("retired\n"));
+    });
+    commit(root, "test: behind with a retired skill");
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src/x.rs"), "fn x() {}\n").unwrap();
+    ok(root, "git", &["add", "src/x.rs"]);
+
+    let (code, out) = update(root);
+    assert_eq!(code, 0, "{out}");
+    let line = out
+        .lines()
+        .find_map(|l| l.strip_prefix("commit: "))
+        .unwrap_or_else(|| panic!("no commit line in:\n{out}"));
+    ok(root, "sh", &["-c", line]);
+
+    let changed = ok(root, "git", &["show", "--name-only", "--format=", "HEAD"]);
+    assert!(changed.contains(".claude/skills/old/SKILL.md"), "{changed}");
+    for path in changed.lines() {
+        assert!(
+            path.starts_with(".claude/skills/") || path.starts_with(".agents/skills/"),
+            "{path} in:\n{changed}"
+        );
+    }
+    let staged = ok(root, "git", &["diff", "--cached", "--name-only"]);
+    assert_eq!(staged.trim(), "src/x.rs");
+    assert_eq!(
+        ok(root, "git", &["status", "--porcelain"]).trim(),
+        "A  src/x.rs"
+    );
+}
+
+#[test]
 fn update_refuses_ahead_and_writes_nothing() {
     let dir = fixture("ahead");
     let before = snapshot(dir.path());

@@ -6,6 +6,7 @@ use std::process::Command;
 use super::board::{self, Kind};
 use super::frontmatter;
 use super::ideas;
+use super::migrate;
 use super::preflight;
 use super::project;
 use super::state;
@@ -128,8 +129,8 @@ pub fn init(root: &Path, out: &mut dyn Write) -> Result<()> {
     say(
         out,
         &format!(
-            "commit: git add {} && git commit -m \"{subject}\"",
-            paths.join(" ")
+            "commit: git add {paths} && git commit -m \"{subject}\" -- {paths}",
+            paths = paths.join(" ")
         ),
     )?;
     say(
@@ -312,8 +313,10 @@ pub fn new_from(
     if let Some(author) = author(root) {
         body = body.replacen("\nauthor: _(name)_\n", &format!("\nauthor: {author}\n"), 1);
     }
-    if let Some((id, _, i)) = &idea {
-        body = with_idea(&body, id, &i.body);
+    if let Some((id, rel, i)) = &idea {
+        let from = root.join(rel);
+        let from = from.parent().unwrap_or(root);
+        body = with_idea(&body, id, &migrate::rebase_links(&i.body, from, &dir));
     }
     write_new(&dir.join("prd.md"), &body)?;
     state::set(&dir, &[("status", "draft")])?;

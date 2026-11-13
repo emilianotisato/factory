@@ -1279,7 +1279,7 @@ fn normalize(p: &Path) -> PathBuf {
 }
 
 fn unlink(text: &str, dir: &Path, gone: &[PathBuf]) -> (String, Vec<(usize, String)>) {
-    let (out, hits) = edit_links(text, dir, |label, _, p| {
+    let (out, hits) = edit_links(text, dir, |label, _, p, _| {
         gone.iter().any(|g| g == p).then(|| label.to_string())
     });
     (out, hits.into_iter().map(|(l, old, _)| (l, old)).collect())
@@ -1287,17 +1287,78 @@ fn unlink(text: &str, dir: &Path, gone: &[PathBuf]) -> (String, Vec<(usize, Stri
 
 /// Anchor dropped: the README holds the rules those links meant.
 fn relink(text: &str, dir: &Path, ideas: &Path) -> (String, Vec<(usize, String, String)>) {
-    edit_links(text, dir, |label, target, p| {
+    edit_links(text, dir, |label, target, p, _| {
         let base = target.strip_suffix("ideas.md")?;
         (p == ideas).then(|| format!("[{label}]({base}ideas/README.md)"))
     })
 }
 
-/// `edit` sees the text, the target sans anchor and its resolved path; hits are `(line, old, new)`.
+/// The links outside fenced blocks, retargeted from `from` to `to`; anchors and titles stay.
+pub(crate) fn rebase_links(text: &str, from: &Path, to: &Path) -> String {
+    let from = normalize(from);
+    let to = normalize(to);
+    let mut out = String::with_capacity(text.len());
+    let mut prose = String::new();
+    let mut fenced = false;
+    for line in text.split_inclusive('\n') {
+        if is_fence(line) {
+            if !fenced {
+                out.push_str(&rebase_prose(&prose, &from, &to));
+                prose.clear();
+            }
+            fenced = !fenced;
+            out.push_str(line);
+        } else if fenced {
+            out.push_str(line);
+        } else {
+            prose.push_str(line);
+        }
+    }
+    out.push_str(&rebase_prose(&prose, &from, &to));
+    out
+}
+
+fn rebase_prose(text: &str, from: &Path, to: &Path) -> String {
+    edit_links(text, from, |_, target, p, link| {
+        if target.starts_with('/') {
+            return None;
+        }
+        let mut new = relative(to, p);
+        if target.ends_with('/') && !new.ends_with('/') {
+            new.push('/');
+        }
+        let at = link.find("](")? + 2;
+        Some(format!(
+            "{}{new}{}",
+            &link[..at],
+            &link[at + target.len()..]
+        ))
+    })
+    .0
+}
+
+/// `target` as reached from `dir`; both are normalized.
+fn relative(dir: &Path, target: &Path) -> String {
+    let d: Vec<_> = dir.components().collect();
+    let t: Vec<_> = target.components().collect();
+    let shared = d.iter().zip(&t).take_while(|(a, b)| a == b).count();
+    let mut parts: Vec<String> = vec!["..".into(); d.len() - shared];
+    parts.extend(
+        t[shared..]
+            .iter()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned()),
+    );
+    if parts.is_empty() {
+        return "./".into();
+    }
+    parts.join("/")
+}
+
+/// `edit` sees the text, the target sans anchor, its resolved path and the whole link; hits are `(line, old, new)`.
 fn edit_links(
     text: &str,
     dir: &Path,
-    edit: impl Fn(&str, &str, &Path) -> Option<String>,
+    edit: impl Fn(&str, &str, &Path, &str) -> Option<String>,
 ) -> (String, Vec<(usize, String, String)>) {
     let mut out = String::new();
     let mut hits = Vec::new();
@@ -1312,7 +1373,7 @@ fn edit_links(
         let external = href.contains(':') || target.is_empty();
         if !external
             && !text[..i].ends_with('!')
-            && let Some(new) = edit(label, target, &normalize(&dir.join(target)))
+            && let Some(new) = edit(label, target, &normalize(&dir.join(target)), &text[i..end])
         {
             out.push_str(&text[copied..i]);
             out.push_str(&new);
