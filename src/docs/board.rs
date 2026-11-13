@@ -172,7 +172,8 @@ pub fn scan_folder_on(base: &Path, kind: Kind, board: Option<&Path>) -> Result<V
     };
     let mut names: Vec<String> = rd
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().is_dir())
+        // `file_type` does not follow links: a symlinked feature folder is not a feature.
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .collect();
     names.sort();
@@ -209,6 +210,9 @@ fn slice_files(dir: &Path) -> Result<Vec<SliceFile>> {
         let Some(number) = state::slice_number(&file) else {
             continue;
         };
+        if e.file_type().is_ok_and(|t| t.is_symlink()) {
+            continue;
+        }
         let text =
             fs::read_to_string(e.path()).map_err(io(format!("read {}", e.path().display())))?;
         out.push(SliceFile {

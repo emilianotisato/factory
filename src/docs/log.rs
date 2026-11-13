@@ -119,6 +119,9 @@ impl Entry {
 /// A line of `log.jsonl` that does not parse: `(line number, error)`, 1-based.
 pub type Skipped = (usize, String);
 
+/// An entry with its 1-based line in `log.jsonl`.
+pub type Numbered = (usize, Entry);
+
 fn id_number(id: &str) -> Option<(&str, u32)> {
     let (prefix, n) = id.rsplit_once('-')?;
     Some((prefix, n.parse().ok()?))
@@ -128,7 +131,8 @@ pub fn path(dir: &Path) -> PathBuf {
     dir.join(FILE)
 }
 
-fn parse(bytes: &[u8]) -> (Vec<Entry>, Vec<Skipped>) {
+/// Lossy: a line of invalid UTF-8 keeps its number, so the lines after it keep theirs.
+fn parse(bytes: &[u8]) -> (Vec<Numbered>, Vec<Skipped>) {
     let mut out = Vec::new();
     let mut bad = Vec::new();
     for (i, l) in String::from_utf8_lossy(bytes).lines().enumerate() {
@@ -136,7 +140,7 @@ fn parse(bytes: &[u8]) -> (Vec<Entry>, Vec<Skipped>) {
             continue;
         }
         match serde_json::from_str(l) {
-            Ok(e) => out.push(e),
+            Ok(e) => out.push((i + 1, e)),
             Err(e) => bad.push((i + 1, e.to_string())),
         }
     }
@@ -151,8 +155,14 @@ fn read(p: &Path) -> Result<Vec<u8>> {
     }
 }
 
-pub fn entries(dir: &Path) -> Result<(Vec<Entry>, Vec<Skipped>)> {
+/// Each entry of `dir`'s log with its 1-based line; a missing log is empty.
+pub fn numbered(dir: &Path) -> Result<(Vec<Numbered>, Vec<Skipped>)> {
     Ok(parse(&read(&path(dir))?))
+}
+
+pub fn entries(dir: &Path) -> Result<(Vec<Entry>, Vec<Skipped>)> {
+    let (lines, bad) = numbered(dir)?;
+    Ok((lines.into_iter().map(|(_, e)| e).collect(), bad))
 }
 
 fn refuse<T>(msg: String) -> Result<T> {
@@ -197,7 +207,7 @@ pub fn add(dir: &Path, mut entry: Entry) -> Result<Option<String>> {
     let _lock = state::lock(dir)?;
     let p = path(dir);
     let bytes = read(&p)?;
-    let (have, _) = parse(&bytes);
+    let have: Vec<Entry> = parse(&bytes).0.into_iter().map(|(_, e)| e).collect();
     // Inside the lock: a ref read before it could miss a BLOCK being written.
     if let Some(r) = &entry.reference
         && !have.iter().any(|e| e.id.as_deref() == Some(r))

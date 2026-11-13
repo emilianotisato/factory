@@ -149,16 +149,7 @@ pub fn block_title(raw: &str) -> String {
 /// A line that does not parse is skipped: `check` reports it.
 pub fn entries(feature_dir: &Path) -> Result<Vec<BlockEntry>> {
     let path = log::path(feature_dir);
-    let text = match fs::read_to_string(&path) {
-        Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(io(format!("read {}", path.display()))(e)),
-    };
-    let lines: Vec<(usize, log::Entry)> = text
-        .lines()
-        .enumerate()
-        .filter_map(|(i, l)| Some((i + 1, serde_json::from_str(l).ok()?)))
-        .collect();
+    let (lines, _) = log::numbered(feature_dir)?;
     let mut out: Vec<BlockEntry> = lines
         .iter()
         .filter(|(_, e)| e.kind == log::Kind::Block)
@@ -296,6 +287,35 @@ mod tests {
         );
         assert!(text.ends_with("):** fixed"), "{text}");
         assert!(find(d, "BLOCK-9").unwrap().is_none());
+    }
+
+    #[test]
+    fn answers_read_the_log_through_the_docs_reader() {
+        use std::io::Write as _;
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        add_block(d, Some(1), None, "Which option?", "b").unwrap();
+        let mut f = fs::OpenOptions::new()
+            .append(true)
+            .open(log::path(d))
+            .unwrap();
+        f.write_all(b"\xff\xfe not json\n").unwrap();
+        let e = find(d, "BLOCK-1").unwrap().unwrap();
+        resolve(d, &e, "a").unwrap();
+
+        let (all, _) = log::numbered(d).unwrap();
+        let lines: Vec<usize> = all.iter().map(|(l, _)| *l).collect();
+        assert_eq!(lines, [1, 3], "the bad line keeps its number");
+        let got = entries(d).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].line, 1);
+        assert!(got[0].resolved);
+        assert_eq!(got[0].answers[0].1, "a");
+
+        let src = include_str!("answers.rs");
+        let body = &src[src.find("pub fn entries(").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        assert!(!body.contains("serde_json"), "{body}");
     }
 
     #[test]
