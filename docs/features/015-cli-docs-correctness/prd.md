@@ -271,13 +271,21 @@ Out of scope: `check`'s own `walk_md` (`src/docs/check.rs:777`) and `migrate.rs:
 | FR-3 | run `an_untagged_version_relocks_and_a_tagged_one_refuses` and `relock_refuses_when_origin_cannot_be_reached` | no |
 | FR-4 | run `the_printed_commit_line_leaves_other_staged_files_alone` | no |
 | FR-5 | run `a_from_idea_prd_keeps_its_relative_links` | no |
-| FR-6 | run `a_docs_verb_exits_2_on_an_unreadable_project_toml` | no |
+| FR-6 | run `a_docs_verb_exits_2_when_it_cannot_read_a_file` | no |
 | FR-7 | run `answers_read_the_log_through_the_docs_reader` | no |
 | FR-8 | run `the_board_and_renumber_skip_symlinks` | no |
 
 ## 13. Slices
 
-_Not sliced yet: `/slice` fills this._
+Five slices, one branch (`feat/cli-docs-correctness`), one PR, one commit per slice, and Prove at the checkpoints. Every row is a test run below the UI. No row is Human, so there is no `qa-guide.md`.
+
+- **01, lane docs and exit codes** (FR-1, FR-6). Both edit `src/cli/docs.rs`. It is the highest risk: `check` reads prose from the lane and only the board files from main.
+- **02, short commit subjects** (FR-2), in `src/commit.rs` and its callers.
+- **03, relock while untagged** (FR-3), in `src/skills.rs` and `tests/skills_bundle.rs`. It edits no skill text, so it needs no bump.
+- **04, commit lines and from-idea links** (FR-4, FR-5). Both edit `src/docs/scaffold.rs`.
+- **05, one log reader and no symlinks** (FR-7, FR-8). It depends on 01, because both edit the board scan in `src/docs/board.rs`.
+
+01 through 04 are mutually independent and fill the four lanes. 05 waits on 01. Checkpoints fall every 2 done slices, then once at the end.
 
 ## 14. Non-goals
 
