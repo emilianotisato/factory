@@ -43,3 +43,31 @@ None measured. The gate cost about 2 min per run and was never red at a checkpoi
 ## Score
 
 4/5: every FR landed with its test. Polish fixed 11 real defects, 4 of them medium, so the slices' own review missed edge cases. The second opinion's vendor was down for the whole run.
+
+## Numbers
+
+<!-- factory:numbers -->
+| role | workers | own | subagents | weighted | minutes | turns |
+|---|---:|---:|---:|---:|---:|---:|
+| build | 5 | 1012346 | 0 | 1012346 | 26 | 92 |
+| checkpoint | 2 | 257540 | 0 | 257540 | 3 | 20 |
+| polish | 1 | 851707 | 1978936 | 2830643 | 13 | 44 |
+| total | 8 | 2121593 | 1978936 | 4100530 | 42 | 156 |
+
+Knobs: build opus/high default · fix opus/high default · checkpoint opus/high default · polish opus/high default · budget 30000000 default · lanes 4 · factory 0.13.4 · claude 2.1.316
+
+Hypothesis: none
+
+quality: gate_red 0 · worker_gate_red 0 · fix_commits 0 · ci_red_rounds 0 · ci_reruns 0 · findings high=0 medium=4 low=9 fixed=11 parked=1 · decisions 6 decide 0 blocks 0
+
+Pack (build): slice 4765 · prd_sections 4842 · log 754 · outline 9232 · lookup 1115 · contract 3685 · autonomy 9988 · inner_loop 86 · total 34467 · start_context 21766
+
+Compared with:
+
+| run | feature | weighted | slices | per slice | lines changed | per line | comment share | id hits |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 015-20261113-f9b6 (this run) | 015 | 4100530 | 5 | 820106 | 1786 | 2296 | 3.7% | 0 |
+| 018-20261112-68dc | 018 | 2243893 | 4 | 560973 | 1343 | 1671 | 1.2% | 0 |
+| 017-20261112-a618 | 017 | 5703646 | 5 | 1140729 | 3138 | 1818 | 4.1% | 0 |
+| 024-20261107-2f04 | 024 | 6104793 | 9 | 678310 | 7078 | 863 | 3.0% | 0 |
+<!-- /factory:numbers -->
