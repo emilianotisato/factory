@@ -703,12 +703,22 @@ pub fn worker_ref(board: &Status, n: u32, role: &str) -> String {
     format!("refs/factory/{:03}/checkpoint-{n}-{role}", board.number)
 }
 
-fn worker_subject(board: &Status, n: u32, role: &str) -> String {
+fn worker_line(n: u32, role: &str) -> (&'static str, String) {
     if role == "fix" {
-        commit::subject(board, "fix", &format!("gate red at checkpoint {n}"))
+        ("fix", format!("gate red at checkpoint {n}"))
     } else {
-        commit::subject(board, "docs", &format!("checkpoint {n}"))
+        ("docs", format!("checkpoint {n}"))
     }
+}
+
+fn worker_subject(board: &Status, n: u32, role: &str) -> String {
+    let (kind, text) = worker_line(n, role);
+    commit::subject(board, kind, &text)
+}
+
+fn worker_message(board: &Status, n: u32, role: &str) -> String {
+    let (kind, text) = worker_line(n, role);
+    commit::message(board, kind, &text)
 }
 
 /// An unlanded ref from an earlier worker would land in place of the next worker's lane.
@@ -776,7 +786,7 @@ pub fn land_worker(
                 &base,
                 &board_files,
                 &commit::protected_files(board),
-                &subject,
+                &worker_message(board, n, role),
                 &name,
             )?
             else {
@@ -871,7 +881,7 @@ fn commit_board(
     }
     let repo = run.state().repo.clone();
     let files = commit::tool_files(board).to_vec();
-    match commit::commit(&repo, &files, &worker_subject(board, n, role))? {
+    match commit::commit(&repo, &files, &worker_message(board, n, role))? {
         Some(c) => {
             record(run, n, role, attempt, row_id, &c.sha, out)?;
             Ok(Some(c.sha))

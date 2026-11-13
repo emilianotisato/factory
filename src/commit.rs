@@ -145,9 +145,51 @@ pub fn expand(repo: &Path, paths: &[String]) -> Result<Vec<String>> {
     Ok(out)
 }
 
+const SUBJECT_MAX: usize = 50;
+
 /// Scoped like the builders' own subjects (`feat(NNN): slice-NN Title`), so a log search by feature finds it.
+/// At most [`SUBJECT_MAX`] chars: an overflowing text is cut at its last space that fits past its
+/// first word, else at the limit. A pure function of its input, because landing finds a commit by its `%s`.
 pub fn subject(board: &Status, kind: &str, text: &str) -> String {
-    format!("{kind}({:03}): {text}", board.number)
+    cut(board.number, kind, text)
+}
+
+/// The commit message for [`subject`]: the subject alone when the text fits, else the subject,
+/// a blank line and the full text.
+pub fn message(board: &Status, kind: &str, text: &str) -> String {
+    message_of(board.number, kind, text)
+}
+
+fn message_of(number: u32, kind: &str, text: &str) -> String {
+    let short = cut(number, kind, text);
+    if short == format!("{kind}({number:03}): {text}") {
+        short
+    } else {
+        format!("{short}\n\n{text}")
+    }
+}
+
+fn cut(number: u32, kind: &str, text: &str) -> String {
+    let prefix = format!("{kind}({number:03}): ");
+    let full = format!("{prefix}{text}");
+    if full.chars().count() <= SUBJECT_MAX {
+        return full;
+    }
+    let start = prefix.chars().count();
+    let fits: Vec<char> = full.chars().take(SUBJECT_MAX + 1).collect();
+    // A cut after the text's first word alone (`CI`, `slice-07`) would say nothing.
+    let at_word = (start + 1..=SUBJECT_MAX).rev().find(|&i| {
+        fits[i] == ' '
+            && fits[start..i]
+                .split(|c| *c == ' ')
+                .filter(|w| !w.is_empty())
+                .count()
+                >= 2
+    });
+    match at_word {
+        Some(i) => fits[..i].iter().collect::<String>().trim_end().to_string(),
+        None => fits[..SUBJECT_MAX].iter().collect(),
+    }
 }
 
 fn git(repo: &Path, args: &[&str]) -> Result<String> {
@@ -305,6 +347,49 @@ mod tests {
         assert_eq!(
             git(r, &["status", "--porcelain"]).unwrap(),
             "A  owner.txt\n"
+        );
+    }
+
+    #[test]
+    fn a_long_subject_is_cut_at_a_word_with_the_rest_in_the_body() {
+        let title = "slice-04 Parked runs resume at their last answer, not relanded";
+        let full = format!("feat(015): {title}");
+        assert_eq!(full.chars().count(), 73);
+        let subject = cut(15, "feat", title);
+        assert!(subject.chars().count() <= SUBJECT_MAX, "{subject}");
+        assert!(full.starts_with(&subject));
+        assert_eq!(full[subject.len()..].chars().next(), Some(' '), "{subject}");
+        assert_eq!(subject, "feat(015): slice-04 Parked runs resume at their");
+        assert_eq!(
+            message_of(15, "feat", title),
+            format!("{subject}\n\n{title}")
+        );
+        assert_eq!(cut(15, "feat", title), subject);
+
+        let check = format!("CI {}", "x".repeat(60));
+        let subject = cut(15, "fix", &check);
+        assert_eq!(subject.chars().count(), SUBJECT_MAX);
+        assert_eq!(subject, format!("fix(015): CI {}", "x".repeat(37)));
+        assert_eq!(
+            message_of(15, "fix", &check).lines().nth(2),
+            Some(check.as_str())
+        );
+        assert_eq!(cut(15, "fix", &check), subject);
+
+        let dashed = "slice-07 Cards—tabs—sheets—dialogs—menus—toasts—popovers";
+        let subject = cut(15, "feat", dashed);
+        assert!(subject.chars().count() <= SUBJECT_MAX, "{subject}");
+        assert_eq!(
+            subject,
+            "feat(015): slice-07 Cards—tabs—sheets—dialogs—menu"
+        );
+        let spaceless = "—".repeat(60);
+        assert_eq!(cut(15, "feat", &spaceless).chars().count(), SUBJECT_MAX);
+
+        assert_eq!(cut(15, "docs", "checkpoint 2"), "docs(015): checkpoint 2");
+        assert_eq!(
+            message_of(15, "docs", "checkpoint 2"),
+            "docs(015): checkpoint 2"
         );
     }
 }

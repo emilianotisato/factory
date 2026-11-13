@@ -3,7 +3,17 @@
 **Source**: [`prd.md`](prd.md) → §4 FR-2, §2, §12. **Depends on**: —. It is independent: no other slice edits `src/commit.rs`, `src/land.rs`, `src/scheduler.rs`, `src/closeout.rs` or `src/checkpoint.rs`.
 **Created**: 2026-11-12
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+- Built:
+  - `commit::subject` cuts to at most 50 chars. It cuts at the last space that fits past the text's first word, else at 50 chars; counting is in `chars()`.
+  - `commit::message` returns the subject alone when the text fits. Otherwise it returns the subject, a blank line and the full text, all in the one `-m`.
+  - These commits now go through `message`: slice (`scheduler::land_slice`, when no ref is held), polish and CI fix (`Closer::message`, in `commit_lane` and `nothing`), checkpoint (`worker_message`, in `commit_lane` and `commit_board`), ship, and refresh numbers. The landing lookups still compare `%s` against `subject`.
+- Inner loop: 1 run, 0 red, 2 min. It caught nothing.
+- Deliberate reds:
+  - `a_long_subject_is_cut_at_a_word_with_the_rest_in_the_body`: with the cut stubbed out, it failed on the 73-char subject; with the body dropped from `message_of`, it failed on the message.
+  - `a_long_slice_title_lands_under_a_short_subject`: with the cut stubbed out, the subject list held only the 80-char subject; with the body dropped, `%b`'s first line was `""`.
+- Deviation: AD-2 (fyi). A space counts as a cut point only after the text's first word, so a spaceless CI check name cuts at 50 as the slice's acceptance says, not at `fix(015): CI`.
+- Prove (at the checkpoint): run `a_long_subject_is_cut_at_a_word_with_the_rest_in_the_body` and `a_long_slice_title_lands_under_a_short_subject`.
 
 **Slice**: After this slice, every subject `commit::subject` returns is at most 50 characters. An overflowing text is cut at the last space that fits, or at 50 chars when no space after the prefix fits. The full text becomes the commit body's first line. Slice, checkpoint, polish, CI-fix and ship commits all go through it.
 
