@@ -10,6 +10,10 @@
 - **Bump.** 0.13.4 in `Cargo.toml`, `Cargo.lock` and the cockpit mod's three pins (`plugin.json`, `hooks/register.tsx`, `tests/cockpit.test.tsx`), then relocked `skills/bundle.lock` once. Later skill slices on this branch hit the relock trap: restore main's lock first.
 - **Inner loop.** 1 run, 0 red, 2 min. One targeted red run (the five new tests against the old text) on purpose.
 - **Deviations.** None.
+- **Checkpoint 1** FR-1 `polish_closeout_keeps_the_summary_current`: `cp-1/fr-01-polish-closeout.txt`
+- **Checkpoint 1** FR-3 `prune_counts_polish_own_edits_as_under_review`: `cp-1/fr-03-prune-counts-polish.txt`
+- **Checkpoint 1** FR-5 `polish_skips_ux_on_an_api_only_change`: `cp-1/fr-05-polish-skips-ux.txt`
+- **Checkpoint 1** FR-8 `prune_lets_a_cited_name_go`, `prune_pr_mode_reuses_the_polish_gate`: `cp-1/fr-08-prune-cited-and-pr-mode.txt`
 
 **Slice**: After this slice:
 

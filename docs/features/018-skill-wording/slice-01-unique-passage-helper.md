@@ -22,6 +22,7 @@
   - `assets/contract-slice.md`, "quiet flag" → `pack_is_the_slice_the_cited_sections_…`: `the pack's # Contract: … occurs 0 times`;
   - `assets/autonomy.md`, "Several tool calls side by side" → `a_builder_reads_autonomy_…` (lib): `autonomy: … occurs 0 times`.
 - **Inner loop**: 5 runs, 3 red, about 8 min. Two reds were the `pack.rs` `#[path]` resolution, a compile error. The third was the 13 duplicate needles. The final run: clippy clean, 0 failures across 43 test binaries.
+- **Checkpoint 1** FR-11 `a_passage_must_occur_exactly_once`: `cp-1/fr-11-passage-once.txt`
 
 **Slice**: After this slice, `assert_unique_passage(label, text, needle)` exists in a file under `tests/`, reachable from every integration test and from `src/pack.rs`'s test module. Every positive skill or asset passage assertion uses it, so a deleted rule turns its test red even when another line shares its words. No skill or asset text changes here, so no version bump.
 

@@ -14,6 +14,8 @@
   - `checkpoint_repairs_the_drive_a_covered_slice_broke`: the `verify-*` repair passage occurs 0 times.
   - `pr_body_names_full_gate_runs_and_inner_loops`: the checkpoint-`**Gate:**` passage occurs 0 times.
 - **Deviations:** none.
+- **Checkpoint 1** FR-7 `a_behavioural_test_is_seen_red_once`, `checkpoint_takes_its_expected_result_from_the_spec`: `cp-1/fr-07-asset-text.txt`
+- **Checkpoint 1** FR-10 `checkpoint_repairs_the_drive_a_covered_slice_broke`: `cp-1/fr-10-checkpoint-repairs-drive.txt`
 
 **Slice**: After this slice:
 
