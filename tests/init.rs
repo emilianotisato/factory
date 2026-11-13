@@ -1,3 +1,6 @@
+#[path = "common/passage.rs"]
+mod passage;
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::symlink;
@@ -5,6 +8,7 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 use factory::skills::{self, FILES, MANIFEST, Manifest, NAMES};
+use passage::assert_unique_passage;
 
 const HEADING: &str = "# Product Docs Convention";
 
@@ -283,10 +287,7 @@ fn the_convention_block_lands_once_in_each_file() {
         let text = read(root, f);
         assert_eq!(text.matches(HEADING).count(), 1, "{f}");
         assert!(text.starts_with(HEADING), "{f}");
-        assert!(
-            text.contains("`docs/features` and `docs/archive` are history"),
-            "{f}"
-        );
+        assert_unique_passage(f, &text, "`docs/features` and `docs/archive` are history");
     }
     let before = (read(root, "CLAUDE.md"), read(root, "AGENTS.md"));
     init(root);

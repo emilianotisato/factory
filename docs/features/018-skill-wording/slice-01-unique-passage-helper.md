@@ -5,7 +5,23 @@
 
 **Highest risk in the feature**: the conversion. Some needles occur more than once today. Each one must be lengthened to the one passage it guards, never weakened, and the converted test must still pass on today's text.
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+
+- **Built.** `tests/common/passage.rs` holds `assert_unique_passage(label, text, needle)`; its own test `a_passage_must_occur_exactly_once` is in `tests/passage.rs`. `skills_bundle.rs`, `cockpit.rs`, `init.rs` and `loop.rs` include it with `#[path]`. `src/pack.rs` includes it as a file-level `#[cfg(test)] #[path = "../tests/common/passage.rs"] mod passage`: a `#[path]` inside the inline `mod tests` resolves from `src/pack/tests/`, which does not exist.
+- **Converted.** All 17 `skills_bundle.rs` assert lines, the `cockpit.rs` deliver-skill loop, `init.rs`'s per-file convention line (labelled `CLAUDE.md` / `AGENTS.md`), `loop.rs`'s `quiet flag`, and `pack.rs`'s three positive autonomy checks (`checkpoint` holds each cut section, `builder` holds each kept one, both hold "Several tool calls side by side"). Absence checks, line selectors and rendered-command checks are left as they were.
+- **Needles lengthened**: 13 occurred more than once on today's text. Each now quotes the one passage it guards.
+  - deliver: `factory run`, `factory wait`, `factory status`, `factory stop`, `AskUserQuestion`, `not sliced`;
+  - gate round 3: `write mode`;
+  - polish: `factory review second` and `factory review second --diff` (§1), `--feature <NNN>` (§1);
+  - prd: `Slice only`, `Stop here`.
+  - `models_md_holds_no_invocation_…` now pairs each skill with its own needle: polish's bare `factory review second` occurs twice.
+- **Seen red**: one needle per file, passage deleted locally, targeted test run, file restored with `git checkout`. Every run exited 101 with the helper's message:
+  - `skills/polish/SKILL.md`, "Run no test and no fix in that checkout until the UX pass returns" → `polish_starts_ux_first_and_holds_tests`: `polish §1: … occurs 0 times`;
+  - `skills/deliver/SKILL.md`, the "If the owner asks to stop: `factory stop <id>`" line deleted → `the_cockpit_skill_…`: `occurs 0 times`. The old `contains("factory stop")` would have stayed green, because step 1 still names `factory stop <id>`;
+  - `assets/docs/convention.md`, the history line → `the_convention_block_lands_once_in_each_file`: `CLAUDE.md: … occurs 0 times`;
+  - `assets/contract-slice.md`, "quiet flag" → `pack_is_the_slice_the_cited_sections_…`: `the pack's # Contract: … occurs 0 times`;
+  - `assets/autonomy.md`, "Several tool calls side by side" → `a_builder_reads_autonomy_…` (lib): `autonomy: … occurs 0 times`.
+- **Inner loop**: 5 runs, 3 red, about 8 min. Two reds were the `pack.rs` `#[path]` resolution, a compile error. The third was the 13 duplicate needles. The final run: clippy clean, 0 failures across 43 test binaries.
 
 **Slice**: After this slice, `assert_unique_passage(label, text, needle)` exists in a file under `tests/`, reachable from every integration test and from `src/pack.rs`'s test module. Every positive skill or asset passage assertion uses it, so a deleted rule turns its test red even when another line shares its words. No skill or asset text changes here, so no version bump.
 

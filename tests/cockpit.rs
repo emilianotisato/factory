@@ -1,5 +1,7 @@
 #[path = "harness/mod.rs"]
 mod harness;
+#[path = "common/passage.rs"]
+mod passage;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -8,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use factory::run::pid_alive;
 use harness::Fixture;
+use passage::assert_unique_passage;
 use serde_json::{Value, json};
 
 const BIN: &str = env!("CARGO_BIN_EXE_factory");
@@ -767,12 +770,12 @@ fn the_cockpit_skill_is_under_sixty_lines_and_names_the_five_commands() {
     let lines = text.lines().count();
     assert!(lines < 60, "{lines} lines");
     for needle in [
-        "factory run",
-        "factory wait",
+        "1. `factory run NNN` (add `--budget",
+        "Run `factory wait <id> --timeout 3300` in a background Bash",
         "factory answer",
-        "factory status",
-        "factory stop",
-        "AskUserQuestion",
+        "`factory status <id>` is the one look at the board",
+        "If the owner asks to stop: `factory stop <id>`",
+        "then `AskUserQuestion` with the question's text",
         "PushNotification",
         // the review round's shape
         "Review all n now (Recommended) / Only the d decide ones / Later",
@@ -782,7 +785,7 @@ fn the_cockpit_skill_is_under_sixty_lines_and_names_the_five_commands() {
         "--kind review --ref AD-{n} --verdict kept",
         "--timeout 3300",
         // an unsliced PRD is sliced first, without the write question
-        "not sliced",
+        "`not sliced` → invoke `/slice NNN from /deliver`",
         "from /deliver",
         // a dead cockpit reattaches
         "replays every event",
@@ -791,7 +794,7 @@ fn the_cockpit_skill_is_under_sixty_lines_and_names_the_five_commands() {
         // a template stand-in is relayed, not asked about
         "`stand-in: …`: information",
     ] {
-        assert!(text.contains(needle), "{needle:?} missing in:\n{text}");
+        assert_unique_passage("deliver/SKILL.md", &text, needle);
     }
     assert!(!text.contains("--timeout 1500"), "the old poll");
     // nothing owner-specific

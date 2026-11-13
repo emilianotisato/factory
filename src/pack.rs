@@ -986,7 +986,12 @@ fn cut_where(prd: &str, starts: impl Fn(&str) -> bool) -> Option<&str> {
 }
 
 #[cfg(test)]
+#[path = "../tests/common/passage.rs"]
+mod passage;
+
+#[cfg(test)]
 mod tests {
+    use super::passage::assert_unique_passage;
     use super::*;
 
     #[test]
@@ -1375,14 +1380,14 @@ mod tests {
             "## Resuming",
         ] {
             assert!(!builder.contains(cut), "{cut}");
-            assert!(checkpoint.contains(cut), "{cut}");
+            assert_unique_passage("checkpoint autonomy", &checkpoint, cut);
         }
         for kept in [
             "\n## The plan stays in docs/\n",
             "5. **Stop.**",
             "**Gate:**",
         ] {
-            assert!(builder.contains(kept), "{kept}");
+            assert_unique_passage("builder autonomy", &builder, kept);
         }
         assert!(
             checkpoint.chars().count() >= builder.chars().count() + 2500,
@@ -1391,7 +1396,7 @@ mod tests {
             builder.chars().count()
         );
         for autonomy in [&builder, &checkpoint] {
-            assert!(autonomy.contains("Several tool calls side by side"));
+            assert_unique_passage("autonomy", autonomy, "Several tool calls side by side");
             assert!(!autonomy.contains("Read, Grep or Bash"));
         }
     }
