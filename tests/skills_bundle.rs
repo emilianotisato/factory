@@ -370,3 +370,92 @@ fn autonomy_has_the_overturn_and_safe_contract_rows() {
     assert_unique_passage("the safe-contract row", row, "`factory docs idea add`");
     assert_unique_passage("the safe-contract row", row, "never blocks");
 }
+
+#[test]
+fn polish_closeout_keeps_the_summary_current() {
+    let closeout = polish_section("## 9. Close out", "## Report");
+    assert_unique_passage(
+        "polish §9",
+        &closeout,
+        "the PRD's `summary` frontmatter, kept current: what landed and what remains",
+    );
+    let text = fs::read_to_string(root().join("skills/polish/SKILL.md")).unwrap();
+    assert!(!text.contains("the index **Notes** cell"), "{closeout}");
+}
+
+#[test]
+fn polish_skips_ux_on_an_api_only_change() {
+    let collect = polish_section("## 1.", "## 2.");
+    let paragraph = |start: &str| {
+        collect
+            .split("\n\n")
+            .find(|p| p.starts_with(start))
+            .unwrap_or_else(|| panic!("{start}"))
+            .to_string()
+    };
+    assert_unique_passage(
+        "polish §1 override rules",
+        &paragraph("Two rules override the table."),
+        "except a change whose only user surface is an API",
+    );
+    let skip = paragraph("Skip it only when nothing user-visible changed");
+    for keep in [
+        "When the only user surface is an API",
+        "skip `/ux` too, say so",
+        "the QA plan's Human row",
+    ] {
+        assert_unique_passage("polish §1 UX skip", &skip, keep);
+    }
+}
+
+fn prune_section(heading: &str, next: &str) -> String {
+    let text = fs::read_to_string(root().join("skills/prune/SKILL.md")).unwrap();
+    let start = text.find(heading).unwrap_or_else(|| panic!("{heading}"));
+    let end = start + text[start..].find(next).unwrap_or_else(|| panic!("{next}"));
+    text[start..end].to_string()
+}
+
+fn precondition(n: &str) -> String {
+    let pre = prune_section("## Preconditions", "## Full Mode");
+    pre.lines()
+        .find(|l| l.starts_with(&format!("{n}. ")))
+        .unwrap_or_else(|| panic!("precondition {n}"))
+        .to_string()
+}
+
+#[test]
+fn prune_counts_polish_own_edits_as_under_review() {
+    let first = precondition("1");
+    for keep in [
+        "When polish invokes prune, attended or not",
+        "slice docs, `docs/ideas/` files and the feature's log",
+    ] {
+        assert_unique_passage("prune precondition 1", &first, keep);
+    }
+    assert!(!first.contains("Inside a `factory` run"), "{first}");
+}
+
+#[test]
+fn prune_lets_a_cited_name_go() {
+    let fifth = precondition("5");
+    for keep in [
+        "A name cited only in frozen records does not bind: rename or merge freely",
+        "old → new in the commit body, or in your report inside a `factory` run",
+    ] {
+        assert_unique_passage("prune precondition 5", &fifth, keep);
+    }
+    assert!(!fifth.contains("Prefer keeping the name"), "{fifth}");
+}
+
+#[test]
+fn prune_pr_mode_reuses_the_polish_gate() {
+    let pr = prune_section("## PR Mode Workflow", "## Final Report");
+    for keep in [
+        "**When the scoped tests are most of the suite**, the branch is really full mode",
+        "full mode's coverage baseline",
+        "**When polish invokes prune right after a green gate**",
+        "that gate result replaces the 3 repeat runs: cite it in the report",
+    ] {
+        assert_unique_passage("prune PR mode", &pr, keep);
+    }
+}

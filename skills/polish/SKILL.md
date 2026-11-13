@@ -42,7 +42,7 @@ Create a working file in your scratchpad directory (`findings.md`). **Everything
 
 **The plan's `size:` row decides the second opinion, never the table.** One file under 50 changed lines is `local review only`; anything larger adds the second opinion. A small change on the table's last row gets none from the collect: run `factory review second --diff <base-branch>` yourself when its blast radius earns one, and say so.
 
-Two rules override the table. **Anything security-sensitive gets the security pass**, however small — a one-line change to a permission check is the whole attack. **Anything user-visible gets the UX pass**, however small — a one-line CSS change is exactly where a state breaks.
+Two rules override the table. **Anything security-sensitive gets the security pass**, however small — a one-line change to a permission check is the whole attack. **Anything user-visible gets the UX pass**, however small — a one-line CSS change is exactly where a state breaks — except a change whose only user surface is an API, which the skip rule under `/ux` below covers.
 
 **Start `/ux` first, before anything that runs tests**, when the diff earns it. The app it drives and the test suite can share one database, as they do in a lane, so a test run mid-drive changes what it sees. **Run no test and no fix in that checkout until the UX pass returns.** The local review, the security pass and the second opinion are read-only, so they run meanwhile, in the order below.
 
@@ -58,7 +58,7 @@ Its prompt carries a reader's questions, because a rule table cannot ask them. O
 
 **`/ux`, started first as above, when the diff touches anything a user sees** — pages, components, templates, styles, or the server code deciding what a page renders. It drives the app through the verify skill, captures every state (empty, loading, error, focus, narrow, long content) and checks them against `docs/ux-rubric.md`. It is a **collector like the others**: its findings join the same triage, not a separate ritual.
 
-Skip it only when nothing user-visible changed, and say so. No harness (`.claude/skills/verify-*` missing) → say that instead, and that the UI went unreviewed; do not substitute reading the source. A Claude Code mod is the exception: `claude plugin validate` and `claude plugin test` are its harness, so run them and report what they cannot show (how the band, pane or status line look in a live session) for the owner's QA row.
+Skip it only when nothing user-visible changed, and say so. When the only user surface is an API (an API-docs renderer, a curl-only harness), skip `/ux` too, say so, and point at the QA plan's Human row if there is one. No harness (`.claude/skills/verify-*` missing) → say that instead, and that the UI went unreviewed; do not substitute reading the source. A Claude Code mod is the exception: `claude plugin validate` and `claude plugin test` are its harness, so run them and report what they cannot show (how the band, pane or status line look in a live session) for the owner's QA row.
 
 **Then the second opinion, a reviewer that did not write the code.** It is the `second opinion` role in [_shared/models.md](../_shared/models.md) — Cursor CLI, unconditionally. Do not probe for any other vendor's CLI or plugin and do not branch on one being installed; presence says nothing about whether its subscription is live. Cross-vendor is the entire point: models from one vendor share blind spots, so a second Claude agreeing with the first is weak evidence.
 
@@ -211,7 +211,7 @@ In a factory run, skip to Report.
 The closeout is one final commit:
 
 - the prose **Status** line in `prd.md` — what actually landed
-- the index **Notes** cell — decisions taken, what remains, the PR number
+- the PRD's `summary` frontmatter, kept current: what landed and what remains. No PR number goes in it
 - any new `docs/decisions.md` entries the user approved
 - then `factory docs ship <NNN>`. Archiving is `/harvest`'s, once the owner has routed the feature's lessons
 - `factory docs check` clean **before** committing — never commit docs that fail it
