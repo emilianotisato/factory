@@ -22,6 +22,8 @@
 - **Prove (left for the checkpoint):**
   - FR-7: run `answers_read_the_log_through_the_docs_reader`.
   - FR-8: run `the_board_and_renumber_skip_symlinks`.
+- **Proven (checkpoint 2):** FR-7 `answers_read_the_log_through_the_docs_reader` passed — `cp-2/fr7-tests.txt`
+- **Proven (checkpoint 2):** FR-8 `the_board_and_renumber_skip_symlinks` passed — `cp-2/fr8-tests.txt`
 
 **Slice**: After this slice:
 
