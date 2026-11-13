@@ -99,3 +99,9 @@ prd §15 rows:
 They are proven below the UI: the checkpoint runs them and keeps the transcript.
 
 **Acceptance:** after the checkpoint, the transcripts are in Progress.
+
+**Code-review fixes (2026-11-13).**
+
+- Polish §1's "Skip it only when nothing user-visible changed" contradicted the API-only skip in the next sentence, which three reviewers flagged. It now reads "Skip it when nothing user-visible changed".
+- `polish_closeout_keeps_the_summary_current` stopped before "No PR number goes in it", so FR-1's second rule was unguarded. The needle now includes it.
+- `prune_pr_mode_reuses_the_polish_gate` stopped before "with no code or test change since", the condition that keeps the gate reuse safe. The needle now includes it.

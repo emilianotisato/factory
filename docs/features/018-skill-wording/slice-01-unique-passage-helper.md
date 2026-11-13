@@ -87,3 +87,8 @@ Replace each positive `assert!(x.contains(needle), …)` on skill or asset text 
 prd §15 row **FR-11**, its first half: `run a_passage_must_occur_exactly_once`. The second half, `slice_asks_for_a_passage_that_occurs_once`, is slice 04's. It is proven below the UI: the checkpoint runs the test and keeps the transcript.
 
 **Acceptance:** after the checkpoint, the transcript is in Progress.
+
+**Code-review fixes (2026-11-13).**
+
+- `tests/loop.rs`'s three positive checks on the pack's `# Lookup` prose and `tests/cockpit.rs`'s `skills/README.md` check still used bare `contains`, so a deleted sentence could pass on a sibling line. All four now use `assert_unique_passage`.
+- The models test and the §1 collect test both pinned polish's last-resort `factory review second` bullet, so nothing guarded the size-override call. The models test now pins "run `factory review second --diff <base-branch>` yourself".

@@ -802,7 +802,7 @@ fn the_cockpit_skill_is_under_sixty_lines_and_names_the_five_commands() {
         assert!(!text.contains(forbidden), "{forbidden:?} in the skill");
     }
     let readme = fs::read_to_string(root.join("skills/README.md")).unwrap();
-    assert!(readme.contains("`factory init`"), "{readme}");
+    assert_unique_passage("skills/README.md", &readme, "`factory init`");
 }
 
 const STARTED: &str = "2026-10-30T12:00:00Z";

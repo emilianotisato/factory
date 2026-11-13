@@ -94,3 +94,11 @@ prd §15 rows:
 They are proven below the UI: the checkpoint runs them and keeps the transcript.
 
 **Acceptance:** after the checkpoint, the transcripts are in Progress.
+
+**Code-review fixes (2026-11-13).**
+
+- `/slice` §4's "breaks the feature once (a revert or a stub)" now says by hand, never through git, which can lose uncommitted work. This is the same defect as the builder contract's.
+- `/slice` §2 held two near-identical bullets, one for FRs and one for slices, writing one file. They are merged into the slice bullet, which keeps both incidents.
+- Harvest's UTC sentence covered only `{date}`, not its `harvest/<yyyy-mm-dd>` branch, and prune's `prune/<yyyy-mm-dd>` named no clock. Both now name UTC, and `every_skill_that_fills_a_date_names_utc` lists prune (AD-1).
+- `prove_takes_its_expected_result_from_the_spec` also asserted §4's break-it-once rule. That half moved to its own test, `slice_asks_each_test_to_fail_once_without_the_feature`.
+- `tests/skills_bundle.rs` had three copies of the section helper and three inline copies of the same bounds logic. They are folded into one `section(rel, heading, next)`.

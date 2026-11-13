@@ -51,7 +51,7 @@ Ask it of every choice the work forces that nobody wrote down: **does the PRD, t
 
 **The PRD outranks this list for a file it names.** An FR that orders a write here, such as installing a tool that rewrites `CLAUDE.md`, is done as written, with an `AD` marked `decide`. The owner approved that PRD; this list guards against what nobody approved.
 
-**Never wins over every May.** The Never list above and "Never, to get green" below outrank each May item: a CI workflow the PRD ordered may get a defect fix a review found, never an edit that makes a red check pass. `CLAUDE.md` and `docs/decisions.md` stay Never even when the run's FRs make them wrong; that change is a proposal in the PR body. A builder's own contract still wins: it touches nothing outside its slice's files, so for a builder "anything the run itself wrote" means its slice's files.
+**Never wins over every May.** The Never list above and "Never, to get green" below outrank each May item: a CI workflow the PRD ordered may get a defect fix a review found, never an edit that makes a red check pass. `CLAUDE.md` and `docs/decisions.md` stay Never even when the run's FRs make them wrong; that change is a proposal in the PR body. A worker's own contract still wins: a builder touches nothing outside its slice's files, so for a builder "anything the run itself wrote" means its slice's files, and a checkpoint, fix or CI-fix worker touches only what its row or failure names.
 
 ## Never, to get green
 

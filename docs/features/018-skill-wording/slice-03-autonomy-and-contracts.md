@@ -103,3 +103,11 @@ prd §15 rows:
 They are proven below the UI: the checkpoint runs them and keeps the transcript.
 
 **Acceptance:** after the checkpoint, the transcripts are in Progress.
+
+**Code-review fixes (2026-11-13).**
+
+- The builder contract said "break the feature once (a revert or a stub)". A builder never commits, so a git revert (`checkout`, `restore`, `stash`) would wipe the slice's work, and the stash stack is shared across lanes. It now says to do it by hand, never through git.
+- The deliberate reds were left out of the `INNER` line only, but the PR body sums the Progress inner-loop lines, so they would have shown up as real reds. They now count in neither (AD-3).
+- The checkpoint's `verify-*` repair could rewrite what a recipe expects so that it matched a regression. It now says that a repair changes how the recipe drives the app, never what it expects.
+- The Record step's "`**Fixed:** …`, a `verify-*` repair named there" had no verb and read as if every Fixed line must name a repair. It now reads "which names any `verify-*` repair".
+- Autonomy's precedence paragraph named only the builder's contract, while the checkpoint, fix and CI-fix packs read the same new May items. Every worker's own contract now wins (AD-2).

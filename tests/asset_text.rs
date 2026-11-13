@@ -33,6 +33,7 @@ fn autonomy_names_research_notes_runbooks_and_sign_offs() {
         "a CI workflow the PRD ordered may get a defect fix a review found, never an edit that makes a red check pass",
         "`CLAUDE.md` and `docs/decisions.md` stay Never even when the run's FRs make them wrong",
         "for a builder \"anything the run itself wrote\" means its slice's files",
+        "a checkpoint, fix or CI-fix worker touches only what its row or failure names",
     ] {
         assert_unique_passage("autonomy, what a run may write", section, needle);
     }
@@ -43,10 +44,11 @@ fn autonomy_names_research_notes_runbooks_and_sign_offs() {
 #[test]
 fn a_behavioural_test_is_seen_red_once() {
     for needle in [
-        "break the feature once (a revert or a stub), run that test and see it go red, then restore the feature",
+        "break the feature once (a revert or a stub) by hand, never through git: your work is uncommitted, so a `git checkout`, `restore` or `stash` loses it",
+        "Run that test and see it go red, then restore the feature",
         "for each test your tasks' Acceptance names, and each `run` row",
         "Progress gets one line per test, naming how it failed",
-        "These deliberate reds do not count in the `INNER` return line's runs or red",
+        "These deliberate reds count in neither the `INNER` return line nor the Progress inner-loop runs and red",
         "A row only the harness drives just names how it fails with the feature removed",
     ] {
         assert_unique_passage("the builder contract", pack::CONTRACT, needle);
@@ -78,6 +80,7 @@ fn checkpoint_repairs_the_drive_a_covered_slice_broke() {
         "when a covered slice moved the surface a `.claude/skills/verify-*` recipe drives, repair that recipe, then drive the row and name the repair under **Fixed**",
         "Never drop a step an earlier checkpoint drove.",
         "The driver commits the repair with the checkpoint.",
+        "A repair changes how the recipe drives the app, never what it expects",
     ] {
         assert_unique_passage("checkpoint touch rule", touch, needle);
     }
@@ -89,7 +92,7 @@ fn checkpoint_repairs_the_drive_a_covered_slice_broke() {
     assert_unique_passage(
         "checkpoint Record step",
         record,
-        "a `verify-*` repair named there",
+        "`**Fixed:** {what, or none}`, which names any `verify-*` repair",
     );
 }
 

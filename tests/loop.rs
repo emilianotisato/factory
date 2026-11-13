@@ -394,15 +394,13 @@ fn pack_outlines_the_cited_code_and_carries_the_lookup_verbs() {
     for verb in ["factory ctx def", "factory ctx refs", "factory ctx outline"] {
         assert!(lookup.contains(verb), "{verb}: {lookup}");
     }
-    assert!(
-        lookup.contains("a bare name goes to ctx, grep anything else"),
-        "{lookup}"
-    );
-    assert!(lookup.contains("`--vendor`"), "{lookup}");
-    assert!(
-        lookup.contains("with its body when one definition matches"),
-        "{lookup}"
-    );
+    for needle in [
+        "a bare name goes to ctx, grep anything else",
+        "`--vendor`",
+        "with its body when one definition matches",
+    ] {
+        assert_unique_passage("the pack's # Lookup", lookup, needle);
+    }
     assert!(
         !lookup.contains("grep only for literal strings and log output"),
         "{lookup}"
