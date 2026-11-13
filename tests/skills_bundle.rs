@@ -459,3 +459,62 @@ fn prune_pr_mode_reuses_the_polish_gate() {
         assert_unique_passage("prune PR mode", &pr, keep);
     }
 }
+
+fn slice_section(heading: &str, next: &str) -> String {
+    let text = fs::read_to_string(root().join("skills/slice/SKILL.md")).unwrap();
+    let start = text.find(heading).unwrap_or_else(|| panic!("{heading}"));
+    let end = start + text[start..].find(next).unwrap_or_else(|| panic!("{next}"));
+    text[start..end].to_string()
+}
+
+#[test]
+fn prove_takes_its_expected_result_from_the_spec() {
+    let design = slice_section("## 2.", "## 3.");
+    let prove = design
+        .lines()
+        .find(|l| l.starts_with("- **Every slice ends in two tasks.**"))
+        .expect("the Prove bullet");
+    assert_unique_passage(
+        "slice §2 Prove",
+        prove,
+        "comes from the PRD, the spec or the input file, never from what the command printed",
+    );
+    let write = slice_section("## 4.", "## 5.");
+    for needle in [
+        "says how it fails if the feature is removed",
+        "breaks the feature once (a revert or a stub), sees each test it runs go red, then restores the feature",
+        "a row only the harness drives just names its failure",
+    ] {
+        assert_unique_passage("slice §4", &write, needle);
+    }
+}
+
+#[test]
+fn slices_that_write_one_file_are_linked() {
+    let design = slice_section("## 2.", "## 3.");
+    for needle in [
+        "**Two slices whose tasks write the same file are one slice, or the later depends on the earlier.**",
+        "Reading the same file does not link them.",
+    ] {
+        assert_unique_passage("slice §2", &design, needle);
+    }
+}
+
+#[test]
+fn slice_asks_for_a_passage_that_occurs_once() {
+    let write = slice_section("## 4.", "## 5.");
+    assert_unique_passage(
+        "slice §4",
+        &write,
+        "**A skill-text Acceptance asserts that the passage it quotes occurs exactly once**",
+    );
+}
+
+#[test]
+fn every_skill_that_fills_a_date_names_utc() {
+    for skill in ["deliver", "polish", "harvest", "prd", "ux"] {
+        let rel = format!("{skill}/SKILL.md");
+        let text = fs::read_to_string(root().join("skills").join(&rel)).unwrap();
+        assert_unique_passage(&rel, &text, "the UTC date, `date -u +%F`");
+    }
+}

@@ -3,7 +3,16 @@
 **Source**: [`prd.md`](prd.md) → §4 FR-2, §9 FR-7 (the `/slice` half), §11 FR-9, §13 FR-11 (the `/slice` §4 sentence), §15. **Depends on**: 02. Both edit `skills/polish/SKILL.md` (this slice adds its UTC sentence), both rewrite `skills/bundle.lock`, and both add tests to `tests/skills_bundle.rs`. Land 02's bump first, so this slice only relocks.
 **Created**: 2026-11-12
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+
+- **Built.** `/slice` §2 has a new bullet: two slices whose tasks write the same file are one slice, or the later one depends on the earlier, and reading the same file does not link them. The Prove bullet now says the expected result comes from the PRD, the spec or the input file, never from what the command printed. §4's Acceptance bullet gains two sub-bullets. One asks the slice to name how each test fails and to see it red once, worded like `assets/contract-slice.md`. The other asks every skill-text Acceptance to assert a passage that occurs exactly once. Deliver, polish, harvest, prd and ux each say once, at their first date, that it is the UTC date (`date -u +%F`). Four tests were added to `tests/skills_bundle.rs` through `assert_unique_passage`. The lock was restored from `main` and relocked once at 0.13.4.
+- **Inner loop:** 1 run, 0 red, ~2 min. It caught nothing.
+- **Seen red once** (removing the passage, then restoring it):
+  - `prove_takes_its_expected_result_from_the_spec`: red with the §2 spec-not-output sentence removed ("occurs 0 times"), and again with the §4 name-the-failure bullet removed.
+  - `slices_that_write_one_file_are_linked`: red with the §2 slices bullet removed.
+  - `slice_asks_for_a_passage_that_occurs_once`: red with the §4 exactly-once bullet removed.
+  - `every_skill_that_fills_a_date_names_utc`: red with the ux UTC sentence removed.
+- **Deviations:** none. The deliver sentence sits just before the `Owner review ({date})` line, not inside it, because that line is a template for `retro.md`.
 
 **Slice**: After this slice:
 

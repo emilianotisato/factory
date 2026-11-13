@@ -160,7 +160,7 @@ Invoke the `prune` skill in **`pr` mode** (only tests added or changed on this b
 
 ## 8. Distil — three destinations, then the scratchpad dies
 
-- **Fixed** → a `**Code-review fixes ({date}).**` section at the end of the slice file, one bullet each: what was wrong, why it mattered, what it is now. Each fix goes to the slice that owns the code it changes, so one review can write to several slices. Feature-wide fixes go in the last slice touched, or the PRD's Status prose if they belong to no single slice.
+- **Fixed** → a `**Code-review fixes ({date}).**` section at the end of the slice file, one bullet each: what was wrong, why it mattered, what it is now. Each fix goes to the slice that owns the code it changes, so one review can write to several slices. Feature-wide fixes go in the last slice touched, or the PRD's Status prose if they belong to no single slice. Every date you fill, here and in `reviewed=<date>` below, is the UTC date, `date -u +%F`, the clock the `factory` binary stamps with.
 - **Decided** → candidate entries in `docs/decisions.md` (see below).
 - **Parked** → already handled in step 6.
 - **Rebutted** → keep the one-line rebuttals in your report to the user. They do not need a permanent home, but the user must see them.

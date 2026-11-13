@@ -39,7 +39,7 @@ factory docs new <slug> --title "Title"
 
 Allocates the next number (safely, even against another agent in a parallel worktree), writes `state.toml` with `status = "draft"`, and scaffolds `prd.md` with its frontmatter: `number`, `slug`, `title`, `type`, `created`, `author`, `summary`. The frontmatter never carries a status; `state.toml` does, through `factory docs set`.
 
-Slug = short kebab-case, what a human would call it (`admin-console`, `rule-engine-proactive`). Numbers are identity, never reused, and never imply priority. **FR ids are feature-scoped**: `FR-1`, `FR-2`, … within this PRD; across features the reference is `PRD-NNN FR-n`. A cut FR keeps its number and its section, titled `FR-n — RETIRED (date)`.
+Slug = short kebab-case, what a human would call it (`admin-console`, `rule-engine-proactive`). Numbers are identity, never reused, and never imply priority. **FR ids are feature-scoped**: `FR-1`, `FR-2`, … within this PRD; across features the reference is `PRD-NNN FR-n`. A cut FR keeps its number and its section, titled `FR-n — RETIRED (date)`. Every date you fill, here, in the index line and in the scaffold's `Accepted _(date)_`, is the UTC date, `date -u +%F`, the clock the `factory` binary stamps with.
 
 `docs new` also prints whether the project declares a **verify gate**. No gate does not block a PRD — this is the what/why — but it blocks slicing, so carry the fact into §QA plan and the §8 hand-off.
 
