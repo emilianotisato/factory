@@ -1,7 +1,9 @@
 #[path = "common/passage.rs"]
 mod passage;
 
-use factory::skills::{self, FILES, LOCK, Lock, Manifest, NAMES, bundle_hash, check_lock, relock};
+use factory::skills::{
+    self, FILES, LOCK, Lock, Manifest, NAMES, bundle_hash, check_lock, relock, tag_state,
+};
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::ErrorKind;
@@ -194,7 +196,7 @@ fn lock() -> &'static Result<Lock, String> {
         };
         let (version, hash) = (env!("CARGO_PKG_VERSION"), bundle_hash());
         if std::env::var_os("FACTORY_BUNDLE_WRITE").is_some() {
-            let new = relock(old.as_ref(), version, &hash)?;
+            let new = relock(old.as_ref(), version, &hash, tag_state(&root(), version))?;
             fs::write(&path, new.text()).map_err(|e| format!("write {LOCK}: {e}"))?;
             return Ok(new);
         }

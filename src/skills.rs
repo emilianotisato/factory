@@ -162,7 +162,44 @@ pub fn check_lock(lock: &Lock, version: &str, hash: &str) -> std::result::Result
     ))
 }
 
-pub fn relock(old: Option<&Lock>, version: &str, hash: &str) -> std::result::Result<Lock, String> {
+/// Whether `v<version>` is a tag, locally or on origin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tagged {
+    Yes,
+    No,
+    /// Origin could not be asked: offline, or no `origin` remote.
+    Unknown,
+}
+
+/// A local tag answers alone; otherwise only origin's "no such ref" proves the version untagged.
+pub fn tag_state(repo: &Path, version: &str) -> Tagged {
+    let tag = format!("refs/tags/v{version}");
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .ok()
+            .and_then(|out| out.status.code())
+    };
+    if git(&["rev-parse", "-q", "--verify", &tag]) == Some(0) {
+        return Tagged::Yes;
+    }
+    match git(&["ls-remote", "--exit-code", "--tags", "origin", &tag]) {
+        Some(0) => Tagged::Yes,
+        Some(2) => Tagged::No,
+        _ => Tagged::Unknown,
+    }
+}
+
+/// At the same version the hash may change only while `v<version>` is untagged.
+pub fn relock(
+    old: Option<&Lock>,
+    version: &str,
+    hash: &str,
+    tagged: Tagged,
+) -> std::result::Result<Lock, String> {
     let new = Lock {
         version: version.to_string(),
         sha256: hash.to_string(),
@@ -171,13 +208,16 @@ pub fn relock(old: Option<&Lock>, version: &str, hash: &str) -> std::result::Res
         return Ok(new);
     };
     let parts = |v: &str| version_parts(v).ok_or(format!("version {v} is not three integers"));
-    if parts(version)? > parts(&old.version)? {
-        Ok(new)
-    } else {
-        Err(format!(
+    let (now, was) = (parts(version)?, parts(&old.version)?);
+    match (now.cmp(&was), tagged) {
+        (std::cmp::Ordering::Greater, _) | (std::cmp::Ordering::Equal, Tagged::No) => Ok(new),
+        (std::cmp::Ordering::Equal, Tagged::Unknown) => Err(format!(
+            "could not reach origin to prove v{version} is untagged; retry online or bump Cargo.toml past {version}"
+        )),
+        _ => Err(format!(
             "skills changed since {0}: bump Cargo.toml past {0} first",
             old.version
-        ))
+        )),
     }
 }
 
@@ -883,7 +923,7 @@ mod tests {
     }
 
     #[test]
-    fn a_skill_edit_without_a_bump_fails_and_cannot_relock() {
+    fn a_skill_edit_without_a_bump_fails_the_check() {
         let old = lock("0.2.0", "aa");
         let err = check_lock(&old, "0.2.0", "bb").unwrap_err();
         assert!(err.starts_with("skills/bundle.lock is stale:"), "{err}");
@@ -893,18 +933,115 @@ mod tests {
             err.ends_with("bump version in Cargo.toml\n  FACTORY_BUNDLE_WRITE=1 cargo test"),
             "{err}"
         );
+    }
+
+    const BUMP: &str = "skills changed since 0.2.0: bump Cargo.toml past 0.2.0 first";
+    const OFFLINE: &str = "could not reach origin to prove v0.2.0 is untagged; retry online or bump Cargo.toml past 0.2.0";
+
+    #[test]
+    fn an_untagged_version_relocks_and_a_tagged_one_refuses() {
+        let old = lock("0.2.0", "aa");
         assert_eq!(
-            relock(Some(&old), "0.2.0", "bb"),
-            Err("skills changed since 0.2.0: bump Cargo.toml past 0.2.0 first".to_string())
+            relock(Some(&old), "0.2.0", "bb", Tagged::No),
+            Ok(lock("0.2.0", "bb"))
         );
-        assert!(relock(Some(&old), "0.1.9", "bb").is_err());
+        assert_eq!(
+            relock(Some(&old), "0.2.0", "bb", Tagged::Yes),
+            Err(BUMP.to_string())
+        );
+        assert_eq!(
+            relock(Some(&old), "0.2.0", "bb", Tagged::Unknown),
+            Err(OFFLINE.to_string())
+        );
+        for tagged in [Tagged::Yes, Tagged::No, Tagged::Unknown] {
+            assert!(relock(Some(&old), "0.1.9", "bb", tagged).is_err());
+        }
+    }
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    }
+
+    fn tag(dir: &Path, name: &str) {
+        let tree = git(dir, &["mktree"]);
+        git(dir, &["tag", name, &tree]);
+    }
+
+    fn repo(base: &Path, name: &str, bare: bool) -> std::path::PathBuf {
+        let dir = base.join(name);
+        fs::create_dir(&dir).unwrap();
+        git(
+            &dir,
+            if bare {
+                &["init", "-q", "--bare"]
+            } else {
+                &["init", "-q"]
+            },
+        );
+        dir
+    }
+
+    #[test]
+    fn relock_refuses_when_origin_cannot_be_reached() {
+        let base = tempfile::tempdir().unwrap();
+        let old = lock("0.2.0", "aa");
+
+        let offline = repo(base.path(), "offline", false);
+        let missing = base.path().join("missing");
+        git(
+            &offline,
+            &["remote", "add", "origin", missing.to_str().unwrap()],
+        );
+        assert_eq!(tag_state(&offline, "0.2.0"), Tagged::Unknown);
+        assert_eq!(
+            relock(Some(&old), "0.2.0", "bb", tag_state(&offline, "0.2.0")),
+            Err(OFFLINE.to_string())
+        );
+
+        let no_origin = repo(base.path(), "no-origin", false);
+        assert_eq!(tag_state(&no_origin, "0.2.0"), Tagged::Unknown);
+
+        let tagged_origin = repo(base.path(), "tagged.git", true);
+        tag(&tagged_origin, "v0.2.0");
+        let work = repo(base.path(), "work-tagged", false);
+        git(
+            &work,
+            &["remote", "add", "origin", tagged_origin.to_str().unwrap()],
+        );
+        assert_eq!(tag_state(&work, "0.2.0"), Tagged::Yes);
+
+        let clean_origin = repo(base.path(), "clean.git", true);
+        tag(&clean_origin, "v0.1.9");
+        let work = repo(base.path(), "work-clean", false);
+        git(
+            &work,
+            &["remote", "add", "origin", clean_origin.to_str().unwrap()],
+        );
+        assert_eq!(tag_state(&work, "0.2.0"), Tagged::No);
+
+        tag(&no_origin, "v0.2.0");
+        assert_eq!(tag_state(&no_origin, "0.2.0"), Tagged::Yes);
     }
 
     #[test]
     fn a_skill_edit_with_a_bump_relocks() {
         let old = lock("0.2.0", "aa");
-        assert_eq!(relock(Some(&old), "0.2.1", "bb"), Ok(lock("0.2.1", "bb")));
-        assert_eq!(relock(None, "0.2.0", "aa"), Ok(lock("0.2.0", "aa")));
+        for tagged in [Tagged::Yes, Tagged::No, Tagged::Unknown] {
+            assert_eq!(
+                relock(Some(&old), "0.2.1", "bb", tagged),
+                Ok(lock("0.2.1", "bb"))
+            );
+        }
+        assert_eq!(
+            relock(None, "0.2.0", "aa", Tagged::Yes),
+            Ok(lock("0.2.0", "aa"))
+        );
     }
 
     #[test]
@@ -916,14 +1053,17 @@ mod tests {
             "{err}"
         );
         assert!(!err.contains("bundle changed"), "{err}");
-        assert_eq!(relock(Some(&old), "0.2.1", "aa"), Ok(lock("0.2.1", "aa")));
+        assert_eq!(
+            relock(Some(&old), "0.2.1", "aa", Tagged::Unknown),
+            Ok(lock("0.2.1", "aa"))
+        );
     }
 
     #[test]
     fn versions_compare_as_integers() {
         assert_eq!(version_parts("0.10.0"), Some((0, 10, 0)));
         assert!(version_parts("0.10.0") > version_parts("0.9.0"));
-        assert!(relock(Some(&lock("0.9.0", "aa")), "0.10.0", "bb").is_ok());
+        assert!(relock(Some(&lock("0.9.0", "aa")), "0.10.0", "bb", Tagged::Yes).is_ok());
         for bad in ["0.2", "0.2.0.1", "0.2.x", "", "0.2.0-rc1"] {
             assert_eq!(version_parts(bad), None, "{bad}");
         }
