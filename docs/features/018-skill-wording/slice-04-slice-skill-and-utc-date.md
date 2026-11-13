@@ -12,6 +12,9 @@
   - `slices_that_write_one_file_are_linked`: red with the §2 slices bullet removed.
   - `slice_asks_for_a_passage_that_occurs_once`: red with the §4 exactly-once bullet removed.
   - `every_skill_that_fills_a_date_names_utc`: red with the ux UTC sentence removed.
+- **Checkpoint 2** FR-7 `prove_takes_its_expected_result_from_the_spec`, `checkpoint_takes_its_expected_result_from_the_spec`, `a_behavioural_test_is_seen_red_once`: `cp-2/fr-07-prove-from-spec.txt`
+- **Checkpoint 2** FR-9 `slices_that_write_one_file_are_linked`: `cp-2/fr-09-slices-write-one-file.txt`
+- **Checkpoint 2** FR-11 `a_passage_must_occur_exactly_once`, `slice_asks_for_a_passage_that_occurs_once`: `cp-2/fr-11-passage-once.txt`
 - **Deviations:** none. The deliver sentence sits just before the `Owner review ({date})` line, not inside it, because that line is a template for `retro.md`.
 
 **Slice**: After this slice:
