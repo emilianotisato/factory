@@ -90,7 +90,8 @@ pub fn run(root: &Path, from: &str, to: &str, out: &mut dyn Write) -> Result<()>
         fs::rename(&f.dir, &dest).map_err(io(format!("move {}", f.dir.display())))?;
     }
     let prd = dest.join("prd.md");
-    if let Ok(text) = fs::read_to_string(&prd) {
+    let linked = fs::symlink_metadata(&prd).is_ok_and(|m| m.file_type().is_symlink());
+    if !linked && let Ok(text) = fs::read_to_string(&prd) {
         let next = set_number(&text, &format!("{n:03}"));
         if next != text {
             fs::write(&prd, next).map_err(io(format!("write {}", prd.display())))?;

@@ -282,21 +282,12 @@ fn feature(root: &Path, board_dir: &Path, limits: &Project, f: &Feature, r: &mut
     let dir = format!("docs/features/{}", f.dir_name);
     let nnn = format!("{:03}", f.number);
     let prd = format!("{dir}/prd.md");
-    let state_rel = format!("{dir}/{}", state::FILE);
+    let state_rel = board_file(root, board_dir, &dir, state::FILE);
     let kb = |text: &str| text.len() as f64 / 1024.0;
 
     let st = match &f.state {
         Err(e) => {
-            let tree = board_dir
-                .parent()
-                .and_then(Path::parent)
-                .and_then(Path::parent);
-            let e = [Some(root), tree]
-                .into_iter()
-                .flatten()
-                .fold(e.clone(), |e, t| {
-                    e.replace(&format!("{}/", t.display()), "")
-                });
+            let e = e.replace(&format!("{}/", root.display()), "");
             r.err("E-STATE-INVALID", e);
             None
         }
@@ -386,7 +377,8 @@ fn feature(root: &Path, board_dir: &Path, limits: &Project, f: &Feature, r: &mut
     if let Some(s) = st {
         state_rules(&dir, &state_rel, &nnn, f, s, r);
     }
-    log_rules(&dir, &nnn, board_dir, st, r);
+    let log_rel = board_file(root, board_dir, &dir, log::FILE);
+    log_rules(&log_rel, &nnn, board_dir, st, r);
 }
 
 fn prd_keys(f: &Feature, prd: &str, r: &mut Report) {
@@ -623,8 +615,16 @@ fn id_number(id: &str) -> Option<(&str, u32)> {
     Some((prefix, n.parse().ok()?))
 }
 
-fn log_rules(dir: &str, nnn: &str, board_dir: &Path, st: Option<&State>, r: &mut Report) {
-    let log_rel = format!("{dir}/{}", log::FILE);
+/// A board file as findings name it: by its path in the checked tree, or absolute when read from another tree.
+fn board_file(root: &Path, board_dir: &Path, dir: &str, file: &str) -> String {
+    if board_dir.starts_with(root) {
+        format!("{dir}/{file}")
+    } else {
+        board_dir.join(file).display().to_string()
+    }
+}
+
+fn log_rules(log_rel: &str, nnn: &str, board_dir: &Path, st: Option<&State>, r: &mut Report) {
     let (entries, skipped) = match log::entries(board_dir) {
         Ok(x) => x,
         Err(e) => {

@@ -74,3 +74,9 @@ prd §12 rows:
 They are proven below the UI.
 
 **Acceptance:** after the checkpoint, the transcripts are in Progress.
+
+**Code-review fixes (2026-11-13).**
+
+- `rebase_links` knew only ``` fences, so links inside `~~~` fences, or inside a ```` block that holds ```, were rewritten, against FR-5. Fences now match by char and run length.
+- Relative images were left unrebased, but `docs check` resolves them, so a from-idea PRD with an image failed check at once. Images are rebased now (AD-5, superseding AD-1's image clause).
+- AD-1's rules had no test. `rebased_links_keep_fences_roots_anchors_and_titles` covers fences, root-absolute targets, anchors, titles, images and inline code.

@@ -77,3 +77,7 @@ In `src/commit.rs`, have `subject` return the cut subject. Give callers a way to
 prd §12 row **FR-2**: `run a_long_subject_is_cut_at_a_word_with_the_rest_in_the_body` and `run a_long_slice_title_lands_under_a_short_subject`. It is proven below the UI.
 
 **Acceptance:** after the checkpoint, the transcripts are in Progress.
+
+**Code-review fixes (2026-11-13).**
+
+- When no word boundary fits, the hard cut could end on a space (a single-word text of exactly 39 chars, then a space). git strips that space, so the landing lookup by `%s` would miss the commit and land it again. The cut is now trimmed, with a unit case.

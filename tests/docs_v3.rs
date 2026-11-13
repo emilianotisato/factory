@@ -712,6 +712,16 @@ fn a_lane_reads_the_board_files_it_wrote() {
         "{}",
         stdout(&o)
     );
+
+    let mut text = fs::read_to_string(&main_log).unwrap();
+    text.push_str("not json\n");
+    fs::write(&main_log, text).unwrap();
+    let o = board_docs(&fx, &wt, fx.path(), &["check"], "");
+    let report = format!("{}{}", stdout(&o), stderr(&o));
+    assert!(
+        report.contains(&format!("{}:", main_log.display())),
+        "{report}"
+    );
 }
 
 #[test]

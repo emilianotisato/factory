@@ -196,7 +196,7 @@ fn lock() -> &'static Result<Lock, String> {
         };
         let (version, hash) = (env!("CARGO_PKG_VERSION"), bundle_hash());
         if std::env::var_os("FACTORY_BUNDLE_WRITE").is_some() {
-            let new = relock(old.as_ref(), version, &hash, tag_state(&root(), version))?;
+            let new = relock(old.as_ref(), version, &hash, || tag_state(&root(), version))?;
             fs::write(&path, new.text()).map_err(|e| format!("write {LOCK}: {e}"))?;
             return Ok(new);
         }

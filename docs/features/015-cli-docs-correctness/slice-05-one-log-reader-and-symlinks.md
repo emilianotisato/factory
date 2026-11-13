@@ -98,3 +98,8 @@ prd §12 rows:
 They are proven below the UI.
 
 **Acceptance:** after the checkpoint, the transcripts are in Progress.
+
+**Code-review fixes (2026-11-13).**
+
+- `docs renumber` still wrote a moved feature's `prd.md` through a symlink, out of the repo, despite FR-8's "rewrites no file reached through a link". A linked `prd.md` is now skipped, and the symlink test covers it.
+- `board::board_dir` checked main's namesake folder with `is_dir()`, which follows links. It now uses `symlink_metadata`, like the board scan.

@@ -157,7 +157,7 @@ pub fn check_lock(lock: &Lock, version: &str, hash: &str) -> std::result::Result
         return Ok(());
     }
     Err(format!(
-        "{LOCK} is stale:\n{}\nfix:\n  bump version in Cargo.toml\n  FACTORY_BUNDLE_WRITE=1 cargo test",
+        "{LOCK} is stale:\n{}\nfix:\n  FACTORY_BUNDLE_WRITE=1 cargo test\n  refused once v{version} is tagged: bump version in Cargo.toml, then rerun",
         why.join("\n")
     ))
 }
@@ -193,12 +193,13 @@ pub fn tag_state(repo: &Path, version: &str) -> Tagged {
     }
 }
 
-/// At the same version the hash may change only while `v<version>` is untagged.
+/// At the same version the hash may change only while `v<version>` is untagged. `tagged` is asked
+/// only then, so a relock with nothing to prove never reaches origin.
 pub fn relock(
     old: Option<&Lock>,
     version: &str,
     hash: &str,
-    tagged: Tagged,
+    tagged: impl FnOnce() -> Tagged,
 ) -> std::result::Result<Lock, String> {
     let new = Lock {
         version: version.to_string(),
@@ -209,8 +210,12 @@ pub fn relock(
     };
     let parts = |v: &str| version_parts(v).ok_or(format!("version {v} is not three integers"));
     let (now, was) = (parts(version)?, parts(&old.version)?);
-    match (now.cmp(&was), tagged) {
-        (std::cmp::Ordering::Greater, _) | (std::cmp::Ordering::Equal, Tagged::No) => Ok(new),
+    let order = now.cmp(&was);
+    if order == std::cmp::Ordering::Greater {
+        return Ok(new);
+    }
+    match (order, tagged()) {
+        (std::cmp::Ordering::Equal, Tagged::No) => Ok(new),
         (std::cmp::Ordering::Equal, Tagged::Unknown) => Err(format!(
             "could not reach origin to prove v{version} is untagged; retry online or bump Cargo.toml past {version}"
         )),
@@ -930,7 +935,7 @@ mod tests {
         assert!(err.contains("bundle changed: aa → bb"), "{err}");
         assert!(!err.contains("version: lock"), "{err}");
         assert!(
-            err.ends_with("bump version in Cargo.toml\n  FACTORY_BUNDLE_WRITE=1 cargo test"),
+            err.ends_with("fix:\n  FACTORY_BUNDLE_WRITE=1 cargo test\n  refused once v0.2.0 is tagged: bump version in Cargo.toml, then rerun"),
             "{err}"
         );
     }
@@ -942,19 +947,19 @@ mod tests {
     fn an_untagged_version_relocks_and_a_tagged_one_refuses() {
         let old = lock("0.2.0", "aa");
         assert_eq!(
-            relock(Some(&old), "0.2.0", "bb", Tagged::No),
+            relock(Some(&old), "0.2.0", "bb", || Tagged::No),
             Ok(lock("0.2.0", "bb"))
         );
         assert_eq!(
-            relock(Some(&old), "0.2.0", "bb", Tagged::Yes),
+            relock(Some(&old), "0.2.0", "bb", || Tagged::Yes),
             Err(BUMP.to_string())
         );
         assert_eq!(
-            relock(Some(&old), "0.2.0", "bb", Tagged::Unknown),
+            relock(Some(&old), "0.2.0", "bb", || Tagged::Unknown),
             Err(OFFLINE.to_string())
         );
         for tagged in [Tagged::Yes, Tagged::No, Tagged::Unknown] {
-            assert!(relock(Some(&old), "0.1.9", "bb", tagged).is_err());
+            assert!(relock(Some(&old), "0.1.9", "bb", move || tagged).is_err());
         }
     }
 
@@ -962,6 +967,8 @@ mod tests {
         let out = std::process::Command::new("git")
             .args(args)
             .current_dir(dir)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
             .output()
             .unwrap();
         assert!(out.status.success(), "git {args:?}: {out:?}");
@@ -1000,7 +1007,7 @@ mod tests {
         );
         assert_eq!(tag_state(&offline, "0.2.0"), Tagged::Unknown);
         assert_eq!(
-            relock(Some(&old), "0.2.0", "bb", tag_state(&offline, "0.2.0")),
+            relock(Some(&old), "0.2.0", "bb", || tag_state(&offline, "0.2.0")),
             Err(OFFLINE.to_string())
         );
 
@@ -1032,14 +1039,18 @@ mod tests {
     #[test]
     fn a_skill_edit_with_a_bump_relocks() {
         let old = lock("0.2.0", "aa");
-        for tagged in [Tagged::Yes, Tagged::No, Tagged::Unknown] {
-            assert_eq!(
-                relock(Some(&old), "0.2.1", "bb", tagged),
-                Ok(lock("0.2.1", "bb"))
-            );
-        }
+        let unasked =
+            || -> Tagged { unreachable!("only a same-version hash change asks for tags") };
         assert_eq!(
-            relock(None, "0.2.0", "aa", Tagged::Yes),
+            relock(Some(&old), "0.2.1", "bb", unasked),
+            Ok(lock("0.2.1", "bb"))
+        );
+        assert_eq!(
+            relock(Some(&old), "0.2.0", "aa", unasked),
+            Ok(lock("0.2.0", "aa"))
+        );
+        assert_eq!(
+            relock(None, "0.2.0", "aa", unasked),
             Ok(lock("0.2.0", "aa"))
         );
     }
@@ -1054,7 +1065,7 @@ mod tests {
         );
         assert!(!err.contains("bundle changed"), "{err}");
         assert_eq!(
-            relock(Some(&old), "0.2.1", "aa", Tagged::Unknown),
+            relock(Some(&old), "0.2.1", "aa", || Tagged::Unknown),
             Ok(lock("0.2.1", "aa"))
         );
     }
@@ -1063,7 +1074,7 @@ mod tests {
     fn versions_compare_as_integers() {
         assert_eq!(version_parts("0.10.0"), Some((0, 10, 0)));
         assert!(version_parts("0.10.0") > version_parts("0.9.0"));
-        assert!(relock(Some(&lock("0.9.0", "aa")), "0.10.0", "bb", Tagged::Yes).is_ok());
+        assert!(relock(Some(&lock("0.9.0", "aa")), "0.10.0", "bb", || Tagged::Yes).is_ok());
         for bad in ["0.2", "0.2.0.1", "0.2.x", "", "0.2.0-rc1"] {
             assert_eq!(version_parts(bad), None, "{bad}");
         }

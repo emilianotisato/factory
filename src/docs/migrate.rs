@@ -1279,7 +1279,7 @@ fn normalize(p: &Path) -> PathBuf {
 }
 
 fn unlink(text: &str, dir: &Path, gone: &[PathBuf]) -> (String, Vec<(usize, String)>) {
-    let (out, hits) = edit_links(text, dir, |label, _, p, _| {
+    let (out, hits) = edit_links(text, dir, false, |label, _, p, _| {
         gone.iter().any(|g| g == p).then(|| label.to_string())
     });
     (out, hits.into_iter().map(|(l, old, _)| (l, old)).collect())
@@ -1287,39 +1287,49 @@ fn unlink(text: &str, dir: &Path, gone: &[PathBuf]) -> (String, Vec<(usize, Stri
 
 /// Anchor dropped: the README holds the rules those links meant.
 fn relink(text: &str, dir: &Path, ideas: &Path) -> (String, Vec<(usize, String, String)>) {
-    edit_links(text, dir, |label, target, p, _| {
+    edit_links(text, dir, false, |label, target, p, _| {
         let base = target.strip_suffix("ideas.md")?;
         (p == ideas).then(|| format!("[{label}]({base}ideas/README.md)"))
     })
 }
 
-/// The links outside fenced blocks, retargeted from `from` to `to`; anchors and titles stay.
+/// The links and images outside fenced blocks, retargeted from `from` to `to`; anchors and titles stay.
 pub(crate) fn rebase_links(text: &str, from: &Path, to: &Path) -> String {
     let from = normalize(from);
     let to = normalize(to);
     let mut out = String::with_capacity(text.len());
     let mut prose = String::new();
-    let mut fenced = false;
+    let mut open: Option<(char, usize)> = None;
     for line in text.split_inclusive('\n') {
-        if is_fence(line) {
-            if !fenced {
+        match (open, fence_run(line)) {
+            (None, Some(run)) => {
                 out.push_str(&rebase_prose(&prose, &from, &to));
                 prose.clear();
+                open = Some(run);
+                out.push_str(line);
             }
-            fenced = !fenced;
-            out.push_str(line);
-        } else if fenced {
-            out.push_str(line);
-        } else {
-            prose.push_str(line);
+            (Some((c, n)), Some((rc, rn))) if rc == c && rn >= n && line.trim().len() == rn => {
+                open = None;
+                out.push_str(line);
+            }
+            (Some(_), _) => out.push_str(line),
+            (None, None) => prose.push_str(line),
         }
     }
     out.push_str(&rebase_prose(&prose, &from, &to));
     out
 }
 
+/// The fence char and run length a line starts with, when it is a fence: three or more backticks or tildes.
+fn fence_run(line: &str) -> Option<(char, usize)> {
+    let t = line.trim_start();
+    let c = t.chars().next().filter(|c| *c == '`' || *c == '~')?;
+    let n = t.chars().take_while(|x| *x == c).count();
+    (n >= 3).then_some((c, n))
+}
+
 fn rebase_prose(text: &str, from: &Path, to: &Path) -> String {
-    edit_links(text, from, |_, target, p, link| {
+    edit_links(text, from, true, |_, target, p, link| {
         if target.starts_with('/') {
             return None;
         }
@@ -1358,6 +1368,7 @@ fn relative(dir: &Path, target: &Path) -> String {
 fn edit_links(
     text: &str,
     dir: &Path,
+    images: bool,
     edit: impl Fn(&str, &str, &Path, &str) -> Option<String>,
 ) -> (String, Vec<(usize, String, String)>) {
     let mut out = String::new();
@@ -1372,7 +1383,7 @@ fn edit_links(
         let target = href.split('#').next().unwrap_or_default();
         let external = href.contains(':') || target.is_empty();
         if !external
-            && !text[..i].ends_with('!')
+            && (images || !text[..i].ends_with('!'))
             && let Some(new) = edit(label, target, &normalize(&dir.join(target)), &text[i..end])
         {
             out.push_str(&text[copied..i]);
@@ -1874,6 +1885,23 @@ pub fn run(root: &Path, plan: &Plan, db: &Db) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rebased_links_keep_fences_roots_anchors_and_titles() {
+        let from = Path::new("/r/docs/ideas");
+        let to = Path::new("/r/docs/features/001-x");
+        let text = "[a](../reference/x.md#s) ![i](../reference/i.png) [r](/x.md) [t](./o.md \"T\") `[c](../y.md)`\n\
+            ~~~md\n[f](../y.md)\n~~~\n\
+            ````\n```\n[n](../y.md)\n```\n````\n\
+            [after](../y.md)\n";
+        assert_eq!(
+            rebase_links(text, from, to),
+            "[a](../../reference/x.md#s) ![i](../../reference/i.png) [r](/x.md) [t](../../ideas/o.md \"T\") `[c](../../y.md)`\n\
+            ~~~md\n[f](../y.md)\n~~~\n\
+            ````\n```\n[n](../y.md)\n```\n````\n\
+            [after](../../y.md)\n"
+        );
+    }
 
     fn d(n: usize) -> Vec<String> {
         vec!["2026-09-30".to_string(); n]

@@ -161,7 +161,7 @@ pub fn board_dir(board: Option<&Path>, dir: &Path) -> PathBuf {
     board
         .zip(dir.file_name())
         .map(|(b, name)| b.join(name))
-        .filter(|d| d.is_dir())
+        .filter(|d| fs::symlink_metadata(d).is_ok_and(|m| m.is_dir()))
         .unwrap_or_else(|| dir.to_path_buf())
 }
 

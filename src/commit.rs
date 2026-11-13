@@ -188,7 +188,11 @@ fn cut(number: u32, kind: &str, text: &str) -> String {
     });
     match at_word {
         Some(i) => fits[..i].iter().collect::<String>().trim_end().to_string(),
-        None => fits[..SUBJECT_MAX].iter().collect(),
+        None => fits[..SUBJECT_MAX]
+            .iter()
+            .collect::<String>()
+            .trim_end()
+            .to_string(),
     }
 }
 
@@ -385,6 +389,11 @@ mod tests {
         );
         let spaceless = "—".repeat(60);
         assert_eq!(cut(15, "feat", &spaceless).chars().count(), SUBJECT_MAX);
+        let one_word = format!("{} tail", "x".repeat(39));
+        assert_eq!(
+            cut(15, "fix", &one_word),
+            format!("fix(015): {}", "x".repeat(39))
+        );
 
         assert_eq!(cut(15, "docs", "checkpoint 2"), "docs(015): checkpoint 2");
         assert_eq!(

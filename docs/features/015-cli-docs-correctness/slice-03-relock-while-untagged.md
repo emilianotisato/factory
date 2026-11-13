@@ -59,3 +59,9 @@ Write the probe and call it from `tests/skills_bundle.rs` `lock()`.
 prd §12 row **FR-3**: `run an_untagged_version_relocks_and_a_tagged_one_refuses` and `run relock_refuses_when_origin_cannot_be_reached`. It is proven below the UI.
 
 **Acceptance:** after the checkpoint, the transcripts are in Progress.
+
+**Code-review fixes (2026-11-13).**
+
+- `tag_state` ran `git ls-remote origin` on every `FACTORY_BUNDLE_WRITE=1` run, even a bump or an unchanged bundle, and ssh can stall on it. `relock` now takes the probe as a closure and calls it only for a same-version hash change (AD-6). The bump test proves no probe runs.
+- `check_lock`'s stale message still said to bump first. It now says to relock first, and to bump only once the version is tagged.
+- The `tag_state` test's git helper read the user's global config, and `tag.gpgSign=true` turned its lightweight tags red. It now runs with `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_CONFIG_NOSYSTEM=1`, like the other git tests.

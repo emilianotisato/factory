@@ -43,8 +43,8 @@
   - For a lane, those two reads must come from the same-named feature folder under the main tree's `docs/features/`. Everything else stays on the lane: `prd.md`, slices, `project.toml` and links. Thread an optional board base through `check::run` and the scan. Callers that pass none behave exactly as today.
 - **Callers of `check::run` that must stay unchanged**:
   - the driver's in-process `check::run(&lane_dir)` (`src/scheduler.rs:2076`), which has no `FACTORY_BOARD`;
-  - `src/preflight.rs:97`;
-  - `src/doctor.rs:68`.
+  - `src/docs/preflight.rs:97`;
+  - `src/docs/doctor.rs:68`.
   - prd §3: "Unchanged: … the driver's in-process `check::run(&lane_dir)`."
 - **The messages**:
   - `set` prints `docs/features/{name}/state.toml updated` (`src/cli/docs.rs:706`).
@@ -53,7 +53,7 @@
 - **Exit codes**:
   - `docs` (`src/cli/docs.rs:213-221`) maps only `Error::Msg` to `Ok(2)`. Variants are listed in `src/error.rs:7-28`.
   - `Io`, `Toml`, `Json` and `Sql` fall to `src/main.rs:109-113`, which exits 1.
-  - Keep every deliberate `Ok(1)`: `check` (`:290-297`), `retro` with no row (`:574`), `gate` (`src/cli/gate.rs:481,519`) and preflight (`src/preflight.rs:221,418`).
+  - Keep every deliberate `Ok(1)`: `check` (`:290-297`), `retro` with no row (`:574`), `gate` (`src/docs/gate.rs:481,519`) and preflight (`src/docs/preflight.rs:221,418`).
 - **Tests that pin this**:
   - `a_lane_writes_the_main_trees_board_and_ignores_another_repos` (`tests/docs_v3.rs`, helper `board_docs` at `:566`, lane created `--detach` at `:595`). Its `status` JSON at `:637` carries the git branch, and its `retro` read is at `:646`. Both stay on the whole-root path.
   - `tests/docs_retro.rs:30` pins `Some(1)` for a missing retro row.
@@ -100,3 +100,8 @@ prd §12 rows:
 They are proven below the UI: the checkpoint runs them and keeps the transcript.
 
 **Acceptance:** after the checkpoint, the transcripts are in Progress.
+
+**Code-review fixes (2026-11-13).**
+
+- `docs check` in a lane named main's `state.toml` and `log.jsonl` by their lane path (and E-STATE-INVALID stripped main's prefix), so a worker opened the lane's valid copy and could not find the error. Findings now name a board file read from another tree by its absolute path (`board_file` in `src/docs/check.rs`), and `a_lane_reads_the_board_files_it_wrote` asserts it on a bad line in main's log.
+- This slice cited `src/preflight.rs`, `src/doctor.rs` and `src/cli/gate.rs`, which do not exist. The citations now point to `src/docs/`.

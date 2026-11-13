@@ -442,6 +442,11 @@ fn the_board_and_renumber_skip_symlinks() {
     fs::create_dir_all(root.join("docs/features/x")).unwrap();
     symlink("../..", root.join("docs/features/x/loop")).unwrap();
     symlink("../../../outside", root.join("docs/features/x/out")).unwrap();
+    let prd_path = root.join("docs/features/001-fixture/prd.md");
+    let prd = fs::read_to_string(&prd_path).unwrap();
+    fs::write(outside.join("prd.md"), &prd).unwrap();
+    fs::remove_file(&prd_path).unwrap();
+    symlink("../../../outside/prd.md", &prd_path).unwrap();
     commit(&fx);
 
     let board: Value = serde_json::from_str(&fx.docs(&["status", "--json"])).unwrap();
@@ -459,6 +464,7 @@ fn the_board_and_renumber_skip_symlinks() {
     fx.docs(&["renumber", "001", "005"]);
     assert_eq!(fs::read_to_string(outside.join("slice.md")).unwrap(), held);
     assert_eq!(fs::read_to_string(outside.join("note.md")).unwrap(), note);
+    assert_eq!(fs::read_to_string(outside.join("prd.md")).unwrap(), prd);
     assert!(
         fs::symlink_metadata(root.join("docs/features/x/loop"))
             .unwrap()
