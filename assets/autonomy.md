@@ -45,11 +45,13 @@ Ask it of every choice the work forces that nobody wrote down: **does the PRD, t
 <!-- builder: end -->
 ## What an unattended run may write
 
-**May:** application code and tests · the feature's own folder — `prd.md` Status prose, the feature's and its slices' status through `factory docs set`, slices, the log through `factory docs log add`, `retro.md`, `qa-guide.md` · `factory docs idea add` · `.claude/skills/verify-*` whenever the app's surface moves under it: a harness slice, a feature-map entry, or a later slice that changes what the harness drives. Extend or repair a recipe, but never drop a step an earlier checkpoint drove.
+**May:** application code and tests · the feature's own folder — `prd.md` Status prose, the feature's and its slices' status through `factory docs set`, slices, the log through `factory docs log add`, `retro.md`, `qa-guide.md` · `factory docs idea add` · `.claude/skills/verify-*` whenever the app's surface moves under it: a harness slice, a feature-map entry, or a later slice that changes what the harness drives. Extend or repair a recipe, but never drop a step an earlier checkpoint drove. Beyond those: repair anything the run itself wrote on this branch · update project docs the run's FRs make factually wrong, such as research notes, runbooks and operations procedures, text only · fix a defect a review found in a file the PRD ordered, later, with an `AD` marked `decide` as the creation had.
 
-**Never:** `docs/decisions.md` · `docs/ux-rubric.md` · CI workflow files · `CLAUDE.md`, `AGENTS.md`, `.ai/guidelines/` · another feature's folder · anything under `docs/archive/` · the PRD's FRs, acceptance criteria, non-goals or decisions log. A change the run believes one of these needs is a **block**, or a proposal in the PR body when nothing waits on it.
+**Never:** `docs/decisions.md` · `docs/ux-rubric.md` · CI workflow files · `CLAUDE.md`, `AGENTS.md`, `.ai/guidelines/` · another feature's folder · anything under `docs/archive/` · the PRD's FRs, acceptance criteria, non-goals or decisions log · close or tick a human sign-off item, such as a checklist row, a signature or an approval, in any doc: that change is a proposal in the PR body. A change the run believes one of these needs is a **block**, or a proposal in the PR body when nothing waits on it.
 
 **The PRD outranks this list for a file it names.** An FR that orders a write here, such as installing a tool that rewrites `CLAUDE.md`, is done as written, with an `AD` marked `decide`. The owner approved that PRD; this list guards against what nobody approved.
+
+**Never wins over every May.** The Never list above and "Never, to get green" below outrank each May item: a CI workflow the PRD ordered may get a defect fix a review found, never an edit that makes a red check pass. `CLAUDE.md` and `docs/decisions.md` stay Never even when the run's FRs make them wrong; that change is a proposal in the PR body. A builder's own contract still wins: it touches nothing outside its slice's files, so for a builder "anything the run itself wrote" means its slice's files.
 
 ## Never, to get green
 

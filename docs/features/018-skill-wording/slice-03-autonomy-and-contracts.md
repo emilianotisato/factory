@@ -3,7 +3,17 @@
 **Source**: [`prd.md`](prd.md) → §6 FR-4, §8 FR-6, §9 FR-7 (the contract half), §12 FR-10, §15. **Depends on**: 01 (its tests call slice 01's helper). It is independent of 02 and 04: it edits only `assets/`, which is outside the skills bundle, so no relock. Its tests go in a new file, not `tests/skills_bundle.rs`.
 **Created**: 2026-11-12
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+
+- **Built.** `assets/autonomy.md` § What an unattended run may write: three new May items (repair what the run wrote; research notes, runbooks and operations procedures the FRs made wrong, text only; a later defect fix to a PRD-ordered file with an `AD` marked `decide`), a sign-off Never item, and a **Never wins over every May.** precedence paragraph. The cut markers did not move. `assets/contract-slice.md` has a new **See each test fail once** Do bullet. `assets/contract-checkpoint.md` has the spec-not-output rule in Prove, the `verify-*` repair exception in the touch rule, and the repair named under `**Fixed:**` in Record. `assets/pr-body.md`'s Gate line says where its numbers come from and adds an `inner loops:` clause. The tests are in a new `tests/asset_text.rs`, which reads `pack::builder_autonomy()`, `pack::CONTRACT`, `pack::CONTRACT_CHECKPOINT` and `pack::PR_BODY`.
+- **Inner loop:** 1 run, 0 red, 2 min.
+- **Seen red once** (all four assets reverted with `git checkout`, `cargo test -q --test asset_text`, then restored and green):
+  - `autonomy_names_research_notes_runbooks_and_sign_offs`: "repair anything the run itself wrote on this branch" occurs 0 times.
+  - `a_behavioural_test_is_seen_red_once`: the break-the-feature-once passage occurs 0 times.
+  - `checkpoint_takes_its_expected_result_from_the_spec`: the spec-not-output sentence occurs 0 times.
+  - `checkpoint_repairs_the_drive_a_covered_slice_broke`: the `verify-*` repair passage occurs 0 times.
+  - `pr_body_names_full_gate_runs_and_inner_loops`: the checkpoint-`**Gate:**` passage occurs 0 times.
+- **Deviations:** none.
 
 **Slice**: After this slice:
 
