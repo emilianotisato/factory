@@ -31,7 +31,7 @@ With no numbers, the batch is every `shipped` feature; the owner can name a smal
 
 An idea the batch spawned is a lesson too. Routed to the project, it becomes the edit or stays an idea for a future PRD. Already built, or no longer true, it is deleted with the owner's yes.
 
-**Factory itself.** When this repo is the factory checkout (its `.claude/skills/` link into `skills/`), file it here: `factory docs idea add --title "…" --origin "harvest {date}" --body-file -`. Elsewhere, the lesson leaves this repo, so:
+**Factory itself.** When this repo is the factory checkout (its `.claude/skills/` link into `skills/`), file it here: `factory docs idea add --title "…" --origin "harvest {date}" --body-file -`, where `{date}`, like every date this skill fills (the `harvest/<yyyy-mm-dd>` branch too), is the UTC date, `date -u +%F`, the clock the `factory` binary stamps with. Elsewhere, the lesson leaves this repo, so:
 
 1. Write the draft as a markdown file in your scratchpad, outside the repository: a `# ` title line, then the body. Write it **in general terms**: what the skill or verb did, what it should have done, a minimal shape that shows it. No customer, no repo name, no path from this machine, no code that is not the framework's own.
 2. Show the draft to the owner.

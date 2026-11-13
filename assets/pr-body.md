@@ -40,7 +40,7 @@ Evidence stays in the run dir of the machine that ran the build, under `evidence
 
 ### Gate & CI
 
-- Gate `{command}`: {runs} runs, {red} red, {minutes} min in total
+- Gate `{command}`: {runs} runs, {red} red, {minutes} min in total, each summed from every checkpoint entry's `**Gate:**` line in the feature's log plus polish's own gate runs · inner loops: {n} runs, {red} red, summed from the slices' Progress inner-loop lines
 - CI: {green first time \| green after {n} fix rounds \| no CI configured} · {flaky job re-run once: {name}}
 
 ### Retro

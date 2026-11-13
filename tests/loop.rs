@@ -1,5 +1,7 @@
 #[path = "harness/mod.rs"]
 mod harness;
+#[path = "common/passage.rs"]
+mod passage;
 
 use std::fs::{self, File};
 use std::os::unix::process::CommandExt;
@@ -14,6 +16,7 @@ use factory::run::pid_alive;
 use factory::stream::{self, StatusHint, StreamEvent};
 use factory::worker::is_uuid_v4;
 use harness::{FEATURE_DIR, Fixture};
+use passage::assert_unique_passage;
 use serde_json::{Value, json};
 
 const BIN: &str = env!("CARGO_BIN_EXE_factory");
@@ -270,7 +273,7 @@ fn pack_is_the_slice_the_cited_sections_the_contract_and_the_inner_loop() {
         "the driver sets building: {text}"
     );
     let contract = &text[at("\n# Contract\n")..at("\n# Autonomy\n")];
-    assert!(contract.contains("quiet flag"), "{contract}");
+    assert_unique_passage("the pack's # Contract", contract, "quiet flag");
     for ph in ["{NNN}", "{NN}", "{N}", "{seed}", "{factory}"] {
         assert!(!text.contains(ph), "{ph} left in pack");
     }
@@ -391,15 +394,13 @@ fn pack_outlines_the_cited_code_and_carries_the_lookup_verbs() {
     for verb in ["factory ctx def", "factory ctx refs", "factory ctx outline"] {
         assert!(lookup.contains(verb), "{verb}: {lookup}");
     }
-    assert!(
-        lookup.contains("a bare name goes to ctx, grep anything else"),
-        "{lookup}"
-    );
-    assert!(lookup.contains("`--vendor`"), "{lookup}");
-    assert!(
-        lookup.contains("with its body when one definition matches"),
-        "{lookup}"
-    );
+    for needle in [
+        "a bare name goes to ctx, grep anything else",
+        "`--vendor`",
+        "with its body when one definition matches",
+    ] {
+        assert_unique_passage("the pack's # Lookup", lookup, needle);
+    }
     assert!(
         !lookup.contains("grep only for literal strings and log output"),
         "{lookup}"

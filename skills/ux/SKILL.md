@@ -11,7 +11,7 @@ Most of what gets called taste is not taste. It is a short list of things that a
 The two halves:
 
 - **`/ux`** — review the UI this branch changed, against `docs/ux-rubric.md`, by driving it and looking at every state.
-- **`/ux rubric`** — write or update the rubric: the project's own answers about spacing, tokens, empty states, error copy, motion, breakpoints. Interview the code first, the owner second.
+- **`/ux rubric`** — write or update the rubric: the project's own answers about spacing, tokens, empty states, error copy, motion, breakpoints. Interview the code first, the owner second. Each `added {date}` it fills in the rubric is the UTC date, `date -u +%F`, the clock the `factory` binary stamps with.
 
 **This needs a harness.** It drives the real app through `.claude/skills/verify-<app>/`. Missing → say so and run `/harness` first; a UX review from reading source is a guess.
 

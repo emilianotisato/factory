@@ -1,3 +1,6 @@
+#[path = "common/passage.rs"]
+mod passage;
+
 use factory::skills::{self, FILES, LOCK, Lock, Manifest, NAMES, bundle_hash, check_lock, relock};
 use std::collections::BTreeSet;
 use std::fs;
@@ -5,6 +8,8 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
+
+use passage::assert_unique_passage;
 
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -111,8 +116,14 @@ fn models_md_holds_no_invocation_and_the_skills_call_review_second() {
     ] {
         assert!(!models.contains(bad), "{bad:?} in models.md");
     }
-    for skill in ["polish/SKILL.md", "prd/SKILL.md"] {
-        assert!(read(skill).contains("factory review second"), "{skill}");
+    for (skill, call) in [
+        (
+            "polish/SKILL.md",
+            "run `factory review second --diff <base-branch>` yourself",
+        ),
+        ("prd/SKILL.md", "factory review second"),
+    ] {
+        assert_unique_passage(skill, &read(skill), call);
     }
     let mut files = BTreeSet::new();
     let skills = root().join("skills");
@@ -125,42 +136,37 @@ fn models_md_holds_no_invocation_and_the_skills_call_review_second() {
 
 #[test]
 fn polish_collect_starts_from_the_collected_file_with_the_last_resort_beside_it() {
-    let text = fs::read_to_string(root().join("skills/polish/SKILL.md")).unwrap();
-    let start = text.find("## 1.").expect("§1");
-    let end = start + text[start..].find("## 2.").expect("§2");
-    let collect = &text[start..end];
+    let collect = section("polish/SKILL.md", "## 1.", "## 2.");
     for keep in [
         "factory review collect",
         "factory leaks --base",
-        "factory review second --diff",
+        "**`factory review second --diff <base-branch>`**",
     ] {
-        assert!(collect.contains(keep), "{keep:?} left polish §1");
+        assert_unique_passage("polish §1", &collect, keep);
     }
 }
 
 #[test]
 fn polish_fixers_run_one_after_another_with_no_lane_rule() {
-    let text = fs::read_to_string(root().join("skills/polish/SKILL.md")).unwrap();
-    let start = text.find("## 5. Fix").expect("§5");
-    let end = start + text[start..].find("## 6.").expect("§6");
-    let fix = &text[start..end];
+    let fix = section("polish/SKILL.md", "## 5. Fix", "## 6.");
     let lower = fix.to_lowercase();
     for bad in ["lane", "sibling"] {
         assert!(!lower.contains(bad), "{bad:?} in polish §5:\n{fix}");
     }
     for keep in ["factory docs log add", "factory docs gate"] {
-        assert!(fix.contains(keep), "{keep:?} left polish §5");
+        assert_unique_passage("polish §5", &fix, keep);
     }
 }
 
 #[test]
 fn gate_inner_loop_formats_in_write_mode_and_runs_tests_quiet() {
-    let text = fs::read_to_string(root().join("skills/gate/SKILL.md")).unwrap();
-    let start = text.find("**Round 3").expect("round 3");
-    let end = start + text[start..].find("## 4.").expect("§4");
-    let round = &text[start..end];
-    for keep in ["write mode", "check mode", "`cargo test -q`"] {
-        assert!(round.contains(keep), "{keep:?} left gate round 3");
+    let round = section("gate/SKILL.md", "**Round 3", "## 4.");
+    for keep in [
+        "**It runs the formatter in write mode",
+        "check mode",
+        "`cargo test -q`",
+    ] {
+        assert_unique_passage("gate round 3", &round, keep);
     }
     assert!(!round.contains("same string"), "gate round 3:\n{round}");
 
@@ -228,11 +234,11 @@ fn the_prd_skill_offers_the_build_and_drops_the_clear_advice() {
     let text = fs::read_to_string(root().join("skills/prd/SKILL.md")).unwrap();
     for needle in [
         "Build it now (Recommended)",
-        "Slice only",
-        "Stop here",
+        "**Slice only** /",
+        "/ **Stop here**.",
         "invoke `/deliver NNN` with the Skill tool, in this session",
     ] {
-        assert!(text.contains(needle), "{needle:?} missing");
+        assert_unique_passage("prd/SKILL.md", &text, needle);
     }
     assert!(!text.contains("Say the `/clear` part"));
 }
@@ -246,7 +252,7 @@ fn the_slice_skill_skips_the_write_question_only_for_deliver() {
         "**From `/deliver`** → print the board without the `Write these?` line",
         "**Typed by the owner** → ask",
     ] {
-        assert!(text.contains(needle), "{needle:?} missing");
+        assert_unique_passage("slice/SKILL.md", &text, needle);
     }
     assert!(!text.contains("/factory-deliver"));
 }
@@ -256,9 +262,10 @@ fn every_doctor_step_links_the_stale_tooling_rule() {
     let read = |p: &str| fs::read_to_string(root().join("skills").join(p)).unwrap();
     for skill in ["prd", "slice", "deliver", "lanes"] {
         let text = read(&format!("{skill}/SKILL.md"));
-        assert!(
-            text.contains("(../_shared/stale-tooling.md)"),
-            "{skill} does not link the rule"
+        assert_unique_passage(
+            &format!("{skill}/SKILL.md"),
+            &text,
+            "(../_shared/stale-tooling.md)",
         );
     }
     let rule = read("_shared/stale-tooling.md");
@@ -268,12 +275,12 @@ fn every_doctor_step_links_the_stale_tooling_rule() {
         "**`behind`, `differs` or `missing`**, no hand edit → `factory skills update`",
         "**`source checkout`**",
     ] {
-        assert!(rule.contains(needle), "{needle:?} missing");
+        assert_unique_passage("_shared/stale-tooling.md", &rule, needle);
     }
 }
 
-fn polish_section(heading: &str, next: &str) -> String {
-    let text = fs::read_to_string(root().join("skills/polish/SKILL.md")).unwrap();
+fn section(rel: &str, heading: &str, next: &str) -> String {
+    let text = fs::read_to_string(root().join("skills").join(rel)).unwrap();
     let start = text.find(heading).unwrap_or_else(|| panic!("{heading}"));
     let end = start + text[start..].find(next).unwrap_or_else(|| panic!("{next}"));
     text[start..end].to_string()
@@ -281,7 +288,7 @@ fn polish_section(heading: &str, next: &str) -> String {
 
 #[test]
 fn polish_security_pass_reviews_the_base_range() {
-    let collect = polish_section("## 1.", "## 2.");
+    let collect = section("polish/SKILL.md", "## 1.", "## 2.");
     let security = collect
         .split("\n\n")
         .find(|p| p.contains("**Then `security-review`"))
@@ -292,30 +299,28 @@ fn polish_security_pass_reviews_the_base_range() {
         "names the range it reviewed",
         "reviewed nothing",
     ] {
-        assert!(security.contains(keep), "{keep:?} not in:\n{security}");
+        assert_unique_passage("polish §1 security paragraph", security, keep);
     }
 }
 
 #[test]
 fn polish_starts_ux_first_and_holds_tests() {
-    let collect = polish_section("## 1.", "## 2.");
+    let collect = section("polish/SKILL.md", "## 1.", "## 2.");
     let first = collect.find("**Start `/ux` first").expect("ux first");
     let local = collect.find("**Local review first**").expect("local");
     assert!(first < local, "the UX start comes after the local review");
-    assert!(
-        collect.contains("Run no test and no fix in that checkout until the UX pass returns"),
-        "{collect}"
+    assert_unique_passage(
+        "polish §1",
+        &collect,
+        "Run no test and no fix in that checkout until the UX pass returns",
     );
-    let fix = polish_section("## 5. Fix", "## 6.");
-    assert!(
-        fix.contains("Fixes start after the UX pass returns"),
-        "{fix}"
-    );
+    let fix = section("polish/SKILL.md", "## 5. Fix", "## 6.");
+    assert_unique_passage("polish §5", &fix, "Fixes start after the UX pass returns");
 }
 
 #[test]
 fn polish_lists_five_settled_sources() {
-    let verify = polish_section("## 2.", "## 3.");
+    let verify = section("polish/SKILL.md", "## 2.", "## 3.");
     for source in [
         "`OPEN-n`",
         "`docs/decisions.md`",
@@ -323,16 +328,16 @@ fn polish_lists_five_settled_sources() {
         "earlier AD",
         "Non-goals",
     ] {
-        assert!(verify.contains(source), "{source:?} not settled in §2");
+        assert_unique_passage("polish §2", &verify, source);
     }
-    let collect = polish_section("## 1.", "## 2.");
+    let collect = section("polish/SKILL.md", "## 1.", "## 2.");
     for keep in [
-        "--feature <NNN>",
+        "add `--feature <NNN>`, so every pass prompt carries what is settled",
         "--since <commit>",
         "git log -1 --format=%H -G '^reviewed' -- docs/features/<NNN>-*/state.toml",
         "A finding that contradicts an entry names it",
     ] {
-        assert!(collect.contains(keep), "{keep:?} not in polish §1");
+        assert_unique_passage("polish §1", &collect, keep);
     }
 }
 
@@ -343,7 +348,7 @@ fn autonomy_has_the_overturn_and_safe_contract_rows() {
         .lines()
         .find(|l| l.contains("may overturn an earlier `AD`"))
         .expect("the overturn rule reaches builders");
-    assert!(overturn.contains("**Supersedes:** AD-n"), "{overturn}");
+    assert_unique_passage("the overturn rule", overturn, "**Supersedes:** AD-n");
 
     let full = factory::pack::autonomy();
     let start = full.find("## Mapping").expect("mapping");
@@ -353,6 +358,145 @@ fn autonomy_has_the_overturn_and_safe_contract_rows() {
         .lines()
         .find(|l| l.contains("changes a contract while today's behavior is safe"))
         .expect("the safe-contract row sits in the Mapping");
-    assert!(row.contains("`factory docs idea add`"), "{row}");
-    assert!(row.contains("never blocks"), "{row}");
+    assert_unique_passage("the safe-contract row", row, "`factory docs idea add`");
+    assert_unique_passage("the safe-contract row", row, "never blocks");
+}
+
+#[test]
+fn polish_closeout_keeps_the_summary_current() {
+    let closeout = section("polish/SKILL.md", "## 9. Close out", "## Report");
+    assert_unique_passage(
+        "polish §9",
+        &closeout,
+        "the PRD's `summary` frontmatter, kept current: what landed and what remains. No PR number goes in it",
+    );
+    let text = fs::read_to_string(root().join("skills/polish/SKILL.md")).unwrap();
+    assert!(!text.contains("the index **Notes** cell"), "{closeout}");
+}
+
+#[test]
+fn polish_skips_ux_on_an_api_only_change() {
+    let collect = section("polish/SKILL.md", "## 1.", "## 2.");
+    let paragraph = |start: &str| {
+        collect
+            .split("\n\n")
+            .find(|p| p.starts_with(start))
+            .unwrap_or_else(|| panic!("{start}"))
+            .to_string()
+    };
+    assert_unique_passage(
+        "polish §1 override rules",
+        &paragraph("Two rules override the table."),
+        "except a change whose only user surface is an API",
+    );
+    let skip = paragraph("Skip it when nothing user-visible changed");
+    for keep in [
+        "When the only user surface is an API",
+        "skip `/ux` too, say so",
+        "the QA plan's Human row",
+    ] {
+        assert_unique_passage("polish §1 UX skip", &skip, keep);
+    }
+}
+
+fn precondition(n: &str) -> String {
+    let pre = section("prune/SKILL.md", "## Preconditions", "## Full Mode");
+    pre.lines()
+        .find(|l| l.starts_with(&format!("{n}. ")))
+        .unwrap_or_else(|| panic!("precondition {n}"))
+        .to_string()
+}
+
+#[test]
+fn prune_counts_polish_own_edits_as_under_review() {
+    let first = precondition("1");
+    for keep in [
+        "When polish invokes prune, attended or not",
+        "slice docs, `docs/ideas/` files and the feature's log",
+    ] {
+        assert_unique_passage("prune precondition 1", &first, keep);
+    }
+    assert!(!first.contains("Inside a `factory` run"), "{first}");
+}
+
+#[test]
+fn prune_lets_a_cited_name_go() {
+    let fifth = precondition("5");
+    for keep in [
+        "A name cited only in frozen records does not bind: rename or merge freely",
+        "old → new in the commit body, or in your report inside a `factory` run",
+    ] {
+        assert_unique_passage("prune precondition 5", &fifth, keep);
+    }
+    assert!(!fifth.contains("Prefer keeping the name"), "{fifth}");
+}
+
+#[test]
+fn prune_pr_mode_reuses_the_polish_gate() {
+    let pr = section("prune/SKILL.md", "## PR Mode Workflow", "## Final Report");
+    for keep in [
+        "**When the scoped tests are most of the suite**, the branch is really full mode",
+        "full mode's coverage baseline",
+        "**When polish invokes prune right after a green gate**, with no code or test change since",
+        "that gate result replaces the 3 repeat runs: cite it in the report",
+    ] {
+        assert_unique_passage("prune PR mode", &pr, keep);
+    }
+}
+
+#[test]
+fn prove_takes_its_expected_result_from_the_spec() {
+    let design = section("slice/SKILL.md", "## 2.", "## 3.");
+    let prove = design
+        .lines()
+        .find(|l| l.starts_with("- **Every slice ends in two tasks.**"))
+        .expect("the Prove bullet");
+    assert_unique_passage(
+        "slice §2 Prove",
+        prove,
+        "comes from the PRD, the spec or the input file, never from what the command printed",
+    );
+}
+
+#[test]
+fn slice_asks_each_test_to_fail_once_without_the_feature() {
+    let write = section("slice/SKILL.md", "## 4.", "## 5.");
+    for needle in [
+        "says how it fails if the feature is removed",
+        "The builder breaks the feature once by hand (a revert or a stub, never through git, which can lose uncommitted work)",
+        "sees each test it runs go red, then restores the feature",
+        "a row only the harness drives just names its failure",
+    ] {
+        assert_unique_passage("slice §4", &write, needle);
+    }
+}
+
+#[test]
+fn slices_that_write_one_file_are_linked() {
+    let design = section("slice/SKILL.md", "## 2.", "## 3.");
+    for needle in [
+        "**Two slices whose tasks write the same file are one slice, or the later depends on the earlier.**",
+        "Reading the same file does not link them.",
+    ] {
+        assert_unique_passage("slice §2", &design, needle);
+    }
+}
+
+#[test]
+fn slice_asks_for_a_passage_that_occurs_once() {
+    let write = section("slice/SKILL.md", "## 4.", "## 5.");
+    assert_unique_passage(
+        "slice §4",
+        &write,
+        "**A skill-text Acceptance asserts that the passage it quotes occurs exactly once**",
+    );
+}
+
+#[test]
+fn every_skill_that_fills_a_date_names_utc() {
+    for skill in ["deliver", "polish", "harvest", "prd", "ux", "prune"] {
+        let rel = format!("{skill}/SKILL.md");
+        let text = fs::read_to_string(root().join("skills").join(&rel)).unwrap();
+        assert_unique_passage(&rel, &text, "the UTC date, `date -u +%F`");
+    }
 }
