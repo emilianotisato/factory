@@ -985,7 +985,8 @@ fn land_slice(
     let title = row
         .and_then(|s| s.title.clone())
         .unwrap_or_else(|| format!("slice {slice:02}"));
-    let subject = commit::subject(board, "feat", &format!("slice-{slice:02} {title}"));
+    let text = format!("slice-{slice:02} {title}");
+    let subject = commit::subject(board, "feat", &text);
     // Killed after the landing commit, before its record: a second pick would find nothing.
     if let Some(base) = &base {
         let range = format!("{base}..HEAD");
@@ -1022,7 +1023,7 @@ fn land_slice(
                 Some(sha) => git_ok(&repo, &["log", "-1", "--format=%B", sha])?
                     .trim()
                     .to_string(),
-                None => subject.clone(),
+                None => commit::message(board, "feat", &text),
             };
             let main = lanes::main_tree(&repo)?;
             let Some(c) = land::commit_lane(

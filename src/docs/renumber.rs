@@ -21,10 +21,17 @@ fn git(root: &Path, args: &[&str]) -> bool {
 
 fn walk_md(dir: &Path, into: &mut Vec<PathBuf>) {
     let Ok(rd) = fs::read_dir(dir) else { return };
-    let mut entries: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
-    entries.sort();
-    for p in entries {
-        if p.is_dir() {
+    let mut entries: Vec<(PathBuf, fs::FileType)> = rd
+        .flatten()
+        .filter_map(|e| Some((e.path(), e.file_type().ok()?)))
+        .collect();
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    // `file_type` does not follow links, so a link is neither walked down nor rewritten through.
+    for (p, t) in entries {
+        if t.is_symlink() {
+            continue;
+        }
+        if t.is_dir() {
             walk_md(&p, into);
         } else if p.extension().is_some_and(|e| e == "md") {
             into.push(p);
@@ -83,7 +90,8 @@ pub fn run(root: &Path, from: &str, to: &str, out: &mut dyn Write) -> Result<()>
         fs::rename(&f.dir, &dest).map_err(io(format!("move {}", f.dir.display())))?;
     }
     let prd = dest.join("prd.md");
-    if let Ok(text) = fs::read_to_string(&prd) {
+    let linked = fs::symlink_metadata(&prd).is_ok_and(|m| m.file_type().is_symlink());
+    if !linked && let Ok(text) = fs::read_to_string(&prd) {
         let next = set_number(&text, &format!("{n:03}"));
         if next != text {
             fs::write(&prd, next).map_err(io(format!("write {}", prd.display())))?;

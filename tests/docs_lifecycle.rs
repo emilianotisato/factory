@@ -421,6 +421,57 @@ fn renumber_rewrites_live_docs_and_leaves_the_archive_alone() {
     );
 }
 
+#[test]
+fn the_board_and_renumber_skip_symlinks() {
+    use std::os::unix::fs::symlink;
+    let fx = Fixture::new("v3-symlinks");
+    let root = fx.path();
+    symlink("001-fixture", root.join("docs/features/002-linked")).unwrap();
+
+    let slice = fx.slice_path(3);
+    let slice_name = slice.file_name().unwrap().to_owned();
+    let outside = root.join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    let held = "# Slice 03 — held elsewhere\n\nSee PRD-001 and 001-fixture.\n";
+    let note = "# A note\n\nPRD-001 lives in 001-fixture.\n";
+    fs::write(outside.join("slice.md"), held).unwrap();
+    fs::write(outside.join("note.md"), note).unwrap();
+    fs::remove_file(&slice).unwrap();
+    symlink("../../../outside/slice.md", &slice).unwrap();
+
+    fs::create_dir_all(root.join("docs/features/x")).unwrap();
+    symlink("../..", root.join("docs/features/x/loop")).unwrap();
+    symlink("../../../outside", root.join("docs/features/x/out")).unwrap();
+    let prd_path = root.join("docs/features/001-fixture/prd.md");
+    let prd = fs::read_to_string(&prd_path).unwrap();
+    fs::write(outside.join("prd.md"), &prd).unwrap();
+    fs::remove_file(&prd_path).unwrap();
+    symlink("../../../outside/prd.md", &prd_path).unwrap();
+    commit(&fx);
+
+    let board: Value = serde_json::from_str(&fx.docs(&["status", "--json"])).unwrap();
+    let numbers: Vec<u64> = board["live"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["number"].as_u64().unwrap())
+        .collect();
+    assert_eq!(numbers, [1], "{board}");
+    let s: Status = serde_json::from_str(&fx.docs(&["status", "001", "--json"])).unwrap();
+    let linked = format!("001-fixture/{}", slice_name.to_string_lossy());
+    assert!(s.slices.iter().all(|x| x.file != linked), "{:?}", s.slices);
+
+    fx.docs(&["renumber", "001", "005"]);
+    assert_eq!(fs::read_to_string(outside.join("slice.md")).unwrap(), held);
+    assert_eq!(fs::read_to_string(outside.join("note.md")).unwrap(), note);
+    assert_eq!(fs::read_to_string(outside.join("prd.md")).unwrap(), prd);
+    assert!(
+        fs::symlink_metadata(root.join("docs/features/x/loop"))
+            .unwrap()
+            .is_symlink()
+    );
+}
+
 // ── harvest ──────────────────────────────────────────────────────────────────
 
 fn retro(lesson: &str) -> String {

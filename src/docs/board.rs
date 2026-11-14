@@ -152,12 +152,28 @@ pub fn folder_name(name: &str) -> Option<(u32, &str)> {
 
 /// A `state.toml` that does not parse is kept as its error on the feature, never a reason to fail.
 pub fn scan_folder(base: &Path, kind: Kind) -> Result<Vec<Feature>> {
+    scan_folder_on(base, kind, None)
+}
+
+/// The folder the board files (`state.toml`, `log.jsonl`) of `dir` are read from: its namesake under `board`
+/// when that exists, else `dir` itself.
+pub fn board_dir(board: Option<&Path>, dir: &Path) -> PathBuf {
+    board
+        .zip(dir.file_name())
+        .map(|(b, name)| b.join(name))
+        .filter(|d| fs::symlink_metadata(d).is_ok_and(|m| m.is_dir()))
+        .unwrap_or_else(|| dir.to_path_buf())
+}
+
+/// As `scan_folder`, reading each `state.toml` through `board_dir`.
+pub fn scan_folder_on(base: &Path, kind: Kind, board: Option<&Path>) -> Result<Vec<Feature>> {
     let Ok(rd) = fs::read_dir(base) else {
         return Ok(Vec::new());
     };
     let mut names: Vec<String> = rd
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().is_dir())
+        // `file_type` does not follow links: a symlinked feature folder is not a feature.
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .collect();
     names.sort();
@@ -171,7 +187,7 @@ pub fn scan_folder(base: &Path, kind: Kind) -> Result<Vec<Feature>> {
             Ok(text) => Some((frontmatter::parse(&text), text)),
             Err(_) => None,
         };
-        let state = state::read(&dir).map_err(|e| e.to_string());
+        let state = state::read(&board_dir(board, &dir)).map_err(|e| e.to_string());
         out.push(Feature {
             kind,
             number,
@@ -194,6 +210,9 @@ fn slice_files(dir: &Path) -> Result<Vec<SliceFile>> {
         let Some(number) = state::slice_number(&file) else {
             continue;
         };
+        if e.file_type().is_ok_and(|t| t.is_symlink()) {
+            continue;
+        }
         let text =
             fs::read_to_string(e.path()).map_err(io(format!("read {}", e.path().display())))?;
         out.push(SliceFile {

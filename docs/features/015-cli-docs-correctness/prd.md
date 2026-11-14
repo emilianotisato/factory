@@ -2,154 +2,317 @@
 number: 015
 slug: cli-docs-correctness
 title: "CLI, docs and log correctness"
-# type: feature | bugfix | enhancement | refactor
-type: feature
+type: bugfix
 created: 2026-11-05
 author: Emiliano Tisato
 summary: |
-  Docs verbs write where the reader reads and never report a write that did not happen; the run log takes one lock and one reader; slice commit subjects fit 50 characters; relock, skills update and from-idea PRDs stop tripping on their own output. Draft from the 2026-11-05 idea triage, not interviewed.
+  factory's own tools stop misleading the agent:
+  - in a lane, every docs verb reads and writes the board files (`state.toml`, `log.jsonl`) in the main tree, and says so;
+  - every driver commit subject fits 50 characters, with the rest in the body;
+  - relock replaces the hash of a version that has no tag yet;
+  - the `skills update` and `init` commit lines commit only their own dirs;
+  - from-idea PRDs keep working relative links;
+  - docs verbs exit 2 on a file or TOML error;
+  - the run log has one reader;
+  - the board scan and `renumber` skip symlinks.
+  Interviewed 2026-11-12.
 ---
 
 # PRD-015 — CLI, docs and log correctness
 
-> **Draft from the 2026-11-05 idea triage.** The owner chose what is in and out, group by group; nothing here is interviewed or verified yet. `/prd` continues this draft: interview, recon, FRs, QA plan. `file:line` facts are from `main` at `ca128f7`; re-verify them.
-
 ## 1. Why now
 
-`factory docs set NNN reviewed=` printed "state.toml updated" and wrote nothing the lane could see (2026-11-05); `log add` / `log show` split the same way in two client runs. Relock has hit four PRDs. Slice commits break the owner's 50-character rule on every run. Each item is small; together they are the places an agent's own tool lies to it.
+These are places where an agent's own tool lies to it.
 
-## 2. Candidate FRs
+Bugs the owner's runs hit:
 
-Kept by the owner at the triage. `/prd` turns each into an FR or cuts it.
+- **`docs set reviewed=` looked like a no-op** (2026-11-05). It printed "state.toml updated", but `docs check` in the lane kept warning `W-NOT-REVIEWED`. `log add` and `log show` split the same way in two client runs (icg-cloud PRD-019, arca-api PRD-025), and AD-14 duplicated AD-13 because of it.
+- **Relock tripped every feature that edits a skill twice:** PRD-005, 007, 008, 012, 017 and 018. Both of 2026-11-12's runs restored the base lock by hand (PRD-017 retro `:22`, PRD-018 retro `:19`).
+- **Slice commit subjects run 53 to 73 characters**, breaking the owner's 50-character rule on every run.
+- **From-idea PRDs broke every relative link:** 8 PRDs in one downstream project, fixed by hand.
 
-- **C-1 — One tree for docs verbs in a lane.** `board_root` sends `set`, `retro`, `status` and `log add` to the main tree while `check` and `log show` read the lane (`src/cli/docs.rs:253-264`); the "updated" message does not name the tree (`:706`). One rule, and the message says where it wrote. `/polish` §8 names the verb, not the frontmatter (`skills/polish/SKILL.md:155`).
-- **C-2 — Slice commit subjects fit 50 characters.** `src/scheduler.rs:987` builds `feat(NNN): slice-NN <title>`, uncapped (`src/commit.rs:149`). Trim; the full title moves into the body.
-- **C-3 — Relock replaces the hash of an untagged version** (`src/skills.rs:165-182`), and refuses once `vX.Y.Z` exists locally or on origin. `/polish` §5 says to relock from the base while untagged.
-- **C-4 — The skills-update commit line is scoped**: `git commit -m … -- <dirs>` (`src/cli/skills.rs:94`).
-- **C-5 — From-idea PRDs rewrite the idea's relative links** (`src/docs/scaffold.rs:363`).
-- **C-6 — Docs verbs exit 2 on an I/O or TOML error** (`src/main.rs:108-111`, `src/cli/docs.rs:213-220`).
-- **C-7 — The run log: one lock, one reader.** `factory answer` checks "already resolved" under `docs.lock` (`src/answers.rs:243`, `src/cli/answer.rs:205-208`); `settle_dead` writes the block and its note in one append (`src/scheduler.rs:1914-1928`); `answers::entries` uses `docs::log`'s reader (`src/answers.rs:150-160`).
-- **C-8 — Board scan and `renumber` skip symlinks** (`src/docs/board.rs:159`, `src/docs/renumber.rs:27`).
-- **C-9 — Two verbs agents hand-roll today:** append the Code-review fixes to the PRD (`skills/polish/SKILL.md:150`), and merge a superseded AD in the docs log.
+The rest are defects found by earlier polish reviews (PRD-002, PRD-012):
 
-## 3. Not in scope (decided 2026-11-05)
+- an unscoped commit line;
+- an exit code a hook cannot read;
+- a second log reader;
+- symlinks followed by the board scan and `renumber`.
 
-- **`Docs::dir` rescans the board per call** — dropped: no measured cost.
-- **`factory upgrade` cannot tell a cargo install from a release install** — moved to *Factory as a consumer*.
-- **Small tool gaps 1, 3, 4** (Boost `--no-scripts` trap, a per-slice inner-loop verb, Prove vs gate minutes) — dropped: project-specific or report-only. Gap 6 is moot, gap 7 is done.
-- **friction-icg's leaks bullet** — in *Guards a branch can't loosen*.
+**Deliberately left alone:** the two log races, and the two hand-rolled verbs (§14).
 
-## 4. Source ideas
+## 2. Blast radius
 
-The full text of each idea this draft absorbed; the idea files are deleted.
+- **Workers in a lane.** FR-1 changes what `check`, `log show` and `status` read in a lane. Every worker runs them, so a worker now sees its own `docs set` and `log add` writes. Outside a lane (`FACTORY_BOARD` unset, or another repo) nothing changes.
+- **Commit history.** FR-2 changes every driver commit subject longer than 50 characters. The landing code finds an already-landed commit by exact subject:
+  - `src/scheduler.rs:993-994`;
+  - `src/closeout.rs:579-582`;
+  - `src/checkpoint.rs:751-754`.
 
-### `factory docs set NNN reviewed=<date>` reports success but writes nothing
+  So the cut must be deterministic. A run resumed across the upgrade looks for the new subject. A slice that landed under the old long subject, before the upgrade, is not found and lands again. Accepted: upgrade between runs, as `CLAUDE.md` already says.
+- **Releases.** FR-3 lets a skill hash change under an untagged version. Once `vX.Y.Z` is tagged, nothing changes: the released hash is still frozen.
+- **No external contract.** No JSON, event or schema changes. The `commit:` lines that `skills update` and `init` print change shape. Their only readers are agents following `skills/_shared/stale-tooling.md:7`, and the new line still runs as one command.
 
-_added 2026-11-05, origin: factory upstream_
+## 3. FR-1 — In a lane, the board files come from the main tree
 
-`factory docs set 011 reviewed=2026-11-05` printed "state.toml updated", but no `reviewed` key appeared in the lane's `state.toml`, and `factory docs check` kept warning `W-NOT-REVIEWED`. Either the key goes to the driver's store while the check reads the lane, or the set is a no-op.
+**Today.**
 
-Related: `/polish` § 8 says to "set `reviewed: {date}` in the PRD's frontmatter", while the contract says `factory docs set NNN reviewed=…`. A run followed the contract and left the frontmatter alone. The two should name one place.
+- `board_root` (`src/cli/docs.rs:253-264`) swaps the whole root to `$FACTORY_BOARD`, the main tree (`src/worker.rs:55,260`), for `set`, `retro`, `status` and `log add` (`:225`, `board_root(&root, args).unwrap_or(root)`). It does so only when that tree shares a git common dir with the cwd. Those verbs read everything from main: prose, `project.toml`, the git branch.
+- Every other verb uses the lane, including `check` (`:292`, `check::run(root)`) and `log show` (`:436`, `log::entries(&f.dir)`).
+- The driver's own in-process check, which gates a slice's `done`, is `check::run(&lane_dir)` (`src/scheduler.rs:2076`). It has no `FACTORY_BOARD`, and nothing here changes it.
+- So the polish worker, which runs in a lane (`src/closeout.rs:197,230`), sets `reviewed` in main's `state.toml`. Its `docs check` then reads the lane's copy and warns `W-NOT-REVIEWED` (`src/docs/check.rs:537-541`).
+- The message `docs/features/{name}/state.toml updated` (`src/cli/docs.rs:706`) does not say which tree.
+- The driver commits the main tree's board files (`src/commit.rs:15`, `src/closeout.rs:573,685`), so main is the record.
 
-Should: `docs set reviewed=` writes where `docs check` reads (or refuses loudly), and § 8 points at the same mechanism.
+**Decision (2026-11-12; narrowed the same day after the adversarial pass).** An earlier draft said every docs verb would read only the board files from main and everything else from the lane. That was wrong twice:
 
-### friction: icg-cloud PRD-019
+- the four listed verbs already swap the whole root;
+- making `status` read prose from the lane breaks `tests/docs_v3.rs:637`, whose JSON carries the git branch, and the detached lane says `HEAD`.
 
-_added 2026-10-15, origin: icg-cloud PRD-019 run 019-20261015-48af_
+The rule as built:
 
-- **`polish` §1, the second opinion**: the passes run serially at ~12 min each with a 900 s timeout. A feature-sized diff (17 passes) has no budget, and there is no rule for when slow counts as failed. Run the passes in parallel, or give the step a wall-clock cap that hands the remaining passes to the fallback.
-- **`factory docs log`**: `log add` in a lane writes the main checkout's log, while `log show` in the lane reads the lane's copy. That is how AD-14 duplicated AD-13, and an append-only log cannot take it back.
-- **Leaks check**: it missed a plan number inside a string. `tests/Browser/GuideTest.php:217` had `guideShot($page, 'fr123-7-guide-staff-new-slot', narrow: true);`, a screenshot name carrying `fr123-7`. The local review caught it, and it is now `guide-staff-new-slot`.
+- **`log show` joins the whole-root list.** It reads only the log, so a whole-root swap is exact.
+- **`check` keeps the lane as its root,** so it still validates the prose the worker is editing. But when `board_root` would resolve for it, it reads each feature's `state.toml` and `log.jsonl` from the matching folder in the main tree.
+- **A write's message names the main tree's path** when it is not the cwd: `set`, `log add`, and `retro --set`.
+- **Unchanged:**
+  - `docs new` and `docs slice`, which write the cwd's `state.toml` as today. No run has created a feature inside a lane.
+  - The driver's in-process `check::run(&lane_dir)`.
 
-From ~/Projects/ICG/icg-cloud/docs/features/019-arca-setup-papercuts/retro.md
+- **Accepted cost:** in a lane, `check` mixes two trees, the lane's prose and main's board files. It can now disagree with the driver's in-process check of the same lane on a warning such as `W-NOT-REVIEWED`. The driver's check gates on errors, and the lane gets main's board files at its next reset.
+- **Rejected:** keeping the split and fixing only the message. `check` would still warn `W-NOT-REVIEWED` after polish set it.
+- **Trap:** the same-repo check stays (`:261-263`). A fixture repo inside `cargo test` in a worker must never read the worker's board.
 
-### /deliver slice commit subjects exceed 50 characters
+**Acceptance.**
 
-_added 2026-11-05, origin: factory upstream_
+- In a lane with `FACTORY_BOARD` set:
+  - `docs set N reviewed=<date>` followed by `docs check` shows no `W-NOT-REVIEWED`;
+  - `docs log add` followed by `docs log show` shows the new entry.
+- `set`'s message names the main tree's path.
+- `a_lane_writes_the_main_trees_board_and_ignores_another_repos` (`tests/docs_v3.rs`) still passes, including the `status` JSON at `:637`, the `retro` read at `:646` and the other-repo half.
 
-The driver writes slice commits as `feat(NNN): slice-NN <slice title>`. With ordinary slice titles this reaches 53 to 73 characters, for example `feat(011): slice-03 Certification pages, last of FR-3`. Owners who follow the common 50-character subject rule (and Conventional Commits tooling that warns on it) get history a worker cannot fix after it is published; a local review then flags it on every feature.
+## 4. FR-2 — Every driver commit subject fits 50 characters
 
-Should: the commit template cuts the title to fit a 50-character subject (or a configurable limit), and moves the full slice title into the body.
+**Today.**
 
-### Let relock replace the hash of a version that has no tag
+- `commit::subject` (`src/commit.rs:149-151`) is `format!("{kind}({:03}): {text}", …)`, with no cap.
+- Slice commits pass `slice-{NN} {title}` (`src/scheduler.rs:988`). The 20-character prefix leaves 30 for the title, and real titles run 53 to 73 in all.
+- `fix(NNN): CI {check}` (`src/closeout.rs:482`) carries an arbitrary check name.
+- Both commit helpers pass a single `-m` (`src/commit.rs:73`, `src/land.rs:71`). The held-commit path already passes a full `%B` message, body included, as that one `-m` (`src/scheduler.rs:1021-1024`). An earlier draft said neither helper could write a body (corrected 2026-11-12). So a body is the subject plus a blank line plus the body, in the same `-m`.
 
-_added 2026-10-15, origin: harvest 2026-10-15_
+**Decision (2026-11-12).** `commit::subject` returns at most 50 characters.
 
-`skills/bundle.lock` pins one hash per version, and `relock` (`src/skills.rs`) refuses a second hash at the same version. On a feature branch a slice bumps and locks the version, and the tag comes only after the merge. A stale skill line polish finds then cannot be fixed on the branch: bumping again breaks the FR that pinned the version. PRD-005 and PRD-007 parked their fixes, and PRD-008 relocked by hand from main's lock. Releasing on time does not help, because the clash happens before any tag exists.
+- When the text overflows, it is cut at the last space that keeps the subject within 50 **characters** (chars, never bytes: titles hold "—"), with no ellipsis.
+  - When no space after the `kind(NNN): ` prefix fits, it is cut at 50 characters, on a char boundary.
+  - The full text becomes the body's first line.
+- The cut is a pure function of the text, so the landing lookups by `%s` (§2) still match.
+- The commit helpers gain an optional body, passed as a second `-m`.
+- The limit is fixed at 50, with no knob.
 
-Fix: `relock` replaces the hash while no `vX.Y.Z` tag exists for that version, locally or on origin, and keeps refusing once one does, since that hash is what users installed.
+- **Accepted cost:** a long slice title reads cut in `git log --oneline`. The body holds it whole.
+- **Rejected:**
+  - a configurable limit, a knob nobody asked for;
+  - dropping the title, which makes history read worse.
 
-Seen again in PRD-012 (harvest 2026-11-05): a polish fix to skill text tripped the lock under the untagged 0.11.0; the run restored the base branch's lock and relocked by hand (AD-1). Neither `/polish` § 5 nor the Autonomy contract says which to do, so the skill should say it once this lands.
+**Acceptance.** For both a 73-character slice title and a 60-character CI check name:
 
-### Scope the skills-update commit line to the skill dirs
+- the subject is at most 50 characters;
+- it ends at a word boundary;
+- the body's first line is the full text;
+- a second call on the same input returns the same subject.
 
-_added 2026-10-30, origin: PRD-012 polish_
+The landing tests in `tests/commits.rs`, `tests/merge.rs` and `tests/checkpoints.rs` still pass. Their one-letter titles are unchanged.
 
-From PRD-012 polish (second opinion, grok). `factory skills update` prints `commit: git add <skill dirs> && git commit -m "chore: skills X"` (`src/cli/skills.rs` near the end of `update`). `git commit` with no pathspec takes the whole index, so anything already staged rides in the chore commit. PRD-012 made `/prd`, `/slice`, `/deliver` and `/lanes` run that line without asking (`skills/_shared/stale-tooling.md`), which raises the odds. Shape: print `git commit -m "…" -- <dirs>` (paths are tracked after the add, so new files are included); tests that match the commit line (`tests/init.rs`, `tests/skills_bundle.rs`, `src/skills.rs` unit tests) move with it. Acceptance: with `src/x.rs` staged, running the printed line commits only the skill dirs.
+## 5. FR-3 — Relock replaces the hash of an untagged version
 
-### From-idea PRDs keep the idea's relative links
+**Today.**
 
-_added 2026-11-02, origin: owner_
+- `relock` (`src/skills.rs:165-182`) accepts a new hash only when the version is strictly greater than the lock's. Otherwise: "skills changed since {v}: bump Cargo.toml past {v} first".
+- Its only caller is `lock()` in `tests/skills_bundle.rs:186-207`, under `FACTORY_BUNDLE_WRITE`. CI only checks (`bundle_lock_matches`).
+- So a second skill edit on a feature branch, after a slice already bumped and relocked, cannot relock without a second bump. PRD-005, 007, 008, 012, 017 and 018 each worked around it.
+- `scripts/release.sh:30-31` already probes tags:
+  - locally: `git rev-parse -q --verify refs/tags/$tag`;
+  - on origin: `git ls-remote --exit-code --tags origin refs/tags/$tag`.
+- **Trap** (adversarial pass, 2026-11-12): `release.sh:31` treats every non-zero exit as "no tag". `ls-remote --exit-code` exits 2 for "no such ref" and other codes (128) for "cannot reach". The probe must tell exit 2 apart from the rest, or an offline relock replaces a released hash: the case this FR rejects.
 
-`factory docs new <slug> --from-idea <id>` pastes the idea's body into the new PRD
-unchanged. The idea lived in `docs/ideas/`, but the PRD lives in
-`docs/features/{NNN}-{slug}/`, one folder deeper. So every relative link in the body
-breaks: `../reference/x.md` now points at `docs/features/reference/x.md`.
+**Decision (2026-11-12).**
 
-The owner hit this on 8 PRDs in a downstream project and fixed every link by hand.
+- At the same version, relock replaces the hash when `v<version>` is a tag neither locally nor on origin. It keeps refusing once either has the tag: that hash is what users installed.
+- When origin cannot be reached (offline, or no `origin` remote), it refuses and says so ("could not reach origin to prove v… is untagged; retry online or bump").
+- `relock` stays pure: the caller passes whether the version is tagged. The probe runs in the test-side caller, the way `release.sh` does it.
 
-The copy happens in `with_idea()` in `src/docs/scaffold.rs`, which writes the body under
-`## From idea {id}` as-is. Rewriting each relative markdown link target from the idea's
-folder to the PRD's folder at that point would fix it. Absolute URLs, `#anchors` and
-links inside code fences should stay as they are.
+- **Accepted cost:** relock at the same version needs the network, and an offline relock refuses.
+- **Rejected:** trusting local tags when origin is unreachable. A tag pushed from another machine and not fetched would let a released hash be replaced.
 
-`factory docs check` could also flag broken relative links in PRDs, so the next case is
-caught even if the rewrite misses one.
+**Acceptance.**
 
-### Native `factory docs` verbs exit 1 on an I/O or TOML error
+- `a_skill_edit_without_a_bump_fails_and_cannot_relock` (`src/skills.rs:886`) splits:
+  - an untagged same-version relock succeeds;
+  - a tagged one refuses;
+  - an unknown one (origin unreachable) refuses with the online message.
+- The bump cases at `:904-926` still pass.
 
-_added 2026-10-13_
+## 6. FR-4 — The printed commit lines commit only their own dirs
 
-`src/main.rs` maps every `Err` to exit 1, while v2's `die()` exited 2 and `check` uses 1 for "errors found"; a hook cannot tell a broken `state.toml` from a failed check. Map `Error::Io` and `Error::Toml` to 2 under `factory docs`. PRD-002 polish review (second opinion), 2026-10-13.
+**Today.**
 
-### `factory answer` reads and writes the log outside one lock
+- `factory skills update` prints `commit: git add <dirs> && git commit -m "chore: skills <v>"` (`src/cli/skills.rs:94`).
+- `factory init` prints the same unscoped form (`src/docs/scaffold.rs:131`).
+- `git commit` with no pathspec takes the whole index. `skills/_shared/stale-tooling.md:7` has `/prd`, `/slice`, `/deliver` and `/lanes` run the update line without asking, so anything already staged rides along (PRD-012 polish, grok).
 
-_added 2026-10-13_
+**Decision (2026-11-12).** Both lines end `git commit -m "…" -- <dirs>`. The paths are tracked after the `add`, so new files are included.
 
-Two `factory answer BLOCK-n` calls at once can both see the block open and both append an `answer` entry (`src/answers.rs` `resolve` has no already-resolved check under `docs.lock`), and `deliver` in `src/cli/answer.rs` reads the slice status and then calls `state::set` as two locked steps, so a driver write between them is overwritten. Fix: a `log::append_if` that re-reads under the lock, and a compare-and-set on `slices.N.status`. Owner-driven command, so the race needs two terminals; parked. PRD-002 polish review, 2026-10-13.
+- **Accepted cost:** none.
 
-### `settle_dead` writes the block and its note as two log appends
+**Acceptance.** With `src/x.rs` staged, running the printed line commits only the listed dirs and leaves `src/x.rs` staged. `tests/init.rs:380` compares the whole line and moves with it. `tests/skills_fence.rs:286,403` and `tests/init.rs:217` match a prefix and pass unchanged (an earlier draft said all four move; corrected 2026-11-12).
 
-_added 2026-10-13_
+## 7. FR-5 — From-idea PRDs keep working relative links
 
-A crash between them leaves a `block` with no note. One append of both under the lock, or the note folded into the block body. PRD-002 polish review, 2026-10-13.
+**Today.**
 
-### `answers::entries` parses `log.jsonl` a second time
+- `with_idea` (`src/docs/scaffold.rs:349-370`) pastes the idea's body verbatim under `## From idea {id}` (`:363`).
+- The idea lived in `docs/ideas/`, and the PRD lives one folder deeper, so `../reference/x.md` now points at `docs/features/reference/x.md`.
+- `check` already flags the result as `E-LINK-BROKEN` (`src/docs/check.rs:791-822`). That is how the owner found 8 of them, all fixed by hand.
+- `src/docs/migrate.rs:1242-1328` has a link rewriter (`edit_links`) that skips URLs, `#` anchors and images, but not code fences.
 
-_added 2026-10-13_
+**Decision (2026-11-12).**
 
-`src/answers.rs` re-implements the line reader `src/docs/log.rs` already has; one reader would keep the two from drifting on a format change. PRD-002 polish review, 2026-10-13.
+- `with_idea` rewrites each relative markdown link target from the idea's folder to the PRD's folder, reusing `migrate.rs`'s link helpers.
+- URLs, `#` anchors and links inside fenced code blocks stay as written.
+- **Accepted cost:** none.
 
-### `renumber` and the board scan follow symlinks
+**Acceptance.** For an idea whose body holds markdown links to `../reference/x.md`, `./other-idea.md`, `https://x` and `#a`, plus a fenced block holding a link to `../y.md`, the new PRD:
 
-_added 2026-10-13_
+- resolves the first two to the same files as from the idea's folder;
+- leaves the URL, the anchor and the fenced block byte-for-byte unchanged.
 
-A symlinked feature folder or slice file under `docs/features/` is read and renamed through the link. Refuse or skip symlinks, as `check` could flag them. PRD-002 polish review (security pass), 2026-10-13.
+The same idea without the fenced block passes `docs check` with no `E-LINK-BROKEN`. `check`'s link scan (`src/docs/check.rs:791-862`) does not skip fences, so a fenced link is still flagged. An earlier draft claimed the whole body would pass check. Corrected 2026-11-12.
 
-### Small tool gaps from three unattended runs
+## 8. FR-6 — Docs verbs exit 2 on a file or TOML error
 
-_added 2026-10-29, origin: factory upstream_
+**Today.**
 
-Each of these came up in a `/deliver` retro as something an agent did by hand or worked around.
+- `cli::docs::docs` maps `Error::Msg` to exit 2 (`src/cli/docs.rs:213-221`), so a `state.toml` that does not parse already exits 2 (`src/docs/state.rs:74-76`).
+- `Io`, `Toml` (from `project.toml`, `src/docs/project.rs:58,108`), `Json` and `Sql` fall through to `src/main.rs:109-113`, which exits 1.
+- `check` uses 1 for "errors found" (`src/cli/docs.rs:290-297`), so a hook cannot tell a broken `project.toml` from a failed check.
 
-1. **`--no-scripts` in the slice contract's Traps for Laravel projects using Boost.** Boost's `post-update-cmd` runs `boost:update`, which pulls Boost's newest guideline text and skills into `CLAUDE.md`, `AGENTS.md` and the skill folders. Inside a feature, an agent running `composer update` gets dozens of unrelated files in its diff. One slice knew to pass `--no-scripts`; the polish fixer in the same run did not, and spent 5 minutes restoring files.
-2. **A verb to append a slice's `**Code-review fixes**` section.** Polish hand-edits every slice file for this; it is the one docs write polish still does without the tool.
-3. **Per-slice inner-loop run counts readable from the store.** The PR body's Slices table asks for "inner {runs}/{red}", and the polish worker cannot see them.
-4. **`measure.py` splitting a checkpoint's Prove minutes from its gate minutes.** Retros currently estimate the split.
-5. **`docs log merge` renaming a superseded AD's heading.** After a merge, the superseded AD still reads as current unless you reach the one that supersedes it.
-6. **The PreToolUse grep hook blocks literal text searches that contain markdown punctuation** (searching for `**Back off.**` is treated as a symbol lookup), so the agent had to read whole files instead.
-7. **A `ctx refs` mode that searches `vendor/`.** The hook blocks `grep` for code symbols, and the one lookup that mattered in a run was inside a vendor package.
+**Decision (2026-11-12).** Under `factory docs`, every `Err` exits 2: the `Io`, `Toml`, `Json` and `Sql` variants join `Msg` in `cli::docs::docs`. Exits 1 that a verb returns on purpose as `Ok(1)` are unchanged:
 
-### Also from
+- `check`'s errors;
+- `retro` with no row (`:574`);
+- `gate` with no gate (`src/cli/gate.rs:481,519`);
+- preflight's (`src/preflight.rs:221,418`).
 
-friction-arca-api PRD-025, its `factory docs log`, lanes bullet: full text in *Skill wording, contradictions and Prove guidance*.
+- **Accepted cost:** none.
+
+**Acceptance.** `docs log show 001` where `log.jsonl` is a directory exits 2. On v0.13.4 it exits 1, checked 2026-11-12. A `check` with errors still exits 1. An earlier draft tested an unparseable `project.toml`, which already exits 2 through the "not on the framework" path (`src/cli/docs.rs:246-249`). Corrected 2026-11-12.
+
+## 9. FR-7 — The run log has one reader
+
+**Today.** `answers::entries` (`src/answers.rs:150-160`) parses `log.jsonl` with its own `serde_json::from_str` loop. `docs/log.rs` already has the reader:
+
+- `parse` at `:131` is private and drops line numbers;
+- `entries` at `:154` needs the 1-based line.
+
+**Decision (2026-11-12).** `docs::log` exposes one reader that returns each entry with its 1-based line. `answers::entries` uses it, so the two cannot drift on a format change.
+
+- **Accepted cost:** none.
+- The two races (§14) stay out.
+
+**Acceptance.**
+
+- `answers::entries` has no JSON parsing of its own.
+- `a_block_is_resolved_by_an_answer_and_its_line_stays` (`src/answers.rs:272`) still passes.
+- A log holding a line of invalid UTF-8 no longer makes `answers::entries` fail. Today it fails with `read_to_string` (`src/answers.rs:152-155`), while the docs reader reads lossily (`src/docs/log.rs:134`). Its other lines are read with the same line numbers.
+- An earlier draft's acceptance, an unparseable line skipped the same way by both, already held. Corrected 2026-11-12.
+
+## 10. FR-8 — The board scan and `renumber` skip symlinks
+
+**Today.**
+
+- `src/docs/board.rs:160` filters feature folders with `is_dir()`, which follows links.
+- `:190-199` reads any `slice-NN-*.md`, link or not.
+- `src/docs/renumber.rs:22-33` recurses with `is_dir()`, following links. A link to an ancestor stops only at the kernel's 40-link limit, so an earlier draft's "never ends" was wrong (corrected 2026-11-12). It then rewrites every `.md` it found, through the link (`:96-110`).
+- `src/docs/check.rs:732-733` already uses `fs::symlink_metadata` against FIFOs and `/dev/zero` (PRD-002 security pass).
+
+**Decision (2026-11-12).**
+
+- The board scan and `renumber` use `symlink_metadata`.
+- They skip a symlinked feature folder or slice file, and `renumber` never follows a link down.
+- **Accepted cost:** a symlinked feature is invisible to the board.
+
+**Acceptance.** In a fixture with a symlinked feature folder, a symlinked slice file and a link from `docs/features/x/loop` to `docs/`:
+
+- the board (`docs status --json`) has no feature for the linked folder;
+- no slice's `file` points at the linked slice file;
+- `docs renumber` rewrites no file reached through a link.
+
+Out of scope: `check`'s own `walk_md` (`src/docs/check.rs:777`) and `migrate.rs:1332` follow directory links the same way. Nothing seen depends on it.
+
+## 11. Decisions log
+
+- ~~**Lane docs rule**~~: the board files always come from the main tree (2026-11-12), §3.
+- ~~**Subject shape**~~: cut the title at a word, full text in the body, fixed at 50 (2026-11-12), §4.
+- ~~**Cap scope**~~: every driver subject (2026-11-12), §4.
+- ~~**Relock**~~: replace while untagged locally and on origin; refuse when origin cannot be reached (2026-11-12), §5.
+- ~~**Code-review fixes verb**~~: left out (2026-11-12), §14.
+- ~~**Log races**~~: left out; one reader only (2026-11-12), §9, §14.
+- ~~**Superseded AD in `log show`**~~: left out (2026-11-12), §14.
+
+## 12. QA plan
+
+- **Gate:** `factory docs gate`.
+- **Surface:** the `factory` CLI and the driver's commits. No UI and no harness: every row is proven below the UI by a test whose transcript is the evidence.
+- **Seed:** the existing fixtures (`tests/harness/mod.rs`, a lane fixture as in `tests/docs_v3.rs`).
+- **Human rows:** none, so there is no `qa-guide.md`.
+
+| FR | Proof | Human? |
+|---|---|---|
+| FR-1 | run `a_lane_reads_the_board_files_it_wrote` | no |
+| FR-2 | run `a_long_subject_is_cut_at_a_word_with_the_rest_in_the_body` and `a_long_slice_title_lands_under_a_short_subject` | no |
+| FR-3 | run `an_untagged_version_relocks_and_a_tagged_one_refuses` and `relock_refuses_when_origin_cannot_be_reached` | no |
+| FR-4 | run `the_printed_commit_line_leaves_other_staged_files_alone` | no |
+| FR-5 | run `a_from_idea_prd_keeps_its_relative_links` | no |
+| FR-6 | run `a_docs_verb_exits_2_when_it_cannot_read_a_file` | no |
+| FR-7 | run `answers_read_the_log_through_the_docs_reader` | no |
+| FR-8 | run `the_board_and_renumber_skip_symlinks` | no |
+
+## 13. Slices
+
+Five slices, one branch (`feat/cli-docs-correctness`), one PR, one commit per slice, and Prove at the checkpoints. Every row is a test run below the UI. No row is Human, so there is no `qa-guide.md`.
+
+- **01, lane docs and exit codes** (FR-1, FR-6). Both edit `src/cli/docs.rs`. It is the highest risk: `check` reads prose from the lane and only the board files from main.
+- **02, short commit subjects** (FR-2), in `src/commit.rs` and its callers.
+- **03, relock while untagged** (FR-3), in `src/skills.rs` and `tests/skills_bundle.rs`. It edits no skill text, so it needs no bump.
+- **04, commit lines and from-idea links** (FR-4, FR-5). Both edit `src/docs/scaffold.rs`.
+- **05, one log reader and no symlinks** (FR-7, FR-8). It depends on 01, because both edit the board scan in `src/docs/board.rs`.
+
+01 through 04 are mutually independent and fill the four lanes. 05 waits on 01. Checkpoints fall every 2 done slices, then once at the end.
+
+## 14. Non-goals
+
+- **Not handled: two `factory answer` calls racing** (2026-11-12, owner cut). `resolve` never re-checks "still open" under `docs.lock` (`src/answers.rs`, `src/docs/log.rs:195-228`), so both calls can append. It needs two terminals, and it has never happened. Reopen on a duplicate answer.
+- **Not handled: `answer`'s slice status read, then set** (`src/cli/answer.rs:204-208`). A driver write in between is overwritten. Same cut and same signal.
+- **Not handled: `settle_dead`'s two appends** (`src/scheduler.rs:2040` then `:1923-1931`). A crash between them leaves a block with no note, though the block body already says what happened. Reopen on a block with no note.
+- **Not handled: a verb that appends a slice's Code-review fixes** (2026-11-12). Polish's hand edit (`skills/polish/SKILL.md:163`) has caused no reported defect. Reopen if one does.
+- **Not handled: `log show` marking an AD a later `**Supersedes:**` line overturned** (2026-11-12). The review passes already drop it (`src/settled.rs:48-100`), and no run has been misled. The old `log merge` rename is moot: v3 has no `log merge` (`src/cli/docs.rs:209`).
+- **Polish §8 names the `docs set reviewed=` verb**: done in PRD-017 (`skills/polish/SKILL.md:168`).
+- **The `.push(` hook false positive**: PRD-019.
+- **One landing pipeline** (PRD-020 C-8) also edits `land_lane`, but not `commit::subject`. Whichever ships second rebases.
+
+## 15. Verification notes
+
+Checked 2026-11-12 on `feat/cli-docs-correctness` at main `820d21b` (v0.13.4). Re-verify at slice entry.
+
+- `board_root` is at `src/cli/docs.rs:253-264`, unchanged since PRD-005 (`611dcd1`). `FACTORY_BOARD` is set at `src/worker.rs:55,260`. Polish runs in a lane (`src/closeout.rs:197,230`). The `set` message is at `src/cli/docs.rs:706`.
+- `commit::subject` is at `src/commit.rs:149-151`. The slice subject is at `src/scheduler.rs:988`, and the CI subject at `src/closeout.rs:482`. The lookups by subject are at `src/scheduler.rs:993-994`, `src/closeout.rs:579-582` and `src/checkpoint.rs:751-754`. The single `-m` is at `src/commit.rs:73` and `src/land.rs:71`.
+- `relock` is at `src/skills.rs:165-182`; its test is at `:886`, with bump tests at `:904-926`. The caller is `tests/skills_bundle.rs:186-207`, and the tag probes are at `scripts/release.sh:30-31`. No skill mentions relock today.
+- The commit lines are at `src/cli/skills.rs:94` and `src/docs/scaffold.rs:131`. Their tests are at `tests/skills_fence.rs:286,403` and `tests/init.rs:217,380`. The draft named `src/skills.rs` and `tests/skills_bundle.rs` tests; there are none.
+- `with_idea` is at `src/docs/scaffold.rs:349-370`, and the link helpers at `src/docs/migrate.rs:1242-1328`. `E-LINK-BROKEN` is at `src/docs/check.rs:791-822`.
+- The exit-2 mapping is at `src/cli/docs.rs:213-221`, and the fall-through to exit 1 at `src/main.rs:109-113`. The error variants are at `src/error.rs:7-28`.
+- `answers::entries` is at `src/answers.rs:150-160`. The log reader's `parse` is at `src/docs/log.rs:131` and `entries` at `:154`.
+- The symlink-following scans are at `src/docs/board.rs:160,190-199` and `src/docs/renumber.rs:22-33,96-110`.
+- **Adversarial pass (2026-11-12):** a fresh Opus agent, since Cursor's quota is out until 2026-11-24 (`factory review second` exit 2). It made 9 findings, all applied above as dated corrections. FR-1 was narrowed: `log show` swaps the whole root, and `check` reads only the board files from main. The acceptances of FR-5, FR-6, FR-7 and FR-8 were made able to fail. FR-2's cut was defined in chars, and FR-3's probe trap named.
+- No other draft touches `answers.rs`, `cli/docs.rs`, `skills.rs`, `cli/skills.rs`, `board.rs`, `renumber.rs` or `scaffold.rs`. PRD-022 edits `src/commit.rs` `protected_files`, a different function. PRD-021 waits on FR-3.
+
+## 16. Source ideas
+
+The full text of the ideas this PRD absorbed is in the 2026-11-05 triage draft, `git show 820d21b:docs/features/015-cli-docs-correctness/prd.md` §4.

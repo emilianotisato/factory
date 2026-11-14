@@ -91,8 +91,8 @@ pub fn update(root: &Path, out: &mut dyn Write) -> Result<i32> {
     say(
         out,
         &format!(
-            "commit: git add {} && git commit -m \"chore: skills {v}\"",
-            rendered.dirs().join(" ")
+            "commit: git add {dirs} && git commit -m \"chore: skills {v}\" -- {dirs}",
+            dirs = rendered.dirs().join(" ")
         ),
     )?;
     Ok(0)

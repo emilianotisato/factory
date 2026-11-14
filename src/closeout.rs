@@ -476,11 +476,19 @@ impl Closer<'_> {
         format!("refs/factory/{:03}/{key}", board.number)
     }
 
-    fn subject(&self, board: &Status) -> String {
+    fn text(&self) -> String {
         match self {
-            Closer::Polish => commit::subject(board, "fix", "polish review fixes"),
-            Closer::CiFix { check, .. } => commit::subject(board, "fix", &format!("CI {check}")),
+            Closer::Polish => "polish review fixes".to_string(),
+            Closer::CiFix { check, .. } => format!("CI {check}"),
         }
+    }
+
+    fn subject(&self, board: &Status) -> String {
+        commit::subject(board, "fix", &self.text())
+    }
+
+    fn message(&self, board: &Status) -> String {
+        commit::message(board, "fix", &self.text())
     }
 
     /// Polish may write `prd.md` (its Status prose); `docs/index.md` stays the ship's.
@@ -603,7 +611,7 @@ fn land_worker(
                     base,
                     &board_files,
                     &who.protected(board),
-                    &subject,
+                    &who.message(board),
                     &name,
                 )?,
                 None => None,
@@ -705,7 +713,7 @@ fn nothing(
     }
     let repo = run.state().repo.clone();
     let files = commit::tool_files(board).to_vec();
-    if let Some(c) = commit::commit(&repo, &files, &who.subject(board))? {
+    if let Some(c) = commit::commit(&repo, &files, &who.message(board))? {
         record(run, who, row_id, &c.sha, out)?;
         return Ok(Some(c.sha));
     }
@@ -996,7 +1004,7 @@ fn ship(
     let committed = commit::commit(
         &repo,
         &want,
-        &commit::subject(board, "docs", &format!("ship PRD-{feature}")),
+        &commit::message(board, "docs", &format!("ship PRD-{feature}")),
     )?;
     match &committed {
         Some(c) => say(
@@ -1214,7 +1222,7 @@ fn refresh_numbers(run: &Run, board: &Status, out: &mut dyn Write) -> Result<()>
             if let Some(c) = commit::commit(
                 repo,
                 &[path],
-                &commit::subject(board, "docs", "refresh numbers"),
+                &commit::message(board, "docs", "refresh numbers"),
             )? {
                 say(
                     out,

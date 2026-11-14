@@ -323,6 +323,66 @@ fn new_from_idea_carries_the_body_and_deletes_the_file() {
     assert_eq!(fs::read_to_string(&reservation).unwrap(), before);
 }
 
+/// An idea linking a reference doc and a sibling idea, and the PRD made from it.
+fn prd_from_linking_idea(fx: &Fixture, fence: &str) -> (String, String, String) {
+    let reference = fx.path().join("docs/reference");
+    fs::create_dir_all(&reference).unwrap();
+    fs::write(reference.join("x.md"), "# X\n\n## Part\n").unwrap();
+    let other = add_ok(fx, &["--title", "Other idea"], "Other.\n");
+    let body = format!(
+        "See [x](../reference/x.md), [part](../reference/x.md#part \"Part\") and [other](./{other}.md).\n\
+         Also [site](https://x) and [top](#a).\n{fence}"
+    );
+    let id = add_ok(fx, &["--title", "Linking idea"], &body);
+    fx.docs(&["new", "linked", "--from-idea", &id]);
+    let board = fs::read_dir(fx.path().join("docs/features")).unwrap();
+    let dir = board
+        .map(|e| e.unwrap().path())
+        .find(|p| p.to_string_lossy().ends_with("-linked"))
+        .unwrap();
+    let prd = fs::read_to_string(dir.join("prd.md")).unwrap();
+    (
+        prd,
+        other,
+        dir.file_name().unwrap().to_string_lossy().into(),
+    )
+}
+
+#[test]
+fn a_from_idea_prd_keeps_its_relative_links() {
+    let fx = Fixture::new("ideas-from-links");
+    let fence = "\n```md\n[y](../y.md)\n```\n";
+    let (prd, other, name) = prd_from_linking_idea(&fx, fence);
+    let prd_dir = fx.path().join("docs/features").join(&name);
+    let ideas = fx.path().join("docs/ideas");
+    for (old, new) in [
+        ("../reference/x.md", "../../reference/x.md"),
+        (&format!("./{other}.md"), &format!("../../ideas/{other}.md")),
+    ] {
+        assert!(prd.contains(&format!("]({new}")), "{new} in:\n{prd}");
+        assert_eq!(
+            ideas.join(old).canonicalize().unwrap(),
+            prd_dir.join(new).canonicalize().unwrap()
+        );
+    }
+    assert!(
+        prd.contains("[part](../../reference/x.md#part \"Part\")"),
+        "{prd}"
+    );
+    assert!(
+        prd.contains("Also [site](https://x) and [top](#a).\n"),
+        "{prd}"
+    );
+    assert!(prd.contains(fence), "{prd}");
+
+    let fx = Fixture::new("ideas-from-links-checked");
+    prd_from_linking_idea(&fx, "");
+    let check = fx.docs_output(&["check"]);
+    let said = format!("{}{}", stdout(&check), stderr(&check));
+    assert!(!said.contains("E-LINK-BROKEN"), "{said}");
+    assert_eq!(check.status.code(), Some(0), "{said}");
+}
+
 #[test]
 fn init_writes_the_readme_once() {
     let dir = tempfile::tempdir().unwrap();

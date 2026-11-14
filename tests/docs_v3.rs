@@ -657,3 +657,85 @@ fn a_lane_writes_the_main_trees_board_and_ignores_another_repos() {
     assert_eq!(lane.slices[&2].status, "building", "the lane's own board");
     assert_ne!(fx.slice_status(2), "building");
 }
+
+#[test]
+fn a_lane_reads_the_board_files_it_wrote() {
+    let fx = Fixture::new("board-reads");
+    let wt = fx.path().with_file_name("wt");
+    fx.git(&["worktree", "add", "-q", "--detach", wt.to_str().unwrap()]);
+    let main = fx.path().canonicalize().unwrap();
+    let lane = |args: &[&str], stdin: &str| {
+        let o = board_docs(&fx, &wt, fx.path(), args, stdin);
+        assert!(o.status.success(), "{args:?}: {}{}", stdout(&o), stderr(&o));
+        o
+    };
+
+    let mut set = vec!["set".to_string(), "001".into()];
+    set.extend(
+        fx.state()
+            .slices
+            .keys()
+            .map(|n| format!("slices.{n}.status=done")),
+    );
+    set.extend(["status=in-progress".into(), "reviewed=2026-11-12".into()]);
+    let set: Vec<&str> = set.iter().map(String::as_str).collect();
+    let o = lane(&set, "");
+    let main_state = main.join(FEATURE_DIR).join("state.toml");
+    assert!(
+        stdout(&o).contains(&format!("{} updated", main_state.display())),
+        "{}",
+        stdout(&o)
+    );
+
+    let o = board_docs(&fx, &wt, fx.path(), &["check"], "");
+    let report = format!("{}{}", stdout(&o), stderr(&o));
+    assert!(report.contains("W-READY-TO-SHIP"), "{report}");
+    assert!(!report.contains("W-NOT-REVIEWED"), "{report}");
+
+    let add = ["log", "add", "001", "--kind", "note", "--title", "t"];
+    let o = lane(
+        &[&add[..], &["--body-file", "-"]].concat(),
+        "seen from the lane\n",
+    );
+    let main_log = main.join(FEATURE_DIR).join("log.jsonl");
+    assert!(
+        stderr(&o).contains(&main_log.display().to_string()),
+        "{}",
+        stderr(&o)
+    );
+    let o = lane(&["log", "show", "001"], "");
+    assert!(stdout(&o).contains("seen from the lane"), "{}", stdout(&o));
+
+    let o = lane(&["retro", "001", "--set", "score=3"], "");
+    assert!(
+        stdout(&o).contains(&format!("repo: {}", main.display())),
+        "{}",
+        stdout(&o)
+    );
+
+    let mut text = fs::read_to_string(&main_log).unwrap();
+    text.push_str("not json\n");
+    fs::write(&main_log, text).unwrap();
+    let o = board_docs(&fx, &wt, fx.path(), &["check"], "");
+    let report = format!("{}{}", stdout(&o), stderr(&o));
+    assert!(
+        report.contains(&format!("{}:", main_log.display())),
+        "{report}"
+    );
+}
+
+#[test]
+fn a_docs_verb_exits_2_when_it_cannot_read_a_file() {
+    let fx = Fixture::new("docs-unreadable");
+    let log = fx.path().join(FEATURE_DIR).join("log.jsonl");
+    let _ = fs::remove_file(&log);
+    fs::create_dir(&log).unwrap();
+
+    let o = fx.docs_output(&["log", "show", "001"]);
+    assert_eq!(o.status.code(), Some(2), "{}{}", stdout(&o), stderr(&o));
+    assert!(stderr(&o).contains("log.jsonl"), "{}", stderr(&o));
+
+    let o = fx.docs_output(&["check"]);
+    assert_eq!(o.status.code(), Some(1), "{}{}", stdout(&o), stderr(&o));
+    assert!(stderr(&o).contains("E-LOG-PARSE"), "{}", stderr(&o));
+}

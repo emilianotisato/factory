@@ -534,6 +534,61 @@ fn a_driver_killed_after_the_landing_commit_records_it_on_the_resume() {
     });
 }
 
+#[test]
+fn a_long_slice_title_lands_under_a_short_subject() {
+    let title = "Parked runs resume at their last answer and never land twice";
+    assert_eq!(title.chars().count(), 60);
+    let fx = Fixture::with_index("commit-long-title", &[("checkpoint_every", "10")]);
+    fx.chain();
+    let slice = fx.slice_path(1);
+    let text = fs::read_to_string(&slice).unwrap();
+    let heading = text.lines().find(|l| l.starts_with("# ")).unwrap();
+    fs::write(
+        &slice,
+        text.replacen(heading, &format!("# Slice 01 — {title}"), 1),
+    )
+    .unwrap();
+    fx.git(&["commit", "-qam", "chore: a long slice title"]);
+    fx.write_plan(&[
+        json!({"outcome": "done"}),
+        json!({"outcome": "done", "delay_ms": 3000}),
+    ]);
+    // The landing commit is made and the driver dies before recording it.
+    kill_at_commit(&fx, "post-commit", 2);
+
+    let dir = start(&fx);
+    let driver = state(&dir)["pid"].as_u64().unwrap() as u32;
+    wait_until(&fx, &dir, "the driver to die at the commit", 20, || {
+        !pid_alive(driver)
+    });
+    let subject = "feat(001): slice-01 Parked runs resume at their";
+    assert!(
+        subjects(&fx).iter().any(|s| s == subject),
+        "{:?}",
+        subjects(&fx)
+    );
+
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    wait_until(&fx, &dir, "slice 01 to be recorded", 20, || {
+        count(&kinds(&dir), "slice_committed") == 1
+    });
+    let out = factory(&fx, &["stop", &run_id(&dir)]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    wait_phase(&fx, &dir, "finished", 30);
+
+    let sha = sha_of(&fx, subject);
+    let landed = fx.git(&["log", "-1", "--format=%s", &sha]);
+    assert!(landed.trim_end().chars().count() <= 50, "{landed}");
+    let body = fx.git(&["log", "-1", "--format=%b", &sha]);
+    assert_eq!(
+        body.lines().next(),
+        Some(format!("slice-01 {title}").as_str())
+    );
+    assert_eq!(subjects(&fx).iter().filter(|s| *s == subject).count(), 1);
+    assert_eq!(factory_refs(&fx), "");
+}
+
 // ── a dirty main tree parks the run ────────────────────────────────────────
 
 #[test]
