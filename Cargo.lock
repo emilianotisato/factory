@@ -462,7 +462,7 @@ dependencies = [
 
 [[package]]
 name = "factory"
-version = "0.13.4"
+version = "0.13.5"
 dependencies = [
  "axoupdater",
  "clap",
