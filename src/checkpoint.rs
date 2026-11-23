@@ -187,6 +187,8 @@ pub fn run(
         }
     }
 
+    // `n` is max + 1, so every record numbered `n` or later was written for this checkpoint.
+    let mut records_seen = 0;
     loop {
         if let Some(o) = await_quota(run, out)? {
             return Ok(o);
@@ -293,7 +295,12 @@ pub fn run(
         let exit = worker.wait()?;
         green_cached = true; // a respawn reads the same transcript
         let after = docs.status(&feature)?;
-        if after.checkpoints.iter().any(|c| c.n == n) {
+        let records: Vec<&crate::docs::Checkpoint> =
+            after.checkpoints.iter().filter(|c| c.n >= n).collect();
+        let newest = records.iter().max_by_key(|c| c.n);
+        let fresh = records.len() > records_seen;
+        records_seen = records.len();
+        if newest.is_some_and(|c| covers.iter().all(|s| c.covers.contains(s))) {
             let sha = match land_here(run, board, n, "checkpoint", attempt, lane, row_id, out)? {
                 Ok(sha) => sha,
                 Err(o) => {
@@ -337,6 +344,71 @@ pub fn run(
                 out,
                 &format!(
                     "checkpoint {n}: worker {session_id} blocked — {id} in log.jsonl: {title}"
+                ),
+            )?;
+            return Ok(Outcome::Parked {
+                what: park_line(&id, &title),
+                id,
+                fresh: true,
+            });
+        }
+        if let Some(thin) = newest.filter(|_| fresh) {
+            let missing: Vec<u32> = covers
+                .iter()
+                .copied()
+                .filter(|s| !records.iter().any(|c| c.covers.contains(s)))
+                .collect();
+            if records.len() < 2 {
+                settle(run, row_id, &session_id, &exit.summary, WorkerOutcome::Done)?;
+                say(
+                    out,
+                    &format!(
+                        "checkpoint {n}: worker {session_id} wrote CP-{} without slice(s) {} — sent back once",
+                        thin.n,
+                        pad_list(&missing)
+                    ),
+                )?;
+                continue;
+            }
+            settle(
+                run,
+                row_id,
+                &session_id,
+                &exit.summary,
+                WorkerOutcome::Blocked,
+            )?;
+            let ids: Vec<String> = records.iter().map(|c| format!("`CP-{}`", c.n)).collect();
+            let title = answers::block_title(&format!(
+                "Checkpoint {n} records never covered slice(s) {}",
+                pad_list(&missing)
+            ));
+            let body = format!(
+                "**Happened:** the driver handed checkpoint {n} slices {handed}; the records {ids} never name slice(s) {missing}, \
+                 so those slices stay unverified. The record was sent back once and the second worker's record was short again.\n\
+                 **Options:** 1. read the last checkpoint worker's stream under `{dir}/`, fix what made it drop the slices and answer this block — a fresh checkpoint is handed the slices still unverified; \
+                 2. drive their Prove rows by hand, add a record naming them (`factory docs log add {feature} --kind checkpoint --phase checkpoint --slice <last> --covers {missing_csv}`) and answer this block.\n\
+                 **Recommended:** 1 — two workers dropping the same slices points at the pack or the contract, not at one forgetful worker.\n",
+                handed = pad_list(&covers),
+                ids = ids.join(", "),
+                missing = pad_list(&missing),
+                dir = crate::worker::dir(run.dir()).display(),
+                missing_csv = missing
+                    .iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
+            let id = answers::add_block(&feature_dir, None, Some("checkpoint"), &title, &body)?;
+            run.emit(EventKind::CheckpointBlocked {
+                n,
+                block_id: id.clone(),
+                question: title.clone(),
+            })?;
+            say(
+                out,
+                &format!(
+                    "checkpoint {n}: second short record — {id} written to log.jsonl: slice(s) {} never covered",
+                    pad_list(&missing)
                 ),
             )?;
             return Ok(Outcome::Parked {

@@ -1644,6 +1644,108 @@ fn two_dead_checkpoint_workers_block_the_run_and_the_answer_spawns_a_third() {
     assert_two_checkpoints(&fx, &dir);
 }
 
+// ── a record naming fewer slices than it was handed ────────────────────────
+
+fn short(covers: &[u32]) -> Value {
+    json!({"outcome": "checkpoint", "covers": covers})
+}
+
+fn checkpoint_covers(fx: &Fixture) -> Vec<(String, Value)> {
+    fx.log_of("checkpoint")
+        .into_iter()
+        .map(|e| (e["id"].as_str().unwrap().to_string(), e["covers"].clone()))
+        .collect()
+}
+
+#[test]
+fn a_record_naming_fewer_slices_is_sent_back_once() {
+    let fx = Fixture::new("cp-short-once");
+    fx.chain();
+    fx.write_plan(&[
+        done(),
+        done(),
+        short(&[1]),
+        step("checkpoint"),
+        done(),
+        step("checkpoint"),
+    ]);
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "finished", 90);
+
+    assert_eq!(
+        prompts(&fx),
+        [
+            build(1),
+            build(2),
+            checkpoint(1),
+            checkpoint(1),
+            build(3),
+            checkpoint(3),
+            polish()
+        ],
+        "{}",
+        driver_log(&dir)
+    );
+    let text = driver_log(&dir);
+    assert!(
+        text.contains("checkpoint 1: worker ")
+            && text.contains("wrote CP-1 without slice(s) 02 — sent back once"),
+        "{text}"
+    );
+    let spawned = of_kind(&dir, "checkpoint_spawned");
+    assert_eq!(spawned[0]["attempt"], 1);
+    assert_eq!(spawned[1]["attempt"], 2);
+    assert_eq!(spawned[2]["attempt"], 1, "an exact record lands first time");
+    assert_eq!(count(&kinds(&dir), "checkpoint_blocked"), 0);
+    assert!(fx.log_of("block").is_empty());
+    assert_eq!(
+        checkpoint_covers(&fx),
+        [
+            ("CP-1".into(), json!([1])),
+            ("CP-2".into(), json!([1, 2])),
+            ("CP-3".into(), json!([3])),
+        ]
+    );
+    let workers = db(&fx).workers(&run_id(&dir)).unwrap();
+    assert_eq!(workers[2].outcome.as_deref(), Some("done"));
+    assert_eq!(workers[3].outcome.as_deref(), Some("done"));
+    assert!(notes(&fx, "Dead checkpoint worker").is_empty());
+}
+
+#[test]
+fn a_second_short_record_blocks_and_leaves_the_slices_unverified() {
+    let fx = Fixture::new("cp-short-twice");
+    fx.chain();
+    fx.write_plan(&[done(), done(), short(&[1]), short(&[1]), done()]);
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "waiting-owner", 60);
+
+    assert_eq!(
+        prompts(&fx),
+        [build(1), build(2), checkpoint(1), checkpoint(1)],
+        "{}",
+        driver_log(&dir)
+    );
+    let blocks = fx.log_of("block");
+    assert_eq!(blocks.len(), 1, "{blocks:?}");
+    let title = "Checkpoint 1 records never covered slice(s) 02";
+    assert_eq!(blocks[0]["title"], title, "{}", blocks[0]);
+    assert_eq!(blocks[0]["phase"], "checkpoint");
+    let b = body(&blocks[0]);
+    assert!(
+        b.contains("the records `CP-1`, `CP-2` never name slice(s) 02"),
+        "{b}"
+    );
+    let blocked = of_kind(&dir, "checkpoint_blocked");
+    assert_eq!(blocked.len(), 1);
+    assert_eq!(blocked[0]["question"], title);
+    assert_eq!(count(&kinds(&dir), "checkpoint_done"), 0);
+    assert!(notes(&fx, "Dead checkpoint worker").is_empty());
+
+    let status: Value = serde_json::from_str(&fx.docs(&["status", "001", "--json"])).unwrap();
+    assert_eq!(status["unverified"], json!([2]), "{status}");
+}
+
 // ── a fix worker's changes, however it ended ────────────────────────────────
 
 #[test]

@@ -59,6 +59,8 @@
 //   On a checkpoint: leaks: "fix" deletes every `path:line` hit under the
 //     pack's `# Leaks` (bottom-up per file) and every bare `path` hit, then
 //     names each one under **Fixed** and FIXED: instead of `none`.
+//     covers: [n, ...] the slices the record names, in place of every slice
+//     the pack hands it.
 //
 // The call record ($FACTORY_STUB_DIR/calls/<n>.json) carries argv, cwd, HEAD,
 // the FACTORY_* env, every env variable's name (never a value), GH_CONFIG_DIR,
@@ -249,7 +251,8 @@ if (role === 'fix') {
 // ── 3b. a checkpoint worker ──────────────────────────────────────────────────
 if (role === 'checkpoint') {
   const cp = Number((flags['-p'] ?? '').match(/checkpoint (\d+)/)?.[1] ?? 1)
-  const covered = [...pack.matchAll(/^## slice-(\d{2})/gm)].map((x) => x[1])
+  const handed = [...pack.matchAll(/^## slice-(\d{2})/gm)].map((x) => x[1])
+  const covered = step.covers ? step.covers.map((x) => String(x).padStart(2, '0')) : handed
   const rows = [...new Set([...pack.matchAll(/^\| (FR-\d+) \|/gm)].map((x) => x[1]))]
   const dirM = pack.match(/<!-- (docs\/features\/[^/\s]+)\//)
   if (!dirM) fail(65, 'the checkpoint pack names no docs/features/<dir>/ file')

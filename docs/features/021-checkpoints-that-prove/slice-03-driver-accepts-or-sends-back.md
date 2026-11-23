@@ -3,7 +3,12 @@
 **Source**: [`prd.md`](prd.md) → §3 (FR-1, the driver side). **Depends on**: — _(independent of 01 and 02: it edits the close path in `src/checkpoint.rs`, which neither of them touches. Slice 04 depends on this one because it extends the same close path.)_
 **Created**: 2026-11-23
 
-**Progress**: _(written as it lands)_
+**Progress**:
+- Built: `src/checkpoint.rs` accepts only when the newest checkpoint entry numbered `n` or later names every handed slice (superset accepted); a fresh short record settles its worker `done`, prints the missing slices and respawns once; a second short record writes a block naming the never-covered slices and parks. `DEATH_CAP` untouched. `tests/stubs/claude` takes a `covers` step key (AD-5).
+- Inner loop: 1 run, 0 red, 4 min — caught: nothing.
+- Seen red: `a_record_naming_fewer_slices_is_sent_back_once` with the old `c.n == n` test back — one checkpoint worker, then slice 03 (prompts mismatch). `a_second_short_record_blocks_and_leaves_the_slices_unverified` with the cap removed — the third worker lands, the run never parks (waiting-owner timeout).
+- Deviation: the send-back is capped on the checkpoint's own record count, not `attempt` (AD-4, decide), so a death before a short record still gets its send-back.
+- Prove: both tests left for the checkpoint.
 
 **Slice**: After this, the driver stops closing a checkpoint on the number alone. It reads the newest checkpoint entry, checks that it names every slice the driver handed it, sends a short record back once, then blocks naming the missing slices. It leaves the evidence check to slice 04 and the contract text alone.
 
