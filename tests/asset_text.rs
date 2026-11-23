@@ -134,3 +134,44 @@ fn checkpoint_evidence_goes_in_one_directory_per_row_key() {
         assert_unique_passage("checkpoint Record step", record, needle);
     }
 }
+
+#[test]
+fn the_checkpoint_contract_asks_for_one_mutation_check() {
+    let ask = "Then one mutation check per checkpoint: take the riskiest row you drove, the one whose FR rests on a single line, and break that line by hand, never through git";
+    let restore = "Run that row's test and see it red, then restore the line and see the test green again before you record";
+    let field = "`**Mutation:** {file:line} broken — {test} red: {how it failed} — restored, green`, which names the line the mutation check broke, the red it saw and the restore";
+
+    let prove = line_starting(
+        "the checkpoint contract",
+        pack::CONTRACT_CHECKPOINT,
+        "2. **Prove**",
+    );
+    for needle in [ask, restore] {
+        assert_unique_passage("checkpoint Prove step", prove, needle);
+    }
+    let record = line_starting(
+        "the checkpoint contract",
+        pack::CONTRACT_CHECKPOINT,
+        "4. **Record**",
+    );
+    assert_unique_passage("checkpoint Record step", record, field);
+
+    let autonomy = pack::builder_autonomy();
+    let mut bundle = vec![
+        pack::CONTRACT,
+        pack::CONTRACT_FIX,
+        pack::CONTRACT_CHECKPOINT,
+        pack::CONTRACT_POLISH,
+        pack::CONTRACT_CI_FIX,
+        pack::CONTRACT_MERGE,
+        pack::PR_BODY,
+        pack::RETRO,
+        pack::LOOKUP,
+        autonomy.as_str(),
+    ];
+    bundle.extend(factory::skills::FILES.iter().map(|(_, text)| *text));
+    let bundle = bundle.join("\n");
+    for needle in [ask, restore, field] {
+        assert_unique_passage("the bundle", &bundle, needle);
+    }
+}

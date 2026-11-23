@@ -3,7 +3,8 @@
 **Source**: [`prd.md`](prd.md) → §6 (FR-4). **Depends on**: 04 — _(both edit `assets/contract-checkpoint.md`; 04's Prove and Record steps land first so this slice only adds its own step.)_
 **Created**: 2026-11-23
 
-**Progress**: _(written as it lands)_
+**Progress**: built — the checkpoint contract's Prove step asks for one mutation check per checkpoint (riskiest row, break its one line by hand never through git, see the test red, restore and see it green before recording), and the Record body gains a `**Mutation:**` field naming the `file:line`, the red and the restore; `the_checkpoint_contract_asks_for_one_mutation_check` pins all three passages unique in the Prove line, the Record line and the whole bundle (every pack text plus every skill file) · inner loop: 1 run, 0 red, 2 min — caught: nothing · deviations: none
+- `the_checkpoint_contract_asks_for_one_mutation_check` seen red: with "one mutation check per checkpoint" cut from the contract, the Prove-step needle occurs 0 times, want exactly once
 
 **Slice**: After this, the checkpoint contract asks the worker to prove one of its rows can go red: break the line the row's FR rests on, see the test fail, restore, and name the `file:line` and the red in the record. Wording only — the driver does not check it, by the owner's decision.
 
