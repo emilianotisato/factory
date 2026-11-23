@@ -45,3 +45,31 @@ The leaks check had nothing it should have caught. The one misplaced comment (on
 ## Score
 
 4 — the feature landed whole and checkpoints stayed green. But the run's own checkpoints could not exercise the restart path, so polish was the step that found the bypass that skipped every new check. The second opinion never ran.
+
+## Numbers
+
+<!-- factory:numbers -->
+| role | workers | own | subagents | weighted | minutes | turns |
+|---|---:|---:|---:|---:|---:|---:|
+| build | 5 | 1649528 | 0 | 1649528 | 46 | 118 |
+| checkpoint | 2 | 368730 | 0 | 368730 | 7 | 29 |
+| polish | 1 | 1189031 | 1279746 | 2468777 | 15 | 57 |
+| total | 8 | 3207287 | 1279746 | 4487033 | 69 | 204 |
+
+Knobs: build opus/high default · fix opus/high default · checkpoint opus/high default · polish opus/high default · budget 30000000 default · lanes 4 · factory 0.13.5 · claude 2.1.330
+
+Hypothesis: none
+
+quality: gate_red 0 · worker_gate_red 0 · fix_commits 0 · ci_red_rounds 0 · ci_reruns 0 · findings high=1 medium=4 low=9 fixed=12 parked=2 · decisions 10 decide 3 blocks 0
+
+Pack (build): slice 6048 · prd_sections 4037 · log 2759 · outline 6964 · lookup 1115 · contract 3685 · autonomy 9988 · inner_loop 86 · total 34681 · start_context 21461
+
+Compared with:
+
+| run | feature | weighted | slices | per slice | lines changed | per line | comment share | id hits |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 021-20261123-a324 (this run) | 021 | 4487033 | 5 | 897407 | 2193 | 2046 | 2.9% | 0 |
+| 015-20261113-f9b6 | 015 | 4100530 | 5 | 820106 | 1786 | 2296 | 3.7% | 0 |
+| 018-20261112-68dc | 018 | 2243893 | 4 | 560973 | 1343 | 1671 | 1.2% | 0 |
+| 017-20261112-a618 | 017 | 5703646 | 5 | 1140729 | 3138 | 1818 | 4.1% | 0 |
+<!-- /factory:numbers -->
