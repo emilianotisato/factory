@@ -124,7 +124,21 @@ No row needs a human, so no `qa-guide.md` is generated.
 
 ## 9. Slices
 
-_`/slice` fills this._
+Five slices on one branch, `feat/checkpoints-that-prove`, one PR, one commit per slice.
+
+- **01 — `covers` required on write** (FR-1, write side). The validator in `src/docs/log.rs` refuses a checkpoint entry with no `--covers`, so the false-green path closes for every new run. Independent.
+- **02 — the handed row list** (FR-2's pack half, FR-3). `src/pack.rs`: `qa_rows` returns each handed row with a key and its `Human?` cell, the whole-table fallback goes, and `all_done` hands the entire table. FR-2 and FR-3 both rewrite this function, so they are one slice. Independent, and the spine.
+- **03 — the driver accepts or sends back** (FR-1, driver side). `src/checkpoint.rs`: the close test reads the newest entry and compares covers, sends a short record back once, then blocks. Independent.
+- **04 — evidence proves the row** (FR-2, driver side and contract text). The evidence check per handed non-human row, the block that names every missing one, the acceptance-by-event rule, and the contract's per-row directory. **Depends on 02** for the keys and on **03** for the close path it extends.
+- **05 — the mutation check in the contract** (FR-4). Wording only. **Depends on 04**, which edits the same file.
+
+**Order.** The spine is 02 → 04 → 05. 01 and 03 are independent of everything, so three builders start at once and 04 waits for two of them. 04 carries the feature's risk: a wrong `Human?` or no-rows exclusion blocks every run in every repo on the framework, and its slice says so at the top.
+
+**Checkpoints** fall every 2 done slices (`checkpoint_every = 2`) and once at the end. The last one runs with `all_done` true, so it is handed the whole QA table — which is FR-3 proving itself.
+
+**The run does not enforce what it builds.** A lane runs the installed binary (0.13.5), so this feature's own checkpoints close under the old rules. No slice should expect its new strictness to fire during its own run, and evidence for this run goes flat under `$FACTORY_EVIDENCE/cp-{n}/` as today's contract says.
+
+**No `qa-guide.md`:** no row in § QA plan is marked `Human? = yes`, so there is nothing for a human to judge and no guide is generated.
 
 ## 10. Non-goals
 
