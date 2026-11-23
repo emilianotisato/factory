@@ -73,3 +73,5 @@ Compared with:
 | 018-20261112-68dc | 018 | 2243893 | 4 | 560973 | 1343 | 1671 | 1.2% | 0 |
 | 017-20261112-a618 | 017 | 5703646 | 5 | 1140729 | 3138 | 1818 | 4.1% | 0 |
 <!-- /factory:numbers -->
+
+**Owner review (2026-11-23):** 3 kept, 0 changed (AD-4, AD-6, AD-8). The 7 `fyi` decisions (AD-1, AD-2, AD-3, AD-5, AD-7, AD-9, AD-10) were left unreviewed by the owner's choice.
