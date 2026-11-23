@@ -136,6 +136,8 @@ fn the_board_reads_its_log_fields_from_log_jsonl() {
             "checkpoint",
             "--slice",
             "2",
+            "--covers",
+            "1,2",
             "--title",
             "after 2"
         ]),
@@ -249,7 +251,6 @@ fn a_checkpoint_records_the_slices_it_covers() {
         cp(&["--covers", "1,2,4,5"])["covers"],
         serde_json::json!([1, 2, 4, 5])
     );
-    assert!(cp(&[]).get("covers").is_none(), "{:?}", log_lines(&fx));
 
     let before = log_lines(&fx);
     let o = fx.docs_output(&[
@@ -258,6 +259,41 @@ fn a_checkpoint_records_the_slices_it_covers() {
     assert!(!o.status.success());
     assert!(String::from_utf8_lossy(&o.stderr).contains("--covers"));
     assert_eq!(log_lines(&fx), before);
+}
+
+#[test]
+fn log_add_checkpoint_refuses_a_missing_covers() {
+    let fx = Fixture::new("log-covers-required");
+    let add = |extra: &[&str]| {
+        let mut a = vec![
+            "log",
+            "add",
+            "001",
+            "--kind",
+            "checkpoint",
+            "--slice",
+            "3",
+            "--title",
+            "x",
+        ];
+        a.extend_from_slice(extra);
+        fx.docs_output(&a)
+    };
+    fx.docs(&["log", "add", "001", "--kind", "note", "--title", "seed"]);
+    let before = fx.read(&format!("{FEATURE_DIR}/log.jsonl"));
+    for missing in [&[][..], &["--covers", ""]] {
+        let o = add(missing);
+        assert!(!o.status.success(), "{missing:?}");
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(err.contains("--covers"), "{err}");
+        assert_eq!(fx.read(&format!("{FEATURE_DIR}/log.jsonl")), before);
+    }
+
+    let o = add(&["--covers", "1,2"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(String::from_utf8_lossy(&o.stdout), "CP-1\n");
+    let line: serde_json::Value = serde_json::from_str(log_lines(&fx).last().unwrap()).unwrap();
+    assert_eq!(line["covers"], serde_json::json!([1, 2]));
 }
 
 #[test]

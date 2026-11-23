@@ -198,6 +198,9 @@ fn validate(e: &Entry) -> Result<()> {
     if e.kind == Kind::Checkpoint && e.slice.is_none() {
         return refuse("a checkpoint needs --slice, the last slice it covers".into());
     }
+    if e.kind == Kind::Checkpoint && e.covers.is_empty() {
+        return refuse("a checkpoint needs --covers, every slice it proved".into());
+    }
     Ok(())
 }
 
@@ -427,6 +430,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let mut cp = entry(Kind::Checkpoint);
         cp.slice = Some(2);
+        cp.covers = vec![1, 2];
         let mut ids = Vec::new();
         for e in [
             entry(Kind::Decision),
@@ -469,12 +473,17 @@ mod tests {
         verdict.verdict = Some(Verdict::Kept);
         let mut flag = entry(Kind::Block);
         flag.flag = Some(Flag::Fyi);
-        let no_slice = entry(Kind::Checkpoint);
+        let mut no_slice = entry(Kind::Checkpoint);
+        no_slice.covers = vec![1];
+        let mut no_covers = entry(Kind::Checkpoint);
+        no_covers.slice = Some(1);
         let mut phase = entry(Kind::Block);
         phase.phase = Some("lunch".into());
         let mut no_verdict = entry(Kind::Review);
         no_verdict.reference = Some("BLOCK-1".into());
-        for e in [dangling, verdict, flag, no_slice, phase, no_verdict] {
+        for e in [
+            dangling, verdict, flag, no_slice, no_covers, phase, no_verdict,
+        ] {
             let err = add(d.path(), e.clone()).unwrap_err();
             assert!(matches!(err, Error::Msg(_)), "{e:?} refused with {err}");
         }

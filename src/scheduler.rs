@@ -252,7 +252,7 @@ fn drive_inner(
             }
         }
 
-        let mut board = docs.status(&feature)?;
+        let mut board = driver_board(run, docs, &feature)?;
         let live: HashSet<String> = table
             .values()
             .map(|r| r.worker.session_id.clone())
@@ -294,7 +294,7 @@ fn drive_inner(
                 if quota::hold(run)?.is_some() {
                     continue;
                 }
-                board = docs.status(&feature)?;
+                board = driver_board(run, docs, &feature)?;
             }
         }
 
@@ -478,12 +478,20 @@ fn drive_inner(
     }
 }
 
+/// The board with only the checkpoint records this run accepted counted as coverage.
+fn driver_board(run: &Run, docs: &Docs, feature: &str) -> Result<Status> {
+    let mut board = docs.status(feature)?;
+    let dir = run.state().repo.join(&board.dir);
+    checkpoint::accepted_only(&mut board, &run.events()?, &dir)?;
+    Ok(board)
+}
+
 /// Nothing between here and `closeout::run` commits; the closeout checks the branch itself.
 fn closeout_owns(run: &Run, docs: &Docs, feature: &str, table: &Table) -> Result<bool> {
     if !table.is_empty() || run.state().workers.iter().any(|w| w.outcome.is_none()) {
         return Ok(false);
     }
-    let board = docs.status(feature)?;
+    let board = driver_board(run, docs, feature)?;
     Ok(board.all_done && board.unverified.is_empty())
 }
 
@@ -1708,8 +1716,19 @@ fn settle_checkpoint_orphan(
 ) -> Result<Option<String>> {
     let n = w.checkpoint.unwrap_or(0);
     let repo = run.state().repo.clone();
-    let lands =
-        w.role == "fix" || (w.role == "checkpoint" && board.checkpoints.iter().any(|c| c.n == n));
+    let recorded = w.role == "checkpoint" && board.checkpoints.iter().any(|c| c.n >= n);
+    let lands = w.role == "fix" || (recorded && checkpoint::orphan_record_holds(run, board, n)?);
+    if recorded && !lands && !summary.is_dead() {
+        settle(run, w.row_id, &w.session_id, &summary, WorkerOutcome::Done)?;
+        say(
+            out,
+            &format!(
+                "checkpoint {n}: worker {} of an earlier driver left a record short of its slices or evidence — the checkpoint runs again",
+                w.session_id
+            ),
+        )?;
+        return Ok(None);
+    }
     let mut sha = None;
     if lands {
         let attempt = if w.role == "fix" {

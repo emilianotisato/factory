@@ -174,6 +174,11 @@ pub fn dir(run_dir: &Path) -> PathBuf {
     run_dir.join(DIR)
 }
 
+/// What `EVIDENCE_ENV` names: `cp-{n}/<row key>/` below it holds a checkpoint's proof of one row.
+pub fn evidence_dir(run_dir: &Path) -> PathBuf {
+    run_dir.join("evidence")
+}
+
 pub fn stream_path(run_dir: &Path, session_id: &str) -> PathBuf {
     dir(run_dir).join(format!("{session_id}.jsonl"))
 }
@@ -258,7 +263,7 @@ impl Worker {
         cmd.env(crate::cli::hook::PACK_ENV, &pack_path);
         cmd.env(REPO_ENV, &cwd);
         cmd.env(BOARD_ENV, &repo);
-        let evidence = run_dir.join("evidence");
+        let evidence = evidence_dir(&run_dir);
         let _ = std::fs::create_dir_all(&evidence);
         cmd.env(EVIDENCE_ENV, evidence);
         let mut child = cmd.spawn().map_err(|e| Error::Tool {

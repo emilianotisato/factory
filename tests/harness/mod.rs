@@ -295,6 +295,14 @@ impl Fixture {
         self.docs(&["slice", FEATURE, "b"]);
         self.docs(&["slice", FEATURE, "c", "--depends", "2"]);
         self.patch_prd_v3();
+        for n in 1..=3 {
+            let p = self.slice_path(n);
+            let text = fs::read_to_string(&p).expect("fixture slice");
+            let prove = "### 3. Prove — at the checkpoint — blocked by: 2\n";
+            assert!(text.contains(prove), "{}", p.display());
+            let named = format!("{prove}`prd.md` §8, the FR-1 row.\n\n");
+            fs::write(&p, text.replacen(prove, &named, 1)).unwrap();
+        }
         self.docs(&["set", FEATURE, "status=ready"]);
 
         fs::create_dir_all(self.root.join("src")).unwrap();

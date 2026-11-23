@@ -85,6 +85,15 @@ pub struct Pack {
     pub files: Vec<String>,
     pub missing_sections: Vec<u32>,
     pub parts: Vec<Part>,
+    /// The QA rows a checkpoint pack handed its worker; empty for every other pack.
+    pub rows: Vec<QaRow>,
+}
+
+/// One handed QA row: `FR-<n>` when its FR has one row in the table, `FR-<n>.<k>` for the k-th of several.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QaRow {
+    pub key: String,
+    pub human: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -273,6 +282,7 @@ impl Pack {
             files,
             missing_sections: missing,
             parts,
+            rows: Vec::new(),
         })
     }
 }
@@ -325,6 +335,7 @@ impl Pack {
             files: Vec::new(),
             missing_sections: Vec::new(),
             parts,
+            rows: Vec::new(),
         })
     }
 
@@ -406,6 +417,7 @@ impl Pack {
             files,
             missing_sections: Vec::new(),
             parts,
+            rows: Vec::new(),
         })
     }
 
@@ -448,7 +460,6 @@ impl Pack {
 
         let mut files = Vec::new();
         let mut slices = String::new();
-        let mut named: Vec<String> = Vec::new();
         for c in covers {
             let Some(entry) = board.slices.iter().find(|s| s.number == *c) else {
                 continue;
@@ -456,11 +467,6 @@ impl Pack {
             let rel = format!("docs/features/{}", entry.file);
             let slice_text = read(&repo.join(&rel))?;
             let prove = prove_section(&slice_text);
-            for id in fr_ids(prove) {
-                if !named.contains(&id) {
-                    named.push(id);
-                }
-            }
             slices.push_str(&format!(
                 "## slice-{c:02} — {}\n\n<!-- {rel} -->\n\n",
                 entry.title.as_deref().unwrap_or("")
@@ -474,6 +480,7 @@ impl Pack {
             files.push(rel);
         }
         files.push(prd_rel.clone());
+        let (qa_text, rows) = handed_qa(repo, board, covers, &prd_text)?;
 
         let (text, parts) = assemble(
             format!("<!-- factory-pack files: {} -->\n\n", files.join(",")),
@@ -487,8 +494,14 @@ impl Pack {
                 format!("# Leaks\n\n{}", leaks.trim_end()),
                 format!("# Covered slices\n\n{}", slices.trim_end()),
                 format!(
-                    "# QA rows\n\n<!-- {prd_rel}: § QA plan -->\n\n{}",
-                    qa_rows(&prd_text, &named).trim_end()
+                    "# QA rows\n\n<!-- {prd_rel}: § QA plan -->\n\n{}{}",
+                    if board.all_done {
+                        "Every slice is done, so this checkpoint is handed every row in the QA table, \
+                         not only the rows its covered slices name.\n\n"
+                    } else {
+                        ""
+                    },
+                    qa_text.trim_end()
                 ),
                 log_section(docs, board)?,
                 format!("# Contract\n\n{}", contract.trim_end()),
@@ -507,6 +520,7 @@ impl Pack {
             files,
             missing_sections: Vec::new(),
             parts,
+            rows,
         })
     }
 
@@ -587,6 +601,7 @@ impl Pack {
             files,
             missing_sections: Vec::new(),
             parts,
+            rows: Vec::new(),
         })
     }
 
@@ -637,6 +652,7 @@ impl Pack {
             files: Vec::new(),
             missing_sections: Vec::new(),
             parts,
+            rows: Vec::new(),
         })
     }
 }
@@ -686,40 +702,110 @@ pub fn fr_ids(text: &str) -> Vec<String> {
     out
 }
 
-pub fn qa_rows(prd: &str, named: &[String]) -> String {
-    let rows: Vec<&str> = prd
-        .lines()
-        .filter(|l| l.starts_with("| FR") || l.starts_with("|---"))
+/// The QA rows a checkpoint covering `covers` is handed: the rows the covered slices' Prove sections name, or every
+/// row once every slice is done.
+pub fn handed_qa(
+    repo: &Path,
+    board: &Status,
+    covers: &[u32],
+    prd_text: &str,
+) -> Result<(String, Vec<QaRow>)> {
+    if board.all_done {
+        return Ok(qa_rows(prd_text, None));
+    }
+    let mut named: Vec<String> = Vec::new();
+    for c in covers {
+        let Some(entry) = board.slices.iter().find(|s| s.number == *c) else {
+            continue;
+        };
+        let slice_text = read(&repo.join(format!("docs/features/{}", entry.file)))?;
+        for id in fr_ids(prove_section(&slice_text)) {
+            if !named.contains(&id) {
+                named.push(id);
+            }
+        }
+    }
+    Ok(qa_rows(prd_text, Some(&named[..])))
+}
+
+/// The QA plan rows handed to a checkpoint, each printed with its key: the rows whose first cell names an id in
+/// `named`, or every row when `named` is `None`.
+pub fn qa_rows(prd: &str, named: Option<&[String]>) -> (String, Vec<QaRow>) {
+    let lines: Vec<&str> = prd.lines().collect();
+    let row_id = |line: &str| -> Option<String> {
+        line.strip_prefix("| FR-")?;
+        fr_ids(cells(line).first()?).into_iter().next()
+    };
+    let Some(first) = lines.iter().position(|l| row_id(l).is_some()) else {
+        let any_table = lines.iter().any(|l| l.starts_with("|---"));
+        return (
+            String::from(if any_table {
+                "(the PRD has no `| FR-` row: 0 rows handed)"
+            } else {
+                "(the PRD has no QA plan table)"
+            }),
+            Vec::new(),
+        );
+    };
+    let header_start = lines[..first]
+        .iter()
+        .rposition(|l| !l.starts_with('|'))
+        .map_or(0, |i| i + 1);
+    let header = &lines[header_start..first];
+    let human_col = header
+        .iter()
+        .find_map(|h| cells(h).iter().position(|c| *c == "Human?"))
+        .unwrap_or(3);
+    let body: Vec<(&str, String)> = lines
+        .iter()
+        .filter_map(|l| row_id(l).map(|id| (*l, id)))
         .collect();
+
+    let mut out: Vec<String> = header.iter().map(|h| h.to_string()).collect();
+    let mut rows = Vec::new();
+    for (i, (line, id)) in body.iter().enumerate() {
+        if named.is_some_and(|n| !n.contains(id)) {
+            continue;
+        }
+        let total = body.iter().filter(|(_, other)| other == id).count();
+        let key = if total == 1 {
+            id.clone()
+        } else {
+            let k = body[..=i].iter().filter(|(_, other)| other == id).count();
+            format!("{id}.{k}")
+        };
+        let human = cells(line).get(human_col).is_some_and(|c| is_yes(c));
+        out.push(format!(
+            "{line} key: `{key}`{}",
+            if human {
+                " (deferred: Human? = yes)"
+            } else {
+                ""
+            }
+        ));
+        rows.push(QaRow { key, human });
+    }
     if rows.is_empty() {
-        return String::from("(the PRD has no QA plan table)");
+        out.push(String::new());
+        out.push("(no covered slice's Prove section names a row: 0 rows handed)".to_string());
     }
-    let header: Vec<&str> = rows
-        .iter()
-        .copied()
-        .take_while(|l| !l.starts_with("| FR-"))
-        .collect();
-    let body: Vec<&str> = rows
-        .iter()
-        .copied()
-        .filter(|l| l.starts_with("| FR-"))
-        .collect();
-    let picked: Vec<&str> = body
-        .iter()
-        .copied()
-        .filter(|l| {
-            let id = l.trim_start_matches('|').trim();
-            let id = id.split('|').next().unwrap_or("").trim();
-            named.iter().any(|n| n == id)
-        })
-        .collect();
-    let mut out: Vec<&str> = header;
-    if picked.is_empty() {
-        out.extend(body);
-    } else {
-        out.extend(picked);
-    }
-    out.join("\n")
+    (out.join("\n"), rows)
+}
+
+/// A `Human?` cell reads yes when its first word is `yes`, as in `yes`, `**yes**: routing is judgment` or
+/// `yes → qa-guide.md`.
+fn is_yes(cell: &str) -> bool {
+    cell.trim_start_matches(['*', '_', ' '])
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .next()
+        .is_some_and(|w| w.eq_ignore_ascii_case("yes"))
+}
+
+fn cells(row: &str) -> Vec<&str> {
+    let row = row.trim();
+    let row = row.strip_prefix('|').unwrap_or(row);
+    let row = row.strip_suffix('|').unwrap_or(row);
+    row.split('|').map(str::trim).collect()
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -1041,6 +1127,154 @@ mod tests {
         assert_eq!(cut_section(prd, 2), Some("## 2. Users\n\nthem\n"));
         assert_eq!(cut_section(prd, 3), None);
         assert_eq!(cut_section(prd, 11), None);
+    }
+
+    const QA_TABLE: &str = "# PRD\n\n| Step | What |\n|---|---|\n| 1 | a |\n\n## 8. QA plan\n\n\
+        | FR | Proof | Evidence | Human? |\n|---|---|---|---|\n\
+        | FR-6 | run a | transcript | no |\n\
+        | FR-6 | run b | transcript | no |\n\
+        | FR-7 | the owner reads it back | read-back | yes |\n\
+        | FR-6 | run c | transcript | no |\n\
+        | FR-8 after merge | run d | transcript | no |\n";
+
+    fn keys(rows: &[QaRow]) -> Vec<&str> {
+        rows.iter().map(|r| r.key.as_str()).collect()
+    }
+
+    fn body_rows(text: &str) -> Vec<&str> {
+        text.lines().filter(|l| l.starts_with("| FR-")).collect()
+    }
+
+    #[test]
+    fn one_fr_with_three_rows_gets_three_keys() {
+        let (text, rows) = qa_rows(QA_TABLE, None);
+        assert_eq!(keys(&rows), ["FR-6.1", "FR-6.2", "FR-7", "FR-6.3", "FR-8"]);
+        let human: Vec<&str> = rows
+            .iter()
+            .filter(|r| r.human)
+            .map(|r| r.key.as_str())
+            .collect();
+        assert_eq!(human, ["FR-7"]);
+        assert!(
+            text.contains("| FR-6 | run c | transcript | no | key: `FR-6.3`\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("| yes | key: `FR-7` (deferred: Human? = yes)"),
+            "{text}"
+        );
+        assert!(!text.contains("| Step"), "{text}");
+
+        let named = ["FR-6".to_string(), "FR-8".to_string()];
+        let (_, rows) = qa_rows(QA_TABLE, Some(&named));
+        assert_eq!(keys(&rows), ["FR-6.1", "FR-6.2", "FR-6.3", "FR-8"]);
+    }
+
+    #[test]
+    fn a_human_cell_reads_yes_by_its_first_word() {
+        for cell in [
+            "yes",
+            "Yes",
+            "**yes**: routing is judgment",
+            "yes → `qa-guide.md`",
+        ] {
+            assert!(is_yes(cell), "{cell}");
+        }
+        for cell in ["no", "", "yesterday", "no — yes later", "n/a"] {
+            assert!(!is_yes(cell), "{cell}");
+        }
+    }
+
+    #[test]
+    fn a_prd_with_no_fr_rows_hands_nothing() {
+        let prd = "# PRD\n\n| Step | What |\n|---|---|\n| 1 | a |\n";
+        let (text, rows) = qa_rows(prd, None);
+        assert!(rows.is_empty());
+        assert_eq!(text, "(the PRD has no `| FR-` row: 0 rows handed)");
+        let (text, rows) = qa_rows("# PRD\n\nno table\n", None);
+        assert!(rows.is_empty());
+        assert_eq!(text, "(the PRD has no QA plan table)");
+    }
+
+    /// The first slice's Prove section names one row; the second's names none.
+    fn checkpoint_rows(all_done: bool, covers: &[u32]) -> (Vec<QaRow>, String) {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        let dir = "docs/features/001-x";
+        fs::create_dir_all(repo.join(dir)).unwrap();
+        fs::write(repo.join("docs/project.toml"), "[docs]\nframework = 3\n").unwrap();
+        fs::write(repo.join(dir).join("prd.md"), QA_TABLE).unwrap();
+        fs::write(
+            repo.join(dir).join("slice-01-a.md"),
+            "# S\n\n### 3. Prove\n`prd.md` §8, the FR-8 row.\n",
+        )
+        .unwrap();
+        fs::write(
+            repo.join(dir).join("slice-02-b.md"),
+            "# S\n\n### 3. Prove\nnone: no user-visible change.\n",
+        )
+        .unwrap();
+        let docs = Docs::open(repo).unwrap();
+        let slice = |number: u32, file: &str| crate::docs::Slice {
+            number,
+            file: format!("001-x/{file}"),
+            status: Some("done".to_string()),
+            ..Default::default()
+        };
+        let board = Status {
+            number: 1,
+            dir: dir.to_string(),
+            all_done,
+            slices: vec![slice(1, "slice-01-a.md"), slice(2, "slice-02-b.md")],
+            ..Default::default()
+        };
+        let log = repo.join("gate.log");
+        fs::write(&log, "ok\n").unwrap();
+        let cp = Pack::for_checkpoint(
+            &docs,
+            &board,
+            1,
+            covers,
+            &log,
+            false,
+            "clean\n",
+            &repo.join("packs"),
+            1,
+        )
+        .unwrap();
+        let text = section_text(&cp, "qa_rows");
+        (cp.rows, text)
+    }
+
+    #[test]
+    fn the_last_checkpoint_is_handed_every_row_in_the_table() {
+        let (rows, text) = checkpoint_rows(true, &[1]);
+        assert_eq!(keys(&rows), ["FR-6.1", "FR-6.2", "FR-7", "FR-6.3", "FR-8"]);
+        assert_eq!(body_rows(&text).len(), 5, "{text}");
+        assert!(text.contains("handed every row in the QA table"), "{text}");
+    }
+
+    #[test]
+    fn an_earlier_checkpoint_is_handed_only_its_covered_rows() {
+        let (rows, text) = checkpoint_rows(false, &[1]);
+        assert_eq!(keys(&rows), ["FR-8"]);
+        assert_eq!(
+            body_rows(&text),
+            ["| FR-8 after merge | run d | transcript | no | key: `FR-8`"]
+        );
+        assert!(!text.contains("handed every row"), "{text}");
+    }
+
+    #[test]
+    fn a_covered_slice_naming_no_row_hands_nothing() {
+        let (rows, text) = checkpoint_rows(false, &[2]);
+        assert!(rows.is_empty(), "{rows:?}");
+        assert!(body_rows(&text).is_empty(), "{text}");
+        assert!(
+            text.contains("| FR | Proof | Evidence | Human? |\n|---|---|---|---|\n"),
+            "{text}"
+        );
+        assert!(text.contains("0 rows handed"), "{text}");
     }
 
     #[test]
