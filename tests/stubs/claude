@@ -61,6 +61,9 @@
 //     names each one under **Fixed** and FIXED: instead of `none`.
 //     covers: [n, ...] the slices the record names, in place of every slice
 //     the pack hands it.
+//     evidence: {"<key>": "absent" | "empty" | "link" | "file"} how a handed
+//     row's `cp-<n>/<key>/` is left; every other row not marked deferred gets
+//     a directory holding one file.
 //
 // The call record ($FACTORY_STUB_DIR/calls/<n>.json) carries argv, cwd, HEAD,
 // the FACTORY_* env, every env variable's name (never a value), GH_CONFIG_DIR,
@@ -282,17 +285,43 @@ if (role === 'checkpoint') {
   const fixedText = fixed.length ? fixed.map((h) => `leaks: ${h}`).join(', ') : 'none'
   const last = covered[covered.length - 1] ?? '00'
   let evidence = 'none (stub)'
+  const keyed = [...pack.matchAll(/ key: `([^`]+)`( \(deferred)?/g)].map((x) => ({ key: x[1], human: !!x[2] }))
+  const proved = []
   if (process.env.FACTORY_EVIDENCE) {
     const cpDir = path.join(process.env.FACTORY_EVIDENCE, `cp-${cp}`)
     fs.mkdirSync(cpDir, { recursive: true })
     fs.writeFileSync(path.join(cpDir, 'row.txt'), `${rows.join(', ') || 'none'}: proven by the stub at checkpoint ${cp}\n`)
     evidence = `cp-${cp}/row.txt`
+    const how = step.evidence ?? {}
+    for (const { key, human } of keyed) {
+      if (human) {
+        proved.push(`${key}: deferred (Human? = yes)`)
+        continue
+      }
+      const dir = path.join(cpDir, key)
+      const mode = how[key]
+      fs.rmSync(dir, { recursive: true, force: true })
+      if (mode === 'absent') continue
+      if (mode === 'file') {
+        fs.writeFileSync(dir, 'not a directory\n')
+      } else if (mode === 'link') {
+        const elsewhere = path.join(process.env.FACTORY_EVIDENCE, 'elsewhere')
+        fs.mkdirSync(elsewhere, { recursive: true })
+        fs.writeFileSync(path.join(elsewhere, 'proof.txt'), 'somebody else\'s proof\n')
+        fs.symlinkSync(elsewhere, dir)
+      } else {
+        fs.mkdirSync(dir, { recursive: true })
+        if (mode !== 'empty') fs.writeFileSync(path.join(dir, 'proof.txt'), `${key}: proven by the stub at checkpoint ${cp}\n`)
+      }
+      proved.push(`${key}: cp-${cp}/${key}/proof.txt`)
+    }
   }
+  const rowLine = keyed.length ? proved.join(', ') : '0 rows handed'
   const add = ['log', 'add', cpFeature, '--kind', 'checkpoint', '--phase', 'checkpoint', '--slice', String(Number(last)), '--covers', covered.map(Number).join(','), '--title', `after slice-${last} · ${today}`, '--body-file', '-']
   const id = docs(add, [
     `**Covers:** slices ${covered.join(', ')}`,
     '**Gate:** 1 runs, 0 red, 0 min — caught: nothing (driver-run)',
-    `**Prove:** ${rows.join(', ') || 'none'} — evidence: ${evidence}`,
+    `**Prove:** ${rows.join(', ') || 'none'} — evidence: ${evidence} — rows: ${rowLine}`,
     `**Fixed:** ${fixedText}`,
   ].join('\n'))
   emit(init)

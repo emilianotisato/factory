@@ -106,3 +106,31 @@ fn pr_body_names_full_gate_runs_and_inner_loops() {
         assert_unique_passage("the PR body's Gate line", gate, needle);
     }
 }
+
+#[test]
+fn checkpoint_evidence_goes_in_one_directory_per_row_key() {
+    let prove = line_starting(
+        "the checkpoint contract",
+        pack::CONTRACT_CHECKPOINT,
+        "2. **Prove**",
+    );
+    for needle in [
+        "Each row's evidence lives in its own directory, `$FACTORY_EVIDENCE/cp-{n}/<key>/`, where `<key>` is the `key:` the row carries under `# QA rows`",
+        "a harness that saves elsewhere copies what it wrote into the row's directory",
+        "every row not marked `(deferred: Human? = yes)` left a non-empty directory there",
+    ] {
+        assert_unique_passage("checkpoint Prove step", prove, needle);
+    }
+    let record = line_starting(
+        "the checkpoint contract",
+        pack::CONTRACT_CHECKPOINT,
+        "4. **Record**",
+    );
+    for needle in [
+        "lists each handed row by its key with its evidence (`FR-6.1: cp-{n}/FR-6.1/<file>`)",
+        "a deferred row as `FR-7: deferred (Human? = yes)`",
+        "reads `0 rows handed` when the pack handed none",
+    ] {
+        assert_unique_passage("checkpoint Record step", record, needle);
+    }
+}

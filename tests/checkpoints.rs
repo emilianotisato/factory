@@ -1746,6 +1746,464 @@ fn a_second_short_record_blocks_and_leaves_the_slices_unverified() {
     assert_eq!(status["unverified"], json!([2]), "{status}");
 }
 
+// ── a row proven by its evidence directory ──────────────────────────────────
+
+/// Replaces the fixture's QA table with `table` and has every slice's Prove section name `named`.
+fn qa_plan(fx: &Fixture, table: &[&str], named: &str) {
+    let p = fx.path().join(FEATURE_DIR).join("prd.md");
+    let text = fs::read_to_string(&p).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines
+        .iter()
+        .position(|l| l.starts_with("| FR |"))
+        .unwrap_or_else(|| panic!("no QA table in\n{text}"));
+    let end = start
+        + lines[start..]
+            .iter()
+            .take_while(|l| l.starts_with('|'))
+            .count();
+    let mut out: Vec<&str> = lines[..start].to_vec();
+    out.extend(table);
+    out.extend(&lines[end..]);
+    fs::write(&p, out.join("\n") + "\n").unwrap();
+    for n in 1..=3 {
+        let s = fx.slice_path(n);
+        let text = fs::read_to_string(&s).unwrap();
+        assert!(text.contains("the FR-1 row."), "{}", s.display());
+        fs::write(&s, text.replace("the FR-1 row.", named)).unwrap();
+    }
+    fx.git(&["add", "-A"]);
+    fx.git(&["commit", "-q", "-m", "chore: the QA plan"]);
+}
+
+const QA_HEAD: [&str; 2] = [
+    "| FR | Proof on the real surface | Evidence | Human? |",
+    "|---|---|---|---|",
+];
+
+fn rows_table(rows: &[(&str, &str)]) -> Vec<String> {
+    let mut t: Vec<String> = QA_HEAD.iter().map(|l| l.to_string()).collect();
+    for (i, (fr, human)) in rows.iter().enumerate() {
+        t.push(format!(
+            "| {fr} | run step {i} in the fixture | transcript | {human} |"
+        ));
+    }
+    t
+}
+
+fn with_evidence(how: Value) -> Value {
+    json!({"outcome": "checkpoint", "evidence": how})
+}
+
+fn record_body(fx: &Fixture, id: &str) -> String {
+    let hit = fx
+        .log_of("checkpoint")
+        .into_iter()
+        .find(|e| e["id"] == id)
+        .unwrap_or_else(|| panic!("no {id}"));
+    body(&hit).to_string()
+}
+
+fn sent_back_once(fx: &Fixture, dir: &Path, short: &str) {
+    assert_eq!(
+        prompts(fx),
+        [
+            build(1),
+            build(2),
+            checkpoint(1),
+            checkpoint(1),
+            build(3),
+            checkpoint(3),
+            polish()
+        ],
+        "{}",
+        driver_log(dir)
+    );
+    let text = driver_log(dir);
+    assert!(
+        text.contains(&format!("wrote CP-1 {short} — sent back once")),
+        "{text}"
+    );
+    let spawned = of_kind(dir, "checkpoint_spawned");
+    assert_eq!(spawned[1]["attempt"], 2);
+    assert_eq!(count(&kinds(dir), "checkpoint_blocked"), 0);
+    assert!(fx.log_of("block").is_empty());
+}
+
+#[test]
+fn a_row_with_no_evidence_directory_is_sent_back() {
+    let fx = Fixture::new("cp-ev-absent");
+    fx.chain();
+    let table = rows_table(&[("FR-1", "no"), ("FR-2", "no")]);
+    qa_plan(
+        &fx,
+        &table.iter().map(String::as_str).collect::<Vec<_>>(),
+        "the FR-1 and FR-2 rows.",
+    );
+    fx.write_plan(&[
+        done(),
+        done(),
+        with_evidence(json!({"FR-2": "absent"})),
+        step("checkpoint"),
+        done(),
+        step("checkpoint"),
+    ]);
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "finished", 90);
+
+    sent_back_once(&fx, &dir, "with no evidence for FR-2");
+    assert!(
+        driver_log(&dir).contains("checkpoint 1: 2 rows handed, evidence owed for FR-1, FR-2"),
+        "{}",
+        driver_log(&dir)
+    );
+    assert!(dir.join("evidence/cp-1/FR-2/proof.txt").is_file());
+}
+
+#[test]
+fn an_empty_evidence_directory_counts_as_missing() {
+    let fx = Fixture::new("cp-ev-empty");
+    fx.chain();
+    let table = rows_table(&[("FR-1", "no"), ("FR-2", "no")]);
+    qa_plan(
+        &fx,
+        &table.iter().map(String::as_str).collect::<Vec<_>>(),
+        "the FR-1 and FR-2 rows.",
+    );
+    fx.write_plan(&[
+        done(),
+        done(),
+        with_evidence(json!({"FR-2": "empty"})),
+        step("checkpoint"),
+        done(),
+        step("checkpoint"),
+    ]);
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "finished", 90);
+
+    sent_back_once(&fx, &dir, "with no evidence for FR-2");
+}
+
+#[test]
+fn a_link_or_a_file_in_place_of_a_row_directory_counts_as_missing() {
+    let fx = Fixture::new("cp-ev-link");
+    fx.chain();
+    let table = rows_table(&[("FR-1", "no"), ("FR-2", "no")]);
+    qa_plan(
+        &fx,
+        &table.iter().map(String::as_str).collect::<Vec<_>>(),
+        "the FR-1 and FR-2 rows.",
+    );
+    fx.write_plan(&[
+        done(),
+        done(),
+        with_evidence(json!({"FR-2": "link"})),
+        with_evidence(json!({"FR-2": "file"})),
+        done(),
+    ]);
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "waiting-owner", 60);
+
+    let blocks = fx.log_of("block");
+    assert_eq!(blocks.len(), 1, "{blocks:?}");
+    assert_eq!(
+        blocks[0]["title"], "Checkpoint 1 left no evidence for FR-2",
+        "{}",
+        blocks[0]
+    );
+    assert_eq!(count(&kinds(&dir), "checkpoint_done"), 0);
+}
+
+#[test]
+fn a_block_names_every_missing_row() {
+    let fx = Fixture::new("cp-ev-every");
+    fx.chain();
+    let table = rows_table(&[
+        ("FR-1", "no"),
+        ("FR-2", "no"),
+        ("FR-3", "no"),
+        ("FR-4", "no"),
+    ]);
+    qa_plan(
+        &fx,
+        &table.iter().map(String::as_str).collect::<Vec<_>>(),
+        "the FR-1, FR-2, FR-3 and FR-4 rows.",
+    );
+    let missing = json!({"FR-2": "absent", "FR-3": "empty", "FR-4": "absent"});
+    fx.write_plan(&[
+        done(),
+        done(),
+        with_evidence(missing.clone()),
+        with_evidence(missing),
+        done(),
+    ]);
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "waiting-owner", 60);
+
+    assert_eq!(
+        prompts(&fx),
+        [build(1), build(2), checkpoint(1), checkpoint(1)],
+        "{}",
+        driver_log(&dir)
+    );
+    let blocks = fx.log_of("block");
+    assert_eq!(blocks.len(), 1, "{blocks:?}");
+    let title = "Checkpoint 1 left no evidence for FR-2, FR-3, FR-4";
+    assert_eq!(blocks[0]["title"], title, "{}", blocks[0]);
+    let b = body(&blocks[0]);
+    assert!(
+        b.contains("holds no non-empty directory for row(s) FR-2, FR-3, FR-4;"),
+        "{b}"
+    );
+    assert!(b.contains("The disk decides"), "{b}");
+    assert!(!b.contains("never name slice(s)"), "{b}");
+    let blocked = of_kind(&dir, "checkpoint_blocked");
+    assert_eq!(blocked.len(), 1);
+    assert_eq!(blocked[0]["question"], title);
+    assert_eq!(count(&kinds(&dir), "checkpoint_done"), 0);
+}
+
+#[test]
+fn a_rejected_checkpoint_does_not_verify_its_slices() {
+    let fx = Fixture::new("cp-ev-rejected");
+    fx.chain();
+    let table = rows_table(&[("FR-1", "no"), ("FR-2", "no")]);
+    qa_plan(
+        &fx,
+        &table.iter().map(String::as_str).collect::<Vec<_>>(),
+        "the FR-1 and FR-2 rows.",
+    );
+    let missing = json!({"FR-2": "absent"});
+    fx.write_plan(&[
+        done(),
+        done(),
+        with_evidence(missing.clone()),
+        with_evidence(missing),
+        step("checkpoint"),
+        done(),
+        step("checkpoint"),
+    ]);
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "waiting-owner", 60);
+
+    assert_eq!(
+        checkpoint_covers(&fx),
+        [
+            ("CP-1".into(), json!([1, 2])),
+            ("CP-2".into(), json!([1, 2])),
+        ]
+    );
+    let status: Value = serde_json::from_str(&fx.docs(&["status", "001", "--json"])).unwrap();
+    assert_eq!(status["unverified"], json!([]), "{status}");
+
+    let out = factory(&fx, &["answer", "BLOCK-1", "fixed the pack"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    wait_phase(&fx, &dir, "finished", 90);
+
+    let started: Vec<(Value, Value)> = of_kind(&dir, "checkpoint_started")
+        .iter()
+        .map(|e| (e["n"].clone(), e["covers"].clone()))
+        .collect();
+    assert_eq!(
+        started,
+        [
+            (json!(1), json!([1, 2])),
+            (json!(3), json!([1, 2])),
+            (json!(4), json!([3])),
+        ],
+        "{}",
+        driver_log(&dir)
+    );
+    assert_eq!(
+        prompts(&fx),
+        [
+            build(1),
+            build(2),
+            checkpoint(1),
+            checkpoint(1),
+            checkpoint(3),
+            build(3),
+            checkpoint(4),
+            polish()
+        ]
+    );
+}
+
+#[test]
+fn a_record_the_owner_writes_after_the_block_stands() {
+    let fx = Fixture::new("cp-ev-owner");
+    fx.chain();
+    let missing = json!({"FR-1.2": "absent"});
+    fx.write_plan(&[
+        done(),
+        done(),
+        with_evidence(missing.clone()),
+        with_evidence(missing),
+        done(),
+        step("checkpoint"),
+    ]);
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "waiting-owner", 60);
+
+    let body = fx.stub_dir().join("owner-record.md");
+    fs::write(&body, "**Prove:** FR-1.2 driven by hand\n").unwrap();
+    fx.docs(&[
+        "log",
+        "add",
+        "001",
+        "--kind",
+        "checkpoint",
+        "--phase",
+        "checkpoint",
+        "--slice",
+        "2",
+        "--covers",
+        "1,2",
+        "--title",
+        "after slice-02",
+        "--body-file",
+        body.to_str().unwrap(),
+    ]);
+    let out = factory(&fx, &["answer", "BLOCK-1", "proved it by hand"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    wait_phase(&fx, &dir, "finished", 90);
+
+    let started: Vec<Value> = of_kind(&dir, "checkpoint_started")
+        .iter()
+        .map(|e| e["covers"].clone())
+        .collect();
+    assert_eq!(started, [json!([1, 2]), json!([3])], "{}", driver_log(&dir));
+}
+
+#[test]
+fn one_fr_with_three_rows_needs_three_directories() {
+    let fx = Fixture::new("cp-ev-three");
+    fx.chain();
+    let table = rows_table(&[("FR-6", "no"), ("FR-6", "no"), ("FR-6", "no")]);
+    qa_plan(
+        &fx,
+        &table.iter().map(String::as_str).collect::<Vec<_>>(),
+        "the FR-6 rows.",
+    );
+    let missing = json!({"FR-6.3": "absent"});
+    fx.write_plan(&[
+        done(),
+        done(),
+        with_evidence(missing.clone()),
+        with_evidence(missing),
+        done(),
+    ]);
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "waiting-owner", 60);
+
+    for key in ["FR-6.1", "FR-6.2"] {
+        let d = dir.join("evidence/cp-1").join(key);
+        assert!(d.join("proof.txt").is_file(), "{} missing", d.display());
+    }
+    let blocks = fx.log_of("block");
+    assert_eq!(blocks.len(), 1, "{blocks:?}");
+    assert_eq!(
+        blocks[0]["title"], "Checkpoint 1 left no evidence for FR-6.3",
+        "{}",
+        blocks[0]
+    );
+    assert!(
+        driver_log(&dir).contains("wrote CP-1 with no evidence for FR-6.3 — sent back once"),
+        "{}",
+        driver_log(&dir)
+    );
+}
+
+#[test]
+fn a_human_row_needs_no_evidence() {
+    let fx = Fixture::new("cp-ev-human");
+    fx.chain();
+    let table = rows_table(&[("FR-1", "no"), ("FR-2", "yes")]);
+    qa_plan(
+        &fx,
+        &table.iter().map(String::as_str).collect::<Vec<_>>(),
+        "the FR-1 and FR-2 rows.",
+    );
+    fx.write_plan(&[
+        done(),
+        done(),
+        step("checkpoint"),
+        done(),
+        step("checkpoint"),
+    ]);
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "finished", 90);
+
+    assert_eq!(
+        prompts(&fx),
+        [
+            build(1),
+            build(2),
+            checkpoint(1),
+            build(3),
+            checkpoint(2),
+            polish()
+        ],
+        "{}",
+        driver_log(&dir)
+    );
+    assert!(!dir.join("evidence/cp-1/FR-2").exists());
+    assert!(
+        driver_log(&dir).contains(
+            "checkpoint 1: 2 rows handed, evidence owed for FR-1, deferred (Human? = yes): FR-2"
+        ),
+        "{}",
+        driver_log(&dir)
+    );
+    assert!(
+        record_body(&fx, "CP-1").contains("FR-2: deferred (Human? = yes)"),
+        "{}",
+        record_body(&fx, "CP-1")
+    );
+}
+
+#[test]
+fn a_prd_with_no_fr_rows_hands_nothing() {
+    let fx = Fixture::new("cp-ev-none");
+    fx.chain();
+    qa_plan(
+        &fx,
+        &["| Step | What |", "|---|---|", "| 1 | build the fixture |"],
+        "the FR-1 row.",
+    );
+    fx.write_plan(&[
+        done(),
+        done(),
+        step("checkpoint"),
+        done(),
+        step("checkpoint"),
+    ]);
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "finished", 90);
+
+    assert_eq!(
+        prompts(&fx),
+        [
+            build(1),
+            build(2),
+            checkpoint(1),
+            build(3),
+            checkpoint(2),
+            polish()
+        ],
+        "{}",
+        driver_log(&dir)
+    );
+    let text = driver_log(&dir);
+    assert!(text.contains("checkpoint 1: 0 rows handed"), "{text}");
+    assert!(text.contains("checkpoint 2: 0 rows handed"), "{text}");
+    assert!(
+        record_body(&fx, "CP-1").contains("rows: 0 rows handed"),
+        "{}",
+        record_body(&fx, "CP-1")
+    );
+}
+
 // ── a fix worker's changes, however it ended ────────────────────────────────
 
 #[test]
