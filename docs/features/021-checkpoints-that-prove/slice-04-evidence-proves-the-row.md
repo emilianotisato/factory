@@ -65,3 +65,13 @@
 `prd.md` §8, the **FR-2** row in full: `a_row_with_no_evidence_directory_is_sent_back`, `an_empty_evidence_directory_counts_as_missing`, `a_block_names_every_missing_row`, `one_fr_with_three_rows_needs_three_directories`, `a_human_row_needs_no_evidence`, `a_prd_with_no_fr_rows_hands_nothing`. All `run` rows, proven below the UI from the transcript.
 
 **Acceptance:** after the checkpoint, the transcript shows each named test green, including the two exclusion cases.
+
+**Code-review fixes (2026-11-23).**
+- A checkpoint worker left behind by a killed driver landed as soon as any `CP-n` existed, then emitted `CheckpointDone`. `accepted_only` then counted a thin or evidence-less record, so a driver restart skipped every new check. It now lands only when `checkpoint::orphan_record_holds` passes: the same covers and evidence test as the live path (AD-9). Pinned by `a_short_record_left_by_a_killed_driver_does_not_close_the_checkpoint`.
+- `accepted_only` kept every record written after a checkpoint's last block as the owner's. That included a resumed worker's short record when the run stopped before the next check. Now only a record between the block and its answer stands (AD-8). Pinned by `a_record_after_the_blocks_answer_is_a_workers_and_is_refused`.
+- Two doc comments overstated the code:
+  - `unproven_rows` claimed "only `lstat`" and "a file at any level counts as missing".
+  - `accepted_only` claimed to narrow `checkpoints`, when it recomputes only `unverified` and `checkpoint_due`.
+
+  Both now say what the code does.
+- The contract said "a real directory and not a link". The check also needs an entry inside that is not a link, so it now says "a real directory holding files, not links". The return line's evidence path changed from `cp-{n}/<file>` to `cp-{n}/<key>/<file>`, which matches steps 2 and 3.

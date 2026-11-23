@@ -1728,12 +1728,12 @@ fn a_second_short_record_blocks_and_leaves_the_slices_unverified() {
     );
     let blocks = fx.log_of("block");
     assert_eq!(blocks.len(), 1, "{blocks:?}");
-    let title = "Checkpoint 1 records never covered slice(s) 02";
+    let title = "Checkpoint 1 record CP-2 leaves out slice(s) 02";
     assert_eq!(blocks[0]["title"], title, "{}", blocks[0]);
     assert_eq!(blocks[0]["phase"], "checkpoint");
     let b = body(&blocks[0]);
     assert!(
-        b.contains("the records `CP-1`, `CP-2` never name slice(s) 02"),
+        b.contains("of the records `CP-1`, `CP-2`, the newest, `CP-2`, does not name slice(s) 02"),
         "{b}"
     );
     let blocked = of_kind(&dir, "checkpoint_blocked");
@@ -1744,6 +1744,139 @@ fn a_second_short_record_blocks_and_leaves_the_slices_unverified() {
 
     let status: Value = serde_json::from_str(&fx.docs(&["status", "001", "--json"])).unwrap();
     assert_eq!(status["unverified"], json!([2]), "{status}");
+}
+
+#[test]
+fn a_block_names_the_slice_the_newest_record_leaves_out() {
+    let fx = Fixture::new("cp-short-swap");
+    fx.chain();
+    fx.write_plan(&[done(), done(), short(&[1]), short(&[2]), done()]);
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "waiting-owner", 60);
+
+    let blocks = fx.log_of("block");
+    assert_eq!(blocks.len(), 1, "{blocks:?}");
+    assert_eq!(
+        blocks[0]["title"], "Checkpoint 1 record CP-2 leaves out slice(s) 01",
+        "{}",
+        blocks[0]
+    );
+    assert!(body(&blocks[0]).contains("does not name slice(s) 01"));
+}
+
+#[test]
+fn a_worker_dying_after_a_short_record_is_respawned_not_blocked() {
+    let fx = Fixture::new("cp-short-dead");
+    fx.chain();
+    fx.write_plan(&[
+        done(),
+        done(),
+        short(&[1]),
+        step("dead"),
+        step("checkpoint"),
+        done(),
+        step("checkpoint"),
+    ]);
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "finished", 90);
+
+    assert_eq!(
+        prompts(&fx),
+        [
+            build(1),
+            build(2),
+            checkpoint(1),
+            checkpoint(1),
+            checkpoint(1),
+            build(3),
+            checkpoint(3),
+            polish()
+        ],
+        "{}",
+        driver_log(&dir)
+    );
+    assert!(fx.log_of("block").is_empty());
+    assert_eq!(count(&kinds(&dir), "worker_dead"), 1);
+}
+
+#[test]
+fn a_short_record_left_by_a_killed_driver_does_not_close_the_checkpoint() {
+    let fx = Fixture::new("cp-orphan-short");
+    fx.chain();
+    fx.write_plan(&[
+        done(),
+        done(),
+        json!({"outcome": "checkpoint", "delay_ms": 3000}),
+        step("checkpoint"),
+        done(),
+        step("checkpoint"),
+    ]);
+    let mut cmd = fx.command(BIN);
+    cmd.args(["run", "001", "--foreground"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0);
+    let mut child = cmd.spawn().unwrap();
+    let driver = child.id();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while run_dirs(&fx).len() != 1
+        || !kinds(&run_dirs(&fx)[0])
+            .iter()
+            .any(|k| k == "checkpoint_spawned")
+    {
+        assert!(Instant::now() < deadline, "no checkpoint worker after 30s");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let dir = only_run_dir(&fx);
+    let worker = state(&dir)["workers"][2]["pid"].as_u64().unwrap() as u32;
+    // SAFETY: a plain kill(2) on the test's own child group.
+    assert_eq!(unsafe { libc::kill(-(driver as i32), libc::SIGKILL) }, 0);
+    child.wait().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while pid_alive(worker) {
+        assert!(Instant::now() < deadline, "the orphaned worker lives on");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let body = fx.stub_dir().join("thin-record.md");
+    fs::write(&body, "**Prove:** slice 01 only\n").unwrap();
+    fx.docs(&[
+        "log",
+        "add",
+        "001",
+        "--kind",
+        "checkpoint",
+        "--phase",
+        "checkpoint",
+        "--slice",
+        "1",
+        "--covers",
+        "1",
+        "--title",
+        "after slice-01",
+        "--body-file",
+        body.to_str().unwrap(),
+    ]);
+
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    wait_phase(&fx, &dir, "finished", 60);
+
+    let done_ns: Vec<Value> = of_kind(&dir, "checkpoint_done")
+        .iter()
+        .map(|e| e["n"].clone())
+        .collect();
+    assert!(!done_ns.contains(&json!(1)), "{done_ns:?}");
+    let started: Vec<Value> = of_kind(&dir, "checkpoint_started")
+        .iter()
+        .map(|e| e["covers"].clone())
+        .collect();
+    assert_eq!(
+        started,
+        [json!([1, 2]), json!([1, 2]), json!([3])],
+        "{}",
+        driver_log(&dir)
+    );
 }
 
 // ── a row proven by its evidence directory ──────────────────────────────────

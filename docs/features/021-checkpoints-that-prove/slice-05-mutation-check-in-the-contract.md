@@ -40,3 +40,6 @@
 `prd.md` §8, the **FR-4** row: `the_checkpoint_contract_asks_for_one_mutation_check`. A `run` row, proven below the UI from the transcript. This slice is the last in the order, so its checkpoint runs with `all_done` true and is handed every row in the table (§5 FR-3).
 
 **Acceptance:** after the checkpoint, the transcript shows the test green, and the record shows the whole table handed rather than this slice's row alone.
+
+**Code-review fixes (2026-11-23).**
+- The `**Mutation:**` field had no form for a checkpoint that drove no row (`0 rows handed`, or only deferred rows). That left the worker to invent a mutation or block. The contract now gives `**Mutation:** none — 0 rows driven`.

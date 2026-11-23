@@ -187,7 +187,6 @@ pub fn run(
         }
     }
 
-    // `n` is max + 1, so every record numbered `n` or later was written for this checkpoint.
     let mut records_seen = 0;
     loop {
         if let Some(o) = await_quota(run, out)? {
@@ -295,6 +294,7 @@ pub fn run(
         let exit = worker.wait()?;
         green_cached = true; // a respawn reads the same transcript
         let after = docs.status(&feature)?;
+        // `n` is max + 1, so every record numbered `n` or later was written for this checkpoint.
         let records: Vec<&crate::docs::Checkpoint> =
             after.checkpoints.iter().filter(|c| c.n >= n).collect();
         let newest = records.iter().max_by_key(|c| c.n);
@@ -361,13 +361,14 @@ pub fn run(
             let missing: Vec<u32> = covers
                 .iter()
                 .copied()
-                .filter(|s| !records.iter().any(|c| c.covers.contains(s)))
+                .filter(|s| !thin.covers.contains(s))
                 .collect();
             let rows = unproven.join(", ");
             let mut what = Vec::new();
             if !missing.is_empty() {
                 what.push(format!(
-                    "records never covered slice(s) {}",
+                    "record CP-{} leaves out slice(s) {}",
+                    thin.n,
                     pad_list(&missing)
                 ));
             }
@@ -404,8 +405,9 @@ pub fn run(
             let mut happened = String::new();
             if !missing.is_empty() {
                 happened += &format!(
-                    "the records {} never name slice(s) {}, so those slices stay unverified. ",
+                    "of the records {}, the newest, `CP-{}`, does not name slice(s) {}, so the checkpoint's slices stay unverified. ",
                     ids.join(", "),
+                    thin.n,
                     pad_list(&missing)
                 );
             }
@@ -1178,7 +1180,8 @@ fn settle(
 }
 
 /// The keys of the handed rows not marked human whose `cp-{n}/<key>/` under `evidence` is missing or empty.
-/// Only `lstat` is used: a link or a file at any level counts as missing, so no link can lend another dir's files.
+/// `evidence`, `cp-{n}` and `<key>` must be real directories, not links, and `<key>` must hold an entry that is not a
+/// link, so no link can lend another dir's files.
 fn unproven_rows(evidence: &Path, n: u32, rows: &[QaRow]) -> Vec<String> {
     let real_dir = |p: &Path| fs::symlink_metadata(p).is_ok_and(|m| m.is_dir());
     let cp = evidence.join(format!("cp-{n}"));
@@ -1199,6 +1202,36 @@ fn unproven_rows(evidence: &Path, n: u32, rows: &[QaRow]) -> Vec<String> {
         })
         .map(|r| r.key.clone())
         .collect()
+}
+
+/// Whether a checkpoint worker of an earlier driver left what this driver would accept: the newest record numbered
+/// `n` or later names every slice the checkpoint was handed, and every handed row has its evidence.
+pub fn orphan_record_holds(run: &Run, board: &Status, n: u32) -> Result<bool> {
+    let handed = run.events()?.iter().rev().find_map(|e| match &e.kind {
+        EventKind::CheckpointStarted { n: m, covers }
+        | EventKind::CheckpointResumed { n: m, covers }
+            if *m == n =>
+        {
+            Some(covers.clone())
+        }
+        _ => None,
+    });
+    let newest = board
+        .checkpoints
+        .iter()
+        .filter(|c| c.n >= n)
+        .max_by_key(|c| c.n);
+    let (Some(covers), Some(newest)) = (handed, newest) else {
+        return Ok(false);
+    };
+    if !covers.iter().all(|s| newest.covers.contains(s)) {
+        return Ok(false);
+    }
+    let repo = run.state().repo.clone();
+    let prd = repo.join(&board.dir).join("prd.md");
+    let prd_text = fs::read_to_string(&prd).map_err(io(format!("read {}", prd.display())))?;
+    let (_, rows) = crate::pack::handed_qa(&repo, board, &covers, &prd_text)?;
+    Ok(unproven_rows(&crate::worker::evidence_dir(run.dir()), n, &rows).is_empty())
 }
 
 fn handed_line(rows: &[QaRow]) -> String {
@@ -1234,9 +1267,10 @@ fn csv(slices: &[u32]) -> String {
         .join(",")
 }
 
-/// Narrows `board` to the records this run's driver accepted: a checkpoint it started and never finished owns the
-/// records numbered from it up to the next one started, and those prove nothing, so their slices need a checkpoint
-/// again. A record written after that checkpoint's last block is the owner's answer, and stands.
+/// Recomputes `unverified` and `checkpoint_due` from the records this run's driver accepted; `checkpoints` keeps every
+/// record. A checkpoint it started and never finished owns the records numbered from it up to the next one started,
+/// and those prove nothing, so their slices need a checkpoint again. A record written after that checkpoint's last
+/// block and before the block's answer is the owner's, and stands.
 pub fn accepted_only(board: &mut Status, events: &[Event], feature_dir: &Path) -> Result<()> {
     let mut started: Vec<u32> = Vec::new();
     let mut done: HashSet<u32> = HashSet::new();
@@ -1281,9 +1315,13 @@ pub fn accepted_only(board: &mut Status, events: &[Event], feature_dir: &Path) -
                     Some(block) => {
                         let record =
                             line_of(crate::docs::log::Kind::Checkpoint, &format!("CP-{}", c.n));
+                        let answer = entries.iter().position(|e| {
+                            e.kind == crate::docs::log::Kind::Answer
+                                && e.reference.as_deref() == Some(block)
+                        });
                         let block = line_of(crate::docs::log::Kind::Block, block);
                         match (record, block) {
-                            (Some(r), Some(b)) => r < b,
+                            (Some(r), Some(b)) => r < b || answer.is_some_and(|a| r > a),
                             _ => true,
                         }
                     }
@@ -1427,6 +1465,45 @@ mod tests {
             slice: None,
             text: "a".to_string(),
         })
+    }
+
+    #[test]
+    fn a_record_after_the_blocks_answer_is_a_workers_and_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let block = r#"{"kind":"block","id":"BLOCK-1","ts":"t","phase":"checkpoint","title":"q","body":"b"}"#;
+        let answer = r#"{"kind":"answer","ts":"t","ref":"BLOCK-1","title":"","body":"go"}"#;
+        let record = r#"{"kind":"checkpoint","id":"CP-1","ts":"t","phase":"checkpoint","slice":2,"covers":[1,2],"title":"c","body":"b"}"#;
+        let started = ev(EventKind::CheckpointStarted {
+            n: 1,
+            covers: vec![1, 2],
+        });
+        let board = || Status {
+            slices: [1, 2]
+                .map(|number| crate::docs::Slice {
+                    number,
+                    status: Some("done".to_string()),
+                    ..Default::default()
+                })
+                .to_vec(),
+            checkpoints: vec![crate::docs::Checkpoint {
+                n: 1,
+                covers: vec![1, 2],
+                ..Default::default()
+            }],
+            checkpoint_every: 2,
+            ..Default::default()
+        };
+        let events = [started, blocked(1, "BLOCK-1")];
+        for (lines, refused) in [
+            ([block, record, answer], false),
+            ([block, answer, record], true),
+        ] {
+            fs::write(tmp.path().join("log.jsonl"), lines.join("\n") + "\n").unwrap();
+            let mut b = board();
+            accepted_only(&mut b, &events, tmp.path()).unwrap();
+            let want: Vec<u32> = if refused { vec![1, 2] } else { vec![] };
+            assert_eq!(b.unverified, want, "{lines:?}");
+        }
     }
 
     #[test]

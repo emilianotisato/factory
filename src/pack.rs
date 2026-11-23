@@ -460,7 +460,6 @@ impl Pack {
 
         let mut files = Vec::new();
         let mut slices = String::new();
-        let mut named: Vec<String> = Vec::new();
         for c in covers {
             let Some(entry) = board.slices.iter().find(|s| s.number == *c) else {
                 continue;
@@ -468,11 +467,6 @@ impl Pack {
             let rel = format!("docs/features/{}", entry.file);
             let slice_text = read(&repo.join(&rel))?;
             let prove = prove_section(&slice_text);
-            for id in fr_ids(prove) {
-                if !named.contains(&id) {
-                    named.push(id);
-                }
-            }
             slices.push_str(&format!(
                 "## slice-{c:02} — {}\n\n<!-- {rel} -->\n\n",
                 entry.title.as_deref().unwrap_or("")
@@ -486,7 +480,7 @@ impl Pack {
             files.push(rel);
         }
         files.push(prd_rel.clone());
-        let (qa_text, rows) = qa_rows(&prd_text, (!board.all_done).then_some(&named[..]));
+        let (qa_text, rows) = handed_qa(repo, board, covers, &prd_text)?;
 
         let (text, parts) = assemble(
             format!("<!-- factory-pack files: {} -->\n\n", files.join(",")),
@@ -708,6 +702,32 @@ pub fn fr_ids(text: &str) -> Vec<String> {
     out
 }
 
+/// The QA rows a checkpoint covering `covers` is handed: the rows the covered slices' Prove sections name, or every
+/// row once every slice is done.
+pub fn handed_qa(
+    repo: &Path,
+    board: &Status,
+    covers: &[u32],
+    prd_text: &str,
+) -> Result<(String, Vec<QaRow>)> {
+    if board.all_done {
+        return Ok(qa_rows(prd_text, None));
+    }
+    let mut named: Vec<String> = Vec::new();
+    for c in covers {
+        let Some(entry) = board.slices.iter().find(|s| s.number == *c) else {
+            continue;
+        };
+        let slice_text = read(&repo.join(format!("docs/features/{}", entry.file)))?;
+        for id in fr_ids(prove_section(&slice_text)) {
+            if !named.contains(&id) {
+                named.push(id);
+            }
+        }
+    }
+    Ok(qa_rows(prd_text, Some(&named[..])))
+}
+
 /// The QA plan rows handed to a checkpoint, each printed with its key: the rows whose first cell names an id in
 /// `named`, or every row when `named` is `None`.
 pub fn qa_rows(prd: &str, named: Option<&[String]>) -> (String, Vec<QaRow>) {
@@ -754,9 +774,7 @@ pub fn qa_rows(prd: &str, named: Option<&[String]>) -> (String, Vec<QaRow>) {
             let k = body[..=i].iter().filter(|(_, other)| other == id).count();
             format!("{id}.{k}")
         };
-        let human = cells(line)
-            .get(human_col)
-            .is_some_and(|c| c.eq_ignore_ascii_case("yes"));
+        let human = cells(line).get(human_col).is_some_and(|c| is_yes(c));
         out.push(format!(
             "{line} key: `{key}`{}",
             if human {
@@ -772,6 +790,15 @@ pub fn qa_rows(prd: &str, named: Option<&[String]>) -> (String, Vec<QaRow>) {
         out.push("(no covered slice's Prove section names a row: 0 rows handed)".to_string());
     }
     (out.join("\n"), rows)
+}
+
+/// A `Human?` cell reads yes when its first word is `yes`, as in `yes`, `**yes**: routing is judgment` or
+/// `yes → qa-guide.md`.
+fn is_yes(cell: &str) -> bool {
+    cell.trim_start_matches(['*', '_', ' '])
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .next()
+        .is_some_and(|w| w.eq_ignore_ascii_case("yes"))
 }
 
 fn cells(row: &str) -> Vec<&str> {
@@ -1141,6 +1168,21 @@ mod tests {
         let named = ["FR-6".to_string(), "FR-8".to_string()];
         let (_, rows) = qa_rows(QA_TABLE, Some(&named));
         assert_eq!(keys(&rows), ["FR-6.1", "FR-6.2", "FR-6.3", "FR-8"]);
+    }
+
+    #[test]
+    fn a_human_cell_reads_yes_by_its_first_word() {
+        for cell in [
+            "yes",
+            "Yes",
+            "**yes**: routing is judgment",
+            "yes → `qa-guide.md`",
+        ] {
+            assert!(is_yes(cell), "{cell}");
+        }
+        for cell in ["no", "", "yesterday", "no — yes later", "n/a"] {
+            assert!(!is_yes(cell), "{cell}");
+        }
     }
 
     #[test]

@@ -54,3 +54,8 @@
 `prd.md` §8, the **FR-1** row — this slice's half: `a_record_naming_fewer_slices_is_sent_back_once` and `a_second_short_record_blocks_and_leaves_the_slices_unverified`. Both are `run` rows, proven below the UI from the checkpoint's transcript. The write-side test in the same row is slice 01's.
 
 **Acceptance:** after the checkpoint, the transcript shows both tests green.
+
+**Code-review fixes (2026-11-23).**
+- A record was accepted on the newest entry alone, but the missing slices were worked out across every record numbered `n` or later. A first record covering slice 1 and a second covering slice 2 therefore blocked with an empty reason: title `Checkpoint 1 `, and a **Happened:** line that named nothing. The missing slices now come from the newest record, and the title reads `record CP-k leaves out slice(s) …`. Pinned by `a_block_names_the_slice_the_newest_record_leaves_out`.
+- AD-4's freshness rule had no test: a worker that died after a short record could have been counted as the second short record. `a_worker_dying_after_a_short_record_is_respawned_not_blocked` pins it, and it goes red when `fresh` is forced true.
+- The comment on `records_seen` explained the `c.n >= n` filter about 100 lines away. It now sits on that filter.

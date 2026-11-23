@@ -57,3 +57,8 @@
 `prd.md` §8, the **FR-3** row in full (`the_last_checkpoint_is_handed_every_row_in_the_table`, `an_earlier_checkpoint_is_handed_only_its_covered_rows`, `a_covered_slice_naming_no_row_hands_nothing`), and the **FR-2** row's pack half (`one_fr_with_three_rows_needs_three_directories`'s key half, `a_human_row_needs_no_evidence`'s marking half, `a_prd_with_no_fr_rows_hands_nothing`). All `run` rows, proven below the UI from the transcript.
 
 **Acceptance:** after the checkpoint, the transcript shows each named test green, and the recorded keys for the fixture table appear in the evidence.
+
+**Code-review fixes (2026-11-23).**
+- A `Human?` cell matched only an exact `yes`, so `**yes**: routing is judgment` or `yes → qa-guide.md`, the shape five archived PRDs use, owed evidence and would block the last checkpoint on a row no worker can prove. It now reads the cell's first word (`is_yes`, AD-10), pinned by `a_human_cell_reads_yes_by_its_first_word`.
+- The handed rows now come from one function, `pack::handed_qa`, used by both `Pack::for_checkpoint` and the restarted driver's orphan check, so the two cannot drift.
+- The contract's `# QA rows` reading step said only "the rows those Prove tasks name", which is wrong at the last checkpoint. It now adds "or every row once every slice is done".

@@ -1716,8 +1716,19 @@ fn settle_checkpoint_orphan(
 ) -> Result<Option<String>> {
     let n = w.checkpoint.unwrap_or(0);
     let repo = run.state().repo.clone();
-    let lands =
-        w.role == "fix" || (w.role == "checkpoint" && board.checkpoints.iter().any(|c| c.n == n));
+    let recorded = w.role == "checkpoint" && board.checkpoints.iter().any(|c| c.n >= n);
+    let lands = w.role == "fix" || (recorded && checkpoint::orphan_record_holds(run, board, n)?);
+    if recorded && !lands && !summary.is_dead() {
+        settle(run, w.row_id, &w.session_id, &summary, WorkerOutcome::Done)?;
+        say(
+            out,
+            &format!(
+                "checkpoint {n}: worker {} of an earlier driver left a record short of its slices or evidence — the checkpoint runs again",
+                w.session_id
+            ),
+        )?;
+        return Ok(None);
+    }
     let mut sha = None;
     if lands {
         let attempt = if w.role == "fix" {
