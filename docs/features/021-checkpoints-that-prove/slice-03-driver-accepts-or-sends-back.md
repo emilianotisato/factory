@@ -9,6 +9,7 @@
 - Seen red: `a_record_naming_fewer_slices_is_sent_back_once` with the old `c.n == n` test back — one checkpoint worker, then slice 03 (prompts mismatch). `a_second_short_record_blocks_and_leaves_the_slices_unverified` with the cap removed — the third worker lands, the run never parks (waiting-owner timeout).
 - Deviation: the send-back is capped on the checkpoint's own record count, not `attempt` (AD-4, decide), so a death before a short record still gets its send-back.
 - Prove: both tests left for the checkpoint.
+- Checkpoint 1, FR-1 (send-back half): `cp-1/fr-1-send-back.log` — `a_record_naming_fewer_slices_is_sent_back_once` and `a_second_short_record_blocks_and_leaves_the_slices_unverified` green.
 
 **Slice**: After this, the driver stops closing a checkpoint on the number alone. It reads the newest checkpoint entry, checks that it names every slice the driver handed it, sends a short record back once, then blocks naming the missing slices. It leaves the evidence check to slice 04 and the contract text alone.
 

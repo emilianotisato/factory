@@ -9,6 +9,7 @@
 - Seen red: `log_add_checkpoint_refuses_a_missing_covers` with the refusal stubbed to `false`. The command exited 0 and the `!o.status.success()` assertion failed. Green again once restored.
 - Deviation (AD-1, fyi): the existing tests that wrote a covers-less checkpoint now pass `--covers`, and the `cp(&[])` "no covers field" assertion is dropped because it asserted the write FR-1 forbids. `a_log_without_covers_keeps_the_high_water_rule` and `covered()` are untouched.
 - Left for the checkpoint: the §8 FR-1 `run` rows `log_add_checkpoint_refuses_a_missing_covers` and `a_log_without_covers_keeps_the_high_water_rule`.
+- Checkpoint 1, FR-1 (write half): `cp-1/fr-1-write-side.log` — `log_add_checkpoint_refuses_a_missing_covers` and `a_log_without_covers_keeps_the_high_water_rule` green.
 
 **Slice**: After this, a checkpoint entry with no `covers` cannot be created, so the false-green path in §3 closes for every new run. It leaves the read side alone: `covered()` keeps its high-water branch for the 18 covers-less entries in archived 001 to 005, and the driver still closes on the number alone — that is slice 03.
 

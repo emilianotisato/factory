@@ -708,7 +708,7 @@ pub fn fr_ids(text: &str) -> Vec<String> {
     out
 }
 
-/// The § QA plan rows handed to a checkpoint, each printed with its key: the rows whose first cell names an id in
+/// The QA plan rows handed to a checkpoint, each printed with its key: the rows whose first cell names an id in
 /// `named`, or every row when `named` is `None`.
 pub fn qa_rows(prd: &str, named: Option<&[String]>) -> (String, Vec<QaRow>) {
     let lines: Vec<&str> = prd.lines().collect();
@@ -1154,7 +1154,7 @@ mod tests {
         assert_eq!(text, "(the PRD has no QA plan table)");
     }
 
-    /// Slice 1's Prove section names one row; slice 2's names none.
+    /// The first slice's Prove section names one row; the second's names none.
     fn checkpoint_rows(all_done: bool, covers: &[u32]) -> (Vec<QaRow>, String) {
         let tmp = tempfile::tempdir().unwrap();
         let repo = tmp.path();
