@@ -3,7 +3,7 @@
 **Source**: [`prd.md`](prd.md) → §4 (FR-2, the pack side) and §5 (FR-3). **Depends on**: — _(independent, but it is the spine: slice 04 cannot check evidence until the pack returns the row keys. Both FRs rewrite `qa_rows` and `for_checkpoint`, so they are one slice.)_
 **Created**: 2026-11-23
 
-**Progress**: _(written as it lands)_
+**Progress**: built — `qa_rows` returns `(text, Vec<QaRow>)` with `FR-<n>`/`FR-<n>.<k>` keys counted over the whole body and a `human` flag read from the `Human?` column; each row prints `` key: `…` `` (and `(deferred: Human? = yes)`); `Pack.rows` carries the checkpoint's handed rows; the whole-table fallback is gone; an empty body says `0 rows handed`; `all_done` hands every row and says so. Inner loop: 2 runs, 1 red, 7 min — the red caught seven `tests/checkpoints.rs` tests leaning on the removed fallback (fixture fixed, AD-3). Deliberate reds: `one_fr_with_three_rows_gets_three_keys` (no occurrence count → three `FR-6`; Human cell ignored → no human row), `a_covered_slice_naming_no_row_hands_nothing` (fallback back → every row), `the_last_checkpoint_is_handed_every_row_in_the_table` (no `all_done` arm → `[FR-8]`), `an_earlier_checkpoint_is_handed_only_its_covered_rows` (always whole table → five keys), `a_prd_with_no_fr_rows_hands_nothing` (sentinel as signal → wrong line). Deviations: AD-2 (key print shape), AD-3 (harness fixture).
 
 **Slice**: After this, `for_checkpoint` returns the keys of the rows it handed the worker, the pack prints each row's key beside it, a `Human? = yes` row is marked deferred, and the last checkpoint is handed the whole table while an earlier one is handed only its covered slices' rows — including when that set is empty. Nothing enforces any of it yet; the driver's check is slice 04.
 
