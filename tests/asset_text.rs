@@ -127,8 +127,8 @@ fn checkpoint_evidence_goes_in_one_directory_per_row_key() {
         "4. **Record**",
     );
     for needle in [
-        "lists each handed row by its key with its evidence (`FR-6.1: cp-{n}/FR-6.1/<file>`)",
-        "a deferred row as `FR-7: deferred (Human? = yes)`",
+        "lists each handed row by its key with its evidence (`<key>: cp-{n}/<key>/<file>`)",
+        "a deferred row as `<key>: deferred (Human? = yes)`",
         "reads `0 rows handed` when the pack handed none",
     ] {
         assert_unique_passage("checkpoint Record step", record, needle);
