@@ -5,7 +5,7 @@ added: "2026-11-20"
 origin: "factory upstream"
 ---
 
-**1. The last checkpoint re-runs every browser proof the feature wrote.** A later slice put a session re-check in front of every acting user. Two earlier proofs went red and stayed red until polish, because the last checkpoint ran only its own new drive. A per-feature list of proofs, run in full at the last checkpoint, catches that.
+**1. The last checkpoint re-runs every browser proof the feature wrote.** _(Absorbed 2026-11-23 into PRD-021 FR-3; left here for the record.)_ A later slice put a session re-check in front of every acting user. Two earlier proofs went red and stayed red until polish, because the last checkpoint ran only its own new drive. A per-feature list of proofs, run in full at the last checkpoint, catches that.
 
 **2. Each form a slice adds gets one empty submit and one narrow-screen drive.** Happy-path drives missed the browser's own `required` bubbles blocking the app's Spanish errors, and a primary button off screen at 375 px. Both showed up only in the UX pass.
 
