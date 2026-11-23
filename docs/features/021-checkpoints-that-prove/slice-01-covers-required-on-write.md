@@ -3,7 +3,12 @@
 **Source**: [`prd.md`](prd.md) → §3 (FR-1, the write side). **Depends on**: — _(independent: it edits only the log's validator and the CLI arg, which no other slice touches)_
 **Created**: 2026-11-23
 
-**Progress**: _(written as it lands)_
+**Progress**:
+- Built: `validate()` in `src/docs/log.rs` now refuses a checkpoint whose `covers` is empty ("a checkpoint needs --covers, every slice it proved"). That covers both an omitted flag and `--covers ""`, and the log is never read or locked. New test `log_add_checkpoint_refuses_a_missing_covers` (`tests/docs_log.rs`). The unit refusal list gains a no-covers case.
+- Inner loop: 1 run, 0 red, 5 min. Caught nothing.
+- Seen red: `log_add_checkpoint_refuses_a_missing_covers` with the refusal stubbed to `false`. The command exited 0 and the `!o.status.success()` assertion failed. Green again once restored.
+- Deviation (AD-1, fyi): the existing tests that wrote a covers-less checkpoint now pass `--covers`, and the `cp(&[])` "no covers field" assertion is dropped because it asserted the write FR-1 forbids. `a_log_without_covers_keeps_the_high_water_rule` and `covered()` are untouched.
+- Left for the checkpoint: the §8 FR-1 `run` rows `log_add_checkpoint_refuses_a_missing_covers` and `a_log_without_covers_keeps_the_high_water_rule`.
 
 **Slice**: After this, a checkpoint entry with no `covers` cannot be created, so the false-green path in §3 closes for every new run. It leaves the read side alone: `covered()` keeps its high-water branch for the 18 covers-less entries in archived 001 to 005, and the driver still closes on the number alone — that is slice 03.
 
