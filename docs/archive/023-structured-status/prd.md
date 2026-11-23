@@ -9,6 +9,7 @@ summary: |
   `factory status --json` carries each run's repo, slug, title, slices, budget, gate, PR, CI and open questions as fields, each question with the exact `factory answer` argv, and `--recent` adds runs that ended in the last 7 days. Schema stays 1 and the prose stays, so the Claude Code cockpit mod needs no code change. Built for herdr-factory PRD-001, which waits on this release.
 from_idea: "2026-11-06-feed-a-herdr-app-cockpit-from-factory-status"
 ---
+> **History.** The code, `docs/reference` and `docs/decisions.md` win over this document.
 
 # PRD-023 — Structured run status for the herdr-app cockpit
 

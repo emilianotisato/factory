@@ -17,6 +17,7 @@ summary: |
   - the board scan and `renumber` skip symlinks.
   Interviewed 2026-11-12.
 ---
+> **History.** The code, `docs/reference` and `docs/decisions.md` win over this document.
 
 # PRD-015 — CLI, docs and log correctness
 

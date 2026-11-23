@@ -9,6 +9,7 @@ summary: |
   A new read-only verb, `factory live <id> --json`, returns one run's live detail as a schema-1 contract: what it waits on and why, what each worker does, the running or red gate with its failing excerpt, CI, a timeline, and the evidence files. Driver phases that are silent today get events (gate start, review collect, CI waiting, an empty fix, a park's reason). The same excerpt becomes a red gate's block title in `status`. The consumer is herdr-factory PRD-003's Run side panel.
 from_idea: "2026-11-07-factory-live-a-read-only-live-run-contract-for-the"
 ---
+> **History.** The code, `docs/reference` and `docs/decisions.md` win over this document.
 
 # PRD-024 — factory live: the live-run contract for the herdr cockpit panel
 

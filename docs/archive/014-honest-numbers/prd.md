@@ -9,6 +9,7 @@ author: Emiliano Tisato
 summary: |
   A retro's `## Numbers` is written at ship, so CI fix workers that run after it are missing: 6 of 54 shipped runs under-report, one by 17%. Every push after ship now rewrites the section and, when it changed, commits it ahead of the push. Agreed 2026-11-05; one FR, no slices.
 ---
+> **History.** The code, `docs/reference` and `docs/decisions.md` win over this document.
 
 # PRD-014 — Numbers count the CI rounds
 

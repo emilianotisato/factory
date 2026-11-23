@@ -8,6 +8,7 @@ author: Emiliano Tisato
 summary: |
   Polish's reviewers stop wasting passes and stop reporting what they did not do. The security pass reviews the run's own base range. A timed-out second-opinion pass counts as unreviewed. Collect skips tool-written and vendored files, splits a huge file by hunks, sends each pass the feature's settled decisions, and can review only what changed since the last polish. `factory stop` kills running reviewers, the UX pass runs before any test, and autonomy.md gains two rows. Interviewed 2026-11-12.
 ---
+> **History.** The code, `docs/reference` and `docs/decisions.md` win over this document.
 
 # PRD-017 — Polish reviews that don't waste passes
 

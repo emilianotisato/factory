@@ -1,6 +1,6 @@
-status = "shipped"
-reviewed = "2026-11-12"
-shipped = "2026-11-12"
+status = "archived"
+reviewed = "2026-11-13"
+shipped = "2026-11-13"
 
 [slices.1]
 status = "done"
@@ -14,15 +14,10 @@ depends_on = [1]
 
 [slices.3]
 status = "done"
-lane = 1
-depends_on = [2]
+lane = 2
+depends_on = [1]
 
 [slices.4]
 status = "done"
 lane = 1
-depends_on = [3]
-
-[slices.5]
-status = "done"
-lane = 2
-depends_on = []
+depends_on = [2]

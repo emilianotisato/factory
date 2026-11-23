@@ -8,6 +8,7 @@ author: Emiliano Tisato
 summary: |
   The skills stop contradicting each other and stop leaving runs to guess. Polish's closeout names the summary, not a dead Notes cell. Every `{date}` is the UTC date. Prune counts polish's own edits as under review, lets a cited test name go, and reuses polish's gate. The PR body defines its gate runs. Polish says what to do on an API-only change. Autonomy names research notes, runbooks and sign-off items. Prove rows take their expected result from the spec and are seen red once. Slices that write one file are linked. A checkpoint repairs the harness drive its slices broke. Every skill-text test asserts a unique passage. Interviewed 2026-11-12.
 ---
+> **History.** The code, `docs/reference` and `docs/decisions.md` win over this document.
 
 # PRD-018 — Skill wording, contradictions and Prove guidance
 
