@@ -187,7 +187,10 @@ function translator(provider) {
     return {
       line(ev) {
         const out = []
-        if (ev.type === 'rate_limit_event') return out
+        if (ev.type === 'rate_limit_event') {
+          resetsAt = ev.rate_limit_info?.resetsAt
+          return out
+        }
         if (ev.type !== 'result') out.push(...flush(message))
         if (ev.type === 'system') {
           session = ev.session_id
@@ -213,7 +216,7 @@ function translator(provider) {
           pending = null
           const u = ev.usage ?? {}
           out.push(...message(ev.result))
-          out.push({ type: 'result', subtype: ev.is_error ? 'error' : 'success', is_error: !!ev.is_error, duration_ms: ev.duration_ms ?? 0, result: ev.result, session_id: session, usage: { inputTokens: u.input_tokens ?? 0, outputTokens: u.output_tokens ?? 0, cacheReadTokens: u.cache_read_input_tokens ?? 0 } })
+          out.push({ type: 'result', subtype: ev.is_error ? 'error' : 'success', is_error: !!ev.is_error, duration_ms: ev.duration_ms ?? 0, result: ev.result, session_id: session, usage: { inputTokens: u.input_tokens ?? 0, outputTokens: u.output_tokens ?? 0, cacheReadTokens: u.cache_read_input_tokens ?? 0 }, ...(ev.is_error && resetsAt ? { resets_at: resetsAt } : {}) })
         }
         return out
       },

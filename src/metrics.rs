@@ -464,15 +464,22 @@ pub fn record_subagents_for(
     cwd: Option<&Path>,
     provider: Provider,
 ) -> Result<()> {
+    let config = paths::claude_config_dir();
+    record_subagents_in(run, worker_id, session_id, cwd, provider, &config)
+}
+
+fn record_subagents_in(
+    run: &mut Run,
+    worker_id: i64,
+    session_id: &str,
+    cwd: Option<&Path>,
+    provider: Provider,
+    claude_config: &Path,
+) -> Result<()> {
     if provider != Provider::Claude {
         return run.db().set_worker_subagents(worker_id, None);
     }
-    let path = transcript_of(
-        &paths::claude_config_dir(),
-        cwd,
-        &run.state().repo,
-        session_id,
-    );
+    let path = transcript_of(claude_config, cwd, &run.state().repo, session_id);
     let written = match read_subagents(&path) {
         Ok(cols) => run.db().set_worker_subagents(worker_id, Some(cols)),
         Err(SubagentsUnread::TranscriptMissing) => run
@@ -944,20 +951,16 @@ mod tests {
         let config = tmp.path().join("claude");
         fs::create_dir_all(&config).unwrap();
         fs::set_permissions(&config, fs::Permissions::from_mode(0o000)).unwrap();
-        let before = std::env::var_os("CLAUDE_CONFIG_DIR");
-        // SAFETY: only the Claude subagent lookup reads it, and there a missing transcript reads the same.
-        unsafe { std::env::set_var("CLAUDE_CONFIG_DIR", &config) };
-
-        let codex_done = record_subagents_for(&mut run, codex, "s-codex", None, Provider::Codex);
-        let claude_done = record_subagents(&mut run, claude, "s-claude", None);
-
-        // SAFETY: as above.
-        unsafe {
-            match before {
-                Some(v) => std::env::set_var("CLAUDE_CONFIG_DIR", v),
-                None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
-            }
-        }
+        let codex_done =
+            record_subagents_in(&mut run, codex, "s-codex", None, Provider::Codex, &config);
+        let claude_done = record_subagents_in(
+            &mut run,
+            claude,
+            "s-claude",
+            None,
+            Provider::Claude,
+            &config,
+        );
         fs::set_permissions(&config, fs::Permissions::from_mode(0o755)).unwrap();
 
         codex_done.unwrap();

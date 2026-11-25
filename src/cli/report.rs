@@ -15,6 +15,7 @@ use crate::error::{io, json};
 use crate::measure::{self, Measure};
 use crate::metrics::{self, CTX_KINDS, LOOKUP_KINDS, SubagentsUnread};
 use crate::pack::Part;
+use crate::provider::Provider;
 use crate::run::{GateCmds, Run};
 use crate::stream::Findings;
 use crate::{Error, Result, paths, quota, stream, worker};
@@ -772,14 +773,24 @@ pub fn knobs_text(k: Option<&Value>) -> String {
         format!("lanes {}", or_dash(k["lanes"].as_u64())),
         format!("factory {}", s(&k["factory_version"])),
     ]);
-    match k["provider_versions"].as_object().filter(|m| !m.is_empty()) {
-        // A JSON object iterates its keys sorted.
-        Some(versions) => parts.extend(
+    // A provider whose probe failed still shows, with no version.
+    let mut versions: BTreeMap<&str, Option<&str>> = k["workers"]
+        .as_object()
+        .into_iter()
+        .flat_map(|w| w.values())
+        .filter_map(|w| w["provider"].as_str())
+        .map(|p| (p, None))
+        .collect();
+    if let Some(probed) = k["provider_versions"].as_object() {
+        versions.extend(probed.iter().map(|(p, v)| (p.as_str(), v.as_str())));
+    }
+    match versions.is_empty() {
+        false => parts.extend(
             versions
                 .iter()
-                .map(|(p, v)| format!("{p} {}", or_dash(v.as_str().map(version_number)))),
+                .map(|(p, v)| format!("{p} {}", or_dash(v.map(version_number)))),
         ),
-        None => parts.push(format!(
+        true => parts.push(format!(
             "claude {}",
             or_dash(
                 k["claude_version"]
@@ -841,7 +852,12 @@ pub fn recount(run: &Run, out: &mut dyn Write) -> Result<()> {
                 path.display()
             ))
         })?;
-        ended.push((w, session, short, stream::parse(&text).1));
+        let provider = w
+            .provider
+            .as_deref()
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(Provider::Claude);
+        ended.push((w, session, short, stream::parse_for(provider, &text).1));
     }
     // The gate pair as the driver reads it, so an inner-loop run keeps its kind.
     let gate = Docs::open(&repo).ok().and_then(|d| {
@@ -1105,7 +1121,8 @@ mod tests {
             knobs_text(Some(&k)),
             "build codex:gpt-5.4/xhigh user · fix cursor:grok-4.7-high user · \
              checkpoint claude:opus/high default · polish opencode:zai/glm-5 flag/default · \
-             budget 30000000 user · lanes 2 · factory 0.1.0 · claude 2.1.296 · codex 0.172.0"
+             budget 30000000 user · lanes 2 · factory 0.1.0 · claude 2.1.296 · codex 0.172.0 · \
+             cursor — · opencode —"
         );
 
         let legacy = serde_json::json!({
@@ -1127,6 +1144,12 @@ mod tests {
         let none_probed =
             serde_json::json!({"workers": {}, "provider_versions": {}, "claude_version": null});
         assert!(knobs_text(Some(&none_probed)).ends_with(" · claude —"));
+        let probe_failed = serde_json::json!({
+            "workers": {"build": {"provider": "codex", "model": "gpt-5.4", "effort": "high", "source": "user"}},
+            "provider_versions": {},
+            "claude_version": null,
+        });
+        assert!(knobs_text(Some(&probe_failed)).ends_with(" · factory — · codex —"));
     }
 
     #[test]

@@ -727,10 +727,17 @@ pub fn parse_provider_choice(
     let (name, rest) = raw.split_once(':').unwrap_or((raw, ""));
     let p: Provider = name.trim().parse()?;
     let rest = rest.trim();
-    let (model, effort) = match rest.rsplit_once(':') {
-        Some((m, e)) if p.effort_levels().contains(&e.trim()) => (m.trim(), Some(e.trim())),
-        Some((_, e)) if is_effort_word(e.trim()) => {
-            let e = e.trim();
+    if is_effort_word(&rest.to_ascii_lowercase()) {
+        return Err(format!(
+            "{rest:?} is an effort, not a model — write `{p}::{rest}` for the default model at that effort"
+        ));
+    }
+    let (model, effort) = match rest
+        .rsplit_once(':')
+        .map(|(m, e)| (m, e.trim().to_ascii_lowercase()))
+    {
+        Some((m, e)) if p.effort_levels().contains(&e.as_str()) => (m.trim(), Some(e)),
+        Some((_, e)) if is_effort_word(&e) => {
             return Err(if p.effort_levels().is_empty() {
                 format!("{p} takes no effort level, not {e:?}")
             } else {
@@ -740,7 +747,7 @@ pub fn parse_provider_choice(
                 )
             });
         }
-        Some((m, "")) => (m.trim(), None),
+        Some((m, e)) if e.is_empty() => (m.trim(), None),
         _ => (rest, None),
     };
     let model = match model {
@@ -753,7 +760,7 @@ pub fn parse_provider_choice(
         m if !crate::provider::is_model_name(m) => return Err(format!("{m:?} is not a model id")),
         m => Some(m.to_string()),
     };
-    Ok((p, model, effort.map(str::to_string)))
+    Ok((p, model, effort))
 }
 
 fn is_effort_word(e: &str) -> bool {
@@ -1968,6 +1975,7 @@ mod tests {
                 effort: None,
             }
         );
+        assert_eq!(spec("claude:opus:High").effort.as_deref(), Some("high"));
         let s = spec("Fix=claude");
         assert_eq!(
             (s.role.as_deref(), s.model, s.effort),
@@ -1979,6 +1987,8 @@ mod tests {
             "cursor:grok-4.7-high:high",
             "codex:o3:max",
             "codex:--auto",
+            "codex:high",
+            "agy:MAX",
             "gemini",
             "build=",
         ] {

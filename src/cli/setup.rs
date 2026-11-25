@@ -532,6 +532,11 @@ fn effective(loaded: &Loaded, detected: &[Detected]) -> Value {
         (None, None) => "default",
     };
     let given = |set: bool| if set { "user" } else { "default" };
+    // A provider with no effort levels runs with none, as each role does.
+    let effort = w
+        .effort
+        .clone()
+        .filter(|_| !fallback.effort_levels().is_empty());
     let mut workers = serde_json::Map::new();
     workers.insert(
         "default".into(),
@@ -539,9 +544,9 @@ fn effective(loaded: &Loaded, detected: &[Detected]) -> Value {
             "provider": fallback.as_str(),
             "provider_source": default_provider_source,
             "model": w.model.clone().unwrap_or_else(|| fallback.default_model().to_string()),
-            "effort": w.effort.clone().or_else(|| fallback.default_effort().map(str::to_string)),
+            "effort": effort.clone().or_else(|| fallback.default_effort().map(str::to_string)),
             "model_source": given(w.model.is_some()),
-            "effort_source": given(w.effort.is_some()),
+            "effort_source": given(effort.is_some()),
         }),
     );
     for role in ROLES {

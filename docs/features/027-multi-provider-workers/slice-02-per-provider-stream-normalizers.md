@@ -74,3 +74,12 @@ Drive these sub-rows from [`prd.md`](prd.md) §9 QA plan at CP-1 (live JSON proo
 - **FR-4 (stream & subagents)**: run `cargo test stream_normalizers_parse_status_findings_usage_and_rate_limits_for_all_five_providers` and `cargo test non_claude_worker_skips_claude_subagent_lookup_without_warning`.
 
 **Acceptance:** both tests have passing transcripts captured in CP-1 evidence and recorded in **Progress**.
+
+**Code-review fixes (2026-11-25).**
+- A Codex or OpenCode worker killed mid-narration read as finished, because every message set `has_result`: a dead fix worker settled Done and a killed polish read its narration as FINDINGS. A result now needs a terminal event (`turn.completed`, a non-`tool-calls` `step_finish`, or a failure) (AD-12).
+- A failure kept earlier narration as the result (`STATUS: done` then a 429 `turn.failed` landed the slice and never paused); a failure's message now wins, and a `turn.completed` after a retried Codex `error` clears it. The last Codex message is the answer, not the first `STATUS:` of the joined turn (AD-12).
+- `"duration_ms":429` or `src/lib.rs:429:10` paused a run as rate-limited; a 429 now counts from the message (not after `:` or a digit) or a status field only (AD-12).
+- An Agy usage-limit result replaced the reset its `rate_limit_event` named with none, so the pause guessed 15 minutes; the reset is kept.
+- An OpenCode tool call updated under the same `callID` kept its empty pending input (a gate run read as `Run`); the later input wins. A Codex `file_change` with several paths now records one Edit per path.
+- Token sums saturate instead of overflowing on a hostile count.
+- The subagent test set `CLAUDE_CONFIG_DIR` process-wide while lib tests run in parallel; it now passes the dir to `record_subagents_in`.

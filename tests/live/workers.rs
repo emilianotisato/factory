@@ -257,6 +257,8 @@ fn live_json_reads_non_claude_worker_streams() {
             on("agy", "checkpoint", "agy"),
             on("cursor", "polish", "cursor"),
             on("opencode", "fix", "opencode"),
+            on("codex-on", "slice", "codex"),
+            on("cursor-fn", "polish", "cursor"),
             alive("claude", "slice"),
         ] }),
         &[],
@@ -324,6 +326,26 @@ fn live_json_reads_non_claude_worker_streams() {
         ]),
     );
 
+    stream(
+        &fx,
+        "codex-on",
+        &lines(&[
+            json!({"type": "item.completed", "item": {"id": "i0", "type": "agent_message",
+                "text": "STATUS: done once the tests pass"}}),
+            json!({"type": "item.started", "item": {"id": "i1", "type": "command_execution",
+                "command": "cargo test", "status": "in_progress"}}),
+        ]),
+    );
+    let args = json!({"file_path": format!("{repo}/src/c.rs")}).to_string();
+    stream(
+        &fx,
+        "cursor-fn",
+        &lines(&[
+            json!({"type": "tool_call", "subtype": "started", "call_id": "c-1",
+            "tool_call": {"function": {"name": "Read", "arguments": args}}}),
+        ]),
+    );
+
     let v = live(&fx, &[]);
     let w = |s: &str| by_session(&v, s).clone();
     for (s, p) in [
@@ -364,6 +386,12 @@ fn live_json_reads_non_claude_worker_streams() {
     assert_eq!(o["doing"]["label"], "Edit src/b.rs", "{o}");
     assert_eq!(o["narration"], "Fixing the red test", "{o}");
     assert_eq!(o["outcome"], json!({"status": "done", "block": null}));
+
+    let on = w("codex-on");
+    assert_eq!(on["doing"]["tool"], "Bash", "{on}");
+    assert_eq!(on["outcome"], Value::Null, "{on}");
+    let f = w("cursor-fn");
+    assert_eq!(f["doing"]["label"], "Read src/c.rs", "{f}");
 
     // A Claude worker reading nothing it knows stays null, never an error.
     let cl = w("claude");

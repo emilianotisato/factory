@@ -228,9 +228,24 @@ fn path_without_claude(fx: &Fixture) -> String {
             std::os::unix::fs::symlink(e.path(), bin.join(e.file_name())).unwrap();
         }
     }
-    let rest: Vec<&str> = fx.env()["PATH"]
+    // A system dir that holds a real `claude` is mirrored without it.
+    let rest: Vec<String> = fx.env()["PATH"]
         .split(':')
         .filter(|d| Path::new(d) != stubs)
+        .enumerate()
+        .map(|(i, d)| {
+            if !Path::new(d).join("claude").exists() {
+                return d.to_string();
+            }
+            let mirror = fx.path().parent().unwrap().join(format!("no-claude-{i}"));
+            fs::create_dir_all(&mirror).unwrap();
+            for e in fs::read_dir(d).unwrap().flatten() {
+                if e.file_name() != "claude" {
+                    let _ = std::os::unix::fs::symlink(e.path(), mirror.join(e.file_name()));
+                }
+            }
+            mirror.display().to_string()
+        })
         .collect();
     let path = format!(
         "{}:{}:{}",

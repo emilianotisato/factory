@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
+use factory::db::Db;
 use factory::run::pid_alive;
 use harness::Fixture;
 use serde_json::{Value, json};
@@ -566,6 +567,14 @@ fn universal_path_shims_block_gh_and_git_push_including_pushurl_while_passing_no
             "options then push",
         );
         refused(
+            &w("git", &["--git-dir", ".git", "push", "origin"]),
+            "--git-dir <dir> push",
+        );
+        refused(
+            &w("git", &["--attr-source", "HEAD", "push", "origin"]),
+            "--attr-source <tree> push",
+        );
+        refused(
             &w("git", &["send-pack", bare.to_str().unwrap(), "HEAD"]),
             "send-pack",
         );
@@ -825,6 +834,24 @@ fn mixed_provider_run_completes_slices_checkpoint_and_polish() {
     assert_eq!(seen.iter().filter(|r| *r == "build").count(), 3, "{seen:?}");
     let events = fs::read_to_string(dir.join("events.jsonl")).unwrap();
     assert!(!events.contains("\"subagents_unread\""), "{events}");
+
+    let id = dir.file_name().unwrap().to_str().unwrap().to_string();
+    let db_path = PathBuf::from(&fx.env()["FACTORY_DATA_DIR"]).join("factory.db");
+    let rows = || Db::open(&db_path).unwrap().workers(&id).unwrap();
+    let before = rows();
+    for w in &before {
+        let claude = w.provider.as_deref() == Some("claude");
+        assert_eq!(w.subagents.is_some(), claude, "{w:?}");
+        assert!(w.output.unwrap_or(0) > 0, "{w:?}");
+    }
+    let out = fx
+        .command(BIN)
+        .args(["report", &id, "--recount"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert_eq!(rows(), before);
+
     assert_eq!(
         fx.state()
             .slices

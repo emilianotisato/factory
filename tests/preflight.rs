@@ -693,6 +693,19 @@ fn preflight_asks_when_worker_provider_unset_and_refuses_missing_binary() {
         assert!(run_state(&fx)["worker_config"].is_null());
     }
     let (code, out) = no_worker(&fx, &["answer", &ask, "codex:gpt-5.4:xhigh"], &[]);
+    assert_eq!(code, Some(1), "{out}");
+    assert!(
+        out.contains("worker provider codex (codex) not found on PATH"),
+        "{out}"
+    );
+    assert!(!config_toml(&fx).exists());
+    assert_eq!(run_state(&fx)["phase"], "waiting-owner");
+    let codex_path = stub_bin(&fx, "codex");
+    let (code, out) = no_worker(
+        &fx,
+        &["answer", &ask, "codex:gpt-5.4:xhigh"],
+        &[("PATH", &codex_path)],
+    );
     assert_eq!(code, Some(0), "{out}");
     assert!(
         out.contains("every ask answered — the run proceeds"),
@@ -753,6 +766,25 @@ fn preflight_asks_when_worker_provider_unset_and_refuses_missing_binary() {
     assert!(
         out.contains("  ✗ fix worker runs on opencode with no model"),
         "{out}"
+    );
+
+    let legacy = Fixture::new("answer-worker-keeps-legacy-model");
+    fs::write(
+        config_toml(&legacy),
+        "[workers]\nmodel = \"sonnet\"\neffort = \"max\"\n",
+    )
+    .unwrap();
+    let ask = parked_on_worker_ask(&legacy);
+    let (code, out) = no_worker(&legacy, &["answer", &ask, "claude"], &[]);
+    assert_eq!(code, Some(0), "{out}");
+    assert!(
+        out.contains("workers: claude sonnet · max (every role)"),
+        "{out}"
+    );
+    let saved = fs::read_to_string(config_toml(&legacy)).unwrap();
+    assert!(
+        saved.contains("model = \"sonnet\"") && saved.contains("effort = \"max\""),
+        "{saved}"
     );
 
     let proceed = Fixture::new("answer-worker-proceed");

@@ -35,6 +35,10 @@ const fs = require('node:fs')
 const path = require('node:path')
 
 const argv = process.argv.slice(2)
+if (argv.length === 1 && argv[0] === '--version') {
+  console.log('cursor-agent stub 1.0.0')
+  return
+}
 // A worker call: `-p --force …` (see workers/provider-worker.js); a review call never forces.
 if (argv.includes('--force')) {
   require('./workers/provider-worker.js')('cursor', argv)

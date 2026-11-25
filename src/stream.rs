@@ -528,14 +528,31 @@ pub fn detect_rate_limit(msg: &str, resets_at: Option<u64>) -> Option<RateLimit>
     .iter()
     .any(|p| m.contains(p));
     let b = m.as_bytes();
+    // `src/lib.rs:429:10` is a line number, not a status.
     let status = m.match_indices("429").any(|(i, _)| {
-        !(i > 0 && b[i - 1].is_ascii_digit()) && !b.get(i + 3).is_some_and(u8::is_ascii_digit)
+        !(i > 0 && (b[i - 1].is_ascii_digit() || b[i - 1] == b':'))
+            && !b.get(i + 3).is_some_and(u8::is_ascii_digit)
     });
     (named || status).then(|| RateLimit {
         status: Some("rejected".into()),
         resets_at,
         utilization_pct: None,
     })
+}
+
+/// A 429 in a status field anywhere in an error event; other numbers, such as a duration, never count.
+fn status_429(v: &Value) -> bool {
+    match v {
+        Value::Object(m) => m.iter().any(|(k, v)| {
+            (matches!(
+                k.as_str(),
+                "status" | "statusCode" | "status_code" | "code" | "httpStatus" | "http_status"
+            ) && (v.as_u64() == Some(429) || v.as_str() == Some("429")))
+                || status_429(v)
+        }),
+        Value::Array(a) => a.iter().any(status_429),
+        _ => false,
+    }
 }
 
 fn resets_at(v: &Value) -> Option<u64> {
@@ -561,7 +578,7 @@ fn u64_at(v: &Value, pointer: &str) -> Option<u64> {
 fn add(a: Option<u64>, b: Option<u64>) -> Option<u64> {
     match (a, b) {
         (None, None) => None,
-        _ => Some(a.unwrap_or(0) + b.unwrap_or(0)),
+        _ => Some(a.unwrap_or(0).saturating_add(b.unwrap_or(0))),
     }
 }
 
@@ -657,7 +674,14 @@ impl Norm {
             "" => format!("call-{}", self.s.tool_uses.len()),
             id => id.to_string(),
         };
-        if self.pending.contains_key(&id) {
+        if let Some(&i) = self.pending.get(&id) {
+            let named = match &input {
+                Value::Object(m) => !m.is_empty(),
+                v => !v.is_null(),
+            };
+            if named {
+                self.s.tool_uses[i].input = claude_input(name, input);
+            }
             return id;
         }
         self.pending.insert(id.clone(), self.s.tool_uses.len());
@@ -701,13 +725,23 @@ impl Norm {
         }
     }
 
+    /// A failure ends the worker the way a Claude error result does: its message, not earlier narration, is the result.
     fn fail(&mut self, msg: &str, event: &Value) {
         self.s.is_error = true;
         self.s.has_result = true;
+        self.turn.clear();
+        self.final_text = None;
         if !msg.trim().is_empty() {
             self.error = Some(msg.to_string());
         }
-        if let Some(rl) = detect_rate_limit(&format!("{msg} {event}"), resets_at(event)) {
+        let limit = detect_rate_limit(msg, resets_at(event)).or_else(|| {
+            status_429(event).then(|| RateLimit {
+                status: Some("rejected".into()),
+                resets_at: resets_at(event),
+                utilization_pct: None,
+            })
+        });
+        if let Some(rl) = limit {
             self.s.rate_limit = Some(rl);
         }
     }
@@ -733,7 +767,8 @@ impl Norm {
                 let id = str_at(item, &["/id"]).unwrap_or("");
                 match str_at(item, &["/type"]).unwrap_or("") {
                     "agent_message" => {
-                        self.s.has_result = true;
+                        // Each message is whole: the last one is the worker's answer.
+                        self.turn_closed = true;
                         self.say(None, str_at(item, &["/text"]).unwrap_or(""));
                     }
                     "command_execution" => {
@@ -745,12 +780,18 @@ impl Norm {
                         self.tool_result(&id, out, failed);
                     }
                     "file_change" => {
-                        let changes = item.get("changes").cloned().unwrap_or(Value::Null);
-                        let path = str_at(&changes, &["/0/path"]).unwrap_or("");
-                        let input = serde_json::json!({ "file_path": path, "changes": changes });
-                        let id = self.tool(id, "Edit", input);
                         let failed = str_at(item, &["/status"]) == Some("failed");
-                        self.tool_result(&id, &Value::Null, failed);
+                        let changes = item["changes"].as_array().cloned().unwrap_or_default();
+                        for (n, change) in changes.iter().enumerate() {
+                            let path = str_at(change, &["/path"]).unwrap_or("");
+                            let input = serde_json::json!({ "file_path": path, "change": change });
+                            let call = match n {
+                                0 => id.to_string(),
+                                n => format!("{id}#{n}"),
+                            };
+                            let call = self.tool(&call, "Edit", input);
+                            self.tool_result(&call, &Value::Null, failed);
+                        }
                     }
                     _ => {}
                 }
@@ -766,6 +807,11 @@ impl Norm {
                     ..Usage::default()
                 };
                 self.step(&u, false);
+                // A completed turn outlived any error before it, such as a retried disconnect.
+                self.s.has_result = true;
+                self.s.is_error = false;
+                self.s.rate_limit = None;
+                self.error = None;
             }
             "turn.failed" => {
                 let msg = str_at(v, &["/error/message", "/message"]).unwrap_or("turn failed");
@@ -918,7 +964,6 @@ impl Norm {
         let part = &v["part"];
         match str_at(v, &["/type"]).unwrap_or("") {
             "text" => {
-                self.s.has_result = true;
                 if self.s.session_id.is_none() {
                     self.init(v);
                 }
@@ -952,6 +997,9 @@ impl Norm {
                     }),
                 };
                 self.step(&u, true);
+                if str_at(part, &["/reason"]) != Some("tool-calls") {
+                    self.s.has_result = true;
+                }
                 if let Some(c) = part["cost"].as_f64() {
                     self.s.cost_usd = Some(self.s.cost_usd.unwrap_or(0.0) + c);
                 }
@@ -980,8 +1028,11 @@ impl Norm {
                 s.is_error |= self.s.is_error;
                 s.has_result |= self.s.has_result;
                 s.cost_usd = s.cost_usd.or(self.s.cost_usd);
-                if self.s.rate_limit.is_some() {
-                    s.rate_limit = self.s.rate_limit.take();
+                if let Some(mut rl) = self.s.rate_limit.take() {
+                    rl.resets_at = rl
+                        .resets_at
+                        .or(s.rate_limit.as_ref().and_then(|r| r.resets_at));
+                    s.rate_limit = Some(rl);
                 }
                 s
             }
@@ -1296,12 +1347,86 @@ mod tests {
     }
 
     #[test]
+    fn a_worker_killed_mid_narration_is_dead() {
+        let codex = [
+            r#"{"type":"thread.started","thread_id":"th1"}"#,
+            r#"{"type":"item.completed","item":{"id":"i0","type":"agent_message","text":"Running tests"}}"#,
+        ]
+        .join("\n");
+        assert!(parse_for(Provider::Codex, &codex).1.is_dead());
+        let opencode = [
+            r#"{"type":"text","part":{"id":"p1","type":"text","text":"Running tests"}}"#,
+            r#"{"type":"step_finish","part":{"reason":"tool-calls","tokens":{"input":1,"output":1}}}"#,
+        ]
+        .join("\n");
+        assert!(parse_for(Provider::Opencode, &opencode).1.is_dead());
+    }
+
+    #[test]
+    fn a_failure_outranks_earlier_narration_and_a_completed_turn_outranks_a_retry() {
+        let done = serde_json::to_string(FINAL).unwrap();
+        let failed = [
+            format!(r#"{{"type":"item.completed","item":{{"id":"i0","type":"agent_message","text":{done}}}}}"#),
+            r#"{"type":"turn.failed","error":{"message":"429 Too Many Requests"}}"#.to_string(),
+        ]
+        .join("\n");
+        let (_, s) = parse_for(Provider::Codex, &failed);
+        assert_eq!(s.status_hint, None);
+        assert!(crate::quota::Limit::from(&s).is_some());
+
+        let retried = [
+            r#"{"type":"error","message":"Reconnecting... 1/5 (429 Too Many Requests)"}"#.to_string(),
+            r#"{"type":"item.completed","item":{"id":"i0","type":"agent_message","text":"STATUS: failed if the build breaks"}}"#.to_string(),
+            format!(r#"{{"type":"item.completed","item":{{"id":"i1","type":"agent_message","text":{done}}}}}"#),
+            r#"{"type":"turn.completed","usage":{"input_tokens":5,"output_tokens":1}}"#.to_string(),
+        ]
+        .join("\n");
+        let (_, s) = parse_for(Provider::Codex, &retried);
+        assert!(!s.is_error && s.rate_limit.is_none());
+        assert_eq!(s.status_hint, Some(StatusHint::Done));
+    }
+
+    #[test]
+    fn a_tool_call_updated_under_its_id_keeps_its_last_input() {
+        let opencode = [
+            r#"{"type":"tool_use","part":{"callID":"c1","tool":"bash","state":{"status":"pending","input":{}}}}"#,
+            r#"{"type":"tool_use","part":{"callID":"c1","tool":"bash","state":{"status":"completed","input":{"command":"cargo test"},"output":"ok"}}}"#,
+        ]
+        .join("\n");
+        let (_, s) = parse_for(Provider::Opencode, &opencode);
+        assert_eq!(s.tool_uses.len(), 1);
+        assert_eq!(s.tool_uses[0].input["command"], "cargo test");
+
+        let codex = r#"{"type":"item.completed","item":{"id":"i1","type":"file_change","changes":[{"path":"src/a.rs"},{"path":"src/b.rs"}],"status":"completed"}}"#;
+        let (_, s) = parse_for(Provider::Codex, codex);
+        let paths: Vec<_> = s.tool_uses.iter().map(|t| &t.input["file_path"]).collect();
+        assert_eq!(paths, ["src/a.rs", "src/b.rs"]);
+    }
+
+    #[test]
+    fn an_agy_usage_limit_keeps_the_reset_its_rate_limit_event_named() {
+        let agy = [
+            r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1791592200}}"#,
+            r#"{"type":"result","is_error":true,"result":"You've hit your usage limit"}"#,
+        ]
+        .join("\n");
+        let (_, s) = parse_for(Provider::Agy, &agy);
+        assert_eq!(s.rate_limit.unwrap().resets_at, Some(1_791_592_200));
+    }
+
+    #[test]
     fn only_an_error_naming_a_limit_is_a_rate_limit() {
         assert!(detect_rate_limit("Usage Limit reached", None).is_some());
         assert!(detect_rate_limit("status 429", Some(5)).unwrap().resets_at == Some(5));
         assert!(detect_rate_limit("rate_limit_exceeded", None).is_some());
         assert!(detect_rate_limit("line 14290 failed", None).is_none());
         assert!(detect_rate_limit("compile error", None).is_none());
+        assert!(detect_rate_limit("rustc: src/lib.rs:429:10 mismatched types", None).is_none());
+        let (_, s) = parse_for(
+            Provider::Cursor,
+            r#"{"type":"result","is_error":true,"duration_ms":429,"result":"sandbox denied"}"#,
+        );
+        assert!(s.rate_limit.is_none());
         let (_, s) = parse_for(
             Provider::Codex,
             r#"{"type":"turn.failed","error":{"message":"sandbox denied"}}"#,

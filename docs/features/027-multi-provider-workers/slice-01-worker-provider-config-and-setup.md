@@ -100,3 +100,11 @@ Drive this row from [`prd.md`](prd.md) §9 QA plan at CP-1:
 - **FR-1**: run `cargo test worker_config_mixes_roles_without_leaking_claude_defaults`, `cargo test run_flag_worker_persists_across_daemon_and_resume`, `cargo test preflight_asks_when_worker_provider_unset_and_refuses_missing_binary`, and `cargo test setup_workers_configures_mixed_roles`.
 
 **Acceptance:** FR-1 row has passing test transcripts captured in checkpoint evidence and recorded in **Progress**.
+
+**Code-review fixes (2026-11-25).**
+- Answering the worker ask saved `[workers]` and woke the run without the preflight checks, so a provider whose CLI was missing (or a role left with no model) died at the first spawn and never asked again. The answer now resolves in memory, refuses with the preflight's own message and leaves config.toml and the ask untouched (AD-13; `preflight::worker_refusals`).
+- A bare `claude` answer wrote `opus` over a legacy provider-less `[workers] model = "sonnet"` and dropped its effort, for every repo. It now keeps them, as AD-6 reads that table as Claude's (AD-13).
+- The answer said "workers run on codex" while a role table kept its own provider; it now prints each role's resolved worker (`preflight::workers_line`, shared with preflight).
+- `--worker codex:high` set the model to `high`, and `claude:opus:High` made the model `opus:High`; an effort alone is refused with a `<provider>::<effort>` hint and efforts match case-insensitively (AD-15/AD-16).
+- A review answer with a valid provider but a bad effort said it "names no reviewer"; that prefix is now only for an unknown provider.
+- `factory setup --show` printed a `[workers] effort` for Cursor, which never runs with one; the default row now drops it as every role does.

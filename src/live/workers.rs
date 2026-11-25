@@ -154,7 +154,8 @@ pub fn read_tail(path: &Path, alive: bool, paths: &Paths, provider: Provider) ->
             at_done = true;
         }
         match v.get("type").and_then(Value::as_str) {
-            Some("result") if t.outcome.is_none() => {
+            // A message with a `STATUS:` line is only the result when no tool ran after it.
+            Some("result") if t.outcome.is_none() && (claude_shaped || t.doing.is_none()) => {
                 t.outcome = Some(outcome(v.get("result").and_then(Value::as_str)));
                 if !alive {
                     return false;
@@ -240,7 +241,14 @@ fn as_claude(provider: Provider, v: &Value) -> Option<Map<String, Value>> {
                     .to_string(),
                 other => capitalized(other),
             };
-            call(&name, body.get("args").cloned().unwrap_or(Value::Null))
+            let input = match key.as_str() {
+                "function" => body
+                    .get("arguments")
+                    .and_then(Value::as_str)
+                    .and_then(|a| serde_json::from_str(a).ok()),
+                _ => body.get("args").cloned(),
+            };
+            call(&name, input.unwrap_or(Value::Null))
         }
         (Provider::Opencode, "text") => said(s("/part/text")?),
         (Provider::Opencode, "tool_use") => call(

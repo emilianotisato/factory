@@ -67,7 +67,8 @@ pub const PUSH_OFF_BASE: &str = "factory-no-push://";
 
 pub const PUSH_OFF_PREFIXES: [&str; 5] = ["git@", "ssh://", "https://", "http://", "git://"];
 
-/// git ignores `pushInsteadOf` for a remote with an explicit `pushurl`; the `git` shim covers that one.
+/// git ignores `pushInsteadOf` for a remote with an explicit `pushurl`; the `git` shim refuses that push only when the
+/// worker runs it through `PATH`, not when git runs it from its own exec path (`git subtree push`, a hook).
 pub fn push_off_env(inherited: Option<&str>) -> Vec<(String, String)> {
     let n: usize = inherited.and_then(|c| c.parse().ok()).unwrap_or(0);
     let mut env = vec![(
@@ -131,7 +132,8 @@ esac
 exec "$real" "$@"
 "#;
 
-/// Holds for every agent CLI, and for a remote with an explicit `pushurl`, which `push_off_env` cannot rewrite.
+/// Holds for every agent CLI, and refuses a typed push to a remote with an explicit `pushurl`, which `push_off_env`
+/// cannot rewrite.
 pub fn ensure_shims(run_dir: &Path) -> Result<PathBuf> {
     let bin = shims_dir(run_dir);
     paths::private_dir_all(&bin).map_err(io(format!("mkdir {}", bin.display())))?;
@@ -146,9 +148,9 @@ pub fn ensure_shims(run_dir: &Path) -> Result<PathBuf> {
         &format!("#!/bin/sh\nprintf '%s\\n' {hint} >&2\nexit 126\n"),
     )?;
     let git_shim = GIT_SHIM
-        .replace("@REAL@", &paths::shell_word(&git.to_string_lossy()))
         .replace("@VALUE@", &GIT_VALUE_OPTS.join("|"))
-        .replace("@HINT@", &hint);
+        .replace("@HINT@", &hint)
+        .replace("@REAL@", &paths::shell_word(&git.to_string_lossy()));
     write_script(&bin.join("git"), &git_shim)?;
     Ok(bin)
 }
@@ -199,7 +201,8 @@ pub fn shimmed_path(shims: &Path, path_env: Option<&OsStr>) -> OsString {
         .unwrap_or_else(|_| shims.as_os_str().to_os_string())
 }
 
-/// The role's worker as the run fixed it; a run from before per-role providers keeps Claude with `cfg`'s model.
+/// The role's worker as the run fixed it; a run from before per-role providers keeps Claude with `cfg`'s model, or
+/// Claude's defaults once `cfg` moved that role to another provider, whose model Claude cannot run.
 pub fn effective_worker(run: &Run, cfg: &config::Config, role: &str) -> config::ResolvedWorker {
     if let Some(wc) = &run.state().worker_config {
         return wc.for_role(role).clone();
@@ -210,6 +213,12 @@ pub fn effective_worker(run: &Run, cfg: &config::Config, role: &str) -> config::
         "polish" => &cfg.workers.polish,
         _ => &cfg.workers.build,
     };
+    if w.provider
+        .or(cfg.workers.provider)
+        .is_some_and(|p| p != Provider::Claude)
+    {
+        return config::ResolvedWorker::defaults(Provider::Claude);
+    }
     config::ResolvedWorker {
         provider: Provider::Claude,
         model: w.model.clone(),
@@ -767,6 +776,30 @@ mod tests {
         assert_ne!(a, b);
         assert!(!is_uuid_v4("03e5f0d5-2e60-18d6-9f03-cfbc491cab0a"));
         assert!(!is_uuid_v4("not-a-uuid"));
+    }
+
+    #[test]
+    fn a_run_from_before_providers_stays_on_claude_without_another_providers_model() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        let run = Run::create(&tmp.path().join("data"), &repo, "001", None, 1).unwrap();
+        let mut cfg = config::Config::default();
+        cfg.workers.build = config::Worker {
+            provider: Some(Provider::Codex),
+            model: "gpt-5.4".into(),
+            effort: "xhigh".into(),
+        };
+        cfg.workers.polish.model = "sonnet".into();
+        assert_eq!(
+            effective_worker(&run, &cfg, "build"),
+            config::ResolvedWorker::defaults(Provider::Claude)
+        );
+        let polish = effective_worker(&run, &cfg, "polish");
+        assert_eq!(
+            (polish.provider, polish.model.as_str()),
+            (Provider::Claude, "sonnet")
+        );
     }
 
     #[test]

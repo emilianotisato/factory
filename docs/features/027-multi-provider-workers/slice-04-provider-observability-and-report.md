@@ -78,3 +78,8 @@ Drive this row from [`prd.md`](prd.md) §9 QA plan at CP-2 (final checkpoint —
 - **FR-5**: run `cargo test codex_only_run_without_claude_on_path_records_knobs_and_reports_cleanly` and `cargo test report_knobs_renders_multi_provider_and_legacy_rows`.
 
 **Acceptance:** FR-5 row (and every prior row re-proved at final CP-2) has passing test transcripts captured in checkpoint evidence and recorded in **Progress**.
+
+**Code-review fixes (2026-11-25).**
+- `factory report --recount` parsed every stream as Claude's, so it wiped the tokens and tool calls of every Codex, Cursor, Agy and OpenCode worker; it now parses with the row's provider.
+- A run whose provider's `--version` probe failed rendered `claude —` after `build codex:…`; the knobs line now names every provider the workers ran on, `—` where no version was recorded.
+- The Codex-only knobs test asserted that no `PATH` dir holds `claude`, which fails on any machine with a system install; such a dir is now mirrored without it.

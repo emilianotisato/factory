@@ -98,3 +98,10 @@ Drive these rows from [`prd.md`](prd.md) §9 QA plan at CP-2 (after slice 04 lan
 - **FR-4 (live)**: run `cargo test live_json_reads_non_claude_worker_streams`.
 
 **Acceptance:** all three rows have passing test transcripts captured in checkpoint evidence and recorded in **Progress**.
+
+**Code-review fixes (2026-11-25).**
+- A pre-upgrade run (`worker_config` absent) spawned `claude --model gpt-5.4` once config.toml moved that role to Codex; it now runs Claude's defaults for such a role (AD-14).
+- `factory live` took an earlier message carrying a `STATUS:` line as the outcome while a later tool still ran; for non-Claude streams it counts only when no tool ran after it. Cursor `function` tool calls now decode their `arguments` for the label.
+- The `push_off_env` and `ensure_shims` comments claimed the shim covers every explicit-`pushurl` push; they now say it covers a push typed through `PATH`, not one git runs itself (parked: `docs/ideas/2026-11-25-close-the-dec-2-gaps-the-worker-path-shim-cannot-s.md`). The real git path is substituted into the shim last.
+- The shim test now also proves the separated `--git-dir <dir> push` and `--attr-source <tree> push` forms; the mixed-provider test now checks non-Claude rows record `subagents = NULL` and that `report --recount` leaves every row as it was.
+- The `cursor-agent` stub answered `--version` with a replayed review stream; it prints a version. Its worker translation kept no `resetsAt` on a rate-limited result.

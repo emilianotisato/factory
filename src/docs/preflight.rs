@@ -472,6 +472,17 @@ pub fn workers(loaded: &config::Loaded, specs: &[config::WorkerSpec], pf: &mut P
         pf.ask.push(worker_ask(&provider::detect_installed()));
         return;
     };
+    let refused = worker_refusals(&resolved);
+    if !refused.is_empty() {
+        pf.pass = false;
+        pf.refuse.extend(refused);
+        return;
+    }
+    pf.ok.push(format!("workers: {}", workers_line(&resolved)));
+}
+
+/// What stops a worker from starting: a provider whose CLI is not on `PATH`, or a role with no model.
+pub fn worker_refusals(resolved: &config::ResolvedWorkers) -> Vec<String> {
     let mut refused = Vec::new();
     for p in resolved.distinct_providers() {
         if provider::resolve_binary(p).is_none() {
@@ -489,19 +500,18 @@ pub fn workers(loaded: &config::Loaded, specs: &[config::WorkerSpec], pf: &mut P
             ));
         }
     }
-    if !refused.is_empty() {
-        pf.pass = false;
-        pf.refuse.extend(refused);
-        return;
-    }
+    refused
+}
+
+/// One worker for every role, or each role's own.
+pub fn workers_line(resolved: &config::ResolvedWorkers) -> String {
     let roles = resolved.roles();
-    let line = if roles.iter().all(|(_, w)| *w == roles[0].1) {
-        format!("workers: {} (every role)", roles[0].1)
+    if roles.iter().all(|(_, w)| *w == roles[0].1) {
+        format!("{} (every role)", roles[0].1)
     } else {
         let each: Vec<String> = roles.iter().map(|(r, w)| format!("{r} {w}")).collect();
-        format!("workers: {}", each.join(", "))
-    };
-    pf.ok.extend([line]);
+        each.join(", ")
+    }
 }
 
 /// Names the installed CLIs, or all five when none is on `PATH`.

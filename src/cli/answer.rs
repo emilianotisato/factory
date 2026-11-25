@@ -507,13 +507,41 @@ fn worker_answer(run: &mut Run, id: &str, text: &str, out: &mut dyn Write) -> Re
             return Ok(false);
         }
     };
+    let config_dir = paths::config_dir();
+    let mut planned = config::load(&config_dir)?;
+    let table = &mut planned.config.workers;
+    // The ask fires only while `[workers]` names no provider, and such a table holds Claude's model and effort.
+    let (model, effort) = match p {
+        Provider::Claude => (
+            model.or_else(|| table.model.clone()),
+            effort.or_else(|| table.effort.clone()),
+        ),
+        _ => (model, effort),
+    };
     let model = model.unwrap_or_else(|| p.default_model().to_string());
+    table.provider = Some(p);
+    table.model = Some(model.clone());
+    table.effort = effort.clone();
+    let Some(resolved) = config::resolve_workers(&planned, &[]).0 else {
+        return Err(Error::Msg(format!(
+            "[workers] provider {p} leaves a role with no provider"
+        )));
+    };
+    let refused = preflight::worker_refusals(&resolved);
+    if !refused.is_empty() {
+        writeln!(
+            out,
+            "{id} not answered: {} — config.toml left as it was",
+            refused.join("; ")
+        )
+        .map_err(io("stdout"))?;
+        return Ok(false);
+    }
     let set = |key: &str, v: Option<&str>| config::Patch {
         table: "workers".into(),
         key: key.into(),
         value: v.map(|v| toml::Value::String(v.into())),
     };
-    let config_dir = paths::config_dir();
     let path = config::patch(
         &config_dir,
         &[
@@ -523,18 +551,12 @@ fn worker_answer(run: &mut Run, id: &str, text: &str, out: &mut dyn Write) -> Re
         ],
     )?;
     let loaded = config::load(&config_dir)?;
-    let Some(resolved) = config::resolve_workers(&loaded, &[]).0 else {
-        return Err(Error::Msg(format!(
-            "{} names [workers] provider {p}, yet a role still has none",
-            path.display()
-        )));
-    };
-    run.set_worker_config(Some(resolved))?;
+    run.set_worker_config(Some(resolved.clone()))?;
     super::run::set_worker_knobs(run, Some(&loaded), out)?;
-    let effort = effort.map_or(String::new(), |e| format!(" at {e} effort"));
     writeln!(
         out,
-        "workers run on {p} with {model}{effort}, saved to {}",
+        "workers: {}; [workers] saved to {}",
+        preflight::workers_line(&resolved),
         path.display()
     )
     .map_err(io("stdout"))?;
@@ -543,8 +565,13 @@ fn worker_answer(run: &mut Run, id: &str, text: &str, out: &mut dyn Write) -> Re
 
 /// `<provider>[:<model>[:<effort>]]`: the model defaults to the provider's, the effort is left to the CLI.
 fn review_choice(answer: &str) -> std::result::Result<(Provider, String, Option<String>), String> {
-    let (p, model, effort) = config::parse_provider_choice(answer)
-        .map_err(|why| format!("{answer:?} names no reviewer: {why}"))?;
+    let (p, model, effort) = config::parse_provider_choice(answer).map_err(|why| {
+        let name = answer.split_once(':').map_or(answer, |(n, _)| n);
+        match name.trim().parse::<Provider>() {
+            Ok(_) => why,
+            Err(_) => format!("{answer:?} names no reviewer: {why}"),
+        }
+    })?;
     Ok((
         p,
         model.unwrap_or_else(|| p.default_model().to_string()),
