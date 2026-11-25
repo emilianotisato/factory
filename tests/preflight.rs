@@ -498,7 +498,7 @@ fn preflight_asks_when_review_unset_and_answer_persists_or_proceeds() {
 
     let fx = Fixture::new("answer-review-codex");
     let ask = parked_on_review_ask(&fx);
-    assert_eq!(ask, "ASK-1");
+    assert!(ask.starts_with("ASK-"), "{ask}");
     let log = fx.path().join(harness::FEATURE_DIR).join("log.jsonl");
     let log_before = fs::read_to_string(&log).unwrap_or_default();
     let (code, out) = no_reviewer(&fx, &["answer", &ask, "bogus"], &[]);

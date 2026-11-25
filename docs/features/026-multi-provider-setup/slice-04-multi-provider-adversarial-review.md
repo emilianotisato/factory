@@ -8,6 +8,12 @@
 - **Inner loop:** 1 run, 0 red, ~2 min. Before it, one targeted `--test preflight` red: the old `one Claude agent` needle against the new judge text (AD-7).
 - **Seen red once:** `review_second_runs_all_five_providers_and_none_mode` (Codex stdin left null: panicked "codex: " on an empty prompt) · `preflight_asks_when_review_unset_and_answer_persists_or_proceeds` (reviewer-answer dispatch removed: `bogus` answered with exit 0). Each green after restore.
 - **Deviations:** AD-7 (decide): preflight needle repinned. AD-8 (fyi): with no reviewer chosen, collect keeps the legacy Cursor defaults. `Patch` values are built inline (config.rs has no `Patch::set`/`remove` helpers, and it belongs to slice 01).
+- **Prove (CP-2):**
+  - FR-1: cp-2/FR-1/provider_registry_roundtrips_infers_and_probes_without_executing_shims.txt, cp-2/FR-1/discover_models_parses_live_outputs_and_kills_hung_probe.txt (pass)
+  - FR-2: cp-2/FR-2/config_loads_multi_provider_schema_maps_legacy_agent_and_ignores_project_workers.txt, cp-2/FR-2/config_patch_updates_multiple_sections_atomically_preserving_comments.txt (pass)
+  - FR-3: cp-2/FR-3/setup_wizard_configures_all_sections_and_keeps_defaults.txt, cp-2/FR-3/setup_non_interactive_flags_and_show_json.txt, cp-2/FR-3/setup_non_tty_without_flags_exits_one.txt (pass)
+  - FR-4: cp-2/FR-4/review_second_runs_all_five_providers_and_none_mode.txt, cp-2/FR-4/preflight_asks_when_review_unset_and_answer_persists_or_proceeds.txt (pass; mutation cp-2/FR-4/mutation-red.txt, cp-2/FR-4/mutation-restored.txt)
+  - FR-5: cp-2/FR-5/skills_render_links_shared_into_agents_skills.txt, cp-2/FR-5/this_repos_claude_skills_link_into_the_source.txt, cp-2/FR-5/every_file_under_skills_is_in_the_bundle_byte_for_byte.txt, cp-2/FR-5/bundle_lock_matches.txt, cp-2/FR-5/skills_are_harness_neutral_and_distinguish_disabled_review.txt, cp-2/FR-5/the_cockpit_skill_is_under_sixty_lines_and_names_the_five_commands.txt (pass)
 
 **Slice**: Replaces hardcoded Cursor-only invocation, probing, and stream parsing in `src/review.rs` with provider-dispatched adapters for all five providers (`claude`, `codex`, `cursor`, `agy`, `opencode`) plus `ReviewProvider::None` (`disabled:` / `skipped (disabled in config)`), adds `review_override` on `RunState` for `proceed` runs, and wires the one-time preflight ask-if-missing + persistent `factory answer` flow in `src/docs/preflight.rs`, `src/cli/run.rs`, and `src/cli/answer.rs`. Leaves `factory setup` to slice 03 and skills to slice 02.
 
