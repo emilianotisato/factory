@@ -210,7 +210,16 @@ No row needs a human, so no `qa-guide.md` is generated.
 
 ## 10. Slices
 
-_(Not sliced yet. Run `/slice`.)_
+Four slices on one branch, `feat/multi-provider-setup`, one PR, one commit per slice, Prove driven at the checkpoints.
+
+- **01 — Provider registry, user-only config, and atomic patcher** (FR-1, FR-2, spine). `src/provider.rs`, `src/lib.rs`, `src/config.rs`, `src/docs/project.rs`, `tests/knobs.rs`, and `tests/harness/mod.rs` (`FACTORY_REVIEW_PROVIDER=cursor`). Independent and the prerequisite for slices 03 and 04.
+- **02 — Portable cockpit skills and bundle relock** (FR-5). `src/skills.rs`, `.agents/skills/*`, `skills/**`, `Cargo.toml` (`0.16.0`), `Cargo.lock`, `skills/bundle.lock`, `tests/skills_bundle.rs`, and `tests/cockpit.rs`. Independent of 01, 03, and 04 (zero file overlap).
+- **03 — Interactive and scriptable `factory setup` wizard** (FR-3). `src/cli/setup.rs`, `src/cli/mod.rs`, `src/main.rs`, and `tests/setup.rs`. **Depends on 01** for `Provider`, `ReviewProvider`, `detect_installed`, `discover_models`, the extended `Config` schema, and `config::patch`; independent of 02 and 04.
+- **04 — Multi-provider adversarial review and preflight ask** (FR-4, highest-risk). `src/review.rs`, `src/cli/review.rs`, `src/collect.rs`, `src/closeout.rs`, `src/run.rs`, `src/docs/preflight.rs`, `src/cli/run.rs`, `src/cli/answer.rs`, `tests/review.rs`, and `tests/preflight.rs`. **Depends on 01** for `Provider`, `ReviewProvider`, `resolve_review`, `config::patch`, and `FACTORY_REVIEW_PROVIDER`; independent of 02 and 03.
+
+**Order and checkpoints.** Wave 1 runs **01** and **02** in parallel; **CP-1** lands right after both (`checkpoint_every = 2`), proving FR-1, FR-2, and FR-5 before anything builds on 01. Wave 2 runs **03** and **04** in parallel; **CP-2** (final checkpoint) proves FR-3, FR-4, and re-proves all rows.
+
+**No `qa-guide.md`:** no row in §9 QA plan is marked `Human? = yes`, so nothing is generated for human QA.
 
 ## 11. Non-goals
 
