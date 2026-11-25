@@ -45,3 +45,31 @@ A comment or name the leaks check should have caught: none. The one wrong commen
 ## Score
 
 4/5. Every FR shipped with green proofs, but polish found five high-severity defects the checkpoints had passed, so the Prove rows mostly exercised the happy path.
+
+## Numbers
+
+<!-- factory:numbers -->
+| role | workers | own | subagents | weighted | minutes | turns |
+|---|---:|---:|---:|---:|---:|---:|
+| build | 4 | 3536933 | 0 | 3536933 | 44 | 156 |
+| checkpoint | 2 | 311308 | 0 | 311308 | 5 | 22 |
+| polish | 1 | 2248170 | 1081682 | 3329852 | 24 | 90 |
+| total | 7 | 6096411 | 1081682 | 7178094 | 72 | 268 |
+
+Knobs: build opus/high default · fix opus/high default · checkpoint opus/high default · polish opus/high default · budget 30000000 default · lanes 4 · factory 0.16.0 · claude 2.1.332
+
+Hypothesis: none
+
+quality: gate_red 0 · worker_gate_red 0 · fix_commits 0 · ci_red_rounds 0 · ci_reruns 0 · findings high=5 medium=11 low=13 fixed=24 parked=5 · decisions 16 decide 0 blocks 0
+
+Pack (build): slice 11549 · prd_sections 12925 · log 3548 · outline 9994 · lookup 1115 · contract 3685 · autonomy 9988 · inner_loop 86 · total 52890 · start_context 30019
+
+Compared with:
+
+| run | feature | weighted | slices | per slice | lines changed | per line | comment share | id hits |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 027-20261125-904f (this run) | 027 | 7178094 | 4 | 1794524 | 5173 | 1388 | 2.9% | 0 |
+| 026-20261125-a6be | 026 | 4801352 | 4 | 1200338 | 5075 | 946 | 2.8% | 0 |
+| 025-20261125-021f | 025 | 2708704 | 4 | 677176 | 1798 | 1507 | 2.4% | 0 |
+| 021-20261123-a324 | 021 | 4487033 | 5 | 897407 | 2193 | 2046 | 2.9% | 0 |
+<!-- /factory:numbers -->
