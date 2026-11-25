@@ -193,11 +193,14 @@ pub fn ci(ctx: &Ctx) -> Value {
             EventKind::CiRed { .. } => Some("red"),
             EventKind::CiWaiting { .. } => Some("waiting"),
             EventKind::CiNoChecks { .. } => Some("noChecks"),
+            EventKind::CiLocal { .. } => Some("local"),
             _ => None,
         })
         .unwrap_or("none");
     let head = ctx.events.iter().rev().find_map(|e| match &e.kind {
-        EventKind::CiGreen { head } | EventKind::CiRed { head, .. } => Some(head.clone()),
+        EventKind::CiGreen { head }
+        | EventKind::CiRed { head, .. }
+        | EventKind::CiLocal { head } => Some(head.clone()),
         _ => None,
     });
     let checks = ctx

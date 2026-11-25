@@ -2496,3 +2496,89 @@ fn stop_kills_a_running_collects_reviewers() {
         kinds(&dir)
     );
 }
+
+fn run_foreground(fx: &Fixture, ci: &str) -> (PathBuf, String) {
+    fx.chain();
+    fx.write_plan(&plan_with(&[step("polish")]));
+    let out = factory(fx, &["run", "001", "--ci", ci, "--foreground"]);
+    let text = stdout(&out);
+    assert_eq!(out.status.code(), Some(0), "{text}");
+    let dir = only_run_dir(fx);
+    assert_eq!(state(&dir)["phase"], "finished", "{text}");
+    (dir, text)
+}
+
+fn last_subject(fx: &Fixture) -> String {
+    fx.git(&["log", "-1", "--pretty=%s"]).trim().to_string()
+}
+
+#[test]
+fn local_ci_skips_watch_stamps_skip_ci_and_reports_local_status() {
+    let fx = Fixture::new("closeout-ci-local");
+    let (dir, log) = run_foreground(&fx, "local");
+    let id = run_id(&dir);
+
+    let subject = last_subject(&fx);
+    assert!(subject.ends_with(" [skip ci]"), "{subject}");
+    assert_eq!(
+        count_subject(&fx, "docs(001): ship PRD-001 [skip ci]"),
+        1,
+        "{:?}",
+        subjects(&fx)
+    );
+    assert_eq!(origin_head(&fx, "feat/fixture"), Some(head(&fx)));
+    assert_eq!(
+        gh_calls(&fx, "pr create --draft").len(),
+        1,
+        "{:?}",
+        fx.gh_log()
+    );
+    assert!(gh_calls(&fx, "pr checks").is_empty(), "{:?}", fx.gh_log());
+
+    let local = of_kind(&dir, "ci_local");
+    assert_eq!(local.len(), 1, "{:?}", kinds(&dir));
+    assert_eq!(local[0]["head"], head(&fx));
+    for kind in ["ci_waiting", "ci_green", "ci_no_checks"] {
+        assert!(of_kind(&dir, kind).is_empty(), "{kind}: {:?}", kinds(&dir));
+    }
+    assert!(
+        log.contains(&format!(
+            "ci: local mode — remote CI skipped at {}",
+            short(&head(&fx))
+        )),
+        "{log}"
+    );
+
+    let out = factory(&fx, &["status", &id, "--json"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let status: Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(status["runs"][0]["ci"], "local", "{status}");
+
+    let out = factory(&fx, &["live", &id, "--json"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let live: Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(live["ci"]["state"], "local", "{live}");
+    assert_eq!(live["ci"]["head"], head(&fx), "{live}");
+
+    let out = factory(&fx, &["wait", &id]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    assert_eq!(stdout(&out), format!("finished: {PR_URL}\n"));
+}
+
+#[test]
+fn remote_ci_keeps_plain_ship_subject_and_watches_checks() {
+    let fx = Fixture::new("closeout-ci-remote");
+    let (dir, _) = run_foreground(&fx, "remote");
+
+    let subject = last_subject(&fx);
+    assert!(!subject.contains("[skip ci]"), "{subject}");
+    assert_eq!(
+        count_subject(&fx, "docs(001): ship PRD-001"),
+        1,
+        "{:?}",
+        subjects(&fx)
+    );
+    assert!(!gh_calls(&fx, "pr checks").is_empty(), "{:?}", fx.gh_log());
+    assert!(of_kind(&dir, "ci_local").is_empty(), "{:?}", kinds(&dir));
+    assert_eq!(of_kind(&dir, "ci_green").len(), 1, "{:?}", kinds(&dir));
+}

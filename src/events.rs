@@ -234,6 +234,10 @@ pub enum EventKind {
     CiNoChecks {
         minutes: u64,
     },
+    /// Remote CI was skipped: the closeout trusted the local gates on `head`.
+    CiLocal {
+        head: String,
+    },
     /// A fix worker that changed nothing: a gate fix carries `n`, `attempt` and `session_id`, a CI fix `round`.
     FixEmpty {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -590,6 +594,12 @@ mod tests {
             (
                 EventKind::CiNoChecks { minutes: 5 },
                 serde_json::json!({"kind":"ci_no_checks","minutes":5}),
+            ),
+            (
+                EventKind::CiLocal {
+                    head: "abc123".into(),
+                },
+                serde_json::json!({"kind":"ci_local","head":"abc123"}),
             ),
             (
                 EventKind::FixEmpty {
