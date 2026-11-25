@@ -98,8 +98,6 @@ pub fn run(args: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i
     if let Some(w) = ci_warning {
         writeln!(err, "factory: {w}").map_err(io("stderr"))?;
     }
-    loaded.config.ci.mode = ci_mode;
-    loaded.sources.ci = ci_source;
 
     let (mut pf, _code) = docs.preflight(&feature)?;
     if !pf.refuse.is_empty() {
@@ -110,6 +108,9 @@ pub fn run(args: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i
         return Ok(1);
     }
     preflight::second_opinion(&loaded.config.review, &mut pf);
+    preflight::ci_mode(&loaded, args.ci, &mut pf);
+    loaded.config.ci.mode = ci_mode;
+    loaded.sources.ci = ci_source;
     // Lanes are made before the run exists, so a lane failure leaves no run behind.
     if !lanes::ensure_all(&data_dir, &crate::lanes::main_tree(&repo)?, out)? {
         writeln!(out, "\nrefused: a lane could not be made").map_err(io("stdout"))?;

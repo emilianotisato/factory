@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use clap::Args;
 
 use crate::answers::{self, Answer};
-use crate::docs::{log, state};
+use crate::config::{self, CiMode};
+use crate::docs::{log, preflight, state};
 use crate::error::io;
 use crate::events::EventKind;
 use crate::quota::{self, Hold};
@@ -297,6 +298,10 @@ fn answer_ask(
         return Ok(1);
     };
     let (mut run, item, _) = asked.swap_remove(i);
+    if item.starts_with(preflight::CI_MODE_ASK_PREFIX) && !ci_mode_answer(&mut run, id, text, out)?
+    {
+        return Ok(1);
+    }
     let now = clock::now_rfc3339();
     let feature = run.state().feature.clone();
     let dir = feature_dir(repo, &feature)?;
@@ -356,6 +361,44 @@ fn answer_ask(
         .map_err(io("stdout"))?;
     }
     Ok(0)
+}
+
+/// `local` and `remote` are saved for every repo, `proceed` is remote for this run only; false leaves the ask open.
+fn ci_mode_answer(run: &mut Run, id: &str, text: &str, out: &mut dyn Write) -> Result<bool> {
+    let (mode, saved) = match text.trim().to_ascii_lowercase().as_str() {
+        "local" => (CiMode::Local, true),
+        "remote" => (CiMode::Remote, true),
+        "proceed" => (CiMode::Remote, false),
+        _ => {
+            writeln!(
+                out,
+                "{id} not answered: {text:?} is not a ci mode — answer `local`, `remote` or `proceed`"
+            )
+            .map_err(io("stdout"))?;
+            return Ok(false);
+        }
+    };
+    let source = if saved {
+        let path = config::write_ci_mode(&paths::config_dir(), mode)?;
+        writeln!(out, "ci mode {mode} saved to {}", path.display()).map_err(io("stdout"))?;
+        config::Source::User
+    } else {
+        writeln!(
+            out,
+            "ci mode {mode} for this run only; config.toml left unset"
+        )
+        .map_err(io("stdout"))?;
+        config::Source::Default
+    };
+    run.set_ci_mode(Some(mode))?;
+    let rid = run.id().as_str();
+    if let Some(text) = run.db().run_row(rid)?.and_then(|r| r.knobs)
+        && let Ok(mut knobs) = serde_json::from_str::<serde_json::Value>(&text)
+    {
+        knobs["ci"] = serde_json::json!({"value": mode, "source": source});
+        run.db().set_run_knobs(rid, &knobs.to_string())?;
+    }
+    Ok(true)
 }
 
 /// A budget-parked run gets no driver: it would only park again.
