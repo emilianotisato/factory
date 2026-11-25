@@ -281,6 +281,45 @@ fn every_doctor_step_links_the_stale_tooling_rule() {
     }
 }
 
+#[test]
+fn gate_skill_carries_ci_economics_guidance() {
+    let ci = fs::read_to_string(root().join("skills/gate/references/ci.md")).unwrap();
+    for needle in [
+        "what cloud CI proves that the local gate did not",
+        "if: github.event.pull_request.draft == false",
+        "types: [opened, reopened, synchronize, ready_for_review]",
+        "Duplicate `push: [main]` runs after a PR-gated merge",
+        "`concurrency: { group: ..., cancel-in-progress: true }`",
+        "add `paths-ignore: ['docs/**', '**.md']`",
+        "No dependency or build caches",
+        "Local parallelism hardcoded on 2-vCPU runners",
+        "`coverage: xdebug` without `--coverage`",
+        "Heavy local-only tiers or daily cron jobs on metered minutes",
+        "PR CI runs the fast clean-room core",
+    ] {
+        assert_unique_passage("gate/references/ci.md", &ci, needle);
+    }
+    let round = section("gate/SKILL.md", "**Round 1", "**Round 2");
+    for needle in [
+        "[references/ci.md](references/ci.md)",
+        "draft-silent clean-room CI plus the full local gate",
+    ] {
+        assert_unique_passage("gate round 1", &round, needle);
+    }
+    let audit = section("gate/SKILL.md", "## 5.", "## 6.");
+    assert_unique_passage(
+        "gate audit",
+        &audit,
+        "checklist against `.github/workflows/*.yml`",
+    );
+    let declare = section("gate/SKILL.md", "## 6.", "## Report");
+    assert_unique_passage(
+        "gate declare",
+        &declare,
+        "per [references/ci.md](references/ci.md)",
+    );
+}
+
 fn section(rel: &str, heading: &str, next: &str) -> String {
     let text = fs::read_to_string(root().join("skills").join(rel)).unwrap();
     let start = text.find(heading).unwrap_or_else(|| panic!("{heading}"));
