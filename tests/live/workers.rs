@@ -277,7 +277,7 @@ fn live_json_reads_non_claude_worker_streams() {
                 "changes": [{"path": format!("{repo}/src/a.rs"), "kind": "update"}],
                 "status": "completed"}}),
             json!({"type": "item.completed", "item": {"id": "i3", "type": "agent_message",
-                "text": "STATUS: blocked\nBLOCK: BLOCK-1 — which index wins"}}),
+                "text": "STATUS: blocked\nBLOCK: which index wins"}}),
             json!({"type": "turn.completed", "usage": {"input_tokens": 10, "output_tokens": 2}}),
         ]),
     );
@@ -305,7 +305,7 @@ fn live_json_reads_non_claude_worker_streams() {
             json!({"type": "tool_call", "subtype": "started", "call_id": "c-1",
                 "tool_call": {"shellToolCall": {"args": {"command": "cargo test"}}}}),
             json!({"type": "result", "subtype": "success", "is_error": false,
-                "result": "STATUS: blocked\nBLOCK: BLOCK-2 — keep the finding?"}),
+                "result": "STATUS: blocked\nBLOCK: keep the finding?"}),
         ]),
     );
     stream(
@@ -342,7 +342,7 @@ fn live_json_reads_non_claude_worker_streams() {
     assert_eq!(c["narration"], "Reading the slice before the edit", "{c}");
     assert_eq!(
         c["outcome"],
-        json!({"status": "blocked", "block": "BLOCK-1 — which index wins"})
+        json!({"status": "blocked", "block": "which index wins"})
     );
     assert_eq!(c["running"], Value::Null);
 
@@ -357,7 +357,7 @@ fn live_json_reads_non_claude_worker_streams() {
     assert_eq!(cu["narration"], "Polishing the branch", "{cu}");
     assert_eq!(
         cu["outcome"],
-        json!({"status": "blocked", "block": "BLOCK-2 — keep the finding?"})
+        json!({"status": "blocked", "block": "keep the finding?"})
     );
 
     let o = w("opencode");

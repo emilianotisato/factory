@@ -9,6 +9,9 @@
 - Deliberate reds: `universal_path_shims_…` failed on the worker `PATH` not starting with `run_dir/bin` when the prepend was removed, and on `bare push` exiting 128, not 126, when the git shim's refusal case was disabled. `all_five_worker_providers_…` failed on the cursor argv once `--trust` was dropped. `mixed_provider_run_…` failed on a build worker recorded as `claude` once `effective_worker` ignored `worker_config`. `live_json_reads_non_claude_worker_streams` failed on a codex worker's `doing: null` once non-Claude lines were read as Claude.
 - Deviation: AD-7 (fyi). The git shim does not resolve aliases.
 - Prove (CP-2): FR-2, FR-3 and the FR-4 live row.
+- CP-2 FR-2: cp-2/FR-2/universal_path_shims_block_gh_and_git_push_including_pushurl_while_passing_normal_git.txt, cp-2/FR-2/mutation-red.txt, cp-2/FR-2/mutation-restored.txt
+- CP-2 FR-3: cp-2/FR-3/all_five_worker_providers_spawn_with_expected_flags_and_large_packs.txt, cp-2/FR-3/mixed_provider_run_completes_slices_checkpoint_and_polish.txt
+- CP-2 FR-4: cp-2/FR-4/stream_normalizers_parse_status_findings_usage_and_rate_limits_for_all_five_providers.txt, cp-2/FR-4/non_claude_worker_skips_claude_subagent_lookup_without_warning.txt, cp-2/FR-4/live_json_reads_non_claude_worker_streams.txt
 
 **Slice**: **Highest-risk slice.** Enforces `docs/decisions.md#dec-2` universally for every worker provider via `run_dir/bin/` `PATH` shims (`gh` + `git` push blocker), switches `Worker::spawn` and all driver call sites (`scheduler`, `checkpoint`, `closeout`) to dispatch across all five providers (`claude`, `codex`, `cursor`, `agy`, `opencode`) using `RunState.worker_config` (with Claude fallback for pre-upgrade `worker_config: None` runs), updates `live::workers` to parse non-Claude streams and emit `"provider"`, and adds multi-provider worker stubs and end-to-end mixed-provider integration tests. Leaves DB `workers.provider`, `runs.knobs`, `probe_provider_versions`, and `factory report` to slice 04.
 
