@@ -642,13 +642,14 @@ pub fn binary_name(cfg: &ResolvedReview) -> String {
         .map_or(String::new(), |p| binary(cfg, p).1)
 }
 
-/// The command `cfg` would log in with, as `cursor-agent login`.
+/// The command `cfg` would log in with, as `cursor-agent login`, naming the binary the probe runs.
 pub fn login_hint(cfg: &ResolvedReview) -> String {
-    match (cfg.provider.provider(), &cfg.binary) {
-        (Some(Provider::Cursor), Some(b)) => format!("{b} login"),
-        (Some(p), _) => p.login_hint().to_string(),
-        (None, _) => String::new(),
-    }
+    let Some(p) = cfg.provider.provider() else {
+        return String::new();
+    };
+    let hint = p.login_hint();
+    let rest = hint.split_once(' ').map_or("", |(_, r)| r);
+    format!("{} {rest}", binary(cfg, p).1)
 }
 
 /// `cancel` firing ends the probe as unreviewed, so a stop never waits on a hung agent.
@@ -680,6 +681,9 @@ pub fn probe_resolved(
     let out = dir.join(file);
     let mut cmd = Command::new(&bin);
     cmd.args(args);
+    if p == Provider::Claude {
+        scrub_claude_session(&mut cmd);
+    }
     let secs = cfg.timeout_secs.min(PROBE_SECS);
     let ended = match run_logged(
         cmd,
@@ -925,13 +929,9 @@ pub fn run_pass_resolved(
             if let Some(e) = effort {
                 cmd.args(["--effort", e]);
             }
-            cmd.arg(prompt);
-            // Inside a Claude Code session these would trip the nested-session guard.
-            for (k, _) in std::env::vars_os() {
-                if k.to_str().is_some_and(crate::worker::scrubbed) {
-                    cmd.env_remove(&k);
-                }
-            }
+            // The diff sits in the log dir, outside the repo a print-mode read may touch.
+            cmd.arg("--add-dir").arg(dir).arg(prompt);
+            scrub_claude_session(&mut cmd);
         }
         Provider::Codex => {
             cmd.args([
@@ -964,12 +964,27 @@ pub fn run_pass_resolved(
             if let Some(e) = effort {
                 cmd.args(["--effort", e]);
             }
-            cmd.arg(prompt);
+            cmd.arg("--add-dir").arg(dir).arg(prompt);
         }
         Provider::Opencode => {
-            cmd.args(["run", "--format", "json", "--agent", "plan", "-m", model]);
-            if let Some(e) = effort {
-                cmd.args(["--variant", e]);
+            // OpenCode takes the effort as the model's `#variant`, and reads no file outside the repo unless attached.
+            let model = match effort {
+                Some(e) => format!("{model}#{e}"),
+                None => model.to_string(),
+            };
+            cmd.args([
+                "run",
+                "--standalone",
+                "--format",
+                "json",
+                "--agent",
+                "plan",
+                "-m",
+                &model,
+            ]);
+            let diff = dir.join(format!("review-{n}.diff"));
+            if diff.is_file() {
+                cmd.arg("-f").arg(&diff);
             }
             cmd.arg(prompt);
         }
@@ -991,6 +1006,15 @@ pub fn run_pass_resolved(
         parsed: parse_stream_for(p, &String::from_utf8_lossy(&text)),
         stderr,
     })
+}
+
+/// Inside a Claude Code session these variables would trip the nested-session guard.
+fn scrub_claude_session(cmd: &mut Command) {
+    for (k, _) in std::env::vars_os() {
+        if k.to_str().is_some_and(crate::worker::scrubbed) {
+            cmd.env_remove(&k);
+        }
+    }
 }
 
 /// One pass's outcome, or why it never ran, and how long it took.
@@ -1265,6 +1289,27 @@ pub fn with_others(prompt: &str, others: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_login_hint_names_the_binary_the_probe_runs() {
+        let cfg = |p, b: &str| ResolvedReview {
+            provider: ReviewProvider::Provider(p),
+            binary: Some(b.into()),
+            model: "m".into(),
+            effort: None,
+            timeout_secs: 1,
+            pass_lines: 600,
+        };
+        assert_eq!(
+            login_hint(&cfg(Provider::Claude, "/opt/c/claude")),
+            "/opt/c/claude login"
+        );
+        assert_eq!(
+            login_hint(&cfg(Provider::Opencode, "/opt/o/opencode")),
+            "/opt/o/opencode auth login"
+        );
+        assert_eq!(login_hint(&cfg(Provider::Cursor, "agent")), "agent login");
+    }
 
     #[test]
     fn a_path_stays_on_its_own_line() {

@@ -323,3 +323,25 @@ fn setup_non_tty_without_flags_exits_one() {
     }
     assert!(!Path::new(&dirs.config_file()).exists());
 }
+
+#[test]
+fn setup_refuses_what_it_cannot_save_and_saves_nothing_on_cut_input() {
+    let dirs = Dirs::new(&["claude", "opencode"]);
+    let o = dirs.factory(&["setup", "--show", "review", "--provider", "none"]);
+    assert_eq!(o.status.code(), Some(1), "{}", text(&o.stdout));
+    let o = dirs.factory(&["setup", "review", "--provider", "opencode"]);
+    assert_eq!(o.status.code(), Some(1), "{}", text(&o.stdout));
+    assert!(
+        text(&o.stderr).contains("give --model"),
+        "{}",
+        text(&o.stderr)
+    );
+    let o = dirs.factory(&["setup", "review", "--provider", "codex", "--model=-x"]);
+    assert_eq!(o.status.code(), Some(1), "{}", text(&o.stdout));
+    assert!(!dirs.config_file().exists());
+
+    let (code, out) = wizard(&dirs, "");
+    assert_eq!(code.unwrap(), 1, "{out}");
+    assert!(out.contains("nothing saved"), "{out}");
+    assert!(!dirs.config_file().exists());
+}

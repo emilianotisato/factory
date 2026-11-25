@@ -66,9 +66,9 @@ pub struct SourceRepo {
 }
 
 /// The owner's own facts (a renamed binary, a rate-limited model) live here, never in the skills.
+/// `resolve_review` picks the reviewer; `agent` and `model` keep their legacy defaults for a file that names no provider.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-/// `resolve_review` says which reviewer runs; `agent` and `model` hold the legacy defaults until it does.
 pub struct Review {
     pub provider: Option<ReviewProvider>,
     pub agent: String,
@@ -529,7 +529,8 @@ fn review_from(
                 p.default_model().to_string()
             };
             let effort = r.effort.clone().filter(|_| !p.effort_levels().is_empty());
-            (agent, model, effort)
+            let binary = agent.filter(|a| Provider::infer_from_binary(a).is_none_or(|n| n == p));
+            (binary, model, effort)
         }
     };
     let resolved = ResolvedReview {
@@ -1065,6 +1066,33 @@ mod tests {
 
         let (cfg, _) = dirs(Some("[review]\nprovider = \"gemini\"\n"), None);
         assert!(matches!(load(cfg.path()), Err(Error::Toml { .. })));
+    }
+
+    #[test]
+    fn a_review_agent_runs_only_for_the_provider_it_names() {
+        let binary = |toml: &str| {
+            let (cfg, _) = dirs(Some(toml), None);
+            review_from(&load(cfg.path()).unwrap(), None)
+                .0
+                .unwrap()
+                .binary
+        };
+        assert_eq!(
+            binary("[review]\nprovider = \"codex\"\nagent = \"cursor-agent\"\n"),
+            None
+        );
+        assert_eq!(
+            binary("[review]\nprovider = \"codex\"\nagent = \"/opt/bin/codex\"\n"),
+            Some("/opt/bin/codex".into())
+        );
+        assert_eq!(
+            binary("[review]\nprovider = \"claude\"\nagent = \"/opt/bin/claude-work\"\n"),
+            Some("/opt/bin/claude-work".into())
+        );
+        assert_eq!(
+            binary("[review]\nagent = \"agent\"\n"),
+            Some("agent".into())
+        );
     }
 
     #[test]

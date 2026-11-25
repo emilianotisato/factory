@@ -128,6 +128,14 @@ pub fn run_with(
     err: &mut dyn Write,
 ) -> Result<i32> {
     if args.show || args.json {
+        if args.section.is_some() {
+            writeln!(
+                err,
+                "factory: --show changes nothing, so it takes no section"
+            )
+            .map_err(io("stderr"))?;
+            return Ok(1);
+        }
         return show(env, args.json, out);
     }
     if let Some(section) = &args.section
@@ -276,6 +284,9 @@ fn model_flag(model: &str) -> Result<String> {
     if m.is_empty() {
         return Err(msg("--model is empty"));
     }
+    if !provider::is_model_name(m) {
+        return Err(msg(format!("--model {m:?} is not a model id")));
+    }
     Ok(m.to_string())
 }
 
@@ -377,6 +388,11 @@ fn review_flags(
         Some(e) => Answer::Set(level(p.effort_levels(), e, p.as_str())?),
         None => Answer::Keep,
     };
+    let keeps_model =
+        current_review(loaded) == Some(chosen) && loaded.sources.review.model != Source::Default;
+    if p.default_model().is_empty() && model == Answer::Keep && !keeps_model {
+        return Err(msg(format!("{p} has no default model: give --model")));
+    }
     let mut edits = review_edits(loaded, p, model, effort);
     if provider.is_some() && !edits.iter().any(|e| e.key == "provider") {
         edits.insert(0, set("review", "provider", p.as_str()));
@@ -426,7 +442,7 @@ fn effective(loaded: &Loaded, detected: &[Detected]) -> Value {
                 "model": r.model,
                 "effort": r.effort,
                 "model_source": from(own.model, w.model.is_some()),
-                "effort_source": from(own.effort, w.effort.is_some()),
+                "effort_source": if r.effort.is_some() { from(own.effort, w.effort.is_some()) } else { "default" },
             }),
         );
     }
@@ -549,6 +565,7 @@ struct Prompter<'a> {
     input: &'a mut dyn BufRead,
     out: &'a mut dyn Write,
     eof: bool,
+    failed: bool,
 }
 
 impl Prompter<'_> {
@@ -592,7 +609,9 @@ impl Prompter<'_> {
         };
         loop {
             let a = self.line(&format!("{ask} [{shown}]:"))?;
-            if a.is_empty() {
+            let placeholder = a.eq_ignore_ascii_case(shown)
+                && !options.iter().any(|(v, _)| v.eq_ignore_ascii_case(&a));
+            if a.is_empty() || placeholder {
                 return Ok(Answer::Keep);
             }
             if clearable && a == "-" {
@@ -607,7 +626,7 @@ impl Prompter<'_> {
             if let Some((v, _)) = by_number.or_else(by_name) {
                 return Ok(Answer::Set(v.clone()));
             }
-            if free_text {
+            if free_text && provider::is_model_name(&a) {
                 return Ok(Answer::Set(a));
             }
             self.say(&format!("`{a}` is not one of the choices"))?;
@@ -650,6 +669,7 @@ pub fn run_wizard(
         input,
         out,
         eof: false,
+        failed: false,
     };
     for w in &loaded.warnings {
         q.say(&format!("warning: {w}"))?;
@@ -679,7 +699,12 @@ pub fn run_wizard(
     if wants("ci") {
         edits.extend(ci_step(&mut q, &loaded)?);
     }
-    save(&env.config_dir, &edits, q.out)
+    if q.eof {
+        q.say("input ended before the last prompt; nothing saved")?;
+        return Ok(1);
+    }
+    let code = save(&env.config_dir, &edits, q.out)?;
+    Ok(if q.failed { 1 } else { code })
 }
 
 fn cockpit_step(
@@ -708,7 +733,7 @@ fn cockpit_step(
         edits.push(set("cockpit", "provider", p.as_str()));
     }
     if chosen == Some(Provider::Claude) && q.yes("Install/update Claude Code cockpit mod? [y/N]")? {
-        crate::cli::cockpit::install(&paths::data_dir().join("mods"), q.out)?;
+        q.failed |= crate::cli::cockpit::install(&paths::data_dir().join("mods"), q.out)? != 0;
     }
     if let Some(repo) = env.repo.as_deref() {
         let verdict = skills::verdict(repo);

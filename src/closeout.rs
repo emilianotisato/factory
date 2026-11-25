@@ -377,10 +377,12 @@ fn polish(
 /// The reviewer `config.toml` names now, since an answer may have set it after the driver read its config;
 /// a `proceed` answer turns it off for this run alone.
 fn review_for(run: &Run, cfg: &Config) -> ResolvedReview {
-    let resolved = config::load(&paths::config_dir())
-        .ok()
-        .and_then(|l| config::resolve_review(&l).0)
-        .unwrap_or_else(|| ResolvedReview::from(&cfg.review));
+    let resolved = match config::load(&paths::config_dir()) {
+        Ok(l) => config::resolve_review(&l)
+            .0
+            .unwrap_or_else(|| ResolvedReview::from(&l.config.review)),
+        Err(_) => ResolvedReview::from(&cfg.review),
+    };
     match run.state().review_override {
         Some(ReviewProvider::None) => ResolvedReview {
             provider: ReviewProvider::None,

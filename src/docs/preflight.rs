@@ -402,13 +402,17 @@ pub fn second_opinion(loaded: &config::Loaded, pf: &mut Preflight) {
 
 /// Names the installed CLIs, or all five when none is on `PATH`.
 fn review_ask(installed: &[provider::Detected]) -> String {
+    let name = |p: Provider| {
+        if p.default_model().is_empty() {
+            format!("`{p}:<model>`")
+        } else {
+            format!("`{p}`")
+        }
+    };
     let names: Vec<String> = if installed.is_empty() {
-        Provider::ALL.iter().map(|p| format!("`{p}`")).collect()
+        Provider::ALL.into_iter().map(name).collect()
     } else {
-        installed
-            .iter()
-            .map(|d| format!("`{}`", d.provider))
-            .collect()
+        installed.iter().map(|d| name(d.provider)).collect()
     };
     let which = if installed.is_empty() {
         "none found on PATH, so any of"

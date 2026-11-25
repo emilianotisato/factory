@@ -68,3 +68,12 @@ Drive this row from [`prd.md`](prd.md) §9 QA plan at CP-2:
 - **FR-3**: run `cargo test setup_wizard_configures_all_sections_and_keeps_defaults`, `cargo test setup_non_interactive_flags_and_show_json`, and `cargo test setup_non_tty_without_flags_exits_one`.
 
 **Acceptance:** FR-3 row has passing test transcripts captured in checkpoint evidence and recorded in **Progress**.
+
+**Code-review fixes (2026-11-25).** All under AD-14, pinned by `setup_refuses_what_it_cannot_save_and_saves_nothing_on_cut_input`:
+
+- `--show review --provider none` returned the old config and exited 0 without applying the flags. `--show` with a section now exits 1.
+- EOF was read as Enter, so a cut input stream saved the suggested providers. The wizard now saves nothing and exits 1.
+- Typing a bracketed placeholder (`inherit`, `none`) saved it as a model id. It now keeps the value, and free-text model ids go through `is_model_name`.
+- `setup review --provider opencode` with no model saved a reviewer that ran `-m ""`. It now exits 1 asking for `--model`.
+- A failed `factory cockpit install` (claude not on PATH) was dropped, so the wizard exited 0. It now exits 1.
+- `--show` reported `effort_source: user` for a role whose provider takes no effort (effort null). It now says `default`.

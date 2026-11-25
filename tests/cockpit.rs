@@ -777,7 +777,7 @@ fn the_cockpit_skill_is_under_sixty_lines_and_names_the_five_commands() {
         "If the owner asks to stop: `factory stop <id>`",
         "then ask the owner with structured choices: the question's text",
         "notify the owner of the line if your harness supports push notifications",
-        "The adversarial-reviewer `ASK-n` offers each `<provider>`, `none` and `proceed`",
+        "The adversarial-reviewer `ASK-n` offers each provider it lists, `none`, `proceed`, and `Other` for a `<provider>:<model>[:<effort>]`",
         // the review round's shape
         "Review all n now (Recommended) / Only the d decide ones / Later",
         "four questions",

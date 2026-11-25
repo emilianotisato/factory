@@ -70,7 +70,7 @@ fn preflight_names_the_second_opinion_ready_or_how_to_log_in_and_keeps_its_exit_
     assert!(line.contains("Authentication required"), "{line}");
     assert!(line.contains("`cursor-agent login`"), "{line}");
     assert!(
-        line.contains("a fresh local subagent per 600-line pass"),
+        line.contains("polish falls back to a fresh local subagent per 600-line pass"),
         "{line}"
     );
     assert!(!out.contains("  ✓ second opinion"), "{out}");

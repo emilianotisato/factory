@@ -149,7 +149,7 @@ fn skills_are_harness_neutral_and_distinguish_disabled_review() {
             [
                 "using `[review]` in `~/.config/factory/config.toml` (configured via `factory setup`)",
                 "An explicitly disabled second opinion (`disabled:`) skips the fallback",
-                "Second opinion unavailable or unreviewed → a fresh subagent on the `judgment` model",
+                "Second opinion unavailable or unreviewed → a fresh subagent on the `judgment` model with **no inherited context**",
             ],
         ),
         (
@@ -157,15 +157,15 @@ fn skills_are_harness_neutral_and_distinguish_disabled_review() {
             [
                 "the cross-vendor provider configured in `[review]` (`factory setup review`)",
                 "`skipped (disabled in config)` means the owner opted out in `[review]`",
-                "`2` with `disabled:` means the owner opted out: say so, and no fallback is owed. `2` with `unreviewed:`",
+                "`2` with `disabled:` means the owner opted out: say so, and no fallback is owed. `2` with `unreviewed:` (the auth is gone, the model is missing, or no pass returned text) means the fallback below starts now",
             ],
         ),
         (
             "prd/SKILL.md",
             [
                 "its provider set by `[review]` (`factory setup review`)",
-                "Exit 2 with `disabled:` means the owner opted out",
-                "Exit 2 with `unreviewed:` means it could not run",
+                "Exit 2 with `disabled:` means the owner opted out: say the second opinion was disabled and skip the fallback",
+                "Exit 2 with `unreviewed:` means it could not run: give the same instruction to a fresh local subagent",
             ],
         ),
     ] {
@@ -293,6 +293,7 @@ fn the_prd_skill_offers_the_build_and_drops_the_clear_advice() {
         assert_unique_passage("prd/SKILL.md", &text, needle);
     }
     assert!(!text.contains("Say the `/clear` part"));
+    assert!(!text.contains("Skill tool"));
 }
 
 #[test]

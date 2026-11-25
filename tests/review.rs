@@ -4,7 +4,7 @@ mod harness;
 
 use std::fs;
 use std::os::unix::process::ExitStatusExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
 use std::time::{Duration, Instant};
 
@@ -437,6 +437,10 @@ fn an_error_result_is_unreviewed_with_its_reason() {
         "{one}"
     );
     assert!(one.contains("(exit 1, partial)"), "{one}");
+    assert!(
+        out.contains("\nunreviewed: no pass returned a review\nlog: "),
+        "{out}"
+    );
 }
 
 #[test]
@@ -1294,6 +1298,8 @@ fn review_second_runs_all_five_providers_and_none_mode() {
                 "m-claude",
                 "--effort",
                 "max",
+                "--add-dir",
+                "<log>",
             ]),
         ),
         (
@@ -1331,6 +1337,8 @@ fn review_second_runs_all_five_providers_and_none_mode() {
                 "m-agy",
                 "--effort",
                 "low",
+                "--add-dir",
+                "<log>",
             ]),
         ),
         (
@@ -1341,14 +1349,13 @@ fn review_second_runs_all_five_providers_and_none_mode() {
             s(&["models"]),
             s(&[
                 "run",
+                "--standalone",
                 "--format",
                 "json",
                 "--agent",
                 "plan",
                 "-m",
-                "prov/m-opencode",
-                "--variant",
-                "medium",
+                "prov/m-opencode#medium",
             ]),
         ),
     ] {
@@ -1388,7 +1395,19 @@ fn review_second_runs_all_five_providers_and_none_mode() {
             let calls = provider_calls(&fx, bin);
             assert_eq!(calls.len(), 2, "{provider} {mode}: {calls:?}");
             assert_eq!(argv(&calls[0]), probe, "{provider} {mode}");
-            let pass = argv(&calls[1]);
+            let log = PathBuf::from(&fx.env()["FACTORY_DATA_DIR"]).join("reviews");
+            let pass: Vec<String> = argv(&calls[1])
+                .into_iter()
+                .map(|a| match Path::new(&a).strip_prefix(&log) {
+                    Ok(rest) if rest.ends_with("review-1.diff") => "<diff>".to_string(),
+                    Ok(_) => "<log>".to_string(),
+                    Err(_) => a,
+                })
+                .collect();
+            let mut flags = flags.clone();
+            if provider == "opencode" && mode == "diff" {
+                flags.extend(s(&["-f", "<diff>"]));
+            }
             let prompt = if provider == "codex" {
                 assert_eq!(pass, flags, "{provider} {mode}");
                 calls[1]["stdin"].as_str().unwrap().to_string()
@@ -1405,8 +1424,10 @@ fn review_second_runs_all_five_providers_and_none_mode() {
                 ),
             }
             let scrubbed = provider == "claude";
-            for var in ["claudecode", "entry"] {
-                assert_eq!(calls[1][var].is_null(), scrubbed, "{provider} {var}");
+            for call in &calls {
+                for var in ["claudecode", "entry"] {
+                    assert_eq!(call[var].is_null(), scrubbed, "{provider} {var}");
+                }
             }
         }
     }

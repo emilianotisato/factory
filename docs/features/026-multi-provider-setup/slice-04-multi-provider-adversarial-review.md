@@ -98,3 +98,12 @@ Drive this row from [`prd.md`](prd.md) §9 QA plan at CP-2 (and re-prove FR-1, F
 - **FR-4**: run `cargo test review_second_runs_all_five_providers_and_none_mode` and `cargo test preflight_asks_when_review_unset_and_answer_persists_or_proceeds`.
 
 **Acceptance:** FR-4 row (and every prior row re-proved at final CP-2) has passing test transcripts captured in checkpoint evidence and recorded in **Progress**.
+
+**Code-review fixes (2026-11-25).**
+
+- The Claude, agy and OpenCode reviewers could not read the diff, which is written to the review log dir outside the repo. Claude and agy now get `--add-dir <log dir>`, and OpenCode gets the diff attached with `-f`. OpenCode's effort moved from `--variant` (absent in v2.4.1) to `-m <model>#<effort>`, plus `--standalone`, so a timeout kills the agent itself. The Claude `--version` probe is scrubbed of session variables like the pass is (AD-11; `review_second_runs_all_five_providers_and_none_mode` asserts the argv and the scrub on both calls).
+- `factory answer ASK-n "codex"` saved `effort = "high"`, against AD-6. It now leaves effort unset, keeps `:` inside model ids, and refuses `-`-led ids (AD-12; `a_reviewer_answer_leaves_effort_unset_and_keeps_colons_in_the_model`).
+- The ask told the owner to answer a bare `opencode`, which is always refused. It now lists `opencode:<model>`.
+- `review second` exited 2 after every pass failed, with no `unreviewed:` line, so the skills could not tell that case from `disabled:`. It now prints `unreviewed: no pass returned a review` before `log:`.
+- Closeout fell back to the driver's startup `[review]` when a fresh load chose nobody. It now uses the fresh file's legacy defaults, as `review collect` does (AD-8).
+- The login hint ignored the configured or resolved binary (`run claude login` for `/opt/c/claude`, `cursor-agent login` when only `agent` is on PATH). It now names the binary the probe runs (`the_login_hint_names_the_binary_the_probe_runs`).

@@ -78,3 +78,10 @@ Drive this row from [`prd.md`](prd.md) §9 QA plan at CP-1:
 - **FR-5**: run `cargo test skills_render_links_shared_into_agents_skills`, `cargo test this_repos_claude_skills_link_into_the_source`, `cargo test every_file_under_skills_is_in_the_bundle_byte_for_byte`, `cargo test bundle_lock_matches`, `cargo test skills_are_harness_neutral_and_distinguish_disabled_review`, and `cargo test the_cockpit_skill_is_under_sixty_lines_and_names_the_five_commands`.
 
 **Acceptance:** FR-5 row has passing test transcripts captured in checkpoint evidence and recorded in **Progress**.
+
+**Code-review fixes (2026-11-25).**
+
+- `/harvest` still listed "a model role" as a `docs/project.toml` knob, which this feature removed. It now points to `factory setup workers`.
+- `_shared/models.md` and `/polish` said the last line of `review second` names `disabled:` or `unreviewed:`, but the last line is always `log:`. They now say a line starting with one of them.
+- `/deliver` offered the reviewer ask with no `Other`, so OpenCode (no default model) could never be answered. It now offers `Other` for `<provider>:<model>[:<effort>]` (AD-13).
+- The needles in `skills_are_harness_neutral_and_distinguish_disabled_review` only pinned prefixes, so the skip-vs-fallback halves could be flipped while the test stayed green. They now pin each consequence, and the `/prd` test rejects `Skill tool`.

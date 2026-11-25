@@ -223,6 +223,11 @@ pub fn resolve_binary_in(provider: Provider, path_env: &OsStr) -> Option<PathBuf
     })
 }
 
+/// A model id a CLI will read as a value: not empty, no leading `-` that would parse as a flag, no space or control character.
+pub fn is_model_name(s: &str) -> bool {
+    !s.is_empty() && !s.starts_with('-') && !s.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
 pub fn resolve_binary(provider: Provider) -> Option<PathBuf> {
     resolve_binary_in(provider, &std::env::var_os("PATH").unwrap_or_default())
 }

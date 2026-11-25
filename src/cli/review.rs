@@ -214,6 +214,9 @@ fn second(a: &SecondArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i3
         writeln!(out, "## {header}\n\n{text}").map_err(io("stdout"))?;
         out.flush().map_err(io("stdout"))?;
     }
+    if reviewed == 0 {
+        writeln!(out, "unreviewed: no pass returned a review").map_err(io("stdout"))?;
+    }
     writeln!(out, "log: {}", dir.display()).map_err(io("stdout"))?;
     Ok(if reviewed > 0 { 0 } else { 2 })
 }

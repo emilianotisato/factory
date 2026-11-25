@@ -460,36 +460,46 @@ fn review_answer(run: &mut Run, id: &str, text: &str, out: &mut dyn Write) -> Re
     Ok(true)
 }
 
-/// `<provider>[:<model>[:<effort>]]`, the model and effort defaulting to the provider's.
+/// `<provider>[:<model>[:<effort>]]`: the model defaults to the provider's, the effort is left to the CLI.
+/// A model may hold `:` itself; only a trailing level the provider knows is taken as the effort.
 fn review_choice(answer: &str) -> std::result::Result<(Provider, String, Option<String>), String> {
-    let mut parts = answer.splitn(3, ':').map(str::trim);
-    let name = parts.next().unwrap_or_default();
+    let (name, rest) = answer.split_once(':').unwrap_or((answer, ""));
     let p: Provider = name
+        .trim()
         .parse()
         .map_err(|_| format!("{answer:?} names no reviewer"))?;
-    let model = match parts.next().filter(|m| !m.is_empty()) {
-        Some(m) => m.to_string(),
-        None if p.default_model().is_empty() => {
+    let rest = rest.trim();
+    let (model, effort) = match rest.rsplit_once(':') {
+        Some((m, e)) if p.effort_levels().contains(&e.trim()) => (m.trim(), Some(e.trim())),
+        Some((_, e)) if is_effort_word(e.trim()) => {
+            let e = e.trim();
+            return Err(if p.effort_levels().is_empty() {
+                format!("{p} takes no effort level, not {e:?}")
+            } else {
+                format!(
+                    "{e:?} is not a {p} effort ({})",
+                    p.effort_levels().join(", ")
+                )
+            });
+        }
+        Some((m, "")) => (m.trim(), None),
+        _ => (rest, None),
+    };
+    let model = match model {
+        "" if p.default_model().is_empty() => {
             return Err(format!(
                 "{p} has no default model, so name one as `{p}:<model>`"
             ));
         }
-        None => p.default_model().to_string(),
+        "" => p.default_model().to_string(),
+        m if !crate::provider::is_model_name(m) => return Err(format!("{m:?} is not a model id")),
+        m => m.to_string(),
     };
-    let effort = match parts.next().filter(|e| !e.is_empty()) {
-        Some(e) if p.effort_levels().contains(&e) => Some(e.to_string()),
-        Some(e) if p.effort_levels().is_empty() => {
-            return Err(format!("{p} takes no effort level, not {e:?}"));
-        }
-        Some(e) => {
-            return Err(format!(
-                "{e:?} is not a {p} effort ({})",
-                p.effort_levels().join(", ")
-            ));
-        }
-        None => p.default_effort().map(str::to_string),
-    };
-    Ok((p, model, effort))
+    Ok((p, model, effort.map(str::to_string)))
+}
+
+fn is_effort_word(e: &str) -> bool {
+    Provider::ALL.iter().any(|p| p.effort_levels().contains(&e))
 }
 
 /// A budget-parked run gets no driver: it would only park again.
@@ -593,6 +603,38 @@ fn rel(repo: &Path, path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_reviewer_answer_leaves_effort_unset_and_keeps_colons_in_the_model() {
+        let ok = |a: &str| review_choice(a).unwrap();
+        let own = |p, m: &str, e: Option<&str>| (p, m.to_string(), e.map(str::to_string));
+        assert_eq!(ok("codex"), own(Provider::Codex, "gpt-5.4", None));
+        assert_eq!(
+            ok("codex:o3:high"),
+            own(Provider::Codex, "o3", Some("high"))
+        );
+        assert_eq!(
+            ok("claude::max"),
+            own(Provider::Claude, "opus", Some("max"))
+        );
+        assert_eq!(
+            ok("opencode:ollama/llama3:8b"),
+            own(Provider::Opencode, "ollama/llama3:8b", None)
+        );
+        assert_eq!(
+            ok("opencode:ollama/llama3:8b:high"),
+            own(Provider::Opencode, "ollama/llama3:8b", Some("high"))
+        );
+        for bad in [
+            "opencode",
+            "cursor:grok-4.7-high:high",
+            "codex:o3:max",
+            "codex:--auto",
+            "gemini",
+        ] {
+            assert!(review_choice(bad).is_err(), "{bad}");
+        }
+    }
 
     #[test]
     fn a_logged_answer_is_found_by_its_title_and_choice() {

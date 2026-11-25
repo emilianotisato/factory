@@ -97,3 +97,9 @@ Drive these rows from [`prd.md`](prd.md) §9 QA plan at CP-1:
 - **FR-2**: run `cargo test config_loads_multi_provider_schema_maps_legacy_agent_and_ignores_project_workers` and `cargo test config_patch_updates_multiple_sections_atomically_preserving_comments`.
 
 **Acceptance:** both FR rows have passing test transcripts captured in checkpoint evidence and recorded in **Progress**.
+
+**Code-review fixes (2026-11-25).**
+
+- `resolve_review` used any `[review] agent` as the binary, even with a `provider` naming another CLI, so `provider = "codex"` plus a leftover `agent = "cursor-agent"` ran cursor-agent with Codex's argv. It now keeps the agent only when its basename names that provider or no known CLI (`a_review_agent_runs_only_for_the_provider_it_names`).
+- New `provider::is_model_name`: a model id is refused when it starts with `-`, which a CLI would read as a flag (`opencode -m --auto`), or holds whitespace or control characters.
+- The `Review` doc line sat between the derives and said "until it does"; it is now one doc block that says what `resolve_review` decides.
