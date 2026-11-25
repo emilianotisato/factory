@@ -1,7 +1,9 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Command;
+use std::time::Duration;
 
 use clap::Args;
 
@@ -9,6 +11,7 @@ use crate::cli::lanes;
 use crate::docs::{Branch, Docs, Preflight, preflight};
 use crate::error::{io, json};
 use crate::events::EventKind;
+use crate::provider::{self, Provider};
 use crate::run::{Phase, Run};
 use crate::{Error, Result, commit, config, daemon, paths, scheduler};
 
@@ -138,7 +141,14 @@ pub fn run(args: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i
         let mut run = Run::create(&data_dir, &repo, &feature, None, budget)?;
         run.set_ci_mode(ci_mode)?;
         run.set_worker_config(worker_config.clone())?;
-        record_start(&run, &docs, &loaded, args.hypothesis.as_deref(), err)?;
+        record_start(
+            &run,
+            &docs,
+            &loaded,
+            &specs,
+            args.hypothesis.as_deref(),
+            err,
+        )?;
         save_preflight(run.dir(), &pf)?;
         for (i, text) in pf.ask.iter().enumerate() {
             let id = format!("ASK-{}", i + 1);
@@ -164,7 +174,14 @@ pub fn run(args: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i
     let mut run = Run::create(&data_dir, &repo, &feature, Some(branch), budget)?;
     run.set_ci_mode(ci_mode)?;
     run.set_worker_config(worker_config)?;
-    record_start(&run, &docs, &loaded, args.hypothesis.as_deref(), err)?;
+    record_start(
+        &run,
+        &docs,
+        &loaded,
+        &specs,
+        args.hypothesis.as_deref(),
+        err,
+    )?;
     // The closeout reads `branch.default` from here.
     save_preflight(run.dir(), &pf)?;
     // Judge lines are noted for the cockpit, never waited on.
@@ -241,18 +258,54 @@ fn record_start(
     run: &Run,
     docs: &Docs,
     loaded: &config::Loaded,
+    specs: &[config::WorkerSpec],
     hypothesis: Option<&str>,
     err: &mut dyn Write,
 ) -> Result<()> {
     let lanes = docs.status(&run.state().feature).ok().map(|s| s.lanes);
-    let claude = claude_version(err)?;
-    let knobs = config::knobs(loaded, lanes, claude.as_deref());
+    let workers = run.state().worker_config.clone();
+    let providers = workers
+        .as_ref()
+        .map_or_else(Vec::new, config::ResolvedWorkers::distinct_providers);
+    let versions = probe_provider_versions(&providers, err)?;
+    let (review, review_source, _) = config::resolve_review(loaded);
+    let knobs = config::knobs(
+        loaded,
+        workers.as_ref(),
+        specs,
+        (review.as_ref(), review_source),
+        lanes,
+        &versions,
+    );
     let id = run.id().as_str();
     run.db().set_run_knobs(id, &knobs.to_string())?;
     if let Some(h) = hypothesis {
         run.db().set_run_hypothesis(id, h)?;
     }
     Ok(())
+}
+
+/// For a run that started before its workers were chosen: once they are, its knobs say what it runs on.
+pub(crate) fn set_worker_knobs(
+    run: &Run,
+    loaded: Option<&config::Loaded>,
+    err: &mut dyn Write,
+) -> Result<()> {
+    let Some(workers) = run.state().worker_config.clone() else {
+        return Ok(());
+    };
+    let id = run.id().as_str();
+    let Some(text) = run.db().run_row(id)?.and_then(|r| r.knobs) else {
+        return Ok(());
+    };
+    let Ok(mut knobs) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return Ok(());
+    };
+    let versions = probe_provider_versions(&workers.distinct_providers(), err)?;
+    knobs["workers"] = config::worker_knobs(loaded, &workers, &[]);
+    knobs["provider_versions"] = serde_json::json!(versions);
+    knobs["claude_version"] = serde_json::json!(versions.get(&Provider::Claude));
+    run.db().set_run_knobs(id, &knobs.to_string())
 }
 
 fn budget_knob(run: &Run, budget: u64) -> Result<()> {
@@ -282,29 +335,42 @@ pub(crate) fn set_knob(
     run.db().set_run_knobs(id, &knobs.to_string())
 }
 
-fn claude_version(err: &mut dyn Write) -> Result<Option<String>> {
-    let why = match Command::new("claude")
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-    {
-        Ok(o) if o.status.success() => {
-            let v = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if !v.is_empty() {
-                return Ok(Some(v));
-            }
-            "printed nothing".to_string()
+/// A lazy shim may download its tool or hang when first run, so each probe is bounded.
+const VERSION_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// `<bin> --version` for each provider the run uses and no other; one that does not answer is warned of and left out.
+pub fn probe_provider_versions(
+    providers: &[Provider],
+    err: &mut dyn Write,
+) -> Result<BTreeMap<Provider, String>> {
+    let mut out = BTreeMap::new();
+    for &p in providers {
+        if out.contains_key(&p) {
+            continue;
         }
-        Ok(o) => format!("exited {}", o.status),
-        Err(e) => e.to_string(),
-    };
-    writeln!(
-        err,
-        "factory: claude --version: {why}; the run records no claude version"
-    )
-    .map_err(io("stderr"))?;
-    Ok(None)
+        let why = match provider::resolve_binary(p) {
+            None => "not on PATH".to_string(),
+            Some(bin) => match provider::run_bounded(&bin, &["--version"], VERSION_TIMEOUT) {
+                Some(text) => match text.lines().map(str::trim).find(|l| !l.is_empty()) {
+                    Some(v) => {
+                        out.insert(p, v.to_string());
+                        continue;
+                    }
+                    None => "printed nothing".to_string(),
+                },
+                None => format!(
+                    "failed or gave no answer within {}s",
+                    VERSION_TIMEOUT.as_secs()
+                ),
+            },
+        };
+        writeln!(
+            err,
+            "factory: {p} --version: {why}; the run records no {p} version"
+        )
+        .map_err(io("stderr"))?;
+    }
+    Ok(out)
 }
 
 /// Called again when the last `ASK-n` is answered.

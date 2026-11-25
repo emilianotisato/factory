@@ -1,4 +1,5 @@
 //! A missing file is the defaults; an unknown key warns, never fails.
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -223,23 +224,6 @@ impl Workers {
             model,
             effort,
         }
-    }
-
-    /// Whether the role takes this `[workers]` default rather than its own value or the provider's.
-    fn inherited(&self, sources: &RoleSources, role: &str, model: bool) -> bool {
-        let Some(s) = sources.role(role) else {
-            return false;
-        };
-        let (own, default) = if model {
-            (s.model, self.model.is_some())
-        } else {
-            (s.effort, self.effort.is_some())
-        };
-        let claude = |p: Option<Provider>| p.unwrap_or(Provider::Claude) == Provider::Claude;
-        own == Source::Default
-            && default
-            && claude(self.provider)
-            && claude(self.role(role).and_then(|w| w.provider).or(self.provider))
     }
 }
 
@@ -468,38 +452,122 @@ pub fn load_with_project(config_dir: &Path, repo: &Path) -> Result<Loaded> {
     Ok(loaded)
 }
 
-pub fn knobs(loaded: &Loaded, lanes: Option<u32>, claude_version: Option<&str>) -> Value {
-    let w = &loaded.config.workers;
-    let s = &loaded.sources.workers;
-    let mut workers = serde_json::Map::new();
-    for (role, worker, src) in [
-        ("build", &w.build, &s.build),
-        ("fix", &w.fix, &s.fix),
-        ("checkpoint", &w.checkpoint, &s.checkpoint),
-        ("polish", &w.polish, &s.polish),
-    ] {
-        let from = |own: Source, model: bool| {
-            if w.inherited(s, role, model) {
-                Source::User
-            } else {
-                own
-            }
-        };
-        let (model_source, effort_source) = (from(src.model, true), from(src.effort, false));
-        let mut o = json!({"model": worker.model, "effort": worker.effort, "source": model_source});
-        if effort_source != model_source {
-            o["effort_source"] = json!(effort_source);
-        }
-        workers.insert(role.to_string(), o);
-    }
+/// `workers` is `None` while the run waits for the owner to pick a worker provider; `specs` are the run's `--worker`
+/// flags; `review` is what `resolve_review` gave.
+pub fn knobs(
+    loaded: &Loaded,
+    workers: Option<&ResolvedWorkers>,
+    specs: &[WorkerSpec],
+    review: (Option<&ResolvedReview>, Source),
+    lanes: Option<u32>,
+    provider_versions: &BTreeMap<Provider, String>,
+) -> Value {
+    let (review, review_source) = review;
+    let review = review.map_or(Value::Null, |r| {
+        json!({
+            "provider": r.provider.as_str(),
+            "model": (!r.model.is_empty()).then_some(&r.model),
+            "source": review_source,
+        })
+    });
     json!({
-        "workers": workers,
+        "workers": workers.map_or_else(|| json!({}), |w| worker_knobs(Some(loaded), w, specs)),
+        "review": review,
         "budget": {"value": loaded.config.budget_weighted_tokens, "source": loaded.sources.budget},
         "ci": {"value": loaded.config.ci.mode, "source": loaded.sources.ci},
         "lanes": lanes,
         "factory_version": env!("CARGO_PKG_VERSION"),
-        "claude_version": claude_version,
+        "provider_versions": provider_versions,
+        "claude_version": provider_versions.get(&Provider::Claude),
     })
+}
+
+/// The `workers` knob. With no `loaded`, every part is the provider's own default.
+pub fn worker_knobs(
+    loaded: Option<&Loaded>,
+    workers: &ResolvedWorkers,
+    specs: &[WorkerSpec],
+) -> Value {
+    let mut out = serde_json::Map::new();
+    for (role, r) in workers.roles() {
+        let (provider_source, model_source, effort_source) = loaded
+            .map_or((Source::Default, Source::Default, Source::Default), |l| {
+                role_sources(l, role, r, specs)
+            });
+        let mut o = json!({
+            "provider": r.provider,
+            "model": r.model,
+            "effort": r.effort,
+            "source": model_source,
+        });
+        if provider_source != model_source {
+            o["provider_source"] = json!(provider_source);
+        }
+        if effort_source != model_source {
+            o["effort_source"] = json!(effort_source);
+        }
+        out.insert(role.to_string(), o);
+    }
+    Value::Object(out)
+}
+
+/// Where a resolved role's provider, model and effort came from. A layer counts only when it holds the value the
+/// role resolved to, so a `FACTORY_WORKER_PROVIDER` the sources cannot see is never mistaken for a file's.
+fn role_sources(
+    loaded: &Loaded,
+    role: &str,
+    r: &ResolvedWorker,
+    specs: &[WorkerSpec],
+) -> (Source, Source, Source) {
+    let w = &loaded.config.workers;
+    let (Some(worker), Some(set)) = (w.role(role), loaded.sources.workers.role(role)) else {
+        return (Source::Default, Source::Default, Source::Default);
+    };
+    let spec = specs
+        .iter()
+        .rev()
+        .find(|s| s.role.as_deref() == Some(role))
+        .or_else(|| specs.iter().rev().find(|s| s.role.is_none()));
+    let provider = if spec.is_some() {
+        Source::Flag
+    } else if worker.provider == Some(r.provider) {
+        set.provider
+    } else if w.provider == Some(r.provider) {
+        Source::User
+    } else {
+        Source::Default
+    };
+    let own = spec.is_none() || worker.provider.or(w.provider) == Some(r.provider);
+    let inherits = w.provider.is_none_or(|p| p == r.provider);
+    let pick = |flag: bool, set: Source, own_value: &str, default: Option<&String>, value: &str| {
+        if flag {
+            Source::Flag
+        } else if own && set != Source::Default && own_value == value {
+            set
+        } else if inherits && default.is_some_and(|d| d == value) {
+            Source::User
+        } else {
+            Source::Default
+        }
+    };
+    let model = pick(
+        spec.is_some_and(|s| s.model.is_some()),
+        set.model,
+        &worker.model,
+        w.model.as_ref(),
+        &r.model,
+    );
+    let effort = match &r.effort {
+        None => Source::Default,
+        Some(e) => pick(
+            spec.is_some_and(|s| s.effort.is_some()),
+            set.effort,
+            &worker.effort,
+            w.effort.as_ref(),
+            e,
+        ),
+    };
+    (provider, model, effort)
 }
 
 /// `--ci`, then the user's `[ci] mode`, then `FACTORY_CI_MODE`; the env is read here so `load` stays file-only.
@@ -1084,6 +1152,20 @@ fn unknown_keys(table: &toml::Table, top: &[&str]) -> Vec<String> {
 mod tests {
     use super::*;
 
+    /// Every role on Claude, as `FACTORY_WORKER_PROVIDER=claude` gives.
+    fn knobs_of(l: &Loaded, lanes: Option<u32>, versions: &[(Provider, &str)]) -> Value {
+        let (workers, _) = resolve_workers_from(l, &[], Some("claude"));
+        let versions = versions.iter().map(|(p, v)| (*p, v.to_string())).collect();
+        knobs(
+            l,
+            workers.as_ref(),
+            &[],
+            (None, Source::Default),
+            lanes,
+            &versions,
+        )
+    }
+
     fn dirs(user: Option<&str>, project: Option<&str>) -> (tempfile::TempDir, tempfile::TempDir) {
         let (cfg, repo) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         if let Some(t) = user {
@@ -1120,14 +1202,18 @@ mod tests {
             l.warnings
         );
 
-        let k = knobs(&l, Some(2), Some("2.1.296 (Claude Code)"));
+        let k = knobs_of(&l, Some(2), &[(Provider::Claude, "2.1.296 (Claude Code)")]);
         assert_eq!(
             k["workers"]["polish"],
-            json!({"model": "sonnet", "effort": "low", "source": "user"})
+            json!({"provider": "claude", "model": "sonnet", "effort": "low", "source": "user", "provider_source": "default"})
         );
         assert_eq!(
             k["workers"]["build"],
-            json!({"model": "opus", "effort": "high", "source": "default"})
+            json!({"provider": "claude", "model": "opus", "effort": "high", "source": "default"})
+        );
+        assert_eq!(
+            k["provider_versions"],
+            json!({"claude": "2.1.296 (Claude Code)"})
         );
         assert_eq!(k["budget"], json!({"value": 7, "source": "project"}));
         assert_eq!(k["lanes"], 2);
@@ -1190,10 +1276,14 @@ mod tests {
             ("sonnet", "medium")
         );
         assert_eq!(w.checkpoint.effort, "low");
-        let k = knobs(&l, None, None);
+        let k = knobs_of(&l, None, &[]);
         assert_eq!(
             k["workers"]["polish"],
-            json!({"model": "sonnet", "effort": "medium", "source": "user"})
+            json!({"provider": "claude", "model": "sonnet", "effort": "medium", "source": "user"})
+        );
+        assert_eq!(
+            k["workers"]["fix"],
+            json!({"provider": "cursor", "model": "grok-4.7-high", "effort": null, "source": "default", "provider_source": "user"})
         );
 
         let (cfg, _) = dirs(
@@ -1363,8 +1453,9 @@ mod tests {
         assert_eq!(a.sources.budget, Source::User);
         assert_eq!(a.sources.workers.fix.model, Source::User);
         assert_eq!(a.sources.workers.fix.effort, Source::Default);
-        let k = knobs(&a, None, None);
+        let k = knobs_of(&a, None, &[(Provider::Codex, "codex-cli 0.172.0")]);
         assert!(k["lanes"].is_null() && k["claude_version"].is_null());
+        assert_eq!(k["provider_versions"]["codex"], "codex-cli 0.172.0");
     }
 
     #[test]
@@ -1440,7 +1531,7 @@ mod tests {
             assert_eq!(l.sources.ci, Source::User);
             assert!(l.warnings.is_empty(), "{:?}", l.warnings);
             assert_eq!(
-                knobs(&l, None, None)["ci"],
+                knobs_of(&l, None, &[])["ci"],
                 json!({"value": written, "source": "user"})
             );
         }
@@ -1449,7 +1540,7 @@ mod tests {
         let l = load(cfg.path()).unwrap();
         assert_eq!((l.config.ci.mode, l.sources.ci), (None, Source::Default));
         assert_eq!(
-            knobs(&l, None, None)["ci"],
+            knobs_of(&l, None, &[])["ci"],
             json!({"value": null, "source": "default"})
         );
 

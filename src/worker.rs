@@ -611,6 +611,8 @@ fn record(
         cfg.effort.as_deref().unwrap_or(""),
         &started_at,
     )?;
+    run.db()
+        .set_worker_provider(row_id, cfg.provider.as_str())?;
     run.db().set_worker_pack_files(row_id, &pack.files)?;
     run.db().set_worker_pack_parts(row_id, &pack.parts)?;
     run.add_worker(WorkerRef {

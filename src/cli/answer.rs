@@ -487,6 +487,7 @@ fn worker_answer(run: &mut Run, id: &str, text: &str, out: &mut dyn Write) -> Re
         )
         .map_err(io("stdout"))?;
         run.set_worker_config(Some(config::ResolvedWorkers::uniform(w)))?;
+        super::run::set_worker_knobs(run, None, out)?;
         return Ok(true);
     }
     let choice = if answer.contains('=') {
@@ -529,6 +530,7 @@ fn worker_answer(run: &mut Run, id: &str, text: &str, out: &mut dyn Write) -> Re
         )));
     };
     run.set_worker_config(Some(resolved))?;
+    super::run::set_worker_knobs(run, Some(&loaded), out)?;
     let effort = effort.map_or(String::new(), |e| format!(" at {e} effort"));
     writeln!(
         out,
