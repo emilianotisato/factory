@@ -9,8 +9,9 @@
 use std::io::Write;
 use std::path::Path;
 
-use crate::config::Review;
+use crate::config::ResolvedReview;
 use crate::leaks::{self, Input};
+use crate::provider::ReviewProvider;
 use crate::review::{Cancel, Progress, Range, Sink};
 use crate::{Result, ci, paths, review, settled};
 
@@ -19,6 +20,8 @@ pub const LOCAL_ONLY_LINES: u64 = 50;
 
 /// The `second opinion:` state when no pass counted.
 const FALLBACK_OWED: &str = "fallback owed";
+/// The `second opinion:` state when the owner turned it off: nothing is owed.
+const DISABLED: &str = "skipped (disabled in config)";
 /// The leaks `verdict:` when the scan errored.
 const DID_NOT_RUN: &str = "did not run";
 
@@ -95,10 +98,12 @@ impl<'a> Options<'a> {
 pub fn collect(
     root: &Path,
     opts: &Options,
-    cfg: &Review,
+    cfg: impl Into<ResolvedReview>,
     progress: &mut dyn Write,
     mut sink: Sink,
 ) -> Result<String> {
+    let cfg: ResolvedReview = cfg.into();
+    let cfg = &cfg;
     let head = ci::head(root)?;
     let range = opts.range();
     let skip = review::skip(root, review::numstat(root, range, &[])?);
@@ -106,7 +111,18 @@ pub fn collect(
     let lines: u64 = files.iter().map(|(_, n)| n).sum();
     let leaks = leaks_part(root, opts.base);
     let second = needs_second_opinion(files);
-    let (state, opinion) = if second {
+    let (state, opinion) = if second && cfg.provider == ReviewProvider::None {
+        if let Some(sink) = sink.as_mut() {
+            sink(Progress::Started {
+                passes: 0,
+                dir: None,
+            })?;
+        }
+        (
+            DISABLED.to_string(),
+            format!("skipped: {}\n", review::DISABLED),
+        )
+    } else if second {
         let settled = opts.feature.and_then(|f| settled::for_feature(root, f));
         let reviewing = Reviewing {
             root,
@@ -197,7 +213,7 @@ struct Reviewing<'a> {
 /// The plan's state line and the section's text.
 fn second_opinion(
     on: &Reviewing,
-    cfg: &Review,
+    cfg: &ResolvedReview,
     files: &[(String, u64)],
     progress: &mut dyn Write,
     mut sink: Sink,
@@ -228,7 +244,7 @@ fn second_opinion(
     if let Err(e) = started(Some(&dir)) {
         return unreviewed(&e.to_string(), Some(&dir), "");
     }
-    if let Err(reason) = review::probe(cfg, &dir, on.cancel) {
+    if let Err(reason) = review::probe_resolved(cfg, &dir, on.cancel) {
         return unreviewed(&reason, Some(&dir), "");
     }
     if on.cancel.is_some_and(|stop| stop()) {

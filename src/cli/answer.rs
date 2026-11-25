@@ -10,6 +10,7 @@ use crate::config::{self, CiMode};
 use crate::docs::{log, preflight, state};
 use crate::error::io;
 use crate::events::EventKind;
+use crate::provider::{Provider, ReviewProvider};
 use crate::quota::{self, Hold};
 use crate::run::{self, Phase, Run};
 use crate::{Error, Result, clock, daemon, paths, scheduler};
@@ -302,6 +303,9 @@ fn answer_ask(
     {
         return Ok(1);
     }
+    if item.starts_with(preflight::REVIEW_ASK_PREFIX) && !review_answer(&mut run, id, text, out)? {
+        return Ok(1);
+    }
     let now = clock::now_rfc3339();
     let feature = run.state().feature.clone();
     let dir = feature_dir(repo, &feature)?;
@@ -393,6 +397,99 @@ fn ci_mode_answer(run: &mut Run, id: &str, text: &str, out: &mut dyn Write) -> R
     run.set_ci_mode(Some(mode))?;
     super::run::set_knob(run, "ci", serde_json::json!(mode), source)?;
     Ok(true)
+}
+
+/// A provider or `none` is saved for every repo, `proceed` skips the second opinion for this run only; false leaves
+/// the ask open.
+fn review_answer(run: &mut Run, id: &str, text: &str, out: &mut dyn Write) -> Result<bool> {
+    let answer = text.trim();
+    let lower = answer.to_ascii_lowercase();
+    if lower == "proceed" {
+        run.set_review_override(Some(ReviewProvider::None))?;
+        writeln!(
+            out,
+            "second opinion skipped for this run only; config.toml left unset"
+        )
+        .map_err(io("stdout"))?;
+        return Ok(true);
+    }
+    let set = |key: &str, v: Option<&str>| config::Patch {
+        table: "review".into(),
+        key: key.into(),
+        value: v.map(|v| toml::Value::String(v.into())),
+    };
+    if lower == "none" {
+        let path = config::patch(
+            &paths::config_dir(),
+            &[set("provider", Some("none")), set("agent", None)],
+        )?;
+        run.set_review_override(Some(ReviewProvider::None))?;
+        writeln!(out, "second opinion disabled, saved to {}", path.display())
+            .map_err(io("stdout"))?;
+        return Ok(true);
+    }
+    let (p, model, effort) = match review_choice(answer) {
+        Ok(c) => c,
+        Err(why) => {
+            writeln!(
+                out,
+                "{id} not answered: {why} — answer `<provider>`, `<provider>:<model>` or `<provider>:<model>:<effort>` \
+                 with a provider of `claude`, `codex`, `cursor`, `agy` or `opencode`; `none`; or `proceed`"
+            )
+            .map_err(io("stdout"))?;
+            return Ok(false);
+        }
+    };
+    let path = config::patch(
+        &paths::config_dir(),
+        &[
+            set("provider", Some(p.as_str())),
+            set("model", Some(&model)),
+            set("effort", effort.as_deref()),
+            set("agent", None),
+        ],
+    )?;
+    run.set_review_override(None)?;
+    let effort = effort.map_or(String::new(), |e| format!(" at {e} effort"));
+    writeln!(
+        out,
+        "second opinion from {p} with {model}{effort}, saved to {}",
+        path.display()
+    )
+    .map_err(io("stdout"))?;
+    Ok(true)
+}
+
+/// `<provider>[:<model>[:<effort>]]`, the model and effort defaulting to the provider's.
+fn review_choice(answer: &str) -> std::result::Result<(Provider, String, Option<String>), String> {
+    let mut parts = answer.splitn(3, ':').map(str::trim);
+    let name = parts.next().unwrap_or_default();
+    let p: Provider = name
+        .parse()
+        .map_err(|_| format!("{answer:?} names no reviewer"))?;
+    let model = match parts.next().filter(|m| !m.is_empty()) {
+        Some(m) => m.to_string(),
+        None if p.default_model().is_empty() => {
+            return Err(format!(
+                "{p} has no default model, so name one as `{p}:<model>`"
+            ));
+        }
+        None => p.default_model().to_string(),
+    };
+    let effort = match parts.next().filter(|e| !e.is_empty()) {
+        Some(e) if p.effort_levels().contains(&e) => Some(e.to_string()),
+        Some(e) if p.effort_levels().is_empty() => {
+            return Err(format!("{p} takes no effort level, not {e:?}"));
+        }
+        Some(e) => {
+            return Err(format!(
+                "{e:?} is not a {p} effort ({})",
+                p.effort_levels().join(", ")
+            ));
+        }
+        None => p.default_effort().map(str::to_string),
+    };
+    Ok((p, model, effort))
 }
 
 /// A budget-parked run gets no driver: it would only park again.

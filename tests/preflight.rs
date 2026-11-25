@@ -70,7 +70,7 @@ fn preflight_names_the_second_opinion_ready_or_how_to_log_in_and_keeps_its_exit_
     assert!(line.contains("Authentication required"), "{line}");
     assert!(line.contains("`cursor-agent login`"), "{line}");
     assert!(
-        line.contains("one Claude agent per 600-line pass"),
+        line.contains("a fresh local subagent per 600-line pass"),
         "{line}"
     );
     assert!(!out.contains("  ✓ second opinion"), "{out}");
@@ -421,5 +421,168 @@ fn preflight_names_an_unreadable_config_and_a_bad_env_ci_mode_instead_of_asking(
     assert!(
         out.contains("FACTORY_CI_MODE=\"cloud\" is neither `local` nor `remote`"),
         "{out}"
+    );
+}
+
+const REVIEW_ASK: &str = "adversarial reviewer not set in config.toml";
+
+/// No reviewer chosen: no `FACTORY_REVIEW_PROVIDER`, and whatever `config_dir` holds.
+fn no_reviewer(fx: &Fixture, args: &[&str], env: &[(&str, &str)]) -> (Option<i32>, String) {
+    let mut c = fx.command(BIN);
+    c.args(args).env_remove("FACTORY_REVIEW_PROVIDER");
+    for (k, v) in env {
+        c.env(k, v);
+    }
+    let o = c.output().unwrap();
+    let text = String::from_utf8_lossy(&o.stdout).into_owned();
+    eprintln!(
+        "$ factory {}\n{text}{}exit={:?}",
+        args.join(" "),
+        String::from_utf8_lossy(&o.stderr),
+        o.status.code()
+    );
+    (o.status.code(), text)
+}
+
+/// Starts a run that parks on the reviewer ask and returns the ask's id.
+fn parked_on_review_ask(fx: &Fixture) -> String {
+    fx.write_plan(&[
+        json!({"outcome": "done"}),
+        json!({"outcome": "done"}),
+        json!({"outcome": "checkpoint"}),
+        json!({"outcome": "done"}),
+        json!({"outcome": "checkpoint"}),
+    ]);
+    let (code, out) = no_reviewer(fx, &["run", "001"], &[]);
+    assert_eq!(code, Some(0), "{out}");
+    assert_eq!(run_state(fx)["phase"], "waiting-owner", "{out}");
+    let asks: Vec<(String, String)> = events(fx)
+        .iter()
+        .filter(|e| e["kind"] == "ask_opened")
+        .map(|e| {
+            (
+                e["id"].as_str().unwrap().to_string(),
+                e["text"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(asks.len(), 1, "{asks:?}");
+    assert!(asks[0].1.starts_with(REVIEW_ASK), "{asks:?}");
+    asks[0].0.clone()
+}
+
+#[test]
+fn preflight_asks_when_review_unset_and_answer_persists_or_proceeds() {
+    let other = Fixture::new("preflight-review-unset");
+    let (code, out) = no_reviewer(&other, &["docs", "preflight", "001"], &[]);
+    assert_eq!(code, Some(2), "{out}");
+    let line = out
+        .lines()
+        .find(|l| l.starts_with(&format!("  ! {REVIEW_ASK}")))
+        .unwrap_or_else(|| panic!("no reviewer ask\n{out}"));
+    for choice in ["`claude`", "`cursor`", "`none`", "`proceed`"] {
+        assert!(line.contains(choice), "{choice}: {line}");
+    }
+    assert!(!out.contains("  ✓ second opinion"), "{out}");
+    let (code, out) = no_reviewer(
+        &other,
+        &["docs", "preflight", "001"],
+        &[("FACTORY_REVIEW_PROVIDER", "bogus")],
+    );
+    assert_eq!(code, Some(2), "{out}");
+    assert!(out.contains(&format!("  ! {REVIEW_ASK}")), "{out}");
+    assert!(
+        out.contains("  ? FACTORY_REVIEW_PROVIDER=\"bogus\" names no reviewer"),
+        "{out}"
+    );
+
+    let fx = Fixture::new("answer-review-codex");
+    let ask = parked_on_review_ask(&fx);
+    assert_eq!(ask, "ASK-1");
+    let log = fx.path().join(harness::FEATURE_DIR).join("log.jsonl");
+    let log_before = fs::read_to_string(&log).unwrap_or_default();
+    let (code, out) = no_reviewer(&fx, &["answer", &ask, "bogus"], &[]);
+    assert_eq!(code, Some(1), "{out}");
+    for choice in ["`codex`", "`opencode`", "`none`", "`proceed`"] {
+        assert!(out.contains(choice), "{choice}: {out}");
+    }
+    assert!(!config_toml(&fx).exists());
+    assert_eq!(fs::read_to_string(&log).unwrap_or_default(), log_before);
+    assert_eq!(answered(&fx), 0);
+    assert!(!run_dir(&fx).join(format!("answers/{ask}.json")).exists());
+    assert_eq!(run_state(&fx)["phase"], "waiting-owner");
+
+    let (code, out) = no_reviewer(&fx, &["answer", &ask, "codex:gpt-5.4:high"], &[]);
+    assert_eq!(code, Some(0), "{out}");
+    assert!(
+        out.contains("every ask answered — the run proceeds"),
+        "{out}"
+    );
+    let saved = fs::read_to_string(config_toml(&fx)).unwrap();
+    let review: toml::Table = toml::from_str::<toml::Table>(&saved).unwrap()["review"]
+        .as_table()
+        .unwrap()
+        .clone();
+    assert_eq!(review["provider"].as_str(), Some("codex"), "{saved}");
+    assert_eq!(review["model"].as_str(), Some("gpt-5.4"), "{saved}");
+    assert_eq!(review["effort"].as_str(), Some("high"), "{saved}");
+    assert_eq!(answered(&fx), 1);
+    assert!(run_state(&fx)["review_override"].is_null());
+
+    let codex = other.stub_dir().join("codex-bin");
+    fs::create_dir_all(&codex).unwrap();
+    fs::write(codex.join("codex"), "#!/bin/sh\necho 'codex-cli 1.0'\n").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(codex.join("codex"), fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let path = format!("{}:{}", codex.display(), other.env()["PATH"]);
+    let (code, out) = no_reviewer(
+        &other,
+        &["docs", "preflight", "001"],
+        &[
+            ("FACTORY_CONFIG_DIR", &fx.env()["FACTORY_CONFIG_DIR"]),
+            ("PATH", &path),
+        ],
+    );
+    assert_eq!(code, Some(0), "{out}");
+    assert!(
+        out.contains("  ✓ second opinion: codex with gpt-5.4 ready\n"),
+        "{out}"
+    );
+    assert!(!out.contains(REVIEW_ASK), "{out}");
+
+    let none = Fixture::new("answer-review-none");
+    let ask = parked_on_review_ask(&none);
+    let (code, out) = no_reviewer(&none, &["answer", &ask, "None"], &[]);
+    assert_eq!(code, Some(0), "{out}");
+    let saved = fs::read_to_string(config_toml(&none)).unwrap();
+    assert!(saved.contains("[review]\nprovider = \"none\"\n"), "{saved}");
+    assert_eq!(run_state(&none)["review_override"], "none");
+    let (code, out) = no_reviewer(
+        &other,
+        &["docs", "preflight", "001"],
+        &[("FACTORY_CONFIG_DIR", &none.env()["FACTORY_CONFIG_DIR"])],
+    );
+    assert_eq!(code, Some(0), "{out}");
+    assert!(
+        out.contains("  ✓ second opinion: disabled (user)\n"),
+        "{out}"
+    );
+
+    let proceed = Fixture::new("answer-review-proceed");
+    let ask = parked_on_review_ask(&proceed);
+    let (code, out) = no_reviewer(&proceed, &["answer", &ask, "proceed"], &[]);
+    assert_eq!(code, Some(0), "{out}");
+    assert!(
+        out.contains("every ask answered — the run proceeds"),
+        "{out}"
+    );
+    assert!(!config_toml(&proceed).exists());
+    assert_eq!(run_state(&proceed)["review_override"], "none");
+    assert!(
+        run_dir(&proceed)
+            .join(format!("answers/{ask}.json"))
+            .is_file()
     );
 }

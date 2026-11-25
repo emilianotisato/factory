@@ -1168,3 +1168,305 @@ fn clearing_reviewed_asks_for_the_whole_branch() {
     fx.git(&["commit", "-q", "-m", "docs: review again"]);
     assert_eq!(factory::settled::last_reviewed(fx.path(), "001"), None);
 }
+
+/// One node stub answering as each provider CLI it is installed as, logging argv, stdin and the Claude session vars.
+const PROVIDER_STUB: &str = r#"#!/usr/bin/env node
+'use strict'
+const fs = require('node:fs')
+const path = require('node:path')
+const name = path.basename(process.argv[1])
+const argv = process.argv.slice(2)
+const stdin = argv[argv.length - 1] === '-' ? fs.readFileSync(0, 'utf8') : null
+fs.appendFileSync(
+  path.join(process.env.FACTORY_STUB_DIR, `${name}.calls`),
+  `${JSON.stringify({ argv, stdin, claudecode: process.env.CLAUDECODE ?? null, entry: process.env.CLAUDE_CODE_ENTRYPOINT ?? null })}\n`,
+)
+const say = (v) => process.stdout.write(`${JSON.stringify(v)}\n`)
+const found = `FINDING ${name}: a:1 breaks on empty input`
+const probe = { '--list-models': 'Available models\n\nauto - Auto\nm-cursor - M Cursor', '--version': `${name} 1.2.3`, models: name === 'agy' ? 'm-agy\tM Agy' : 'prov/m-opencode' }
+if (argv.length === 1 && probe[argv[0]] !== undefined) {
+  console.log(probe[argv[0]])
+  process.exit(0)
+}
+const assistant = (text) => say({ type: 'assistant', message: { content: [{ type: 'text', text }] } })
+if (name === 'codex') {
+  say({ type: 'thread.started', thread_id: 't' })
+  say({ type: 'item.completed', item: { id: '0', type: 'reasoning', text: 'thinking hard' } })
+  say({ type: 'item.completed', item: { id: '1', type: 'agent_message', text: 'looking around' } })
+  say({ type: 'item.completed', item: { id: '2', type: 'agent_message', text: found } })
+  say({ type: 'turn.completed', usage: {} })
+} else if (name === 'opencode') {
+  say({ type: 'step_start', part: {} })
+  say({ type: 'text', part: { type: 'text', text: 'looking around' } })
+  say({ type: 'text', part: { type: 'text', text: found } })
+  say({ type: 'step_finish', part: { reason: 'stop' } })
+} else {
+  assistant('looking around')
+  say({ type: 'result', is_error: false, result: found })
+}
+"#;
+
+/// `<stub_dir>/providers`, holding the stub under every provider's binary name.
+fn provider_stubs(fx: &Fixture) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = fx.stub_dir().join("providers");
+    fs::create_dir_all(&dir).unwrap();
+    for name in ["claude", "codex", "cursor-agent", "agy", "opencode"] {
+        let p = dir.join(name);
+        fs::write(&p, PROVIDER_STUB).unwrap();
+        fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    dir
+}
+
+fn provider_calls(fx: &Fixture, name: &str) -> Vec<Value> {
+    let p = fx.stub_dir().join(format!("{name}.calls"));
+    let calls = fs::read_to_string(&p).unwrap_or_default();
+    let _ = fs::remove_file(&p);
+    calls
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+fn argv(call: &Value) -> Vec<String> {
+    call["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a.as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn review_second_runs_all_five_providers_and_none_mode() {
+    let fx = branch("review-providers", 20, &[("a", 100), ("b", 80)]);
+    let stubs = provider_stubs(&fx);
+    let path = format!("{}:{}", stubs.display(), fx.env()["PATH"]);
+    let cfg = PathBuf::from(&fx.env()["FACTORY_CONFIG_DIR"]).join("config.toml");
+    let doc = format!("{}/prd.md", harness::FEATURE_DIR);
+    let run = |args: &[&str]| {
+        fx.command(BIN)
+            .args(["review", "second"])
+            .args(args)
+            .env("PATH", &path)
+            .env("CLAUDECODE", "1")
+            .env("CLAUDE_CODE_ENTRYPOINT", "cli")
+            .output()
+            .unwrap()
+    };
+    let s = |v: &[&str]| v.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+    for (provider, bin, model, effort, probe, flags) in [
+        (
+            "cursor",
+            "cursor-agent",
+            "m-cursor",
+            None,
+            s(&["--list-models"]),
+            s(&[
+                "-p",
+                "--trust",
+                "--mode",
+                "ask",
+                "--output-format",
+                "stream-json",
+                "--stream-partial-output",
+                "--model",
+                "m-cursor",
+            ]),
+        ),
+        (
+            "claude",
+            "claude",
+            "m-claude",
+            Some("max"),
+            s(&["--version"]),
+            s(&[
+                "-p",
+                "--output-format",
+                "stream-json",
+                "--verbose",
+                "--permission-mode",
+                "plan",
+                "--tools",
+                "Read,Grep,Glob",
+                "--model",
+                "m-claude",
+                "--effort",
+                "max",
+            ]),
+        ),
+        (
+            "codex",
+            "codex",
+            "m-codex",
+            Some("xhigh"),
+            s(&["--version"]),
+            s(&[
+                "exec",
+                "--json",
+                "--sandbox",
+                "read-only",
+                "--ephemeral",
+                "-m",
+                "m-codex",
+                "-c",
+                "model_reasoning_effort=xhigh",
+                "-",
+            ]),
+        ),
+        (
+            "agy",
+            "agy",
+            "m-agy",
+            Some("low"),
+            s(&["models"]),
+            s(&[
+                "-p",
+                "--mode",
+                "plan",
+                "--output-format",
+                "stream-json",
+                "--model",
+                "m-agy",
+                "--effort",
+                "low",
+            ]),
+        ),
+        (
+            "opencode",
+            "opencode",
+            "prov/m-opencode",
+            Some("medium"),
+            s(&["models"]),
+            s(&[
+                "run",
+                "--format",
+                "json",
+                "--agent",
+                "plan",
+                "-m",
+                "prov/m-opencode",
+                "--variant",
+                "medium",
+            ]),
+        ),
+    ] {
+        let effort_line = effort.map_or(String::new(), |e| format!("effort = \"{e}\"\n"));
+        fs::write(
+            &cfg,
+            format!(
+                "[review]\nprovider = \"{provider}\"\nmodel = \"{model}\"\n{effort_line}timeout_secs = 20\n"
+            ),
+        )
+        .unwrap();
+        let label = if provider == "cursor" {
+            model.to_string()
+        } else {
+            format!("{provider}:{model}")
+        };
+        for (mode, args) in [
+            ("diff", s(&["--diff", "main"])),
+            (
+                "doc",
+                s(&["--doc", &doc, "--prompt", "find what cannot be true"]),
+            ),
+        ] {
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            let o = run(&args);
+            let out = stdout(&o);
+            let err = String::from_utf8_lossy(&o.stderr);
+            assert_eq!(o.status.code(), Some(0), "{provider} {mode}\n{out}\n{err}");
+            let found = format!("FINDING {bin}: a:1 breaks on empty input\n");
+            assert!(out.contains(&found), "{provider} {mode}\n{out}");
+            assert!(!out.contains("looking around"), "{provider} {mode}\n{out}");
+            assert!(
+                out.contains(&format!(" s, {label})\n")),
+                "{provider} {mode}\n{out}"
+            );
+
+            let calls = provider_calls(&fx, bin);
+            assert_eq!(calls.len(), 2, "{provider} {mode}: {calls:?}");
+            assert_eq!(argv(&calls[0]), probe, "{provider} {mode}");
+            let pass = argv(&calls[1]);
+            let prompt = if provider == "codex" {
+                assert_eq!(pass, flags, "{provider} {mode}");
+                calls[1]["stdin"].as_str().unwrap().to_string()
+            } else {
+                assert_eq!(pass[..pass.len() - 1], flags[..], "{provider} {mode}");
+                assert!(calls[1]["stdin"].is_null(), "{provider} {mode}");
+                pass.last().unwrap().clone()
+            };
+            match mode {
+                "diff" => assert!(prompt.contains("review-1.diff"), "{provider}: {prompt}"),
+                _ => assert!(
+                    prompt.starts_with("find what cannot be true"),
+                    "{provider}: {prompt}"
+                ),
+            }
+            let scrubbed = provider == "claude";
+            for var in ["claudecode", "entry"] {
+                assert_eq!(calls[1][var].is_null(), scrubbed, "{provider} {var}");
+            }
+        }
+    }
+
+    let reviews = PathBuf::from(&fx.env()["FACTORY_DATA_DIR"]).join("reviews");
+    let logs = |d: &PathBuf| fs::read_dir(d).map_or(0, |r| r.count());
+    let before = logs(&reviews);
+    fs::write(&cfg, "[review]\nprovider = \"none\"\ntimeout_secs = 20\n").unwrap();
+    for args in [
+        &["--diff", "main"][..],
+        &["--doc", &doc, "--prompt", "find what cannot be true"],
+    ] {
+        let o = run(args);
+        assert_eq!(o.status.code(), Some(2), "{}", stdout(&o));
+        assert_eq!(
+            stdout(&o),
+            "disabled: second opinion disabled in config.toml\n"
+        );
+    }
+    assert_eq!(logs(&reviews), before);
+    for bin in ["claude", "codex", "cursor-agent", "agy", "opencode"] {
+        assert!(provider_calls(&fx, bin).is_empty(), "{bin}");
+    }
+    let o = fx
+        .command(BIN)
+        .args(["review", "collect", "--base", "main", "--out", "f.md"])
+        .env("PATH", &path)
+        .output()
+        .unwrap();
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    let file = fx.read("f.md");
+    assert!(
+        part(&file, "Plan").contains("\nsecond opinion: skipped (disabled in config)\n"),
+        "{file}"
+    );
+    assert_eq!(
+        part(&file, "Second opinion"),
+        "## Second opinion\n\nskipped: second opinion disabled in config.toml\n"
+    );
+    let head = fx.git(&["rev-parse", "HEAD"]);
+    assert!(factory::collect::reusable(&file, head.trim()), "{file}");
+    assert_eq!(logs(&reviews), before);
+
+    fs::write(&cfg, "[review]\ntimeout_secs = 20\n").unwrap();
+    let o = fx
+        .command(BIN)
+        .args(["review", "second", "--diff", "main"])
+        .env_remove("FACTORY_REVIEW_PROVIDER")
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(2), "{}", stdout(&o));
+    assert!(
+        stdout(&o).starts_with("unreviewed: adversarial reviewer not set in config.toml"),
+        "{}",
+        stdout(&o)
+    );
+    assert_eq!(logs(&reviews), before);
+}

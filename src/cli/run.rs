@@ -107,7 +107,7 @@ pub fn run(args: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i
         writeln!(out, "\nrefused: {} blocker(s)", pf.refuse.len()).map_err(io("stdout"))?;
         return Ok(1);
     }
-    preflight::second_opinion(&loaded.config.review, &mut pf);
+    preflight::second_opinion(&loaded, &mut pf);
     preflight::ci_mode(&loaded, args.ci, &mut pf);
     loaded.config.ci.mode = ci_mode;
     loaded.sources.ci = ci_source;

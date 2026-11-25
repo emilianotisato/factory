@@ -1,4 +1,5 @@
-//! `second` exits 0 when a pass's text counted, 2 when none did or clap refused a flag (the skills' fallback), 1 on a bad combination.
+//! `second` exits 0 when a pass's text counted, 2 when none did, no reviewer is set or it is disabled, or clap refused
+//! a flag (the skills' fallback, except after `disabled:`), 1 on a bad combination.
 //! Once the probe passed, a failing pass is its own `unreviewed` line, never the command's error: the other passes keep their findings.
 //! `collect` exits 0 when the file was written (or printed, without `--out`), whatever each part found, and 1 on a usage error or when HEAD or the diff cannot be read.
 use std::fs;
@@ -7,7 +8,9 @@ use std::path::{Path, PathBuf};
 
 use clap::{Args, Subcommand};
 
+use crate::config::ResolvedReview;
 use crate::error::io;
+use crate::provider::ReviewProvider;
 use crate::review::{self, Pass, Range};
 use crate::{Result, collect, config, paths, settled};
 
@@ -76,12 +79,14 @@ fn usage(err: &mut dyn Write) -> Result<i32> {
     Ok(1)
 }
 
-fn load_review(err: &mut dyn Write) -> Result<config::Review> {
+/// The reviewer `config.toml` or `FACTORY_REVIEW_PROVIDER` chose, or `None`, and the legacy `[review]` table.
+fn load_review(err: &mut dyn Write) -> Result<(Option<ResolvedReview>, config::Review)> {
     let loaded = config::load(&paths::config_dir())?;
-    for w in &loaded.warnings {
+    let (resolved, _, warning) = config::resolve_review(&loaded);
+    for w in loaded.warnings.iter().chain(&warning) {
         writeln!(err, "factory: {w}").map_err(io("stderr"))?;
     }
-    Ok(loaded.config.review)
+    Ok((resolved, loaded.config.review))
 }
 
 fn collect_file(a: &CollectArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i32> {
@@ -92,7 +97,9 @@ fn collect_file(a: &CollectArgs, out: &mut dyn Write, err: &mut dyn Write) -> Re
     if a.since.as_deref().is_some_and(|c| c.starts_with('-')) {
         return usage(err);
     }
-    let cfg = load_review(err)?;
+    // No reviewer chosen keeps the legacy `[review]` defaults: a collect never stops to ask.
+    let (resolved, legacy) = load_review(err)?;
+    let cfg = resolved.unwrap_or_else(|| ResolvedReview::from(&legacy));
     let cwd = std::env::current_dir().map_err(io("read the current directory"))?;
     let root = paths::repo_root(&cwd)?;
     let opts = collect::Options {
@@ -119,7 +126,21 @@ fn second(a: &SecondArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i3
         Some(p) => Some(fs::read_to_string(p).map_err(io(format!("read {}", p.display())))?),
         None => None,
     };
-    let cfg = load_review(err)?;
+    let cfg = match load_review(err)?.0 {
+        Some(r) if r.provider == ReviewProvider::None => {
+            writeln!(out, "disabled: {}", review::DISABLED).map_err(io("stdout"))?;
+            return Ok(2);
+        }
+        Some(r) => r,
+        None => {
+            writeln!(
+                out,
+                "unreviewed: adversarial reviewer not set in config.toml — run factory setup review"
+            )
+            .map_err(io("stdout"))?;
+            return Ok(2);
+        }
+    };
     let cwd = std::env::current_dir().map_err(io("read the current directory"))?;
 
     // What each pass covers, before anything is spent.
@@ -161,7 +182,7 @@ fn second(a: &SecondArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i3
         _ => None,
     };
     let dir = review::new_log_dir(&paths::data_dir())?;
-    if let Err(reason) = review::probe(&cfg, &dir, None) {
+    if let Err(reason) = review::probe_resolved(&cfg, &dir, None) {
         writeln!(out, "unreviewed: {reason}\n\nlog: {}", dir.display()).map_err(io("stdout"))?;
         return Ok(2);
     }

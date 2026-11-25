@@ -11,6 +11,7 @@ use crate::config::CiMode;
 use crate::db::Db;
 use crate::error::{io, json};
 use crate::events::{self, Event, EventKind};
+use crate::provider::ReviewProvider;
 use crate::{Error, Result, clock, paths};
 
 pub const STATE_FILE: &str = "state.json";
@@ -127,6 +128,9 @@ pub struct RunState {
     /// Set when the run starts, or by the answer to its CI-mode ask; `None` falls back to `config.toml`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ci_mode: Option<CiMode>,
+    /// Set by a `proceed` or `none` answer to the reviewer ask; wins over `config.toml` for this run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_override: Option<ReviewProvider>,
 }
 
 impl RunState {
@@ -272,6 +276,7 @@ impl Run {
             lanes_set_up: Vec::new(),
             lane_bases: BTreeMap::new(),
             ci_mode: None,
+            review_override: None,
         };
         write_state(&dir, &state)?;
         fs::write(dir.join(events::FILE), "")
@@ -377,6 +382,10 @@ impl Run {
 
     pub fn set_ci_mode(&mut self, mode: Option<CiMode>) -> Result<()> {
         self.update(|s| s.ci_mode = mode)
+    }
+
+    pub fn set_review_override(&mut self, v: Option<ReviewProvider>) -> Result<()> {
+        self.update(|s| s.review_override = v)
     }
 
     pub fn request_stop(&mut self) -> Result<()> {
