@@ -775,8 +775,9 @@ fn the_cockpit_skill_is_under_sixty_lines_and_names_the_five_commands() {
         "factory answer",
         "`factory status <id>` is the one look at the board",
         "If the owner asks to stop: `factory stop <id>`",
-        "then `AskUserQuestion` with the question's text",
-        "PushNotification",
+        "then ask the owner with structured choices: the question's text",
+        "notify the owner of the line if your harness supports push notifications",
+        "The adversarial-reviewer `ASK-n` offers each `<provider>`, `none` and `proceed`",
         // the review round's shape
         "Review all n now (Recommended) / Only the d decide ones / Later",
         "four questions",
@@ -797,6 +798,15 @@ fn the_cockpit_skill_is_under_sixty_lines_and_names_the_five_commands() {
         assert_unique_passage("deliver/SKILL.md", &text, needle);
     }
     assert!(!text.contains("--timeout 1500"), "the old poll");
+    // any harness can run it
+    for tool in [
+        "AskUserQuestion",
+        "PushNotification",
+        "Skill tool",
+        "`/clear`",
+    ] {
+        assert!(!text.contains(tool), "{tool:?} in the skill");
+    }
     // nothing owner-specific
     for forbidden in ["/home/", "~/Dropbox", "Dropbox", "emiliano", "Emiliano"] {
         assert!(!text.contains(forbidden), "{forbidden:?} in the skill");

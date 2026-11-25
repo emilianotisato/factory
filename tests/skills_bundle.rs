@@ -2,7 +2,7 @@
 mod passage;
 
 use factory::skills::{
-    self, FILES, LOCK, Lock, Manifest, NAMES, bundle_hash, check_lock, relock, tag_state,
+    self, FILES, LINK_DIRS, LOCK, Lock, Manifest, bundle_hash, check_lock, relock, tag_state,
 };
 use std::collections::BTreeSet;
 use std::fs;
@@ -56,17 +56,21 @@ fn every_file_under_skills_is_in_the_bundle_byte_for_byte() {
 
 #[test]
 fn this_repos_claude_skills_link_into_the_source() {
-    let names = NAMES.iter().copied().chain(["_shared"]);
-    for name in names {
-        let link = root().join(".claude/skills").join(name);
-        let target = fs::read_link(&link).unwrap_or_else(|e| panic!("{name}: {e}"));
-        assert_eq!(target, Path::new("../../skills").join(name), "{name}");
-        let file = if name == "_shared" {
-            "models.md"
-        } else {
-            "SKILL.md"
-        };
-        assert!(link.join(file).is_file(), "{name}/{file} does not resolve");
+    for dir in [".claude/skills", ".agents/skills"] {
+        for name in LINK_DIRS {
+            let link = root().join(dir).join(name);
+            let target = fs::read_link(&link).unwrap_or_else(|e| panic!("{dir}/{name}: {e}"));
+            assert_eq!(target, Path::new("../../skills").join(name), "{dir}/{name}");
+            let file = if name == "_shared" {
+                "models.md"
+            } else {
+                "SKILL.md"
+            };
+            assert!(
+                link.join(file).is_file(),
+                "{dir}/{name}/{file} does not resolve"
+            );
+        }
     }
 }
 
@@ -133,6 +137,52 @@ fn models_md_holds_no_invocation_and_the_skills_call_review_second() {
     for f in files {
         let text = fs::read_to_string(skills.join(&f)).unwrap_or_default();
         assert!(!text.contains("\"A diff\" invocation"), "{f}");
+    }
+}
+
+#[test]
+fn skills_are_harness_neutral_and_distinguish_disabled_review() {
+    let read = |p: &str| fs::read_to_string(root().join("skills").join(p)).unwrap();
+    for (skill, needles) in [
+        (
+            "_shared/models.md",
+            [
+                "using `[review]` in `~/.config/factory/config.toml` (configured via `factory setup`)",
+                "An explicitly disabled second opinion (`disabled:`) skips the fallback",
+                "Second opinion unavailable or unreviewed → a fresh subagent on the `judgment` model",
+            ],
+        ),
+        (
+            "polish/SKILL.md",
+            [
+                "the cross-vendor provider configured in `[review]` (`factory setup review`)",
+                "`skipped (disabled in config)` means the owner opted out in `[review]`",
+                "`2` with `disabled:` means the owner opted out: say so, and no fallback is owed. `2` with `unreviewed:`",
+            ],
+        ),
+        (
+            "prd/SKILL.md",
+            [
+                "its provider set by `[review]` (`factory setup review`)",
+                "Exit 2 with `disabled:` means the owner opted out",
+                "Exit 2 with `unreviewed:` means it could not run",
+            ],
+        ),
+    ] {
+        let text = read(skill);
+        for needle in needles {
+            assert_unique_passage(skill, &text, needle);
+        }
+    }
+    for skill in ["_shared/models.md", "polish/SKILL.md"] {
+        let text = read(skill);
+        for bad in [
+            "Cursor CLI, unconditionally",
+            "Cursor CLI is the cross-vendor path",
+            "a fresh Claude agent",
+        ] {
+            assert!(!text.contains(bad), "{bad:?} in {skill}");
+        }
     }
 }
 
@@ -238,7 +288,7 @@ fn the_prd_skill_offers_the_build_and_drops_the_clear_advice() {
         "Build it now (Recommended)",
         "**Slice only** /",
         "/ **Stop here**.",
-        "invoke `/deliver NNN` with the Skill tool, in this session",
+        "invoke `/deliver NNN` yourself, in this session",
     ] {
         assert_unique_passage("prd/SKILL.md", &text, needle);
     }

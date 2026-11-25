@@ -22,7 +22,7 @@ With no numbers, the batch is every `shipped` feature; the owner can name a smal
 
 ## 2. Route each lesson
 
-**AskUserQuestion**, recommendation first, one round of up to four lessons at a time. Every lesson goes to exactly one of four places:
+**Ask with structured choices**, recommendation first, one round of up to four lessons at a time. Every lesson goes to exactly one of four places:
 
 - **The project**: a diff in this repo. The code, the harness (`.claude/skills/verify-*`), the gate, `CLAUDE.md`, `docs/reference`, `docs/ux-rubric.md`, or an entry in `docs/decisions.md` in the form of §3. Make the edit now; it lands in this skill's commit.
 - **The framework in this project**: a knob in `docs/project.toml`, such as the gate, the lanes or a model role.

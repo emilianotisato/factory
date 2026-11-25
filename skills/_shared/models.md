@@ -15,7 +15,7 @@
 
 In `/deliver`, a slice builder is **judgment** — it makes every call the slice left open, alone — and the subagent that reads a failed CI log is **mechanical**.
 
-Pass the role's model as the `model:` argument to the Agent tool. Current accepted values: `haiku`, `sonnet`, `opus`, `fable`. **Nowhere else in this family names a model.** If a value here is rejected, use the closest available tier, say so once, and fix this file — never block the work on it.
+Pass the role's model as the model argument when your harness starts a subagent (in Claude Code, `model:` on the Agent tool, accepting `haiku`, `sonnet`, `opus`, `fable`); in another harness, its own tier with the same role. **Nowhere else in this family names a model.** If a value here is rejected, use the closest available tier, say so once, and fix this file — never block the work on it.
 
 ## Overrides
 
@@ -23,13 +23,13 @@ Edit the table above. A role you never touch keeps its default. There is no setu
 
 ## Second opinion, specifically
 
-The value is **fresh eyes**, and cross-vendor eyes are better than fresh ones from the same family. Opus, Sonnet and Fable share training and share blind spots, so a second Claude agreeing with the first is weak evidence. A different vendor disagreeing is strong evidence.
+The value is **fresh eyes**, and cross-vendor eyes are better than fresh ones from the same family. Opus, Sonnet and Fable share training and share blind spots, so a second agent from the same vendor agreeing with the first is weak evidence. A different vendor disagreeing is strong evidence.
 
-**Cursor CLI is the cross-vendor path**, **unconditionally**: do not probe for another vendor's CLI or plugin, and do not branch on one being present. A tool being installed says nothing about whether its subscription is live, so presence is not a signal. Switching this back is a deliberate edit to this file, on the owner's word.
+**`factory review second` is the cross-vendor path**, using `[review]` in `~/.config/factory/config.toml` (configured via `factory setup`): the owner picks the reviewer's provider and model there, once, for every repo. Do not probe for another vendor's CLI or plugin, and do not branch on one being present. A tool being installed says nothing about whether its subscription is live, so presence is not a signal. Choose a provider from a different vendor than the one writing the code: cross-vendor is the point.
 
-**Run it through `factory review second`**: `--diff <base> [-- <paths>]` for a diff, `--doc <file> --prompt "<text>"` for a document or a question. The command carries the flags, the pass size and the reading of the stream; `[review]` in `~/.config/factory/config.toml` holds the agent and the model. Exit 2 is unreviewed.
+**Run it through `factory review second`**: `--diff <base> [-- <paths>]` for a diff, `--doc <file> --prompt "<text>"` for a document or a question. The command carries the flags, the pass size and the reading of the stream; `[review]` holds the provider and the model. Exit 2 is `disabled:` (the owner opted out) or `unreviewed:` (the reviewer could not run); its last line says which.
 
-Cursor unavailable, or the run fails → a fresh Claude agent on the `judgment` model with **no inherited context**. Say which reviewer you used and which model. Never `subagent_type: "fork"` here: a fork inherits the reasoning you are asking it to attack, which is the whole failure being avoided.
+Second opinion unavailable or unreviewed → a fresh subagent on the `judgment` model with **no inherited context**. An explicitly disabled second opinion (`disabled:`) skips the fallback: the owner chose none, so say the second opinion was disabled and go on. Say which reviewer you used and which model. Never a fork here (`subagent_type: "fork"` in Claude Code): a fork inherits the reasoning you are asking it to attack, which is the whole failure being avoided.
 
 ## Stating the bar — the preflight rule
 
