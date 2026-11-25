@@ -26,6 +26,7 @@ pub mod metrics;
 pub mod mods;
 pub mod pack;
 pub mod paths;
+pub mod provider;
 pub mod quota;
 pub mod retro;
 pub mod review;
