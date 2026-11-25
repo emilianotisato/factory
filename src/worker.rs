@@ -352,6 +352,7 @@ fn record(
         row_id,
         spawned_at: started_at,
         outcome: None,
+        provider: None,
     })?;
     let session_id = session_id.to_string();
     run.emit(match job {

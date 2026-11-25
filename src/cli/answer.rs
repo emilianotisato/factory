@@ -10,7 +10,7 @@ use crate::config::{self, CiMode};
 use crate::docs::{log, preflight, state};
 use crate::error::io;
 use crate::events::EventKind;
-use crate::provider::{Provider, ReviewProvider};
+use crate::provider::{self, Provider, ReviewProvider};
 use crate::quota::{self, Hold};
 use crate::run::{self, Phase, Run};
 use crate::{Error, Result, clock, daemon, paths, scheduler};
@@ -306,6 +306,9 @@ fn answer_ask(
     if item.starts_with(preflight::REVIEW_ASK_PREFIX) && !review_answer(&mut run, id, text, out)? {
         return Ok(1);
     }
+    if item.starts_with(preflight::WORKER_ASK_PREFIX) && !worker_answer(&mut run, id, text, out)? {
+        return Ok(1);
+    }
     let now = clock::now_rfc3339();
     let feature = run.state().feature.clone();
     let dir = feature_dir(repo, &feature)?;
@@ -460,46 +463,91 @@ fn review_answer(run: &mut Run, id: &str, text: &str, out: &mut dyn Write) -> Re
     Ok(true)
 }
 
-/// `<provider>[:<model>[:<effort>]]`: the model defaults to the provider's, the effort is left to the CLI.
-/// A model may hold `:` itself; only a trailing level the provider knows is taken as the effort.
-fn review_choice(answer: &str) -> std::result::Result<(Provider, String, Option<String>), String> {
-    let (name, rest) = answer.split_once(':').unwrap_or((answer, ""));
-    let p: Provider = name
-        .trim()
-        .parse()
-        .map_err(|_| format!("{answer:?} names no reviewer"))?;
-    let rest = rest.trim();
-    let (model, effort) = match rest.rsplit_once(':') {
-        Some((m, e)) if p.effort_levels().contains(&e.trim()) => (m.trim(), Some(e.trim())),
-        Some((_, e)) if is_effort_word(e.trim()) => {
-            let e = e.trim();
-            return Err(if p.effort_levels().is_empty() {
-                format!("{p} takes no effort level, not {e:?}")
-            } else {
-                format!(
-                    "{e:?} is not a {p} effort ({})",
-                    p.effort_levels().join(", ")
-                )
-            });
-        }
-        Some((m, "")) => (m.trim(), None),
-        _ => (rest, None),
+/// A provider is saved as `[workers]` for every repo, `proceed` runs the first installed CLI with a default model for
+/// this run only; either way the run keeps what it resolved. False leaves the ask open.
+fn worker_answer(run: &mut Run, id: &str, text: &str, out: &mut dyn Write) -> Result<bool> {
+    let answer = text.trim();
+    if answer.eq_ignore_ascii_case("proceed") {
+        let Some(d) = provider::detect_installed()
+            .into_iter()
+            .find(|d| !d.provider.default_model().is_empty())
+        else {
+            writeln!(
+                out,
+                "{id} not answered: no CLI with a default model is on PATH — install one, or name a provider and model \
+                 as `<provider>:<model>`, or run `factory setup workers`"
+            )
+            .map_err(io("stdout"))?;
+            return Ok(false);
+        };
+        let w = config::ResolvedWorker::defaults(d.provider);
+        writeln!(
+            out,
+            "every worker runs on {w} for this run only; config.toml left unset"
+        )
+        .map_err(io("stdout"))?;
+        run.set_worker_config(Some(config::ResolvedWorkers::uniform(w)))?;
+        return Ok(true);
+    }
+    let choice = if answer.contains('=') {
+        Err("a role is set with `factory setup workers --role <role>`, not here".to_string())
+    } else {
+        config::parse_provider_choice(answer)
     };
-    let model = match model {
-        "" if p.default_model().is_empty() => {
-            return Err(format!(
-                "{p} has no default model, so name one as `{p}:<model>`"
-            ));
+    let (p, model, effort) = match choice {
+        Ok(c) => c,
+        Err(why) => {
+            writeln!(
+                out,
+                "{id} not answered: {why} — answer `<provider>`, `<provider>:<model>` or `<provider>:<model>:<effort>` \
+                 with a provider of `claude`, `codex`, `cursor`, `agy` or `opencode`; or `proceed`"
+            )
+            .map_err(io("stdout"))?;
+            return Ok(false);
         }
-        "" => p.default_model().to_string(),
-        m if !crate::provider::is_model_name(m) => return Err(format!("{m:?} is not a model id")),
-        m => m.to_string(),
     };
-    Ok((p, model, effort.map(str::to_string)))
+    let model = model.unwrap_or_else(|| p.default_model().to_string());
+    let set = |key: &str, v: Option<&str>| config::Patch {
+        table: "workers".into(),
+        key: key.into(),
+        value: v.map(|v| toml::Value::String(v.into())),
+    };
+    let config_dir = paths::config_dir();
+    let path = config::patch(
+        &config_dir,
+        &[
+            set("provider", Some(p.as_str())),
+            set("model", Some(&model)),
+            set("effort", effort.as_deref()),
+        ],
+    )?;
+    let loaded = config::load(&config_dir)?;
+    let Some(resolved) = config::resolve_workers(&loaded, &[]).0 else {
+        return Err(Error::Msg(format!(
+            "{} names [workers] provider {p}, yet a role still has none",
+            path.display()
+        )));
+    };
+    run.set_worker_config(Some(resolved))?;
+    let effort = effort.map_or(String::new(), |e| format!(" at {e} effort"));
+    writeln!(
+        out,
+        "workers run on {p} with {model}{effort}, saved to {}",
+        path.display()
+    )
+    .map_err(io("stdout"))?;
+    Ok(true)
 }
 
-fn is_effort_word(e: &str) -> bool {
-    Provider::ALL.iter().any(|p| p.effort_levels().contains(&e))
+/// `<provider>[:<model>[:<effort>]]`: the model defaults to the provider's, the effort is left to the CLI.
+fn review_choice(answer: &str) -> std::result::Result<(Provider, String, Option<String>), String> {
+    let (p, model, effort) = config::parse_provider_choice(answer)
+        .map_err(|why| format!("{answer:?} names no reviewer: {why}"))?;
+    Ok((
+        p,
+        model.unwrap_or_else(|| p.default_model().to_string()),
+        effort,
+    ))
 }
 
 /// A budget-parked run gets no driver: it would only park again.

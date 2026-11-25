@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-use factory::cli::setup::{Env, SetupArgs, run_with};
+use factory::cli::setup::{Env, SetupArgs, SetupSection, run_with};
 use serde_json::Value;
 use tempfile::TempDir;
 
@@ -61,7 +61,8 @@ impl Dirs {
             .env("FACTORY_DATA_DIR", self.tmp.path().join("data"))
             .env_remove("XDG_CONFIG_HOME")
             .env_remove("FACTORY_REVIEW_PROVIDER")
-            .env_remove("FACTORY_CI_MODE");
+            .env_remove("FACTORY_CI_MODE")
+            .env_remove("FACTORY_WORKER_PROVIDER");
         c
     }
 
@@ -108,8 +109,8 @@ fn setup_wizard_configures_all_sections_and_keeps_defaults() {
 
     let script = [
         "1", "n", // cockpit: claude, no mod install
-        "2", "medium", "y", "polish", "haiku", "",
-        "", // workers: sonnet · medium, polish model haiku
+        "1", "2", "medium", "y", "polish", "", "haiku", "",
+        "", // workers: claude sonnet · medium, polish model haiku
         "codex", "1", "high", // review: codex gpt-5.4 · high
         "1",    // ci: local
     ]
@@ -174,7 +175,7 @@ fn setup_wizard_configures_all_sections_and_keeps_defaults() {
     let all_or_nothing = Dirs::new(&["claude"]);
     let inline = "ci = { mode = \"remote\" }\n";
     fs::write(all_or_nothing.config_file(), inline).unwrap();
-    let (code, out) = wizard(&all_or_nothing, "2\n\n\n\n\n\n\n1\n");
+    let (code, out) = wizard(&all_or_nothing, "2\n\n\n\n\n\n\n\n1\n");
     let e = code.expect_err("an inline [ci] table cannot be patched by line");
     assert!(e.to_string().contains("by hand"), "{e}\n{out}");
     assert_eq!(
@@ -344,4 +345,211 @@ fn setup_refuses_what_it_cannot_save_and_saves_nothing_on_cut_input() {
     assert_eq!(code.unwrap(), 1, "{out}");
     assert!(out.contains("nothing saved"), "{out}");
     assert!(!dirs.config_file().exists());
+}
+
+fn show_workers(dirs: &Dirs) -> Value {
+    let o = dirs.factory(&["setup", "--show", "--json"]);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    serde_json::from_slice::<Value>(&o.stdout).unwrap()["workers"].clone()
+}
+
+fn worker(v: &Value, role: &str) -> (String, String, Value) {
+    let w = &v[role];
+    (
+        w["provider"].as_str().unwrap().to_string(),
+        w["model"].as_str().unwrap().to_string(),
+        w["effort"].clone(),
+    )
+}
+
+fn want(p: &str, m: &str, e: Option<&str>) -> (String, String, Value) {
+    (
+        p.to_string(),
+        m.to_string(),
+        e.map_or(Value::Null, Value::from),
+    )
+}
+
+#[test]
+fn setup_workers_configures_mixed_roles() {
+    let dirs = Dirs::new(&["claude", "codex", "cursor-agent"]);
+    fs::write(dirs.config_file(), "[workers]\nmodel = \"sonnet\"\n").unwrap();
+    let script = [
+        "codex",
+        "1",
+        "xhigh",
+        "y", // default: codex gpt-5.4 · xhigh, then override roles
+        "fix",
+        "cursor",
+        "", // fix on cursor: its model, no effort prompt
+        "checkpoint",
+        "claude",
+        "sonnet",
+        "low", // checkpoint on claude sonnet · low
+        "build",
+        "agy",
+        "",
+        "max", // build on agy, its model, max
+        "",
+    ]
+    .join("\n")
+        + "\n";
+    let mut input = Cursor::new(script.into_bytes());
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let args = SetupArgs {
+        section: Some(SetupSection::Workers {
+            role: None,
+            provider: None,
+            model: None,
+            effort: None,
+            clear: false,
+        }),
+        ..SetupArgs::default()
+    };
+    let code = run_with(&args, &mut input, &dirs.env(), &mut out, &mut err);
+    let out = String::from_utf8(out).unwrap();
+    assert_eq!(code.unwrap(), 0, "{out}");
+    assert!(
+        !out.contains("fix effort:"),
+        "cursor takes no effort\n{out}"
+    );
+    let t = dirs.config();
+    assert_eq!(str_at(&t, &["workers", "provider"]), Some("codex"));
+    assert_eq!(str_at(&t, &["workers", "model"]), Some("gpt-5.4"));
+    assert_eq!(str_at(&t, &["workers", "effort"]), Some("xhigh"));
+    assert_eq!(str_at(&t, &["workers", "fix", "provider"]), Some("cursor"));
+    assert_eq!(get(&t, &["workers", "fix", "model"]), None);
+    assert_eq!(get(&t, &["workers", "fix", "effort"]), None);
+    assert_eq!(
+        str_at(&t, &["workers", "checkpoint", "provider"]),
+        Some("claude")
+    );
+    assert_eq!(
+        str_at(&t, &["workers", "checkpoint", "model"]),
+        Some("sonnet")
+    );
+    assert_eq!(
+        str_at(&t, &["workers", "checkpoint", "effort"]),
+        Some("low")
+    );
+    assert_eq!(str_at(&t, &["workers", "build", "provider"]), Some("agy"));
+    assert_eq!(get(&t, &["workers", "build", "model"]), None);
+    assert_eq!(str_at(&t, &["workers", "build", "effort"]), Some("max"));
+    assert_eq!(get(&t, &["workers", "polish"]), None);
+
+    let v = show_workers(&dirs);
+    assert_eq!(
+        worker(&v, "default"),
+        want("codex", "gpt-5.4", Some("xhigh"))
+    );
+    assert_eq!(
+        worker(&v, "build"),
+        want("agy", "gemini-4-neon-high", Some("max"))
+    );
+    assert_eq!(worker(&v, "fix"), want("cursor", "grok-4.7-high", None));
+    assert_eq!(
+        worker(&v, "checkpoint"),
+        want("claude", "sonnet", Some("low"))
+    );
+    assert_eq!(
+        worker(&v, "polish"),
+        want("codex", "gpt-5.4", Some("xhigh"))
+    );
+    assert_eq!(v["fix"]["provider_source"], "user");
+    assert_eq!(v["polish"]["provider_source"], "user");
+    let o = dirs.factory(&["setup", "--show"]);
+    assert!(
+        text(&o.stdout).contains("  fix       cursor grok-4.7-high ("),
+        "{}",
+        text(&o.stdout)
+    );
+
+    for (args, why) in [
+        (
+            &["--role", "polish", "--provider", "opencode"][..],
+            "give --model",
+        ),
+        (
+            &["--role", "fix", "--effort", "high"],
+            "cursor takes no --effort",
+        ),
+        (
+            &["--provider", "cursor", "--effort", "high"],
+            "cursor takes no --effort",
+        ),
+        (&["--role", "build", "--model=-x"], "not a model id"),
+        (
+            &["--role", "fix", "--clear", "--provider", "codex"],
+            "--clear takes no",
+        ),
+    ] {
+        let before = fs::read_to_string(dirs.config_file()).unwrap();
+        let o = dirs.factory(&[&["setup", "workers"], args].concat());
+        assert_eq!(o.status.code(), Some(1), "{args:?}: {}", text(&o.stdout));
+        assert!(
+            text(&o.stderr).contains(why),
+            "{args:?}: {}",
+            text(&o.stderr)
+        );
+        assert_eq!(
+            fs::read_to_string(dirs.config_file()).unwrap(),
+            before,
+            "{args:?}"
+        );
+    }
+    for args in [
+        &[
+            "--role",
+            "polish",
+            "--provider",
+            "opencode",
+            "--model",
+            "ollama/llama3:8b",
+            "--effort",
+            "high",
+        ][..],
+        &["--role", "checkpoint", "--clear"],
+        &["--provider", "claude"],
+        &[
+            "--role",
+            "fix",
+            "--provider",
+            "codex",
+            "--effort",
+            "minimal",
+        ],
+    ] {
+        let o = dirs.factory(&[&["setup", "workers"], args].concat());
+        assert_eq!(o.status.code(), Some(0), "{args:?}: {}", text(&o.stderr));
+    }
+    let t = dirs.config();
+    assert_eq!(str_at(&t, &["workers", "provider"]), Some("claude"));
+    assert_eq!(
+        get(&t, &["workers", "model"]),
+        None,
+        "a codex model left on claude"
+    );
+    assert_eq!(
+        get(&t, &["workers", "effort"]),
+        None,
+        "a codex effort left on claude"
+    );
+    assert_eq!(get(&t, &["workers", "checkpoint", "provider"]), None);
+    assert_eq!(get(&t, &["workers", "checkpoint", "model"]), None);
+
+    let v = show_workers(&dirs);
+    assert_eq!(worker(&v, "default"), want("claude", "opus", Some("high")));
+    assert_eq!(
+        worker(&v, "checkpoint"),
+        want("claude", "opus", Some("high"))
+    );
+    assert_eq!(
+        worker(&v, "build"),
+        want("agy", "gemini-4-neon-high", Some("max"))
+    );
+    assert_eq!(worker(&v, "fix"), want("codex", "gpt-5.4", Some("minimal")));
+    assert_eq!(
+        worker(&v, "polish"),
+        want("opencode", "ollama/llama3:8b", Some("high"))
+    );
 }

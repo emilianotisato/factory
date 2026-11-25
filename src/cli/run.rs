@@ -30,6 +30,11 @@ pub struct RunArgs {
     /// and `FACTORY_CI_MODE`
     #[arg(long, value_enum)]
     pub ci: Option<config::CiMode>,
+    /// The agent CLI a role's workers run on, as `<provider>[:<model>[:<effort>]]` for every role or
+    /// `<role>=<provider>[:<model>[:<effort>]]` for one of build, fix, checkpoint and polish; repeatable.
+    /// Overrides `[workers]` in `config.toml` and `FACTORY_WORKER_PROVIDER`
+    #[arg(long = "worker", value_name = "SPEC")]
+    pub workers: Vec<String>,
 }
 
 /// `factory daemon <run>`: the detached driver `factory run` starts. Hidden.
@@ -94,12 +99,25 @@ pub fn run(args: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i
         return launch(&mut run, &docs, &loaded.config, args.foreground, out);
     }
 
+    let mut specs = Vec::new();
+    for raw in &args.workers {
+        match config::parse_worker_spec(raw) {
+            Ok(s) => specs.extend([s]),
+            Err(why) => {
+                writeln!(err, "factory: --worker {raw}: {why}").map_err(io("stderr"))?;
+                return Ok(1);
+            }
+        }
+    }
+    let (worker_config, _) = config::resolve_workers(&loaded, &specs);
+
     let (ci_mode, ci_source, ci_warning) = config::resolve_ci_mode(&loaded, args.ci);
     if let Some(w) = ci_warning {
         writeln!(err, "factory: {w}").map_err(io("stderr"))?;
     }
 
     let (mut pf, _code) = docs.preflight(&feature)?;
+    preflight::workers(&loaded, &specs, &mut pf);
     if !pf.refuse.is_empty() {
         for line in &pf.refuse {
             writeln!(out, "  ✗ {line}").map_err(io("stdout"))?;
@@ -119,6 +137,7 @@ pub fn run(args: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i
     if !pf.ask.is_empty() {
         let mut run = Run::create(&data_dir, &repo, &feature, None, budget)?;
         run.set_ci_mode(ci_mode)?;
+        run.set_worker_config(worker_config.clone())?;
         record_start(&run, &docs, &loaded, args.hypothesis.as_deref(), err)?;
         save_preflight(run.dir(), &pf)?;
         for (i, text) in pf.ask.iter().enumerate() {
@@ -144,6 +163,7 @@ pub fn run(args: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i
     let branch = ensure_branch(&repo, &pf.branch)?;
     let mut run = Run::create(&data_dir, &repo, &feature, Some(branch), budget)?;
     run.set_ci_mode(ci_mode)?;
+    run.set_worker_config(worker_config)?;
     record_start(&run, &docs, &loaded, args.hypothesis.as_deref(), err)?;
     // The closeout reads `branch.default` from here.
     save_preflight(run.dir(), &pf)?;
@@ -210,6 +230,9 @@ fn flags_ignored(args: &RunArgs, id: &str, err: &mut dyn Write) -> Result<()> {
     }
     if args.ci.is_some() {
         writeln!(err, "--ci ignored: run {id} already exists").map_err(io("stderr"))?;
+    }
+    if !args.workers.is_empty() {
+        writeln!(err, "--worker ignored: run {id} already exists").map_err(io("stderr"))?;
     }
     Ok(())
 }

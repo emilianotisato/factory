@@ -458,14 +458,99 @@ pub fn ci_mode(loaded: &config::Loaded, flag: Option<CiMode>, pf: &mut Preflight
     pf.ok.push(format!("ci mode: {m} ({source})"));
 }
 
+/// Starts every worker-provider ask, so `factory answer` knows which ask writes `[workers]`.
+pub const WORKER_ASK_PREFIX: &str = "worker provider not set in config.toml";
+
+/// Asks once when a role has no provider; otherwise refuses a provider whose CLI is not on `PATH` or that has no
+/// model, and names what each role runs on.
+pub fn workers(loaded: &config::Loaded, specs: &[config::WorkerSpec], pf: &mut Preflight) {
+    let (resolved, warning) = config::resolve_workers(loaded, specs);
+    if let Some(w) = warning {
+        pf.judge.push(w);
+    }
+    let Some(resolved) = resolved else {
+        pf.ask.push(worker_ask(&provider::detect_installed()));
+        return;
+    };
+    let mut refused = Vec::new();
+    for p in resolved.distinct_providers() {
+        if provider::resolve_binary(p).is_none() {
+            refused.push(format!(
+                "worker provider {p} ({}) not found on PATH — install it or run `factory setup workers`",
+                p.binaries().join(" or ")
+            ));
+        }
+    }
+    for (role, w) in resolved.roles() {
+        if w.model.is_empty() {
+            refused.push(format!(
+                "{role} worker runs on {} with no model — set one with `factory setup workers --role {role} --model <m>`",
+                w.provider
+            ));
+        }
+    }
+    if !refused.is_empty() {
+        pf.pass = false;
+        pf.refuse.extend(refused);
+        return;
+    }
+    let roles = resolved.roles();
+    let line = if roles.iter().all(|(_, w)| *w == roles[0].1) {
+        format!("workers: {} (every role)", roles[0].1)
+    } else {
+        let each: Vec<String> = roles.iter().map(|(r, w)| format!("{r} {w}")).collect();
+        format!("workers: {}", each.join(", "))
+    };
+    pf.ok.extend([line]);
+}
+
+/// Names the installed CLIs, or all five when none is on `PATH`.
+fn worker_ask(installed: &[provider::Detected]) -> String {
+    let name = |p: Provider| {
+        if p.default_model().is_empty() {
+            format!("`{p}:<model>`")
+        } else {
+            format!("`{p}`")
+        }
+    };
+    let names: Vec<String> = if installed.is_empty() {
+        Provider::ALL.into_iter().map(name).collect()
+    } else {
+        installed.iter().map(|d| name(d.provider)).collect()
+    };
+    let which = if installed.is_empty() {
+        "none found on PATH, so any of"
+    } else {
+        "installed:"
+    };
+    let proceed = match installed
+        .iter()
+        .find(|d| !d.provider.default_model().is_empty())
+    {
+        Some(d) => format!(
+            "`proceed` runs every role on {} for this run only",
+            d.provider
+        ),
+        None => "`proceed` needs an installed CLI with a default model".to_string(),
+    };
+    format!(
+        "{WORKER_ASK_PREFIX} — answer a provider ({which} {}), as `<provider>`, `<provider>:<model>` or \
+         `<provider>:<model>:<effort>`, to run every worker role on it; it is saved to config.toml for every repo, \
+         and `factory setup workers` mixes providers per role. {proceed} and leaves config.toml unset",
+        names.join(", ")
+    )
+}
+
 pub fn cli(root: &Path, reference: &str, as_json: bool, out: &mut dyn Write) -> Result<i32> {
     let (mut pf, _) = run(root, reference)?;
     match config::load(&paths::config_dir()) {
         Ok(loaded) => {
+            workers(&loaded, &[], &mut pf);
             second_opinion(&loaded, &mut pf);
             ci_mode(&loaded, None, &mut pf);
         }
         Err(e) => {
+            pf.judge.push(format!("workers not read: {e}"));
             pf.judge.push(format!("second opinion not probed: {e}"));
             pf.judge.push(format!("ci mode not read: {e}"));
         }

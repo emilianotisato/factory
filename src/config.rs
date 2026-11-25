@@ -101,11 +101,83 @@ pub struct Worker {
 }
 
 /// What a role runs with once role, `[workers]` and provider defaults are layered.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolvedWorker {
     pub provider: Provider,
     pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+}
+
+impl ResolvedWorker {
+    /// The provider's own model and effort.
+    pub fn defaults(provider: Provider) -> ResolvedWorker {
+        ResolvedWorker {
+            provider,
+            model: provider.default_model().to_string(),
+            effort: provider.default_effort().map(str::to_string),
+        }
+    }
+}
+
+impl std::fmt::Display for ResolvedWorker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} {}", self.provider, self.model)?;
+        match &self.effort {
+            Some(e) => write!(f, " · {e}"),
+            None => Ok(()),
+        }
+    }
+}
+
+/// Every role's worker, fixed for one run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedWorkers {
+    pub build: ResolvedWorker,
+    pub fix: ResolvedWorker,
+    pub checkpoint: ResolvedWorker,
+    pub polish: ResolvedWorker,
+}
+
+impl ResolvedWorkers {
+    pub fn uniform(w: ResolvedWorker) -> ResolvedWorkers {
+        ResolvedWorkers {
+            build: w.clone(),
+            fix: w.clone(),
+            checkpoint: w.clone(),
+            polish: w,
+        }
+    }
+
+    /// A merge runs as `build`, and so does any role this table does not name.
+    pub fn for_role(&self, role: &str) -> &ResolvedWorker {
+        match role {
+            "fix" => &self.fix,
+            "checkpoint" => &self.checkpoint,
+            "polish" => &self.polish,
+            _ => &self.build,
+        }
+    }
+
+    pub fn roles(&self) -> [(&'static str, &ResolvedWorker); 4] {
+        [
+            ("build", &self.build),
+            ("fix", &self.fix),
+            ("checkpoint", &self.checkpoint),
+            ("polish", &self.polish),
+        ]
+    }
+
+    /// In role order, each once.
+    pub fn distinct_providers(&self) -> Vec<Provider> {
+        let mut out: Vec<Provider> = Vec::new();
+        for (_, w) in self.roles() {
+            if !out.contains(&w.provider) {
+                out.extend([w.provider]);
+            }
+        }
+        out
+    }
 }
 
 impl Workers {
@@ -285,6 +357,7 @@ const CI_KEYS: [&str; 1] = ["mode"];
 const COCKPIT_KEYS: [&str; 1] = ["provider"];
 pub const CI_MODE_ENV: &str = "FACTORY_CI_MODE";
 pub const REVIEW_PROVIDER_ENV: &str = "FACTORY_REVIEW_PROVIDER";
+pub const WORKER_PROVIDER_ENV: &str = "FACTORY_WORKER_PROVIDER";
 
 pub const PROJECT_FILE: &str = "docs/project.toml";
 
@@ -542,6 +615,164 @@ fn review_from(
         pass_lines: r.pass_lines,
     };
     (Some(resolved), source, None)
+}
+
+/// One `--worker` flag: every role, or the one it names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkerSpec {
+    pub role: Option<String>,
+    pub provider: Provider,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+}
+
+/// `[<role>=]<provider>[:<model>[:<effort>]]`.
+pub fn parse_worker_spec(raw: &str) -> std::result::Result<WorkerSpec, String> {
+    let raw = raw.trim();
+    let (role, rest) = match raw.split_once('=') {
+        Some((r, rest)) if !r.contains(':') => {
+            let r = r.trim().to_ascii_lowercase();
+            if !ROLE_KEYS.contains(&r.as_str()) {
+                return Err(format!(
+                    "`{r}` is not a worker role: expected build, fix, checkpoint or polish"
+                ));
+            }
+            (Some(r), rest)
+        }
+        _ => (None, raw),
+    };
+    let (provider, model, effort) = parse_provider_choice(rest)?;
+    Ok(WorkerSpec {
+        role,
+        provider,
+        model,
+        effort,
+    })
+}
+
+/// `<provider>[:<model>[:<effort>]]`; the model is `None` when left out and the provider has a default.
+/// A model may hold `:` itself: only a trailing level some provider knows is read as the effort, and it must be this
+/// provider's.
+pub fn parse_provider_choice(
+    raw: &str,
+) -> std::result::Result<(Provider, Option<String>, Option<String>), String> {
+    let (name, rest) = raw.split_once(':').unwrap_or((raw, ""));
+    let p: Provider = name.trim().parse()?;
+    let rest = rest.trim();
+    let (model, effort) = match rest.rsplit_once(':') {
+        Some((m, e)) if p.effort_levels().contains(&e.trim()) => (m.trim(), Some(e.trim())),
+        Some((_, e)) if is_effort_word(e.trim()) => {
+            let e = e.trim();
+            return Err(if p.effort_levels().is_empty() {
+                format!("{p} takes no effort level, not {e:?}")
+            } else {
+                format!(
+                    "{e:?} is not a {p} effort ({})",
+                    p.effort_levels().join(", ")
+                )
+            });
+        }
+        Some((m, "")) => (m.trim(), None),
+        _ => (rest, None),
+    };
+    let model = match model {
+        "" if p.default_model().is_empty() => {
+            return Err(format!(
+                "{p} has no default model, so name one as `{p}:<model>`"
+            ));
+        }
+        "" => None,
+        m if !crate::provider::is_model_name(m) => return Err(format!("{m:?} is not a model id")),
+        m => Some(m.to_string()),
+    };
+    Ok((p, model, effort.map(str::to_string)))
+}
+
+fn is_effort_word(e: &str) -> bool {
+    Provider::ALL.iter().any(|p| p.effort_levels().contains(&e))
+}
+
+/// Per role: its `--worker`, an all-role `--worker`, `[workers.<role>] provider`, `[workers] provider`, then
+/// `FACTORY_WORKER_PROVIDER`. `None` when any role is left without a provider; the second value warns of an env value
+/// that names none.
+pub fn resolve_workers(
+    loaded: &Loaded,
+    specs: &[WorkerSpec],
+) -> (Option<ResolvedWorkers>, Option<String>) {
+    let env = std::env::var(WORKER_PROVIDER_ENV).ok();
+    resolve_workers_from(loaded, specs, env.as_deref())
+}
+
+pub fn resolve_workers_from(
+    loaded: &Loaded,
+    specs: &[WorkerSpec],
+    env: Option<&str>,
+) -> (Option<ResolvedWorkers>, Option<String>) {
+    let raw = env.unwrap_or("");
+    let (env_provider, warning) = match raw.trim() {
+        "" => (None, None),
+        v => match v.parse::<Provider>() {
+            Ok(p) => (Some(p), None),
+            Err(_) => (
+                None,
+                Some(format!(
+                    "{WORKER_PROVIDER_ENV}={raw:?} names no worker provider (claude, codex, cursor, agy or opencode), ignored"
+                )),
+            ),
+        },
+    };
+    let w = &loaded.config.workers;
+    let default_provider = w.provider.or(env_provider);
+    let role = |role: &str| {
+        let spec = specs
+            .iter()
+            .rev()
+            .find(|s| s.role.as_deref() == Some(role))
+            .or_else(|| specs.iter().rev().find(|s| s.role.is_none()));
+        resolve_role(w, &loaded.sources.workers, role, spec, default_provider)
+    };
+    let resolved = (|| {
+        Some(ResolvedWorkers {
+            build: role("build")?,
+            fix: role("fix")?,
+            checkpoint: role("checkpoint")?,
+            polish: role("polish")?,
+        })
+    })();
+    (resolved, warning)
+}
+
+/// A model or effort is taken only from a layer that names the provider the role resolved to.
+fn resolve_role(
+    w: &Workers,
+    sources: &RoleSources,
+    role: &str,
+    spec: Option<&WorkerSpec>,
+    default_provider: Option<Provider>,
+) -> Option<ResolvedWorker> {
+    let (worker, set) = (w.role(role)?, sources.role(role)?);
+    let config_provider = worker.provider.or(default_provider);
+    let provider = spec.map(|s| s.provider).or(config_provider)?;
+    let own = config_provider == Some(provider);
+    let inherits = default_provider == Some(provider);
+    let model = spec
+        .and_then(|s| s.model.clone())
+        .or_else(|| (own && set.model != Source::Default).then(|| worker.model.clone()))
+        .or_else(|| w.model.clone().filter(|_| inherits))
+        .unwrap_or_else(|| provider.default_model().to_string());
+    let effort = if provider.effort_levels().is_empty() {
+        None
+    } else {
+        spec.and_then(|s| s.effort.clone())
+            .or_else(|| (own && set.effort != Source::Default).then(|| worker.effort.clone()))
+            .or_else(|| w.effort.clone().filter(|_| inherits))
+            .or_else(|| provider.default_effort().map(str::to_string))
+    };
+    Some(ResolvedWorker {
+        provider,
+        model,
+        effort,
+    })
 }
 
 /// Sets `[ci] mode` in `config_dir/config.toml`, keeping every other line as written.
@@ -1537,5 +1768,130 @@ mod tests {
             }
         );
         assert!(l.warnings.is_empty(), "{:?}", l.warnings);
+    }
+
+    fn rw(p: Provider, m: &str, e: Option<&str>) -> ResolvedWorker {
+        ResolvedWorker {
+            provider: p,
+            model: m.to_string(),
+            effort: e.map(str::to_string),
+        }
+    }
+
+    fn spec(raw: &str) -> WorkerSpec {
+        parse_worker_spec(raw).unwrap()
+    }
+
+    #[test]
+    fn worker_config_mixes_roles_without_leaking_claude_defaults() {
+        let (cfg, _) = dirs(
+            Some(
+                "[workers]\nprovider = \"claude\"\nmodel = \"opus\"\neffort = \"high\"\n\n\
+                 [workers.build]\nprovider = \"codex\"\n\n\
+                 [workers.fix]\nprovider = \"cursor\"\n\n\
+                 [workers.checkpoint]\nmodel = \"sonnet\"\n",
+            ),
+            None,
+        );
+        let l = load(cfg.path()).unwrap();
+        let (got, warning) = resolve_workers_from(&l, &[], None);
+        assert_eq!(warning, None);
+        let got = got.unwrap();
+        assert_eq!(got.build, rw(Provider::Codex, "gpt-5.4", Some("high")));
+        assert_eq!(got.fix, rw(Provider::Cursor, "grok-4.7-high", None));
+        assert_eq!(got.checkpoint, rw(Provider::Claude, "sonnet", Some("high")));
+        assert_eq!(got.polish, rw(Provider::Claude, "opus", Some("high")));
+        assert_eq!(got.for_role("merge"), &got.build);
+        assert_eq!(
+            got.distinct_providers(),
+            [Provider::Codex, Provider::Cursor, Provider::Claude]
+        );
+        let json = serde_json::to_value(&got).unwrap();
+        assert_eq!(
+            json["fix"],
+            json!({"provider": "cursor", "model": "grok-4.7-high"})
+        );
+        assert_eq!(
+            serde_json::from_value::<ResolvedWorkers>(json).unwrap(),
+            got
+        );
+
+        let flags = [
+            spec("codex:o3"),
+            spec("checkpoint=agy::max"),
+            spec("polish=claude"),
+        ];
+        let (got, _) = resolve_workers_from(&l, &flags, None);
+        let got = got.unwrap();
+        assert_eq!(got.build, rw(Provider::Codex, "o3", Some("high")));
+        assert_eq!(got.fix, rw(Provider::Codex, "o3", Some("high")));
+        assert_eq!(
+            got.checkpoint,
+            rw(Provider::Agy, "gemini-4-neon-high", Some("max"))
+        );
+        assert_eq!(got.polish, rw(Provider::Claude, "opus", Some("high")));
+
+        let (cfg, _) = dirs(
+            Some("[workers]\nmodel = \"sonnet\"\n[workers.build]\nprovider = \"codex\"\n"),
+            None,
+        );
+        let l = load(cfg.path()).unwrap();
+        assert_eq!(resolve_workers_from(&l, &[], None), (None, None));
+        let (none, warning) = resolve_workers_from(&l, &[], Some("gemini"));
+        assert!(none.is_none());
+        assert!(warning.unwrap().contains(WORKER_PROVIDER_ENV));
+        let (got, warning) = resolve_workers_from(&l, &[], Some(" Claude "));
+        assert_eq!(warning, None);
+        let got = got.unwrap();
+        assert_eq!(got.build, rw(Provider::Codex, "gpt-5.4", Some("high")));
+        assert_eq!(got.fix, rw(Provider::Claude, "sonnet", Some("high")));
+        let (got, _) = resolve_workers_from(&l, &[spec("fix=codex")], None);
+        assert!(got.is_none(), "checkpoint and polish have no provider");
+        let (got, _) = resolve_workers_from(&l, &[spec("cursor")], Some("claude"));
+        let got = got.unwrap();
+        assert_eq!(got.build, rw(Provider::Cursor, "grok-4.7-high", None));
+        assert_eq!(got.polish, rw(Provider::Cursor, "grok-4.7-high", None));
+
+        let (cfg, _) = dirs(Some("[workers]\nprovider = \"opencode\"\n"), None);
+        let (got, _) = resolve_workers_from(&load(cfg.path()).unwrap(), &[], None);
+        assert_eq!(got.unwrap().build, rw(Provider::Opencode, "", None));
+    }
+
+    #[test]
+    fn a_worker_spec_keeps_colons_in_the_model_and_refuses_what_no_cli_takes() {
+        assert_eq!(
+            spec("build=codex:gpt-5.4:xhigh"),
+            WorkerSpec {
+                role: Some("build".into()),
+                provider: Provider::Codex,
+                model: Some("gpt-5.4".into()),
+                effort: Some("xhigh".into()),
+            }
+        );
+        assert_eq!(
+            spec("opencode:ollama/llama3:8b"),
+            WorkerSpec {
+                role: None,
+                provider: Provider::Opencode,
+                model: Some("ollama/llama3:8b".into()),
+                effort: None,
+            }
+        );
+        let s = spec("Fix=claude");
+        assert_eq!(
+            (s.role.as_deref(), s.model, s.effort),
+            (Some("fix"), None, None)
+        );
+        for bad in [
+            "opencode",
+            "review=claude",
+            "cursor:grok-4.7-high:high",
+            "codex:o3:max",
+            "codex:--auto",
+            "gemini",
+            "build=",
+        ] {
+            assert!(parse_worker_spec(bad).is_err(), "{bad}");
+        }
     }
 }
