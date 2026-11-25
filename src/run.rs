@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::config::CiMode;
 use crate::db::Db;
 use crate::error::{io, json};
 use crate::events::{self, Event, EventKind};
@@ -123,6 +124,9 @@ pub struct RunState {
     pub pid_start: Option<u64>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub worker_starts: BTreeMap<String, u64>,
+    /// Set once when the run starts, so a detached or resumed driver never re-reads it from `config.toml`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ci_mode: Option<CiMode>,
 }
 
 impl RunState {
@@ -267,6 +271,7 @@ impl Run {
             workers: Vec::new(),
             lanes_set_up: Vec::new(),
             lane_bases: BTreeMap::new(),
+            ci_mode: None,
         };
         write_state(&dir, &state)?;
         fs::write(dir.join(events::FILE), "")
@@ -368,6 +373,10 @@ impl Run {
 
     pub fn set_budget(&mut self, budget_weighted_tokens: u64) -> Result<()> {
         self.update(|s| s.budget_weighted_tokens = budget_weighted_tokens)
+    }
+
+    pub fn set_ci_mode(&mut self, mode: Option<CiMode>) -> Result<()> {
+        self.update(|s| s.ci_mode = mode)
     }
 
     pub fn request_stop(&mut self) -> Result<()> {

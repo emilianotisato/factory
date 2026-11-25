@@ -26,6 +26,10 @@ pub struct RunArgs {
     /// The one line this run tests, stored on its row
     #[arg(long, value_name = "TEXT")]
     pub hypothesis: Option<String>,
+    /// Where this run's CI runs; overrides `[ci] mode` in `config.toml`
+    /// and `FACTORY_CI_MODE`
+    #[arg(long, value_enum)]
+    pub ci: Option<config::CiMode>,
 }
 
 /// `factory daemon <run>`: the detached driver `factory run` starts. Hidden.
@@ -59,7 +63,7 @@ pub fn run(args: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i
     let feature = feature_number(&docs, &args.feature)?;
 
     if let Some(live) = Run::find_live(&data_dir, &repo, &feature)? {
-        hypothesis_ignored(args, live.id().as_str(), err)?;
+        flags_ignored(args, live.id().as_str(), err)?;
         writeln!(
             out,
             "run {id} is live (pid {pid}) — stop it first: factory stop {id}",
@@ -78,7 +82,7 @@ pub fn run(args: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i
                 return Ok(1);
             }
         }
-        hypothesis_ignored(args, run.id().as_str(), err)?;
+        flags_ignored(args, run.id().as_str(), err)?;
         run.adopt()?;
         if let Some(b) = args.budget {
             run.set_budget(b)?;
@@ -89,6 +93,13 @@ pub fn run(args: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i
         print_board(&docs, &feature, out)?;
         return launch(&mut run, &docs, &loaded.config, args.foreground, out);
     }
+
+    let (ci_mode, ci_source, ci_warning) = config::resolve_ci_mode(&loaded, args.ci);
+    if let Some(w) = ci_warning {
+        writeln!(err, "factory: {w}").map_err(io("stderr"))?;
+    }
+    loaded.config.ci.mode = ci_mode;
+    loaded.sources.ci = ci_source;
 
     let (mut pf, _code) = docs.preflight(&feature)?;
     if !pf.refuse.is_empty() {
@@ -106,6 +117,7 @@ pub fn run(args: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i
     }
     if !pf.ask.is_empty() {
         let mut run = Run::create(&data_dir, &repo, &feature, None, budget)?;
+        run.set_ci_mode(ci_mode)?;
         record_start(&run, &docs, &loaded, args.hypothesis.as_deref(), err)?;
         save_preflight(run.dir(), &pf)?;
         for (i, text) in pf.ask.iter().enumerate() {
@@ -130,6 +142,7 @@ pub fn run(args: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i
 
     let branch = ensure_branch(&repo, &pf.branch)?;
     let mut run = Run::create(&data_dir, &repo, &feature, Some(branch), budget)?;
+    run.set_ci_mode(ci_mode)?;
     record_start(&run, &docs, &loaded, args.hypothesis.as_deref(), err)?;
     // The closeout reads `branch.default` from here.
     save_preflight(run.dir(), &pf)?;
@@ -190,9 +203,12 @@ pub fn daemon(args: &DaemonArgs, out: &mut dyn Write, err: &mut dyn Write) -> Re
     }
 }
 
-fn hypothesis_ignored(args: &RunArgs, id: &str, err: &mut dyn Write) -> Result<()> {
+fn flags_ignored(args: &RunArgs, id: &str, err: &mut dyn Write) -> Result<()> {
     if args.hypothesis.is_some() {
         writeln!(err, "hypothesis ignored: run {id} already exists").map_err(io("stderr"))?;
+    }
+    if args.ci.is_some() {
+        writeln!(err, "--ci ignored: run {id} already exists").map_err(io("stderr"))?;
     }
     Ok(())
 }

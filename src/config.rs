@@ -18,6 +18,36 @@ pub struct Config {
     pub workers: Workers,
     pub source: Option<SourceRepo>,
     pub review: Review,
+    pub ci: Ci,
+}
+
+/// Where a run's gate CI runs: on this machine or on the remote's checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum CiMode {
+    Local,
+    Remote,
+}
+
+impl CiMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CiMode::Local => "local",
+            CiMode::Remote => "remote",
+        }
+    }
+}
+
+impl std::fmt::Display for CiMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Ci {
+    pub mode: Option<CiMode>,
 }
 
 /// `Source` is taken: it names the scope a knob came from.
@@ -59,6 +89,7 @@ impl Default for Config {
             workers: Workers::default(),
             source: None,
             review: Review::default(),
+            ci: Ci::default(),
         }
     }
 }
@@ -91,7 +122,7 @@ pub struct Loaded {
     pub sources: Sources,
 }
 
-/// `Flag` is `--budget` on the command line: the budget is the only knob a flag sets.
+/// `Flag` is `--budget` or `--ci` on the command line.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Source {
@@ -106,6 +137,7 @@ pub enum Source {
 pub struct Sources {
     pub budget: Source,
     pub workers: RoleSources,
+    pub ci: Source,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -122,13 +154,21 @@ pub struct WorkerSources {
     pub effort: Source,
 }
 
-const TOP_KEYS: [&str; 4] = ["budget_weighted_tokens", "workers", "source", "review"];
+const TOP_KEYS: [&str; 5] = [
+    "budget_weighted_tokens",
+    "workers",
+    "source",
+    "review",
+    "ci",
+];
 const PROJECT_TOP_KEYS: [&str; 5] = ["docs", "lanes", "leaks", "run", "workers"];
 const RUN_KEYS: [&str; 1] = ["budget"];
 const ROLE_KEYS: [&str; 4] = ["build", "fix", "checkpoint", "polish"];
 const WORKER_KEYS: [&str; 2] = ["model", "effort"];
 const SOURCE_KEYS: [&str; 1] = ["path"];
 const REVIEW_KEYS: [&str; 4] = ["agent", "model", "timeout_secs", "pass_lines"];
+const CI_KEYS: [&str; 1] = ["mode"];
+pub const CI_MODE_ENV: &str = "FACTORY_CI_MODE";
 
 pub const PROJECT_FILE: &str = "docs/project.toml";
 
@@ -151,6 +191,7 @@ pub fn load(config_dir: &Path) -> Result<Loaded> {
         ));
     }
     loaded.sources.budget = scope(&table, &["budget_weighted_tokens"], Source::User);
+    loaded.sources.ci = scope(&table, &["ci", "mode"], Source::User);
     for (role, s) in loaded.sources.workers.each_mut() {
         s.model = scope(&table, &["workers", role, "model"], Source::User);
         s.effort = scope(&table, &["workers", role, "effort"], Source::User);
@@ -234,10 +275,129 @@ pub fn knobs(loaded: &Loaded, lanes: Option<u32>, claude_version: Option<&str>) 
     json!({
         "workers": workers,
         "budget": {"value": loaded.config.budget_weighted_tokens, "source": loaded.sources.budget},
+        "ci": {"value": loaded.config.ci.mode, "source": loaded.sources.ci},
         "lanes": lanes,
         "factory_version": env!("CARGO_PKG_VERSION"),
         "claude_version": claude_version,
     })
+}
+
+/// `--ci`, then the user's `[ci] mode`, then `FACTORY_CI_MODE`; the env is read here so `load` stays file-only.
+/// The third value warns of an env value that names no mode.
+pub fn resolve_ci_mode(
+    loaded: &Loaded,
+    flag: Option<CiMode>,
+) -> (Option<CiMode>, Source, Option<String>) {
+    let env = std::env::var(CI_MODE_ENV).ok();
+    ci_mode_from(loaded, flag, env.as_deref())
+}
+
+fn ci_mode_from(
+    loaded: &Loaded,
+    flag: Option<CiMode>,
+    env: Option<&str>,
+) -> (Option<CiMode>, Source, Option<String>) {
+    if let Some(m) = flag {
+        return (Some(m), Source::Flag, None);
+    }
+    if let Some(m) = loaded.config.ci.mode {
+        return (Some(m), Source::User, None);
+    }
+    let raw = env.unwrap_or("");
+    let v = raw.trim();
+    if v.is_empty() {
+        return (None, Source::Default, None);
+    }
+    match [CiMode::Local, CiMode::Remote]
+        .into_iter()
+        .find(|m| v.eq_ignore_ascii_case(m.as_str()))
+    {
+        Some(m) => (Some(m), Source::Default, None),
+        None => (
+            None,
+            Source::Default,
+            Some(format!(
+                "{CI_MODE_ENV}={raw:?} is neither `local` nor `remote`, ignored"
+            )),
+        ),
+    }
+}
+
+/// Sets `[ci] mode` in `config_dir/config.toml`, keeping every other line as written.
+pub fn write_ci_mode(config_dir: &Path, mode: CiMode) -> Result<PathBuf> {
+    fs::create_dir_all(config_dir)
+        .map_err(crate::error::io(format!("create {}", config_dir.display())))?;
+    let path = config_dir.join("config.toml");
+    let old = match fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(crate::error::io(format!("read {}", path.display()))(e)),
+    };
+    let text = with_ci_mode(&old, mode);
+    toml::from_str::<toml::Table>(&text).map_err(|source| Error::Toml {
+        what: format!("check the new {}", path.display()),
+        source,
+    })?;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let tmp = config_dir.join(format!(".config.toml.{}.{nanos}.tmp", std::process::id()));
+    let written = fs::write(&tmp, &text)
+        .map_err(crate::error::io(format!("write {}", tmp.display())))
+        .and_then(|()| {
+            fs::rename(&tmp, &path).map_err(crate::error::io(format!(
+                "rename {} over {}",
+                tmp.display(),
+                path.display()
+            )))
+        });
+    if written.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    written.map(|()| path)
+}
+
+/// The table a header line opens; an array-of-tables header is never `ci`.
+fn table_header(line: &str) -> Option<String> {
+    let t = line.trim();
+    if t.starts_with("[[") {
+        return Some(String::new());
+    }
+    let inner = t.strip_prefix('[')?;
+    let name = &inner[..inner.find(']')?];
+    Some(name.trim().trim_matches(['"', '\'']).to_string())
+}
+
+fn is_mode_key(line: &str) -> bool {
+    line.split_once('=')
+        .is_some_and(|(k, _)| matches!(k.trim(), "mode" | "\"mode\"" | "'mode'"))
+}
+
+fn with_ci_mode(old: &str, mode: CiMode) -> String {
+    let entry = format!("mode = \"{mode}\"");
+    let mut lines: Vec<String> = old.lines().map(str::to_string).collect();
+    let Some(ci) = lines
+        .iter()
+        .position(|l| table_header(l).as_deref() == Some("ci"))
+    else {
+        let mut text = old.to_string();
+        if !text.is_empty() {
+            if !text.ends_with('\n') {
+                text += "\n";
+            }
+            text += "\n";
+        }
+        return text + &format!("[ci]\n{entry}\n");
+    };
+    let end = lines[ci + 1..]
+        .iter()
+        .position(|l| table_header(l).is_some())
+        .map_or(lines.len(), |i| ci + 1 + i);
+    match (ci + 1..end).find(|&i| is_mode_key(&lines[i])) {
+        Some(i) => lines[i] = entry,
+        None => lines.insert(ci + 1, entry),
+    }
+    lines.join("\n") + "\n"
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -332,7 +492,11 @@ fn unknown_keys(table: &toml::Table, top: &[&str]) -> Vec<String> {
                 .map(|k| format!("run.{k}")),
         );
     }
-    for (name, keys) in [("source", &SOURCE_KEYS[..]), ("review", &REVIEW_KEYS[..])] {
+    for (name, keys) in [
+        ("source", &SOURCE_KEYS[..]),
+        ("review", &REVIEW_KEYS[..]),
+        ("ci", &CI_KEYS[..]),
+    ] {
         if let (true, Some(toml::Value::Table(t))) = (top.contains(&name), table.get(name)) {
             out.extend(
                 t.keys()
@@ -510,6 +674,158 @@ mod tests {
             l.warnings[1].contains("unknown key `review.timeout`"),
             "{:?}",
             l.warnings
+        );
+    }
+
+    #[test]
+    fn ci_mode_reads_user_config_flag_and_env_never_project_toml() {
+        for (written, want) in [("local", CiMode::Local), ("remote", CiMode::Remote)] {
+            let (cfg, _) = dirs(Some(&format!("[ci]\nmode = \"{written}\"\n")), None);
+            let l = load(cfg.path()).unwrap();
+            assert_eq!(l.config.ci.mode, Some(want));
+            assert_eq!(l.sources.ci, Source::User);
+            assert!(l.warnings.is_empty(), "{:?}", l.warnings);
+            assert_eq!(
+                knobs(&l, None, None)["ci"],
+                json!({"value": written, "source": "user"})
+            );
+        }
+
+        let (cfg, _) = dirs(None, None);
+        let l = load(cfg.path()).unwrap();
+        assert_eq!((l.config.ci.mode, l.sources.ci), (None, Source::Default));
+        assert_eq!(
+            knobs(&l, None, None)["ci"],
+            json!({"value": null, "source": "default"})
+        );
+
+        let (cfg, _) = dirs(Some("[ci]\nmode = \"local\"\nrunner = \"x\"\n"), None);
+        let l = load(cfg.path()).unwrap();
+        assert_eq!(l.config.ci.mode, Some(CiMode::Local));
+        assert_eq!(l.warnings.len(), 1, "{:?}", l.warnings);
+        assert!(
+            l.warnings[0].contains("unknown key `ci.runner` ignored"),
+            "{:?}",
+            l.warnings
+        );
+
+        let (cfg, _) = dirs(Some("[ci]\nmode = \"cloud\"\n"), None);
+        assert!(matches!(load(cfg.path()), Err(Error::Toml { .. })));
+
+        let (cfg, repo) = dirs(
+            Some("[ci]\nmode = \"local\"\n"),
+            Some("[ci]\nmode = \"remote\"\n"),
+        );
+        let l = load_with_project(cfg.path(), repo.path()).unwrap();
+        assert_eq!(l.config.ci.mode, Some(CiMode::Local));
+        assert_eq!(l.sources.ci, Source::User);
+        assert_eq!(l.warnings.len(), 1, "{:?}", l.warnings);
+        assert!(
+            l.warnings[0].contains(PROJECT_FILE) && l.warnings[0].contains("unknown key `ci`"),
+            "{:?}",
+            l.warnings
+        );
+
+        let (cfg, _) = dirs(None, None);
+        let unset = load(cfg.path()).unwrap();
+        let (cfg, _) = dirs(Some("[ci]\nmode = \"remote\"\n"), None);
+        let user = load(cfg.path()).unwrap();
+        let local = Some(CiMode::Local);
+        let remote = Some(CiMode::Remote);
+        assert_eq!(
+            ci_mode_from(&user, local, Some("remote")),
+            (local, Source::Flag, None)
+        );
+        assert_eq!(
+            ci_mode_from(&user, None, Some("local")),
+            (remote, Source::User, None)
+        );
+        assert_eq!(
+            ci_mode_from(&unset, None, Some(" LOCAL ")),
+            (local, Source::Default, None)
+        );
+        assert_eq!(
+            ci_mode_from(&unset, None, Some("Remote")),
+            (remote, Source::Default, None)
+        );
+        assert_eq!(
+            ci_mode_from(&unset, None, None),
+            (None, Source::Default, None)
+        );
+        assert_eq!(
+            ci_mode_from(&unset, None, Some("")),
+            (None, Source::Default, None)
+        );
+        let (mode, source, warning) = ci_mode_from(&unset, None, Some("cloud"));
+        assert_eq!((mode, source), (None, Source::Default));
+        assert!(warning.unwrap().contains(CI_MODE_ENV));
+        assert_eq!(resolve_ci_mode(&unset, local), (local, Source::Flag, None));
+    }
+
+    #[test]
+    fn write_ci_mode_preserves_comments_and_updates_idempotently() {
+        let leftovers = |dir: &Path| -> Vec<String> {
+            fs::read_dir(dir)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .filter(|n| n != "config.toml")
+                .collect()
+        };
+
+        let base = tempfile::tempdir().unwrap();
+        let fresh = base.path().join("factory");
+        let path = write_ci_mode(&fresh, CiMode::Local).unwrap();
+        assert_eq!(path, fresh.join("config.toml"));
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "[ci]\nmode = \"local\"\n"
+        );
+        assert_eq!(load(&fresh).unwrap().config.ci.mode, Some(CiMode::Local));
+        assert!(leftovers(&fresh).is_empty(), "{:?}", leftovers(&fresh));
+
+        let original = "# the owner's notes\n# keep me\nbudget_weighted_tokens = 5 # inline\n\n\
+                        [source]\npath = \"/x\"\n\n[review]\n# timeout note\ntimeout_secs = 2\n\n\
+                        [workers.polish]\nmodel = \"sonnet\"";
+        let (cfg, _) = dirs(Some(original), None);
+        let path = write_ci_mode(cfg.path(), CiMode::Local).unwrap();
+        let appended = fs::read_to_string(&path).unwrap();
+        assert_eq!(appended, format!("{original}\n\n[ci]\nmode = \"local\"\n"));
+        let l = load(cfg.path()).unwrap();
+        assert_eq!(l.config.ci.mode, Some(CiMode::Local));
+        assert_eq!(l.config.workers.polish.model, "sonnet");
+        assert_eq!(l.config.review.timeout_secs, 2);
+        assert!(l.warnings.is_empty(), "{:?}", l.warnings);
+
+        write_ci_mode(cfg.path(), CiMode::Remote).unwrap();
+        let updated = fs::read_to_string(&path).unwrap();
+        assert_eq!(updated, appended.replace("\"local\"", "\"remote\""));
+        write_ci_mode(cfg.path(), CiMode::Remote).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), updated);
+        assert_eq!(updated.matches("[ci]").count(), 1);
+        assert!(
+            leftovers(cfg.path()).is_empty(),
+            "{:?}",
+            leftovers(cfg.path())
+        );
+
+        let (cfg, _) = dirs(
+            Some("[ci]\n# chosen once\n\n[other]\nmode = \"keep\"\n"),
+            None,
+        );
+        let path = write_ci_mode(cfg.path(), CiMode::Remote).unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "[ci]\nmode = \"remote\"\n# chosen once\n\n[other]\nmode = \"keep\"\n"
+        );
+
+        let (cfg, _) = dirs(
+            Some("[ci]\nmode = \"local\"\n[review]\nmodel = \"m\"\nmode = 1"),
+            None,
+        );
+        let path = write_ci_mode(cfg.path(), CiMode::Remote).unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "[ci]\nmode = \"remote\"\n[review]\nmodel = \"m\"\nmode = 1\n"
         );
     }
 
