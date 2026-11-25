@@ -43,3 +43,31 @@ The leaks check missed nothing: the branch adds no comment or name that points a
 ## Score
 
 3/5. The code is sound and the review fixes were small, but the PRD shipped a wrong user-facing recovery into four places, and only the polish reviewers caught it.
+
+## Numbers
+
+<!-- factory:numbers -->
+| role | workers | own | subagents | weighted | minutes | turns |
+|---|---:|---:|---:|---:|---:|---:|
+| build | 4 | 1095315 | 0 | 1095315 | 24 | 95 |
+| checkpoint | 1 | 218455 | 0 | 218455 | 4 | 18 |
+| polish | 1 | 807606 | 587328 | 1394934 | 11 | 40 |
+| total | 6 | 2121377 | 587328 | 2708704 | 39 | 153 |
+
+Knobs: build opus/high default · fix opus/high default · checkpoint opus/high default · polish opus/high default · budget 30000000 default · lanes 4 · factory 0.14.0 · claude 2.1.332
+
+Hypothesis: none
+
+quality: gate_red 0 · worker_gate_red 0 · fix_commits 0 · ci_red_rounds 0 · ci_reruns 0 · findings high=1 medium=2 low=13 fixed=15 parked=1 · decisions 5 decide 1 blocks 0
+
+Pack (build): slice 8905 · prd_sections 6869 · log 611 · outline 8226 · lookup 1115 · contract 3685 · autonomy 9988 · inner_loop 86 · total 39484 · start_context 24519
+
+Compared with:
+
+| run | feature | weighted | slices | per slice | lines changed | per line | comment share | id hits |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 025-20261125-021f (this run) | 025 | 2708704 | 4 | 677176 | 1798 | 1507 | 2.4% | 0 |
+| 021-20261123-a324 | 021 | 4487033 | 5 | 897407 | 2193 | 2046 | 2.9% | 0 |
+| 015-20261113-f9b6 | 015 | 4100530 | 5 | 820106 | 1786 | 2296 | 3.7% | 0 |
+| 018-20261112-68dc | 018 | 2243893 | 4 | 560973 | 1343 | 1671 | 1.2% | 0 |
+<!-- /factory:numbers -->
