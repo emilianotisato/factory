@@ -77,3 +77,11 @@
 `prd.md` §8, the **FR-4** row and the `/deliver` part of **FR-3**: `every_file_under_skills_is_in_the_bundle_byte_for_byte`, `bundle_lock_matches`, `gate_skill_carries_ci_economics_guidance`, `the_cockpit_skill_is_under_sixty_lines_and_names_the_five_commands`, and `deliver_skill_handles_local_ci_mode`. All are `run` rows, proven below the UI: the checkpoint runs them and keeps the transcript.
 
 **Acceptance:** after the checkpoint, the transcript shows all five tests green.
+
+**Code-review fixes (2026-11-25).**
+- `/deliver` §3 step 4 and `gate/references/ci.md` had the same wrong advice: that marking the PR ready runs the merge check. While the head commit says `[skip ci]`, it does not. Both now say one new commit without the token is needed (AD-5).
+- `/deliver` §3 step 3 left unsaid which commit gets `[skip ci]`, so the retro append could land as an unstamped HEAD. It now says to commit the retro by pathspec as the last commit before the push, and to stamp that commit. The pinned passage now ends at `Push once.`, so it pins the order too.
+- `/deliver` §2: the CI-mode ask now says it offers no `Other`, because any other answer exits 1.
+- `ci.md` item 4 offered `paths-ignore` with no caveat. On a workflow behind a required check, it leaves docs-only PRs pending forever. The item now carries that caveat and the early-exit alternative.
+- `ci.md` item 2 claimed the PR check proves the merged commit. That holds only when branches must be up to date before merging, and the item now says so.
+- `skills/bundle.lock` relocked at 0.15.0.

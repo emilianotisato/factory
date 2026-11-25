@@ -395,4 +395,31 @@ fn answer_invalid_ci_mode_refuses_and_keeps_ask_open() {
     assert_eq!(code, Some(0), "{out}");
     assert_eq!(answered(&fx), 1);
     assert_eq!(run_state(&fx)["ci_mode"], "remote");
+    let saved = fs::read_to_string(config_toml(&fx)).unwrap();
+    assert!(saved.contains("[ci]\nmode = \"remote\"\n"), "{saved}");
+}
+
+#[test]
+fn preflight_names_an_unreadable_config_and_a_bad_env_ci_mode_instead_of_asking() {
+    let fx = Fixture::new("preflight-ci-unreadable");
+    fs::write(config_toml(&fx), "[ci]\nmode = \"cloud\"\n").unwrap();
+    let (code, out) = unset(&fx, &["docs", "preflight", "001"]);
+    assert_eq!(code, Some(0), "{out}");
+    assert!(out.contains("ci mode not read:"), "{out}");
+    assert!(!out.contains(CI_ASK), "{out}");
+
+    fs::remove_file(config_toml(&fx)).unwrap();
+    let o = fx
+        .command(BIN)
+        .args(["docs", "preflight", "001"])
+        .env("FACTORY_CI_MODE", "cloud")
+        .output()
+        .unwrap();
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert_eq!(o.status.code(), Some(2), "{out}");
+    assert!(out.contains(&format!("  ! {CI_ASK}")), "{out}");
+    assert!(
+        out.contains("FACTORY_CI_MODE=\"cloud\" is neither `local` nor `remote`"),
+        "{out}"
+    );
 }

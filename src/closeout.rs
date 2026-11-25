@@ -156,7 +156,8 @@ fn ci_local(run: &mut Run, out: &mut dyn Write) -> Result<Outcome> {
     say(
         out,
         &format!(
-            "ci: local mode — remote CI skipped at {}; mark PR ready for review (or push) to run required merge checks",
+            "ci: local mode — remote CI skipped at {}; GitHub skips every PR run, ready for review included, \
+             while the head commit says `[skip ci]`: one new commit without it runs the required merge checks",
             short(&head)
         ),
     )?;
@@ -1161,11 +1162,16 @@ fn open_pr(
         match ci::pr_edit(&repo, &pr, &body)? {
             Ok(()) => say(out, &format!("pr: {url} body refreshed (resume)"))?,
             Err(text) => {
+                let after = if local {
+                    "the run finishes in local CI mode"
+                } else {
+                    "CI is watched either way"
+                };
                 let body = format!(
                     "**Happened:** the draft PR {url} exists and `gh pr edit {pr} --body-file …` refused:\n  {text}\n\
                      **Options:**\n\
                      1. fix `gh` (login, network) and answer this block — the edit runs again\n\
-                     2. answer `proceed` to leave the body as it is — CI is watched either way\n\
+                     2. answer `proceed` to leave the body as it is — {after}\n\
                      **Recommended:** 1.\n"
                 );
                 return Ok(Some(block(

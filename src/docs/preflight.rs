@@ -383,13 +383,16 @@ pub const CI_MODE_ASK_PREFIX: &str = "ci mode not set in config.toml";
 
 /// Names the resolved CI mode, or asks the owner once when nothing sets it.
 pub fn ci_mode(loaded: &config::Loaded, flag: Option<CiMode>, pf: &mut Preflight) {
-    let (mode, source, _) = config::resolve_ci_mode(loaded, flag);
+    let (mode, source, warning) = config::resolve_ci_mode(loaded, flag);
+    if let Some(w) = warning {
+        pf.judge.push(w);
+    }
     let Some(m) = mode else {
         pf.ask.push(format!(
             "{CI_MODE_ASK_PREFIX} — answer `local`, `remote` or `proceed`. \
              `local` skips the GitHub Actions watch and stamps `[skip ci]` on closeout commits, \
              relying on your local gate: it saves org Actions minutes but needs local CPU, \
-             and a locked default branch still needs one CI run when the PR is marked ready to merge. \
+             and a locked default branch still needs one CI run before merge, from a commit without `[skip ci]`. \
              `remote` pushes and watches GitHub Actions on every PR with auto-fix rounds: \
              lighter on your machine, but it burns org Actions minutes. \
              `local` and `remote` are saved to config.toml for every repo; \

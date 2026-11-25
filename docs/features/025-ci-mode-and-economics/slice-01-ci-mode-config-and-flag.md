@@ -63,3 +63,8 @@
 `prd.md` §8, the **FR-1** row: `ci_mode_reads_user_config_flag_and_env_never_project_toml`, `write_ci_mode_preserves_comments_and_updates_idempotently`, `run_flag_ci_persists_across_daemon_and_resume`. All three are `run` rows, proven below the UI: the checkpoint runs them and keeps the transcript.
 
 **Acceptance:** after the checkpoint, the transcript shows all three tests green.
+
+**Code-review fixes (2026-11-25).**
+- `write_ci_mode` renamed its temp file over a symlinked `config.toml` and gave the result default permissions, so a dotfiles link was cut and a `0600` file became world-readable. It now rewrites the file the link points at, keeps its permissions, and syncs the temp file before the rename (`write_ci_mode_rewrites_a_symlinked_config_in_place_with_its_permissions`).
+- A `[ci]` line inside a multi-line string was patched as the table: the file still parsed, the CLI said "saved", and the mode was never set. The writer now checks that the new text reads `ci.mode` as the mode written, and otherwise refuses and leaves the file untouched (`write_ci_mode_refuses_a_ci_header_it_cannot_patch`).
+- The doc comment on `RunState.ci_mode` said it was set once and never re-read from `config.toml`. Both claims were wrong: the CI-mode answer sets it, and `None` falls back to `config.toml`. The comment now says so.

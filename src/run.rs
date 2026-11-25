@@ -124,7 +124,7 @@ pub struct RunState {
     pub pid_start: Option<u64>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub worker_starts: BTreeMap<String, u64>,
-    /// Set once when the run starts, so a detached or resumed driver never re-reads it from `config.toml`.
+    /// Set when the run starts, or by the answer to its CI-mode ask; `None` falls back to `config.toml`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ci_mode: Option<CiMode>,
 }

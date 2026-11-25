@@ -65,3 +65,9 @@
 `prd.md` §8, the **FR-2** row: `preflight_asks_when_ci_mode_is_unset_and_exits_two`, `answer_local_writes_config_and_clears_future_preflight`, `answer_proceed_keeps_config_unset_and_runs_remote`, `answer_invalid_ci_mode_refuses_and_keeps_ask_open`. All four are `run` rows, proven below the UI: the checkpoint runs them and keeps the transcript.
 
 **Acceptance:** after the checkpoint, the transcript shows all four tests green.
+
+**Code-review fixes (2026-11-25).**
+- The CI-mode ask told the owner that marking the PR ready runs the merge check. While the head commit carries `[skip ci]`, it does not. The ask now says that one CI run, from a commit without `[skip ci]`, is needed before merge (AD-5).
+- `factory docs preflight` dropped the warning for an invalid `FACTORY_CI_MODE` and showed only the ask. The warning is now a judge line.
+- The knobs patch in `answer.rs` duplicated `budget_knob`. Both now go through one `set_knob` helper in `src/cli/run.rs`.
+- Tests: the mixed-case `Remote` answer now checks that `config.toml` was written. AD-3's broken-config judge line and the bad-env judge line are pinned by `preflight_names_an_unreadable_config_and_a_bad_env_ci_mode_instead_of_asking`.

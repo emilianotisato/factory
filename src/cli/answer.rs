@@ -391,13 +391,7 @@ fn ci_mode_answer(run: &mut Run, id: &str, text: &str, out: &mut dyn Write) -> R
         config::Source::Default
     };
     run.set_ci_mode(Some(mode))?;
-    let rid = run.id().as_str();
-    if let Some(text) = run.db().run_row(rid)?.and_then(|r| r.knobs)
-        && let Ok(mut knobs) = serde_json::from_str::<serde_json::Value>(&text)
-    {
-        knobs["ci"] = serde_json::json!({"value": mode, "source": source});
-        run.db().set_run_knobs(rid, &knobs.to_string())?;
-    }
+    super::run::set_knob(run, "ci", serde_json::json!(mode), source)?;
     Ok(true)
 }
 

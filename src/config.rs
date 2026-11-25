@@ -324,37 +324,69 @@ fn ci_mode_from(
 }
 
 /// Sets `[ci] mode` in `config_dir/config.toml`, keeping every other line as written.
+/// A symlinked `config.toml` keeps its link: the file it points at is the one rewritten, with its permissions.
 pub fn write_ci_mode(config_dir: &Path, mode: CiMode) -> Result<PathBuf> {
     fs::create_dir_all(config_dir)
         .map_err(crate::error::io(format!("create {}", config_dir.display())))?;
     let path = config_dir.join("config.toml");
-    let old = match fs::read_to_string(&path) {
-        Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+    let (target, old, perms) = match fs::canonicalize(&path) {
+        Ok(target) => {
+            let old = fs::read_to_string(&target)
+                .map_err(crate::error::io(format!("read {}", target.display())))?;
+            let perms = fs::metadata(&target)
+                .map_err(crate::error::io(format!("stat {}", target.display())))?
+                .permissions();
+            (target, old, Some(perms))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (path.clone(), String::new(), None),
         Err(e) => return Err(crate::error::io(format!("read {}", path.display()))(e)),
     };
     let text = with_ci_mode(&old, mode);
-    toml::from_str::<toml::Table>(&text).map_err(|source| Error::Toml {
+    let parsed = toml::from_str::<toml::Table>(&text).map_err(|source| Error::Toml {
         what: format!("check the new {}", path.display()),
         source,
     })?;
+    let set = parsed
+        .get("ci")
+        .and_then(|c| c.get("mode"))
+        .and_then(toml::Value::as_str);
+    if set != Some(mode.as_str()) {
+        return Err(Error::Msg(format!(
+            "{} not changed: its `[ci]` table could not be patched line by line — set `mode = \"{mode}\"` under `[ci]` by hand",
+            path.display()
+        )));
+    }
+    let dir = target.parent().unwrap_or(config_dir);
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
-    let tmp = config_dir.join(format!(".config.toml.{}.{nanos}.tmp", std::process::id()));
-    let written = fs::write(&tmp, &text)
+    let tmp = dir.join(format!(".config.toml.{}.{nanos}.tmp", std::process::id()));
+    let written = write_synced(&tmp, &text, perms)
         .map_err(crate::error::io(format!("write {}", tmp.display())))
         .and_then(|()| {
-            fs::rename(&tmp, &path).map_err(crate::error::io(format!(
+            fs::rename(&tmp, &target).map_err(crate::error::io(format!(
                 "rename {} over {}",
                 tmp.display(),
-                path.display()
+                target.display()
             )))
         });
     if written.is_err() {
         let _ = fs::remove_file(&tmp);
     }
     written.map(|()| path)
+}
+
+fn write_synced(path: &Path, text: &str, perms: Option<fs::Permissions>) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    if let Some(p) = perms {
+        file.set_permissions(p)?;
+    }
+    file.write_all(text.as_bytes())?;
+    file.sync_all()
 }
 
 /// The table a header line opens; an array-of-tables header is never `ci`.
@@ -827,6 +859,43 @@ mod tests {
             fs::read_to_string(&path).unwrap(),
             "[ci]\nmode = \"remote\"\n[review]\nmodel = \"m\"\nmode = 1\n"
         );
+    }
+
+    #[test]
+    fn write_ci_mode_rewrites_a_symlinked_config_in_place_with_its_permissions() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let dotfiles = tempfile::tempdir().unwrap();
+        let real = dotfiles.path().join("config.toml");
+        fs::write(&real, "[review]\nmodel = \"m\"\n").unwrap();
+        fs::set_permissions(&real, fs::Permissions::from_mode(0o600)).unwrap();
+        let cfg = tempfile::tempdir().unwrap();
+        symlink(&real, cfg.path().join("config.toml")).unwrap();
+
+        write_ci_mode(cfg.path(), CiMode::Local).unwrap();
+        let link = cfg.path().join("config.toml");
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            fs::read_to_string(&real).unwrap(),
+            "[review]\nmodel = \"m\"\n\n[ci]\nmode = \"local\"\n"
+        );
+        let mode = fs::metadata(&real).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert_eq!(fs::read_dir(dotfiles.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn write_ci_mode_refuses_a_ci_header_it_cannot_patch() {
+        let original = "sample = \"\"\"\n[ci]\n\"\"\"\n";
+        let (cfg, _) = dirs(Some(original), None);
+        let e = write_ci_mode(cfg.path(), CiMode::Local).unwrap_err();
+        assert!(e.to_string().contains("set `mode = \"local\"`"), "{e}");
+        let path = cfg.path().join("config.toml");
+        assert_eq!(fs::read_to_string(path).unwrap(), original);
     }
 
     #[test]

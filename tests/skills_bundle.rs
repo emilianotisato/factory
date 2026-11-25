@@ -291,6 +291,8 @@ fn gate_skill_carries_ci_economics_guidance() {
         "Duplicate `push: [main]` runs after a PR-gated merge",
         "`concurrency: { group: ..., cancel-in-progress: true }`",
         "add `paths-ignore: ['docs/**', '**.md']`",
+        "Never on the workflow behind a required check",
+        "GitHub then skips every `pull_request` run, `ready_for_review` included",
         "No dependency or build caches",
         "Local parallelism hardcoded on 2-vCPU runners",
         "`coverage: xdebug` without `--coverage`",

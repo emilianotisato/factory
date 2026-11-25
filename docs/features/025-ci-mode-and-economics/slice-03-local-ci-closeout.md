@@ -66,3 +66,9 @@
 `prd.md` §8, the **FR-3** row (Rust half): `local_ci_skips_watch_stamps_skip_ci_and_reports_local_status` and `remote_ci_keeps_plain_ship_subject_and_watches_checks`. Both are `run` rows, proven below the UI: the checkpoint runs them and keeps the transcript. (`deliver_skill_handles_local_ci_mode` belongs to slice 04.)
 
 **Acceptance:** after the checkpoint, the transcript shows both tests green.
+
+**Code-review fixes (2026-11-25).**
+- The `ci_local` line told the owner to mark the PR ready for review (or push) to run the merge checks. GitHub skips every `pull_request` run, `ready_for_review` included, while the head commit says `[skip ci]`, so the required check would stay pending. The line now says that one new commit without the token runs them (AD-5).
+- In local mode, the `gh pr edit` block's `proceed` option said "CI is watched either way". In local mode the run finishes unwatched, and the option now says that.
+- `ci_wait`'s doc comment now names `ci_local`.
+- Only the `--foreground` path was tested, and that path carries the flag in its loaded config. `a_detached_driver_keeps_the_runs_local_ci_mode_over_an_unset_config` now proves that the daemon reads the run's own `ci_mode`.

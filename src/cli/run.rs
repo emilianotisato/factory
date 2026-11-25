@@ -232,8 +232,22 @@ fn record_start(
     Ok(())
 }
 
-/// So the row says what the run went on with, not only what it started with.
 fn budget_knob(run: &Run, budget: u64) -> Result<()> {
+    set_knob(
+        run,
+        "budget",
+        serde_json::json!(budget),
+        config::Source::Flag,
+    )
+}
+
+/// So the row says what the run went on with, not only what it started with.
+pub(crate) fn set_knob(
+    run: &Run,
+    key: &str,
+    value: serde_json::Value,
+    source: config::Source,
+) -> Result<()> {
     let id = run.id().as_str();
     let Some(text) = run.db().run_row(id)?.and_then(|r| r.knobs) else {
         return Ok(());
@@ -241,7 +255,7 @@ fn budget_knob(run: &Run, budget: u64) -> Result<()> {
     let Ok(mut knobs) = serde_json::from_str::<serde_json::Value>(&text) else {
         return Ok(());
     };
-    knobs["budget"] = serde_json::json!({"value": budget, "source": config::Source::Flag});
+    knobs[key] = serde_json::json!({"value": value, "source": source});
     run.db().set_run_knobs(id, &knobs.to_string())
 }
 

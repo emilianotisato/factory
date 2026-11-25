@@ -185,7 +185,7 @@ fn open_collect(events: &[Event]) -> Option<usize> {
     matches!(events[at].kind, EventKind::CollectStarted { .. }).then_some(at)
 }
 
-/// The newest CI event when it is `ci_waiting` or `ci_no_checks`; else, in closeout, the newest head when no verdict
+/// The newest CI event when it is `ci_waiting` or `ci_no_checks`, none after `ci_local`; else, in closeout, the newest head when no verdict
 /// followed it, which covers the grace window before checks register, a head lag and a rerun.
 fn ci_wait(ctx: &Ctx) -> Option<(&Event, String)> {
     let events = &ctx.events;

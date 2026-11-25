@@ -2566,6 +2566,26 @@ fn local_ci_skips_watch_stamps_skip_ci_and_reports_local_status() {
 }
 
 #[test]
+fn a_detached_driver_keeps_the_runs_local_ci_mode_over_an_unset_config() {
+    let fx = Fixture::new("closeout-ci-local-detached");
+    fx.chain();
+    fx.write_plan(&built());
+    let out = factory(&fx, &["run", "001", "--ci", "local"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let dir = only_run_dir(&fx);
+    wait_phase(&fx, &dir, "finished", 90);
+
+    assert_eq!(
+        count_subject(&fx, "docs(001): ship PRD-001 [skip ci]"),
+        1,
+        "{:?}",
+        subjects(&fx)
+    );
+    assert!(gh_calls(&fx, "pr checks").is_empty(), "{:?}", fx.gh_log());
+    assert_eq!(of_kind(&dir, "ci_local").len(), 1, "{:?}", kinds(&dir));
+}
+
+#[test]
 fn remote_ci_keeps_plain_ship_subject_and_watches_checks() {
     let fx = Fixture::new("closeout-ci-remote");
     let (dir, _) = run_foreground(&fx, "remote");
