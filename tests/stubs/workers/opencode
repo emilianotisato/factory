@@ -1,0 +1,4 @@
+#!/usr/bin/env node
+'use strict'
+// Stub `opencode` worker CLI: see provider-worker.js.
+require('./provider-worker.js')('opencode', process.argv.slice(2))

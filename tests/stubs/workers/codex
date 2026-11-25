@@ -1,0 +1,4 @@
+#!/usr/bin/env node
+'use strict'
+// Stub `codex` worker CLI: see provider-worker.js.
+require('./provider-worker.js')('codex', process.argv.slice(2))

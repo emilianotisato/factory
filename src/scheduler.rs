@@ -17,6 +17,7 @@ use crate::error::io;
 use crate::events::{self, EventKind};
 use crate::land::{self, Landing};
 use crate::pack::{BlockSection, Pack};
+use crate::provider::Provider;
 use crate::quota::{self, Hold, Limit};
 use crate::run::{GateCmds, Phase, Run, WorkerOutcome, WorkerRef};
 use crate::stream::{StatusHint, Summary};
@@ -533,7 +534,8 @@ fn reap(
         });
         if let Err(e) = routed {
             if !landing_owed(run, &board, slice) {
-                let summary = worker::summary_from_disk(run.dir(), &r.worker.session_id);
+                let summary =
+                    worker::summary_from_disk(run.dir(), &r.worker.session_id, r.worker.provider);
                 settle_failed(run, r.worker.row_id, &r.worker.session_id, &summary);
             }
             return Err(e);
@@ -757,11 +759,12 @@ fn spawn_on(
             &format!("slice {slice:02} cites §{section}, which prd.md does not have"),
         )?;
     }
+    let resolved = worker::effective_worker(run, cfg, job.role());
     let w = Worker::spawn(
         run,
         job,
         &pack,
-        &cfg.workers.build,
+        &resolved,
         &lane_def.env(),
         &lane_dir,
         Some(lane),
@@ -1623,7 +1626,11 @@ fn settle_orphans(
     };
     let mut landing = None;
     for w in dead {
-        let summary = worker::summary_from_disk(run.dir(), &w.session_id);
+        let summary = worker::summary_from_disk(
+            run.dir(),
+            &w.session_id,
+            w.provider.unwrap_or(Provider::Claude),
+        );
         let Some(slice) = w.slice else {
             if w.role == "polish" || (w.role == "fix" && w.checkpoint.is_none()) {
                 if let Some(what) = closeout::settle_orphan(run, board, &w, summary, out)? {
@@ -1859,7 +1866,9 @@ fn settle(
     run.db()
         .finish_worker(row_id, summary, outcome.as_str(), &clock::now_rfc3339())?;
     // Never fails the exit: an unreadable dir is an event and null columns.
-    let _ = metrics::record_subagents(run, row_id, session_id, summary.cwd.as_deref());
+    let provider = worker::provider_of(run, session_id);
+    let _ =
+        metrics::record_subagents_for(run, row_id, session_id, summary.cwd.as_deref(), provider);
     metrics::record_exit(run, row_id, summary)?;
     run.set_worker_outcome(session_id, outcome.as_str())
 }

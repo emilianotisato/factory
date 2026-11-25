@@ -1,4 +1,5 @@
 //! A worker shares the driver's process group (the daemon's `setsid`), so one group signal reaches both.
+use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
@@ -6,11 +7,13 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
+use crate::cli::hook::NEVER_HINT;
 use crate::config;
 use crate::error::io;
 use crate::events::EventKind;
 use crate::pack::Pack;
 use crate::paths;
+use crate::provider::{self, Provider};
 use crate::run::{Run, WorkerRef};
 use crate::stream::Summary;
 use crate::{Error, Result};
@@ -64,7 +67,7 @@ pub const PUSH_OFF_BASE: &str = "factory-no-push://";
 
 pub const PUSH_OFF_PREFIXES: [&str; 5] = ["git@", "ssh://", "https://", "http://", "git://"];
 
-/// git ignores `pushInsteadOf` for a remote with an explicit `pushurl`; the deny rules and hook cover that one.
+/// git ignores `pushInsteadOf` for a remote with an explicit `pushurl`; the `git` shim covers that one.
 pub fn push_off_env(inherited: Option<&str>) -> Vec<(String, String)> {
     let n: usize = inherited.and_then(|c| c.parse().ok()).unwrap_or(0);
     let mut env = vec![(
@@ -83,6 +86,240 @@ pub fn push_off_env(inherited: Option<&str>) -> Vec<(String, String)> {
 
 pub fn gh_config_dir(run_dir: &Path) -> PathBuf {
     run_dir.join("gh-config")
+}
+
+/// First on every worker's `PATH`: a `gh` that always refuses and a `git` that refuses to push.
+pub fn shims_dir(run_dir: &Path) -> PathBuf {
+    run_dir.join("bin")
+}
+
+/// git's global options that take the next argument as their value.
+const GIT_VALUE_OPTS: [&str; 9] = [
+    "-C",
+    "-c",
+    "--git-dir",
+    "--work-tree",
+    "--namespace",
+    "--exec-path",
+    "--super-prefix",
+    "--config-env",
+    "--attr-source",
+];
+
+const GIT_SHIM: &str = r#"#!/bin/sh
+real=@REAL@
+skip=0
+last=0
+sub=
+for a in "$@"; do
+  if [ "$skip" = 1 ]; then skip=0; continue; fi
+  if [ "$last" = 1 ]; then sub=$a; break; fi
+  case "$a" in
+    @VALUE@) skip=1 ;;
+    -*=*) ;;
+    --) last=1 ;;
+    -*) ;;
+    *) sub=$a; break ;;
+  esac
+done
+case "$sub" in
+  push|send-pack)
+    printf '%s\n' @HINT@ >&2
+    exit 126
+    ;;
+esac
+exec "$real" "$@"
+"#;
+
+/// Holds for every agent CLI, and for a remote with an explicit `pushurl`, which `push_off_env` cannot rewrite.
+pub fn ensure_shims(run_dir: &Path) -> Result<PathBuf> {
+    let bin = shims_dir(run_dir);
+    paths::private_dir_all(&bin).map_err(io(format!("mkdir {}", bin.display())))?;
+    let outer = std::env::var_os("PATH").unwrap_or_default();
+    let git = real_git(&outer, &bin).ok_or_else(|| Error::Tool {
+        cmd: "git".into(),
+        detail: "git is not on PATH".into(),
+    })?;
+    let hint = paths::shell_word(NEVER_HINT);
+    write_script(
+        &bin.join("gh"),
+        &format!("#!/bin/sh\nprintf '%s\\n' {hint} >&2\nexit 126\n"),
+    )?;
+    let git_shim = GIT_SHIM
+        .replace("@REAL@", &paths::shell_word(&git.to_string_lossy()))
+        .replace("@VALUE@", &GIT_VALUE_OPTS.join("|"))
+        .replace("@HINT@", &hint);
+    write_script(&bin.join("git"), &git_shim)?;
+    Ok(bin)
+}
+
+/// Never a git in the shims dir, so the shim cannot exec itself.
+fn real_git(path_env: &OsStr, shims: &Path) -> Option<PathBuf> {
+    let shims = fs::canonicalize(shims).unwrap_or_else(|_| shims.to_path_buf());
+    std::env::split_paths(path_env)
+        .filter(|d| !d.as_os_str().is_empty())
+        .filter(|d| fs::canonicalize(d).map_or(d != &shims, |c| c != shims))
+        .map(|d| d.join("git"))
+        .find(|p| {
+            use std::os::unix::fs::PermissionsExt;
+            fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        })
+}
+
+/// Rewritten only when it changed: no exec ever meets a script mid-write.
+fn write_script(path: &Path, text: &str) -> Result<()> {
+    if fs::read_to_string(path).is_ok_and(|t| t == text) {
+        return Ok(());
+    }
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let tmp = path.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
+    OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o700)
+        .open(&tmp)
+        .and_then(|mut f| f.write_all(text.as_bytes()))
+        .and_then(|()| fs::rename(&tmp, path))
+        .map_err(|e| {
+            let _ = fs::remove_file(&tmp);
+            io(format!("write {}", path.display()))(e)
+        })
+}
+
+/// The shims first, and nowhere else.
+pub fn shimmed_path(shims: &Path, path_env: Option<&OsStr>) -> OsString {
+    let rest: Vec<PathBuf> = path_env
+        .map(|p| std::env::split_paths(p).filter(|d| d != shims).collect())
+        .unwrap_or_default();
+    std::env::join_paths(std::iter::once(shims.to_path_buf()).chain(rest))
+        .unwrap_or_else(|_| shims.as_os_str().to_os_string())
+}
+
+/// The role's worker as the run fixed it; a run from before per-role providers keeps Claude with `cfg`'s model.
+pub fn effective_worker(run: &Run, cfg: &config::Config, role: &str) -> config::ResolvedWorker {
+    if let Some(wc) = &run.state().worker_config {
+        return wc.for_role(role).clone();
+    }
+    let w = match role {
+        "fix" => &cfg.workers.fix,
+        "checkpoint" => &cfg.workers.checkpoint,
+        "polish" => &cfg.workers.polish,
+        _ => &cfg.workers.build,
+    };
+    config::ResolvedWorker {
+        provider: Provider::Claude,
+        model: w.model.clone(),
+        effort: Some(w.effort.clone()).filter(|e| !e.is_empty()),
+    }
+}
+
+/// The provider a recorded worker ran on; a record from before providers is Claude.
+pub fn provider_of(run: &Run, session_id: &str) -> Provider {
+    run.state()
+        .workers
+        .iter()
+        .find(|w| w.session_id == session_id)
+        .and_then(|w| w.provider)
+        .unwrap_or(Provider::Claude)
+}
+
+pub fn prompt_path(run_dir: &Path, session_id: &str) -> PathBuf {
+    dir(run_dir).join(format!("{session_id}.prompt.md"))
+}
+
+/// What a non-Claude CLI is told on its command line: the pack is too big for argv.
+pub fn read_prompt_line(prompt: &Path) -> String {
+    format!("Read and follow all instructions in {}.", prompt.display())
+}
+
+pub const OPENCODE_MESSAGE: &str = "Read and follow all instructions in the attached prompt file.";
+
+/// The argv after the binary, for every provider but Claude.
+pub fn provider_args(
+    cfg: &config::ResolvedWorker,
+    role: &str,
+    prompt: &Path,
+    wdir: &Path,
+) -> Vec<OsString> {
+    let mut a: Vec<OsString> = Vec::new();
+    let mut push = |s: &str| a.push(s.into());
+    match cfg.provider {
+        Provider::Claude => {}
+        Provider::Codex => {
+            for s in ["exec", "--json", "-m", &cfg.model] {
+                push(s);
+            }
+            if let Some(e) = &cfg.effort {
+                push("-c");
+                push(&format!("model_reasoning_effort={e}"));
+            }
+            push("--dangerously-bypass-approvals-and-sandbox");
+            push("-");
+        }
+        Provider::Cursor => {
+            for s in [
+                "-p",
+                "--force",
+                "--trust",
+                "--output-format",
+                "stream-json",
+                "--stream-partial-output",
+                "--model",
+                &cfg.model,
+                "--add-dir",
+            ] {
+                push(s);
+            }
+            a.push(wdir.into());
+            a.push(read_prompt_line(prompt).into());
+        }
+        Provider::Agy => {
+            for s in [
+                "-p",
+                "--output-format",
+                "stream-json",
+                "--dangerously-skip-permissions",
+                "--model",
+                &cfg.model,
+            ] {
+                push(s);
+            }
+            if let Some(e) = &cfg.effort {
+                push("--effort");
+                push(e);
+            }
+            if narrowed(role) {
+                push("--disable-slash-commands");
+            }
+            push("--add-dir");
+            a.push(wdir.into());
+            a.push(read_prompt_line(prompt).into());
+        }
+        Provider::Opencode => {
+            let model = match &cfg.effort {
+                Some(e) => format!("{}#{e}", cfg.model),
+                None => cfg.model.clone(),
+            };
+            for s in [
+                "run",
+                "--standalone",
+                "--format",
+                "json",
+                "-m",
+                &model,
+                "-f",
+            ] {
+                push(s);
+            }
+            a.push(prompt.into());
+            a.push(OPENCODE_MESSAGE.into());
+        }
+    }
+    a
 }
 
 pub fn hook_command(exe: &Path) -> String {
@@ -156,6 +393,7 @@ pub struct Worker {
     pub job: Job,
     pub slice: Option<u32>,
     pub role: String,
+    pub provider: Provider,
     pub session_id: String,
     pub pid: u32,
     pub row_id: i64,
@@ -189,7 +427,7 @@ impl Worker {
         run: &mut Run,
         job: Job,
         pack: &Pack,
-        cfg: &config::Worker,
+        cfg: &config::ResolvedWorker,
         env: &[(String, String)],
         cwd: &Path,
         lane: Option<u32>,
@@ -203,39 +441,64 @@ impl Worker {
         paths::private_dir_all(&wdir).map_err(io(format!("mkdir {}", wdir.display())))?;
         let gh_config = gh_config_dir(&run_dir);
         paths::private_dir_all(&gh_config).map_err(io(format!("mkdir {}", gh_config.display())))?;
+        let shims = ensure_shims(&run_dir)?;
         let stream_path = stream_path(&run_dir, &session_id);
         let stderr_path = wdir.join(format!("{session_id}.stderr"));
         let stream_file = private_file(&stream_path)?;
         let stderr_file = private_file(&stderr_path)?;
-        let exe = paths::self_exe().map_err(io("locate the factory binary"))?;
-        let settings_file = settings_path(&run_dir, &session_id);
-        private_file(&settings_file)?
-            .write_all(format!("{:#}\n", settings(&exe, role)).as_bytes())
-            .map_err(io(format!("write {}", settings_file.display())))?;
         let pack_path = std::path::absolute(&pack.path)
             .map_err(io(format!("resolve {}", pack.path.display())))?;
         let repo = run.state().repo.clone();
         // Canonical: the hook keys its guards to `FACTORY_REPO`, the transcript slug to the cwd the worker sees.
         let cwd = std::fs::canonicalize(cwd).map_err(io(format!("resolve {}", cwd.display())))?;
+        let bin = provider::resolve_binary(cfg.provider)
+            .unwrap_or_else(|| PathBuf::from(cfg.provider.binaries()[0]));
+        let bin_name = bin
+            .file_name()
+            .map_or_else(|| bin.to_string_lossy(), |n| n.to_string_lossy())
+            .into_owned();
 
-        let mut cmd = Command::new("claude");
-        cmd.arg("-p")
-            .arg(&pack.prompt)
-            .args(["--output-format", "stream-json", "--verbose"])
-            .args(["--permission-mode", "bypassPermissions"])
-            .arg("--append-system-prompt-file")
-            .arg(&pack_path)
-            .args(["--session-id", &session_id])
-            .args(["--model", &cfg.model])
-            .args(["--effort", &cfg.effort]);
-        if narrowed(role) {
-            cmd.args(["--strict-mcp-config", "--disable-slash-commands"])
-                .args(["--tools", "Bash,Read,Edit,Write"]);
+        let mut cmd = Command::new(&bin);
+        let mut stdin = Stdio::null();
+        if cfg.provider == Provider::Claude {
+            let exe = paths::self_exe().map_err(io("locate the factory binary"))?;
+            let settings_file = settings_path(&run_dir, &session_id);
+            private_file(&settings_file)?
+                .write_all(format!("{:#}\n", settings(&exe, role)).as_bytes())
+                .map_err(io(format!("write {}", settings_file.display())))?;
+            cmd.arg("-p")
+                .arg(&pack.prompt)
+                .args(["--output-format", "stream-json", "--verbose"])
+                .args(["--permission-mode", "bypassPermissions"])
+                .arg("--append-system-prompt-file")
+                .arg(&pack_path)
+                .args(["--session-id", &session_id])
+                .args(["--model", &cfg.model]);
+            if let Some(effort) = &cfg.effort {
+                cmd.args(["--effort", effort]);
+            }
+            if narrowed(role) {
+                cmd.args(["--strict-mcp-config", "--disable-slash-commands"])
+                    .args(["--tools", "Bash,Read,Edit,Write"]);
+            }
+            cmd.arg("--settings").arg(&settings_file);
+        } else {
+            let prompt = prompt_path(&run_dir, &session_id);
+            let body = fs::read(&pack_path).map_err(io(format!("read {}", pack_path.display())))?;
+            let mut f = private_file(&prompt)?;
+            f.write_all(&body)
+                .and_then(|()| write!(f, "\n---\n\n{}\n", pack.prompt))
+                .map_err(io(format!("write {}", prompt.display())))?;
+            drop(f);
+            if cfg.provider == Provider::Codex {
+                stdin = Stdio::from(
+                    File::open(&prompt).map_err(io(format!("open {}", prompt.display())))?,
+                );
+            }
+            cmd.args(provider_args(cfg, role, &prompt, &wdir));
         }
-        cmd.arg("--settings")
-            .arg(&settings_file)
-            .current_dir(&cwd)
-            .stdin(Stdio::null())
+        cmd.current_dir(&cwd)
+            .stdin(stdin)
             .stdout(Stdio::from(stream_file))
             .stderr(Stdio::from(stderr_file));
         for (k, _) in std::env::vars_os() {
@@ -260,6 +523,13 @@ impl Worker {
             .map(|(_, v)| v.clone())
             .or_else(|| std::env::var(GIT_CONFIG_COUNT).ok());
         cmd.envs(push_off_env(inherited.as_deref()));
+        let path_env = env
+            .iter()
+            .rev()
+            .find(|(k, _)| k == "PATH")
+            .map(|(_, v)| OsString::from(v))
+            .or_else(|| std::env::var_os("PATH"));
+        cmd.env("PATH", shimmed_path(&shims, path_env.as_deref()));
         cmd.env(crate::cli::hook::PACK_ENV, &pack_path);
         cmd.env(REPO_ENV, &cwd);
         cmd.env(BOARD_ENV, &repo);
@@ -267,8 +537,8 @@ impl Worker {
         let _ = std::fs::create_dir_all(&evidence);
         cmd.env(EVIDENCE_ENV, evidence);
         let mut child = cmd.spawn().map_err(|e| Error::Tool {
-            cmd: format!("claude -p … --session-id {session_id}"),
-            detail: format!("could not start claude: {e}"),
+            cmd: format!("{bin_name} … (session {session_id})"),
+            detail: format!("could not start {bin_name} ({}): {e}", cfg.provider),
         })?;
         let pid = child.id();
         let recorded = record(run, job, pack, cfg, &session_id, pid, lane);
@@ -277,6 +547,7 @@ impl Worker {
             job,
             slice,
             role: role.to_string(),
+            provider: cfg.provider,
             session_id,
             pid,
             row_id,
@@ -313,7 +584,7 @@ impl Worker {
         let code = status.code().or_else(|| status.signal().map(|s| 128 + s));
         Exit {
             code,
-            summary: summary_at(&self.stream_path),
+            summary: summary_at(&self.stream_path, self.provider),
         }
     }
 }
@@ -322,7 +593,7 @@ fn record(
     run: &mut Run,
     job: Job,
     pack: &Pack,
-    cfg: &config::Worker,
+    cfg: &config::ResolvedWorker,
     session_id: &str,
     pid: u32,
     lane: Option<u32>,
@@ -337,7 +608,7 @@ fn record(
         job.checkpoint(),
         session_id,
         &cfg.model,
-        &cfg.effort,
+        cfg.effort.as_deref().unwrap_or(""),
         &started_at,
     )?;
     run.db().set_worker_pack_files(row_id, &pack.files)?;
@@ -352,7 +623,7 @@ fn record(
         row_id,
         spawned_at: started_at,
         outcome: None,
-        provider: None,
+        provider: Some(cfg.provider),
     })?;
     let session_id = session_id.to_string();
     run.emit(match job {
@@ -416,15 +687,15 @@ fn private_file(path: &Path) -> Result<File> {
         .map_err(io(format!("create {}", path.display())))
 }
 
-fn summary_at(path: &Path) -> Summary {
+fn summary_at(path: &Path, provider: Provider) -> Summary {
     match fs::read_to_string(path) {
-        Ok(text) => crate::stream::parse(&text).1,
+        Ok(text) => crate::stream::parse_for(provider, &text).1,
         Err(_) => Summary::dead(),
     }
 }
 
-pub fn summary_from_disk(run_dir: &Path, session_id: &str) -> Summary {
-    summary_at(&stream_path(run_dir, session_id))
+pub fn summary_from_disk(run_dir: &Path, session_id: &str, provider: Provider) -> Summary {
+    summary_at(&stream_path(run_dir, session_id), provider)
 }
 
 /// `/dev/urandom` over a crate: Linux is the only target.

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 'use strict'
-// Stub `cursor-agent` for `factory review second`. Records
+// Stub `cursor-agent` for `factory review second`, and a worker with
+// `--force` (workers/provider-worker.js). A review call records
 // every call to $FACTORY_STUB_DIR/cursor-agent.log, one JSON argv array per
 // line, and answers from $FACTORY_STUB_DIR/cursor-agent.json when present:
 //
@@ -34,6 +35,11 @@ const fs = require('node:fs')
 const path = require('node:path')
 
 const argv = process.argv.slice(2)
+// A worker call: `-p --force …` (see workers/provider-worker.js); a review call never forces.
+if (argv.includes('--force')) {
+  require('./workers/provider-worker.js')('cursor', argv)
+  return
+}
 const stubDir = process.env.FACTORY_STUB_DIR
 let scenario = {}
 if (stubDir) {

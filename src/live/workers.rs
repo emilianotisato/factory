@@ -9,6 +9,7 @@ use serde_json::{Map, Value, json};
 use super::redact::tokens;
 use super::{Ctx, mtime};
 use crate::events::EventKind;
+use crate::provider::Provider;
 use crate::run::WorkerRef;
 use crate::stream::StatusHint;
 use crate::{lanes, worker};
@@ -28,10 +29,12 @@ pub fn workers(ctx: &Ctx) -> Value {
         .map(|w| {
             let alive = ctx.state.worker_alive(w);
             let stream = worker::stream_path(&ctx.run_dir, &w.session_id);
-            let tail = read_tail(&stream, alive, &Paths::of(ctx, w));
+            let provider = w.provider.unwrap_or(Provider::Claude);
+            let tail = read_tail(&stream, alive, &Paths::of(ctx, w), provider);
             json!({
                 "sessionId": w.session_id,
                 "role": w.role,
+                "provider": provider.as_str(),
                 "slice": w.slice,
                 "checkpoint": w.checkpoint,
                 "lane": w.lane,
@@ -121,7 +124,8 @@ pub struct Tail {
 /// Newest line first. A finished worker stops at its `result` line; a live one reads until every
 /// field is decided or [`BUDGET`] is spent. A heartbeat older than a line too long to read is not
 /// trusted: that line may be the result that ended its tool.
-pub fn read_tail(path: &Path, alive: bool, paths: &Paths) -> Tail {
+pub fn read_tail(path: &Path, alive: bool, paths: &Paths, provider: Provider) -> Tail {
+    let claude_shaped = matches!(provider, Provider::Claude | Provider::Agy);
     let mut t = Tail::default();
     let mut at_done = false;
     let mut returned: HashSet<String> = HashSet::new();
@@ -131,11 +135,19 @@ pub fn read_tail(path: &Path, alive: bool, paths: &Paths) -> Tail {
             blind |= t.running.is_none();
             return true;
         };
-        if !line.starts_with(b"{") || !wanted(&t, at_done, blind, line) {
+        if !line.starts_with(b"{") || (claude_shaped && !wanted(&t, at_done, blind, line)) {
             return true;
         }
         let Ok(Value::Object(v)) = serde_json::from_slice::<Value>(line) else {
             return true;
+        };
+        let v = if claude_shaped {
+            v
+        } else {
+            match as_claude(provider, &Value::Object(v)) {
+                Some(v) => v,
+                None => return true,
+            }
         };
         if !at_done && let Some(ts) = v.get("timestamp").and_then(Value::as_str) {
             t.at = Some(ts.to_string());
@@ -184,6 +196,74 @@ pub fn read_tail(path: &Path, alive: bool, paths: &Paths) -> Tail {
         t.running = None;
     }
     t
+}
+
+/// One line of a Codex, Cursor or OpenCode stream as the Claude line it stands for; a final
+/// message carrying a `STATUS:` line is that stream's `result`.
+fn as_claude(provider: Provider, v: &Value) -> Option<Map<String, Value>> {
+    let at = |p: &str| v.pointer(p).cloned();
+    let s = |p: &str| v.pointer(p).and_then(Value::as_str).map(str::to_string);
+    let said = |text: String| {
+        if StatusHint::from_result(&text).is_some() {
+            json!({"type": "result", "result": text})
+        } else {
+            json!({"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}})
+        }
+    };
+    let call = |name: &str, input: Value| {
+        json!({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": name, "input": input}
+        ]}})
+    };
+    let out = match (provider, s("/type")?.as_str()) {
+        (Provider::Codex, "item.started" | "item.completed") => match s("/item/type")?.as_str() {
+            "agent_message" => said(s("/item/text")?),
+            "command_execution" => call("Bash", json!({})),
+            "file_change" => call("Edit", json!({"file_path": s("/item/changes/0/path")})),
+            _ => return None,
+        },
+        (Provider::Codex, "turn.failed" | "error") => json!({"type": "result",
+            "result": s("/error/message").or_else(|| s("/message"))}),
+        (Provider::Cursor, "assistant" | "result") => v.clone(),
+        (Provider::Cursor, "tool_call") => {
+            let (key, body) = at("/tool_call")?
+                .as_object()?
+                .iter()
+                .next()
+                .map(|(k, b)| (k.clone(), b.clone()))?;
+            let name = match key.strip_suffix("ToolCall").unwrap_or(&key) {
+                "shell" => "Bash".to_string(),
+                "function" => body
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("?")
+                    .to_string(),
+                other => capitalized(other),
+            };
+            call(&name, body.get("args").cloned().unwrap_or(Value::Null))
+        }
+        (Provider::Opencode, "text") => said(s("/part/text")?),
+        (Provider::Opencode, "tool_use") => call(
+            &capitalized(&s("/part/tool")?),
+            at("/part/state/input").unwrap_or(Value::Null),
+        ),
+        (Provider::Opencode, "error") => {
+            json!({"type": "result", "result": s("/error/data/message")
+            .or_else(|| s("/error/message")).or_else(|| s("/data/message"))})
+        }
+        _ => return None,
+    };
+    match out {
+        Value::Object(m) => Some(m),
+        _ => None,
+    }
+}
+
+fn capitalized(name: &str) -> String {
+    let mut c = name.chars();
+    c.next()
+        .map(|f| f.to_uppercase().chain(c).collect())
+        .unwrap_or_default()
 }
 
 /// Only lines that can still decide something are parsed.
@@ -235,7 +315,7 @@ fn label(tool: &str, input: Option<&Value>, paths: &Paths) -> String {
         "Bash" => field("description"),
         "Skill" => field("skill").map(|s| format!("Skill {s}")),
         "Agent" | "Task" => field("description").map(|s| format!("Agent {s}")),
-        _ => ["file_path", "notebook_path", "path"]
+        _ => ["file_path", "notebook_path", "path", "filePath"]
             .into_iter()
             .find_map(field)
             .and_then(|p| paths.relative(&p))
@@ -394,9 +474,16 @@ mod tests {
             "tool_use_id": "t1", "content": "r".repeat(LINE_MAX)}]}});
         std::fs::write(&path, format!("{beat}\n")).unwrap();
         let paths = Paths { roots: Vec::new() };
-        assert!(read_tail(&path, true, &paths).running.is_some());
+        assert!(
+            read_tail(&path, true, &paths, Provider::Claude)
+                .running
+                .is_some()
+        );
         std::fs::write(&path, format!("{beat}\n{result}\n")).unwrap();
-        assert_eq!(read_tail(&path, true, &paths).running, None);
+        assert_eq!(
+            read_tail(&path, true, &paths, Provider::Claude).running,
+            None
+        );
     }
 
     #[test]
