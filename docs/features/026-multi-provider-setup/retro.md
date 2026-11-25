@@ -42,3 +42,31 @@ None that cost more than it caught. The two full gate runs in polish took about 
 ## Score
 
 4 — the build was clean and every checkpoint green, but the second opinion and polish found about fifteen real defects in setup and review edge cases that no slice test exercised.
+
+## Numbers
+
+<!-- factory:numbers -->
+| role | workers | own | subagents | weighted | minutes | turns |
+|---|---:|---:|---:|---:|---:|---:|
+| build | 4 | 2105136 | 0 | 2105136 | 34 | 95 |
+| checkpoint | 2 | 425902 | 0 | 425902 | 6 | 33 |
+| polish | 1 | 1301652 | 968662 | 2270314 | 19 | 63 |
+| total | 7 | 3832689 | 968662 | 4801352 | 59 | 191 |
+
+Knobs: build opus/high default · fix opus/high default · checkpoint opus/high default · polish opus/high default · budget 30000000 default · lanes 4 · factory 0.15.0 · claude 2.1.332
+
+Hypothesis: none
+
+quality: gate_red 0 · worker_gate_red 0 · fix_commits 0 · ci_red_rounds 0 · ci_reruns 0 · findings high=5 medium=10 low=13 fixed=18 parked=10 · decisions 14 decide 3 blocks 0
+
+Pack (build): slice 11840 · prd_sections 13611 · log 3004 · outline 11614 · lookup 1115 · contract 3685 · autonomy 9988 · inner_loop 86 · total 54942 · start_context 30829
+
+Compared with:
+
+| run | feature | weighted | slices | per slice | lines changed | per line | comment share | id hits |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 026-20261125-a6be (this run) | 026 | 4801352 | 4 | 1200338 | 5075 | 946 | 2.8% | 0 |
+| 025-20261125-021f | 025 | 2708704 | 4 | 677176 | 1798 | 1507 | 2.4% | 0 |
+| 021-20261123-a324 | 021 | 4487033 | 5 | 897407 | 2193 | 2046 | 2.9% | 0 |
+| 015-20261113-f9b6 | 015 | 4100530 | 5 | 820106 | 1786 | 2296 | 3.7% | 0 |
+<!-- /factory:numbers -->
