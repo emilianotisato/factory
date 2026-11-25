@@ -287,6 +287,7 @@ fn ci(events: &[Event], pr: bool, over: bool) -> Option<&'static str> {
     let verdict = events.iter().rev().find_map(|e| match e.kind {
         EventKind::CiGreen { .. } => Some(Some("green")),
         EventKind::CiRed { .. } => Some(Some("red")),
+        EventKind::CiLocal { .. } => Some(Some("local")),
         EventKind::CiRerun { .. } | EventKind::CiFixCommitted { .. } => Some(None),
         _ => None,
     });

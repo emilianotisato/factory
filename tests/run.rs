@@ -668,6 +668,71 @@ fn budget_comes_from_the_flag_then_the_config_then_the_default() {
     );
 }
 
+#[test]
+fn run_flag_ci_persists_across_daemon_and_resume() {
+    let fx = Fixture::new("run-ci-flag");
+    fx.write_plan(&[
+        json!({"outcome": "done"}),
+        json!({"outcome": "done"}),
+        json!({"outcome": "checkpoint"}),
+        json!({"outcome": "done"}),
+        json!({"outcome": "checkpoint"}),
+    ]);
+    let out = factory(&fx, &["run", "001", "--ci", "local", "--foreground"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let dirs = run_dirs(&fx);
+    assert_eq!(dirs.len(), 1, "{dirs:?}");
+    assert_eq!(state(&dirs[0])["ci_mode"], "local");
+    assert_eq!(
+        knobs_ci(&fx, &dirs[0]),
+        json!({"value": "local", "source": "flag"})
+    );
+
+    // Unchained with one lane, the run parks on a preflight ask, so a second `run` resumes it.
+    let fx = Fixture::with_index("run-ci-resume", &[("lanes", "1")]);
+    let out = factory(&fx, &["run", "001", "--ci", "local"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let dirs = run_dirs(&fx);
+    assert_eq!(dirs.len(), 1, "{dirs:?}");
+    let dir = &dirs[0];
+    let id = dir.file_name().unwrap().to_str().unwrap().to_string();
+    assert_eq!(state(dir)["phase"], "waiting-owner");
+    assert_eq!(state(dir)["ci_mode"], "local");
+
+    let out = factory(&fx, &["run", "001", "--ci", "remote"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        err.matches(&format!("--ci ignored: run {id} already exists"))
+            .count(),
+        1,
+        "{err}"
+    );
+    let text = stdout(&out);
+    let pid: u64 = text
+        .split("driver pid ")
+        .nth(1)
+        .and_then(|r| r.split_whitespace().next())
+        .and_then(|p| p.parse().ok())
+        .unwrap_or_else(|| panic!("no driver pid: {text}"));
+    wait_until("the detached driver to take the run", 20, || {
+        state(dir)["pid"] == pid
+    });
+    assert_eq!(state(dir)["ci_mode"], "local");
+    assert_eq!(
+        knobs_ci(&fx, dir),
+        json!({"value": "local", "source": "flag"})
+    );
+    assert_eq!(run_dirs(&fx), dirs);
+}
+
+fn knobs_ci(fx: &Fixture, dir: &Path) -> Value {
+    let id = dir.file_name().unwrap().to_str().unwrap();
+    let db = Db::open(&data_dir(fx).join("factory.db")).unwrap();
+    let row = db.run_row(id).unwrap().unwrap();
+    serde_json::from_str::<Value>(row.knobs.as_deref().unwrap()).unwrap()["ci"].clone()
+}
+
 // ── factory stop ─────────────────────────────────────────────────────────────
 
 #[test]

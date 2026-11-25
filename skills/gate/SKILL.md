@@ -67,7 +67,7 @@ Some tiers cannot be green on day one without work. That is a legitimate outcome
 **AskUserQuestion**, recommendation first, cost stated. Read [references/tiers.md](references/tiers.md) before asking: it says what each tier proves that the previous one cannot, which is the only honest way to justify one.
 
 **Round 1 — shape.**
-- **Where it runs**: local only / CI only / both. *(Recommended: both, same command, so they cannot drift. Local-only is a real choice when the full gate needs a database, browsers and minutes — cody-agent chose it deliberately and kept CI as a cheap subset. Say which trade the project is making.)*
+- **Where it runs**: local only / CI only / both. Read [references/ci.md](references/ci.md) first. *(Recommended for a fast gate: both, same command, so they cannot drift. For a slow gate (over 2 min) or a metered private repo: draft-silent clean-room CI plus the full local gate — cody-agent chose a local full gate deliberately and kept CI as a cheap subset. Say which trade the project is making.)*
 - **The wrapper**: which entry point becomes the one command. Prefer what the repo already uses — a `composer` script for Laravel, an npm script for Node, a `Makefile` or `justfile` target for anything polyglot. One string, always.
 - **Right-size it.** A prototype does not need mutation testing; a payments service does. Ask what this code costs when it breaks, and drop tiers that do not earn their runtime.
 
@@ -142,6 +142,7 @@ Then run the gate, prove its tiers as above, and check all of these:
 - **Does the gate build everything it then tests?** A gate that runs browser or integration tests without rebuilding the frontend drives whatever happens to be on disk, so a green result can come from a bundle days old. Check generated files too — routes, clients or types produced by a build step and gitignored — because a type check against stale generated code passes for the wrong reason.
 - **A gate that mutates the working tree.** When the entry point runs a formatter or fixer before the read-only checks, it rewrites files, and firing it on a dirty tree is not safe. That is a fine design; it needs one line in the docs.
 - **Undocumented CI divergence.** When CI runs a different set from the local gate, name which tiers are local-only and why. Undocumented divergence gets "fixed" by accident later, in whichever direction is worse.
+- **CI minutes leaking.** Run the [references/ci.md](references/ci.md) checklist against `.github/workflows/*.yml`: drafts running the full suite, duplicate runs on the default branch, no concurrency group, no `paths-ignore`, no caches, runner parallelism, unused coverage drivers, heavy tiers or cron on metered minutes. Report each leak with its estimated cost in minutes.
 - **Available but unused.** Tooling the stack already ships that the gate does not use — arch-test support in the installed test runner, a security scanner in the linter. Cheap tiers, already paid for.
 - **Grandfathering.** Static-analysis baselines, complexity allowlists, skipped test lists. Each is a debt with no burn-down date, and an audit is where it gets named.
 - **Incremental selection in the gate.** `--tia`, `--changed`, `--onlyChanged` anywhere in the gate or a gating CI job. This is the regression that comes back; check for it every time.
@@ -158,7 +159,7 @@ Report each with its cost. **Change nothing without approval** — an audit that
 - **Name the failure lines** when the gate prints them in a shape no generic reader would call a failure: `gate_failure = ["<regex>", …]` under `[docs]`, tried before the built-in patterns when a red gate's failing lines are picked out for the owner. Each must compile (`factory docs check` says which one does not).
 - **Write the project's verification doc** — the section in `CLAUDE.md` / `AGENTS.md` the project already uses, or `.ai/guidelines/verification.md`. Three parts, no more: the **inner loop** (fast feedback while iterating), **finishing** (the gate is the only accepted proof of done, and the tier list with its thresholds), **environment facts** (the PHP binary, the database container, the coverage driver — whatever bites someone whose machine is not yours).
 - **Write the ratchet rule into that doc**, in the project's own words: floors rise when actual rises; never lower a floor to get green; cover or refactor instead.
-- **CI**, if round 1 said so: the same command, not a re-listed copy of its steps. When CI deliberately runs a subset, say *which* subset and *why* in the doc, so nobody later "fixes" the difference by accident.
+- **CI**, if round 1 said so, per [references/ci.md](references/ci.md): the same command, not a re-listed copy of its steps. When CI deliberately runs a subset, say *which* subset and *why* in the doc, so nobody later "fixes" the difference by accident.
 - **Commit** the scripts, the configs, `docs/project.toml` and the doc together.
 
 ## Report

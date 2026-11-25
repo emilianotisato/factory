@@ -805,6 +805,20 @@ fn the_cockpit_skill_is_under_sixty_lines_and_names_the_five_commands() {
     assert_unique_passage("skills/README.md", &readme, "`factory init`");
 }
 
+#[test]
+fn deliver_skill_handles_local_ci_mode() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let text = fs::read_to_string(root.join("skills/deliver/SKILL.md")).unwrap();
+    for needle in [
+        "`--ci local|remote` only when the owner gave one",
+        "The CI-mode `ASK-n` offers exactly `local`, `remote` and `proceed`, with no `Other`",
+        "commit it by pathspec, the last commit before the push. When `factory status <id> --json` gives `ci` as `\"local\"`, end that commit's subject with `[skip ci]`. Push once.",
+        "GitHub skips every PR run, ready for review included, while the head commit says `[skip ci]`: one new commit without it (an empty one will do) runs the merge checks",
+    ] {
+        assert_unique_passage("deliver/SKILL.md", &text, needle);
+    }
+}
+
 const STARTED: &str = "2026-10-30T12:00:00Z";
 const ENDED: &str = "2026-10-30T13:30:00Z";
 

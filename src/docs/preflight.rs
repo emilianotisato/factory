@@ -5,7 +5,7 @@ use std::process::{Command, Stdio};
 
 use super::board::{self, Feature};
 use super::{Branch, FeatureRef, Preflight, Slice, check, gate, log, project};
-use crate::config::{self, Review};
+use crate::config::{self, CiMode, Review};
 use crate::error::{io, json};
 use crate::{Result, leaks, paths, review, skills};
 
@@ -378,12 +378,55 @@ pub fn second_opinion(cfg: &Review, pf: &mut Preflight) {
     }
 }
 
-pub fn cli(root: &Path, reference: &str, as_json: bool, out: &mut dyn Write) -> Result<i32> {
-    let (mut pf, code) = run(root, reference)?;
-    match config::load(&paths::config_dir()) {
-        Ok(loaded) => second_opinion(&loaded.config.review, &mut pf),
-        Err(e) => pf.judge.push(format!("second opinion not probed: {e}")),
+/// Starts every CI-mode ask, so `factory answer` knows which ask writes `[ci] mode`.
+pub const CI_MODE_ASK_PREFIX: &str = "ci mode not set in config.toml";
+
+/// Names the resolved CI mode, or asks the owner once when nothing sets it.
+pub fn ci_mode(loaded: &config::Loaded, flag: Option<CiMode>, pf: &mut Preflight) {
+    let (mode, source, warning) = config::resolve_ci_mode(loaded, flag);
+    if let Some(w) = warning {
+        pf.judge.push(w);
     }
+    let Some(m) = mode else {
+        pf.ask.push(format!(
+            "{CI_MODE_ASK_PREFIX} — answer `local`, `remote` or `proceed`. \
+             `local` skips the GitHub Actions watch and stamps `[skip ci]` on closeout commits, \
+             relying on your local gate: it saves org Actions minutes but needs local CPU, \
+             and a locked default branch still needs one CI run before merge, from a commit without `[skip ci]`. \
+             `remote` pushes and watches GitHub Actions on every PR with auto-fix rounds: \
+             lighter on your machine, but it burns org Actions minutes. \
+             `local` and `remote` are saved to config.toml for every repo; \
+             `proceed` runs `remote` for this run only and leaves config.toml unset"
+        ));
+        return;
+    };
+    let source = match source {
+        config::Source::Flag => "flag",
+        config::Source::User | config::Source::Project => "user",
+        config::Source::Default => "env",
+    };
+    pf.ok.push(format!("ci mode: {m} ({source})"));
+}
+
+pub fn cli(root: &Path, reference: &str, as_json: bool, out: &mut dyn Write) -> Result<i32> {
+    let (mut pf, _) = run(root, reference)?;
+    match config::load(&paths::config_dir()) {
+        Ok(loaded) => {
+            second_opinion(&loaded.config.review, &mut pf);
+            ci_mode(&loaded, None, &mut pf);
+        }
+        Err(e) => {
+            pf.judge.push(format!("second opinion not probed: {e}"));
+            pf.judge.push(format!("ci mode not read: {e}"));
+        }
+    }
+    let code = if !pf.refuse.is_empty() {
+        1
+    } else if !pf.ask.is_empty() {
+        2
+    } else {
+        0
+    };
     let mut text = String::new();
     if as_json {
         text = serde_json::to_string_pretty(&pf).map_err(json("serialize preflight"))?;

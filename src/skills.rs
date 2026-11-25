@@ -37,6 +37,10 @@ pub const FILES: &[(&str, &str)] = &[
     ),
     ("gate/SKILL.md", include_str!("../skills/gate/SKILL.md")),
     (
+        "gate/references/ci.md",
+        include_str!("../skills/gate/references/ci.md"),
+    ),
+    (
         "gate/references/stacks.md",
         include_str!("../skills/gate/references/stacks.md"),
     ),

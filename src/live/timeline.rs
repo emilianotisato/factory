@@ -88,6 +88,7 @@ pub fn tone(kind: &EventKind) -> &'static str {
         | K::CiRerun { .. }
         | K::CiFixSpawned { .. }
         | K::CiNoChecks { .. }
+        | K::CiLocal { .. }
         | K::CiFixCommitted { .. }
         | K::CollectStarted { .. }
         | K::CollectDone { .. }

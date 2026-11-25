@@ -11,7 +11,7 @@ use crate::ci::{self, CheckRow, Checks, CiRun, Verdict};
 use crate::cli::report::{self, Report};
 use crate::cli::run::load_preflight;
 use crate::commit;
-use crate::config::{self, Config};
+use crate::config::{self, CiMode, Config};
 use crate::db::RetroRow;
 use crate::docs::{Docs, Ship, Status};
 use crate::error::io;
@@ -119,14 +119,54 @@ pub fn run(
     if !polished && let Some(o) = polish(run, docs, cfg, board, out)? {
         return Ok(o);
     }
-    if !shipped && let Some(o) = ship(run, docs, board, out)? {
+    let local = ci_mode(run, cfg) == CiMode::Local;
+    if !shipped && let Some(o) = ship(run, docs, board, local, out)? {
         return Ok(o);
     }
-    if let Some(o) = open_pr(run, docs, board, out)? {
+    if let Some(o) = open_pr(run, docs, board, local, out)? {
         return Ok(o);
+    }
+    if local {
+        return ci_local(run, out);
     }
     if let Some(o) = watch_ci(run, docs, cfg, board, out)? {
         return Ok(o);
+    }
+    Ok(Outcome::Done)
+}
+
+fn ci_mode(run: &Run, cfg: &Config) -> CiMode {
+    run.state()
+        .ci_mode
+        .or(cfg.ci.mode)
+        .unwrap_or(CiMode::Remote)
+}
+
+/// A subject GitHub Actions skips: the local gates already ran on this head.
+fn skip_ci(text: &str, local: bool) -> String {
+    if local {
+        format!("{text} [skip ci]")
+    } else {
+        text.to_string()
+    }
+}
+
+fn ci_local(run: &mut Run, out: &mut dyn Write) -> Result<Outcome> {
+    let head = ci::head(&run.state().repo)?;
+    say(
+        out,
+        &format!(
+            "ci: local mode — remote CI skipped at {}; GitHub skips every PR run, ready for review included, \
+             while the head commit says `[skip ci]`: one new commit without it runs the required merge checks",
+            short(&head)
+        ),
+    )?;
+    let logged = run
+        .events()?
+        .iter()
+        .any(|e| matches!(&e.kind, EventKind::CiLocal { head: h } if *h == head));
+    if !logged {
+        run.emit(EventKind::CiLocal { head })?;
     }
     Ok(Outcome::Done)
 }
@@ -917,6 +957,7 @@ fn ship(
     run: &mut Run,
     docs: &Docs,
     board: &Status,
+    local: bool,
     out: &mut dyn Write,
 ) -> Result<Option<Outcome>> {
     let feature = run.state().feature.clone();
@@ -1004,7 +1045,11 @@ fn ship(
     let committed = commit::commit(
         &repo,
         &want,
-        &commit::message(board, "docs", &format!("ship PRD-{feature}")),
+        &commit::message(
+            board,
+            "docs",
+            &skip_ci(&format!("ship PRD-{feature}"), local),
+        ),
     )?;
     match &committed {
         Some(c) => say(
@@ -1055,6 +1100,7 @@ fn open_pr(
     run: &mut Run,
     docs: &Docs,
     board: &Status,
+    local: bool,
     out: &mut dyn Write,
 ) -> Result<Option<Outcome>> {
     let feature = run.state().feature.clone();
@@ -1076,7 +1122,7 @@ fn open_pr(
         )?;
         return Ok(Some(Outcome::Done));
     }
-    if let Some(o) = push(run, docs, board, &branch, out)? {
+    if let Some(o) = push(run, docs, board, &branch, local, out)? {
         return Ok(Some(o));
     }
     let body = run.dir().join(PR_BODY_FILE);
@@ -1116,11 +1162,16 @@ fn open_pr(
         match ci::pr_edit(&repo, &pr, &body)? {
             Ok(()) => say(out, &format!("pr: {url} body refreshed (resume)"))?,
             Err(text) => {
+                let after = if local {
+                    "the run finishes in local CI mode"
+                } else {
+                    "CI is watched either way"
+                };
                 let body = format!(
                     "**Happened:** the draft PR {url} exists and `gh pr edit {pr} --body-file …` refused:\n  {text}\n\
                      **Options:**\n\
                      1. fix `gh` (login, network) and answer this block — the edit runs again\n\
-                     2. answer `proceed` to leave the body as it is — CI is watched either way\n\
+                     2. answer `proceed` to leave the body as it is — {after}\n\
                      **Recommended:** 1.\n"
                 );
                 return Ok(Some(block(
@@ -1173,6 +1224,7 @@ fn push(
     docs: &Docs,
     board: &Status,
     branch: &str,
+    local: bool,
     out: &mut dyn Write,
 ) -> Result<Option<Outcome>> {
     let repo = run.state().repo.clone();
@@ -1180,7 +1232,7 @@ fn push(
     if let Some(o) = branch_guard(run, docs, feature_dir, "pr", "push", out)? {
         return Ok(Some(o));
     }
-    refresh_numbers(run, board, out)?;
+    refresh_numbers(run, board, local, out)?;
     match ci::push(&repo, branch)? {
         Ok(()) => {
             say(out, &format!("pr: pushed {branch} to origin"))?;
@@ -1208,7 +1260,7 @@ fn push(
 
 /// A section that cannot be computed or written is said and skipped; a failed commit still stops the push.
 /// The retro is committed even when the write changed nothing: a driver killed before its commit left it on disk.
-fn refresh_numbers(run: &Run, board: &Status, out: &mut dyn Write) -> Result<()> {
+fn refresh_numbers(run: &Run, board: &Status, local: bool, out: &mut dyn Write) -> Result<()> {
     let repo = &run.state().repo;
     let retro = repo.join(&board.dir).join("retro.md");
     if !retro.exists() {
@@ -1222,7 +1274,7 @@ fn refresh_numbers(run: &Run, board: &Status, out: &mut dyn Write) -> Result<()>
             if let Some(c) = commit::commit(
                 repo,
                 &[path],
-                &commit::message(board, "docs", "refresh numbers"),
+                &commit::message(board, "docs", &skip_ci("refresh numbers", local)),
             )? {
                 say(
                     out,
@@ -1475,7 +1527,7 @@ fn watch_ci(
                         if run.state().stop_requested {
                             return Ok(Some(Outcome::Stopped));
                         }
-                        if let Some(o) = push(run, docs, board, &branch, out)? {
+                        if let Some(o) = push(run, docs, board, &branch, false, out)? {
                             return Ok(Some(o));
                         }
                         since = Instant::now();

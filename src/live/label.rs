@@ -142,6 +142,7 @@ pub fn label(kind: &EventKind) -> String {
         }
         K::CiWaiting { checks } => format!("CI running {}", count(checks.len(), "check")),
         K::CiNoChecks { minutes } => format!("no CI checks after {minutes} min"),
+        K::CiLocal { head } => format!("CI local (remote skipped on {})", short(head, 7)),
         K::FixEmpty { n: Some(n), .. } => format!("gate {n} fix changed nothing"),
         K::FixEmpty { round: Some(r), .. } => format!("CI fix round {r} changed nothing"),
         K::FixEmpty { .. } => "a fix changed nothing".to_string(),

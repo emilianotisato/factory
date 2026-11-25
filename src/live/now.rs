@@ -185,7 +185,7 @@ fn open_collect(events: &[Event]) -> Option<usize> {
     matches!(events[at].kind, EventKind::CollectStarted { .. }).then_some(at)
 }
 
-/// The newest CI event when it is `ci_waiting` or `ci_no_checks`; else, in closeout, the newest head when no verdict
+/// The newest CI event when it is `ci_waiting` or `ci_no_checks`, none after `ci_local`; else, in closeout, the newest head when no verdict
 /// followed it, which covers the grace window before checks register, a head lag and a rerun.
 fn ci_wait(ctx: &Ctx) -> Option<(&Event, String)> {
     let events = &ctx.events;
@@ -197,6 +197,7 @@ fn ci_wait(ctx: &Ctx) -> Option<(&Event, String)> {
             EventKind::CiNoChecks { minutes } => {
                 return Some((e, format!("CI checks, none reported after {minutes} min")));
             }
+            EventKind::CiLocal { .. } => return None,
             _ => {}
         }
     }
@@ -230,6 +231,7 @@ fn is_ci(kind: &EventKind) -> bool {
         kind,
         EventKind::CiWaiting { .. }
             | EventKind::CiNoChecks { .. }
+            | EventKind::CiLocal { .. }
             | EventKind::CiRed { .. }
             | EventKind::CiGreen { .. }
     )
@@ -464,4 +466,35 @@ fn warnings(events: &[Event]) -> Vec<Entry<'_>> {
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::run::Run;
+
+    #[test]
+    fn a_local_ci_verdict_ends_the_wait_for_checks_to_register() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        let mut run = Run::create(&tmp.path().join("data"), &repo, "001", None, 1).unwrap();
+        run.set_phase(Phase::Closeout).unwrap();
+        run.emit(EventKind::PrOpened {
+            url: "https://example.test/pr/1".into(),
+        })
+        .unwrap();
+        let ctx = Ctx::read(run.dir()).unwrap();
+        assert_eq!(
+            ci_wait(&ctx).map(|(_, label)| label).as_deref(),
+            Some("CI checks to register on the PR")
+        );
+
+        run.emit(EventKind::CiLocal {
+            head: "abc1234def".into(),
+        })
+        .unwrap();
+        let ctx = Ctx::read(run.dir()).unwrap();
+        assert!(ci_wait(&ctx).is_none());
+    }
 }

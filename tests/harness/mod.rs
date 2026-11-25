@@ -616,6 +616,8 @@ fn build_env(
         ),
         ("FACTORY_DATA_DIR".to_string(), s(&base.join("data"))),
         ("FACTORY_CONFIG_DIR".to_string(), s(&base.join("config"))),
+        // Every fixture runs as if the owner chose remote CI, so no run stops to ask.
+        ("FACTORY_CI_MODE".to_string(), "remote".to_string()),
         // Never the owner's real install receipt: a test binary is always "from source".
         (
             "AXOUPDATER_CONFIG_PATH".to_string(),
