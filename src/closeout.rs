@@ -11,13 +11,14 @@ use crate::ci::{self, CheckRow, Checks, CiRun, Verdict};
 use crate::cli::report::{self, Report};
 use crate::cli::run::load_preflight;
 use crate::commit;
-use crate::config::{self, CiMode, Config};
+use crate::config::{self, CiMode, Config, ResolvedReview};
 use crate::db::RetroRow;
 use crate::docs::{Docs, Ship, Status};
 use crate::error::io;
 use crate::events::EventKind;
 use crate::land::{self, Landing};
 use crate::pack::{self, Pack};
+use crate::provider::ReviewProvider;
 use crate::quota::{self, Hold, Limit};
 use crate::review::Progress;
 use crate::run::{Phase, Run, WorkerOutcome, WorkerRef};
@@ -239,7 +240,7 @@ fn polish(
             run,
             &lane_dir,
             &default_branch,
-            &cfg.review,
+            &review_for(run, cfg),
             &collect_path(run.dir()),
             out,
         )?;
@@ -373,13 +374,34 @@ fn polish(
     }
 }
 
+/// The reviewer `config.toml` names now, since an answer may have set it after the driver read its config;
+/// a `proceed` answer turns it off for this run alone.
+fn review_for(run: &Run, cfg: &Config) -> ResolvedReview {
+    let resolved = match config::load(&paths::config_dir()) {
+        Ok(l) => config::resolve_review(&l)
+            .0
+            .unwrap_or_else(|| ResolvedReview::from(&l.config.review)),
+        Err(_) => ResolvedReview::from(&cfg.review),
+    };
+    match run.state().review_override {
+        Some(ReviewProvider::None) => ResolvedReview {
+            provider: ReviewProvider::None,
+            binary: None,
+            model: String::new(),
+            effort: None,
+            ..resolved
+        },
+        _ => resolved,
+    }
+}
+
 /// The `# Collected` body, from the file while `collect::reusable` holds at the lane's HEAD; a failed collect is
 /// the body, never the error.
 fn collected(
     run: &mut Run,
     lane_dir: &Path,
     base: &str,
-    review: &config::Review,
+    review: &ResolvedReview,
     file: &Path,
     out: &mut dyn Write,
 ) -> Result<String> {
@@ -2692,7 +2714,7 @@ mod tests {
         fs::create_dir_all(&lane).unwrap();
         let head = repo_on_main(&lane);
         let file = tmp.path().join(COLLECT_FILE);
-        let cfg = config::Review::default();
+        let cfg = ResolvedReview::from(&config::Review::default());
         let mut run = Run::create(&tmp.path().join("data"), &lane, "001", None, 1).unwrap();
         for (plan, reused) in [
             (
@@ -2734,7 +2756,7 @@ mod tests {
             &mut run,
             &not_a_repo,
             "main",
-            &config::Review::default(),
+            &ResolvedReview::from(&config::Review::default()),
             &file,
             &mut out,
         )

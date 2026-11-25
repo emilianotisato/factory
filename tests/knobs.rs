@@ -37,15 +37,23 @@ fn db(fx: &Fixture) -> Db {
     Db::open(&data_dir(fx).join("factory.db")).unwrap()
 }
 
-fn project_fixture(name: &str) -> Fixture {
+/// The owner's config picks the polish model; the repo's `[workers]` tries to override it and must not.
+fn user_knobs_fixture(name: &str) -> Fixture {
     let fx = Fixture::with_index(name, &[("checkpoint_every", "10"), ("lanes", "1")]);
     fx.chain();
+    let config = PathBuf::from(&fx.env()["FACTORY_CONFIG_DIR"]);
+    fs::create_dir_all(&config).unwrap();
+    fs::write(
+        config.join("config.toml"),
+        "[workers.polish]\nmodel = \"sonnet\"\n",
+    )
+    .unwrap();
     let file = fx.path().join("docs/project.toml");
     let docs = fs::read_to_string(&file).unwrap();
     fs::write(
         &file,
         format!(
-            "{}\n\n[workers.polish]\nmodel = \"sonnet\"\n",
+            "{}\n\n[workers.polish]\nmodel = \"haiku\"\n",
             docs.trim_end()
         ),
     )
@@ -56,8 +64,8 @@ fn project_fixture(name: &str) -> Fixture {
 }
 
 #[test]
-fn a_project_file_sets_the_polish_model_and_the_row_says_so() {
-    let fx = project_fixture("knobs-project");
+fn the_user_config_sets_the_polish_model_and_the_row_says_so() {
+    let fx = user_knobs_fixture("knobs-user");
     fx.write_plan(&[
         json!({"outcome": "done"}),
         json!({"outcome": "done"}),
@@ -71,6 +79,11 @@ fn a_project_file_sets_the_polish_model_and_the_row_says_so() {
     assert_eq!(out.status.code(), Some(0), "{}", text(&out.stdout));
     assert!(
         !text(&out.stderr).contains("claude --version"),
+        "{}",
+        text(&out.stderr)
+    );
+    assert!(
+        text(&out.stderr).contains("docs/project.toml: unknown key `workers` ignored"),
         "{}",
         text(&out.stderr)
     );
@@ -89,7 +102,7 @@ fn a_project_file_sets_the_polish_model_and_the_row_says_so() {
     let row = db.run_row(&id).unwrap().unwrap();
     let knobs: Value = serde_json::from_str(row.knobs.as_deref().unwrap()).unwrap();
     assert_eq!(knobs["workers"]["polish"]["model"], "sonnet");
-    assert_eq!(knobs["workers"]["polish"]["source"], "project");
+    assert_eq!(knobs["workers"]["polish"]["source"], "user");
     assert_eq!(knobs["workers"]["build"]["model"], "opus");
     assert_eq!(knobs["workers"]["build"]["source"], "default");
     assert_eq!(knobs["workers"]["polish"]["effort_source"], "default");
@@ -134,7 +147,7 @@ fn a_project_file_sets_the_polish_model_and_the_row_says_so() {
         "{knobs_line}"
     );
     assert!(
-        knobs_line.contains("polish sonnet/high project/default"),
+        knobs_line.contains("polish sonnet/high user/default"),
         "{knobs_line}"
     );
     assert!(

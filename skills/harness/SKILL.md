@@ -22,7 +22,7 @@ You are writing for the next agent, not for a human. It reads the output cold, m
 
 ## 1. Interview the repo, not the user
 
-Answer these from the code. Ask only what the code cannot tell you, in **one AskUserQuestion round**, with your findings pre-filled as the recommended option.
+Answer these from the code. Ask only what the code cannot tell you, in **one round of structured questions**, with your findings pre-filled as the recommended option.
 
 - **Surface.** What does a user actually touch? Web UI, CLI/TUI, API, desktop, mobile, library. Read routes (`php artisan route:list`, `routes/*.php`, the router file), commands (`php artisan list`, `cmd/`, `bin/`), menus, the README. List **every** surface one driver can reach; they all go in the map.
 - **What defeats the obvious assertion.** Probe this now, in a five-minute spike, rather than discovering it in §5 after writing a map against it. **Shadow DOM** (a web component, an embedded widget) makes text and CSS assertions silently return nothing — the text is plainly on screen and `assertSee` fails. Same for **iframes**, **canvas-rendered UI**, **virtualised lists** that only render what is visible, and **portals** that mount outside the component tree. Each needs a different assertion path, usually the underlying driver's own API rather than the convenience wrapper. Find the escape hatch and write it into Drive as *the* way to assert on that surface, not as a footnote.

@@ -42,7 +42,7 @@ Then measure one thing: how long the inner loop takes alone. The `--prove` run t
 
 ## 2. Propose — the seed list and each lane's values
 
-**AskUserQuestion**, recommendation first, cost stated.
+**Ask with structured choices**, recommendation first, cost stated.
 
 **Round 1 — the seed list.** The ignored paths cloned from the main tree into each lane once, when the lane is made: `.env`, `vendor`, `node_modules`, and whatever heavy state §1 found. A clone is copy-on-write where the filesystem allows it (reflink on Linux, clonefile on macOS), a plain copy otherwise. A seed path the lane already has is kept as it is, so the lane's own build state survives. *(Recommended: the dependency dirs and `.env`. Leave a build output out when the inner loop rebuilds it fast; seeding a 40 GB `target/` costs disk on a filesystem without reflink.)*
 

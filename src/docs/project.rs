@@ -1,4 +1,4 @@
-//! The `[docs]` and `[lanes]` tables of `docs/project.toml`, which the driver's `[run]` and `[workers.*]` tables share.
+//! The `[docs]` and `[lanes]` tables of `docs/project.toml`, which the driver's `[run]` table shares.
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -246,7 +246,7 @@ mod tests {
         assert_eq!(seed(none.path()).unwrap(), None, "no file");
     }
 
-    const SHARED: &str = "# shared by the driver and the docs tool\n[docs]\nframework = 3\ngate = \"./gate.sh\"\n\n[run]\nbudget = 5\n\n[workers.polish]\nmodel = \"sonnet\"   # cheap\n";
+    const SHARED: &str = "# shared by the driver and the docs tool\n[docs]\nframework = 3\ngate = \"./gate.sh\"\n\n[run]\nbudget = 5   # cheap\n";
 
     #[test]
     fn the_driver_tables_and_docs_share_the_file_without_warnings() {
@@ -255,9 +255,15 @@ mod tests {
         let l = config::load_with_project(cfg.path(), d.path()).unwrap();
         assert!(l.warnings.is_empty(), "{:?}", l.warnings);
         assert_eq!(l.config.budget_weighted_tokens, 5);
-        assert_eq!(l.config.workers.polish.model, "sonnet");
         let p = load(d.path()).unwrap().unwrap();
         assert_eq!(p.gate.as_deref(), Some("./gate.sh"));
+
+        let d = repo(&format!("{SHARED}\n[workers.polish]\nmodel = \"sonnet\"\n"));
+        let l = config::load_with_project(cfg.path(), d.path()).unwrap();
+        assert_eq!(l.warnings.len(), 1, "{:?}", l.warnings);
+        assert!(l.warnings[0].contains("unknown key `workers` ignored"));
+        assert_eq!(l.config.workers.polish.model, "opus");
+        assert_eq!(l.config.budget_weighted_tokens, 5);
     }
 
     #[test]

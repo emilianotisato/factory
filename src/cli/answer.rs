@@ -10,6 +10,7 @@ use crate::config::{self, CiMode};
 use crate::docs::{log, preflight, state};
 use crate::error::io;
 use crate::events::EventKind;
+use crate::provider::{Provider, ReviewProvider};
 use crate::quota::{self, Hold};
 use crate::run::{self, Phase, Run};
 use crate::{Error, Result, clock, daemon, paths, scheduler};
@@ -302,6 +303,9 @@ fn answer_ask(
     {
         return Ok(1);
     }
+    if item.starts_with(preflight::REVIEW_ASK_PREFIX) && !review_answer(&mut run, id, text, out)? {
+        return Ok(1);
+    }
     let now = clock::now_rfc3339();
     let feature = run.state().feature.clone();
     let dir = feature_dir(repo, &feature)?;
@@ -393,6 +397,109 @@ fn ci_mode_answer(run: &mut Run, id: &str, text: &str, out: &mut dyn Write) -> R
     run.set_ci_mode(Some(mode))?;
     super::run::set_knob(run, "ci", serde_json::json!(mode), source)?;
     Ok(true)
+}
+
+/// A provider or `none` is saved for every repo, `proceed` skips the second opinion for this run only; false leaves
+/// the ask open.
+fn review_answer(run: &mut Run, id: &str, text: &str, out: &mut dyn Write) -> Result<bool> {
+    let answer = text.trim();
+    let lower = answer.to_ascii_lowercase();
+    if lower == "proceed" {
+        run.set_review_override(Some(ReviewProvider::None))?;
+        writeln!(
+            out,
+            "second opinion skipped for this run only; config.toml left unset"
+        )
+        .map_err(io("stdout"))?;
+        return Ok(true);
+    }
+    let set = |key: &str, v: Option<&str>| config::Patch {
+        table: "review".into(),
+        key: key.into(),
+        value: v.map(|v| toml::Value::String(v.into())),
+    };
+    if lower == "none" {
+        let path = config::patch(
+            &paths::config_dir(),
+            &[set("provider", Some("none")), set("agent", None)],
+        )?;
+        run.set_review_override(Some(ReviewProvider::None))?;
+        writeln!(out, "second opinion disabled, saved to {}", path.display())
+            .map_err(io("stdout"))?;
+        return Ok(true);
+    }
+    let (p, model, effort) = match review_choice(answer) {
+        Ok(c) => c,
+        Err(why) => {
+            writeln!(
+                out,
+                "{id} not answered: {why} — answer `<provider>`, `<provider>:<model>` or `<provider>:<model>:<effort>` \
+                 with a provider of `claude`, `codex`, `cursor`, `agy` or `opencode`; `none`; or `proceed`"
+            )
+            .map_err(io("stdout"))?;
+            return Ok(false);
+        }
+    };
+    let path = config::patch(
+        &paths::config_dir(),
+        &[
+            set("provider", Some(p.as_str())),
+            set("model", Some(&model)),
+            set("effort", effort.as_deref()),
+            set("agent", None),
+        ],
+    )?;
+    run.set_review_override(None)?;
+    let effort = effort.map_or(String::new(), |e| format!(" at {e} effort"));
+    writeln!(
+        out,
+        "second opinion from {p} with {model}{effort}, saved to {}",
+        path.display()
+    )
+    .map_err(io("stdout"))?;
+    Ok(true)
+}
+
+/// `<provider>[:<model>[:<effort>]]`: the model defaults to the provider's, the effort is left to the CLI.
+/// A model may hold `:` itself; only a trailing level the provider knows is taken as the effort.
+fn review_choice(answer: &str) -> std::result::Result<(Provider, String, Option<String>), String> {
+    let (name, rest) = answer.split_once(':').unwrap_or((answer, ""));
+    let p: Provider = name
+        .trim()
+        .parse()
+        .map_err(|_| format!("{answer:?} names no reviewer"))?;
+    let rest = rest.trim();
+    let (model, effort) = match rest.rsplit_once(':') {
+        Some((m, e)) if p.effort_levels().contains(&e.trim()) => (m.trim(), Some(e.trim())),
+        Some((_, e)) if is_effort_word(e.trim()) => {
+            let e = e.trim();
+            return Err(if p.effort_levels().is_empty() {
+                format!("{p} takes no effort level, not {e:?}")
+            } else {
+                format!(
+                    "{e:?} is not a {p} effort ({})",
+                    p.effort_levels().join(", ")
+                )
+            });
+        }
+        Some((m, "")) => (m.trim(), None),
+        _ => (rest, None),
+    };
+    let model = match model {
+        "" if p.default_model().is_empty() => {
+            return Err(format!(
+                "{p} has no default model, so name one as `{p}:<model>`"
+            ));
+        }
+        "" => p.default_model().to_string(),
+        m if !crate::provider::is_model_name(m) => return Err(format!("{m:?} is not a model id")),
+        m => m.to_string(),
+    };
+    Ok((p, model, effort.map(str::to_string)))
+}
+
+fn is_effort_word(e: &str) -> bool {
+    Provider::ALL.iter().any(|p| p.effort_levels().contains(&e))
 }
 
 /// A budget-parked run gets no driver: it would only park again.
@@ -496,6 +603,38 @@ fn rel(repo: &Path, path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_reviewer_answer_leaves_effort_unset_and_keeps_colons_in_the_model() {
+        let ok = |a: &str| review_choice(a).unwrap();
+        let own = |p, m: &str, e: Option<&str>| (p, m.to_string(), e.map(str::to_string));
+        assert_eq!(ok("codex"), own(Provider::Codex, "gpt-5.4", None));
+        assert_eq!(
+            ok("codex:o3:high"),
+            own(Provider::Codex, "o3", Some("high"))
+        );
+        assert_eq!(
+            ok("claude::max"),
+            own(Provider::Claude, "opus", Some("max"))
+        );
+        assert_eq!(
+            ok("opencode:ollama/llama3:8b"),
+            own(Provider::Opencode, "ollama/llama3:8b", None)
+        );
+        assert_eq!(
+            ok("opencode:ollama/llama3:8b:high"),
+            own(Provider::Opencode, "ollama/llama3:8b", Some("high"))
+        );
+        for bad in [
+            "opencode",
+            "cursor:grok-4.7-high:high",
+            "codex:o3:max",
+            "codex:--auto",
+            "gemini",
+        ] {
+            assert!(review_choice(bad).is_err(), "{bad}");
+        }
+    }
 
     #[test]
     fn a_logged_answer_is_found_by_its_title_and_choice() {

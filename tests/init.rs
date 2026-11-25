@@ -125,7 +125,14 @@ fn init_renders_the_bundle_the_links_and_the_manifest() {
         );
         assert!(link.join("SKILL.md").is_file(), "{name}");
     }
-    assert!(fs::symlink_metadata(root.join(".agents/skills/_shared")).is_err());
+    assert_eq!(
+        fs::read_link(root.join(".agents/skills/_shared")).unwrap(),
+        Path::new("../../.claude/skills/_shared")
+    );
+    assert!(
+        root.join(".agents/skills/deliver/../_shared/models.md")
+            .is_file()
+    );
 
     assert!(root.join(".claude/skills/lanes/SKILL.md").is_file());
     let m = manifest(root);
@@ -136,7 +143,7 @@ fn init_renders_the_bundle_the_links_and_the_manifest() {
         let on_disk = read(root, &format!(".claude/skills/{rel}"));
         assert_eq!(&skills::file_hash(&on_disk), hash, "{rel}");
     }
-    assert_eq!(m.links.len(), 10);
+    assert_eq!(m.links.len(), 11);
     assert_eq!(
         m.links[".agents/skills/polish"],
         "../../.claude/skills/polish"
@@ -385,7 +392,7 @@ fn init_prints_the_commit_line_and_commits_nothing() {
         .unwrap_or_else(|| panic!("no commit line in:\n{said}"));
     assert_eq!(line, commit);
     assert!(said.contains(&format!(
-        "skills {version}: .claude/skills/ (23 files, factory.toml), .agents/skills/ (10 links)\n"
+        "skills {version}: .claude/skills/ (23 files, factory.toml), .agents/skills/ (11 links)\n"
     )));
     assert!(said.contains("\nnext, in order: the gate (factory docs gate set \"<cmd>\", or /gate), the harness (/harness), the UX rubric (/ux rubric)\n"), "{said}");
 

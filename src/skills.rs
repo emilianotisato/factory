@@ -22,6 +22,12 @@ pub const NAMES: [&str; 10] = [
     "prd", "slice", "deliver", "polish", "gate", "harness", "harvest", "lanes", "prune", "ux",
 ];
 
+/// Every folder `.agents/skills/` links: a skill's `../_shared/` must resolve there without canonicalizing.
+pub const LINK_DIRS: [&str; 11] = [
+    "prd", "slice", "deliver", "polish", "gate", "harness", "harvest", "lanes", "prune", "ux",
+    "_shared",
+];
+
 pub const FILES: &[(&str, &str)] = &[
     (
         "_shared/models.md",
@@ -377,7 +383,7 @@ pub fn render(root: &Path) -> Result<Rendered> {
         done.files.push(format!("{SKILLS_DIR}/{rel}"));
     }
     let agents = root.join(LINKS_DIR);
-    let names: &[&str] = if shared { &[] } else { &NAMES };
+    let names: &[&str] = if shared { &[] } else { &LINK_DIRS };
     if !shared {
         fs::create_dir_all(&agents).map_err(io(format!("mkdir {}", agents.display())))?;
     }
@@ -870,6 +876,29 @@ mod tests {
     }
 
     #[test]
+    fn skills_render_links_shared_into_agents_skills() {
+        let dir = rendered();
+        let root = dir.path();
+        let shared = format!("{LINKS_DIR}/_shared");
+        assert_eq!(
+            fs::read_link(root.join(&shared)).unwrap(),
+            Path::new("../../.claude/skills/_shared")
+        );
+        let m = read_manifest(root).unwrap().unwrap();
+        assert_eq!(m.links[&shared], link_target("_shared"));
+        let through = root.join(LINKS_DIR).join("deliver/../_shared/models.md");
+        assert!(
+            fs::read_to_string(through)
+                .unwrap()
+                .contains("second opinion")
+        );
+        assert!(verdict(root).is_ok());
+
+        fs::remove_file(root.join(&shared)).unwrap();
+        assert_eq!(verdict(root).lines(), [format!("missing: {shared}")]);
+    }
+
+    #[test]
     fn a_key_leaving_its_dir_is_never_read() {
         let dir = rendered();
         let root = dir.path();
@@ -1096,5 +1125,7 @@ mod tests {
             let path = format!("{name}/SKILL.md");
             assert!(FILES.iter().any(|(p, _)| *p == path), "{path} missing");
         }
+        assert_eq!(LINK_DIRS[..NAMES.len()], NAMES);
+        assert_eq!(LINK_DIRS[NAMES.len()..], ["_shared"]);
     }
 }

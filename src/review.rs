@@ -9,12 +9,13 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-use crate::config::Review;
+use crate::config::{ResolvedReview, Review};
 use crate::docs::{log, state};
 use crate::error::io;
+use crate::provider::{self, Provider, ReviewProvider};
 use crate::{Error, Result, clock, paths};
 
-/// Without these the agent exits on trust, may write, buffers to the end, or leaves nothing when killed.
+/// Without these `cursor-agent` exits on trust, may write, buffers to the end, or leaves nothing when killed.
 pub const FLAGS: [&str; 6] = [
     "--trust",
     "--mode",
@@ -517,15 +518,21 @@ fn forward_signals() {
     });
 }
 
+/// `stdin` feeds the child a file, never a pipe, so a large prompt cannot block it.
 fn run_logged(
     mut cmd: Command,
     out: &Path,
     err: &Path,
     timeout: Duration,
     cancel: Cancel,
+    stdin: Option<&Path>,
 ) -> Result<(Ended, Duration)> {
     let file = |p: &Path| File::create(p).map_err(io(format!("create {}", p.display())));
-    cmd.stdin(Stdio::null())
+    let input = match stdin {
+        Some(p) => Stdio::from(File::open(p).map_err(io(format!("open {}", p.display())))?),
+        None => Stdio::null(),
+    };
+    cmd.stdin(input)
         .stdout(Stdio::from(file(out)?))
         .stderr(Stdio::from(file(err)?))
         // Its own group: a wrapper script's children die with it.
@@ -569,11 +576,114 @@ fn run_logged(
 /// Listing the models takes about a second; a hung agent must not hold preflight for a whole pass's timeout.
 const PROBE_SECS: u64 = 60;
 
+/// Why a disabled reviewer neither probes nor runs.
+pub const DISABLED: &str = "second opinion disabled in config.toml";
+
+/// Without sources, a legacy `Review` is read as written: `agent` is the binary when it names the provider.
+impl From<&Review> for ResolvedReview {
+    fn from(cfg: &Review) -> ResolvedReview {
+        let named = Provider::infer_from_binary(&cfg.agent);
+        let provider = cfg
+            .provider
+            .unwrap_or(ReviewProvider::Provider(named.unwrap_or(Provider::Cursor)));
+        let (binary, model, effort) = match provider {
+            ReviewProvider::None => (None, String::new(), None),
+            ReviewProvider::Provider(p) => {
+                let binary = named
+                    .map_or(p == Provider::Cursor, |n| n == p)
+                    .then(|| cfg.agent.clone());
+                let model = if p != Provider::Cursor && cfg.model == Review::default().model {
+                    p.default_model().to_string()
+                } else {
+                    cfg.model.clone()
+                };
+                let effort = cfg.effort.clone().filter(|_| !p.effort_levels().is_empty());
+                (binary, model, effort)
+            }
+        };
+        ResolvedReview {
+            provider,
+            binary,
+            model,
+            effort,
+            timeout_secs: cfg.timeout_secs,
+            pass_lines: cfg.pass_lines,
+        }
+    }
+}
+
+impl From<&ResolvedReview> for ResolvedReview {
+    fn from(cfg: &ResolvedReview) -> ResolvedReview {
+        cfg.clone()
+    }
+}
+
+/// The command a provider runs as, and the name lines show for it.
+fn binary(cfg: &ResolvedReview, p: Provider) -> (PathBuf, String) {
+    if let Some(b) = &cfg.binary {
+        return (PathBuf::from(b), b.clone());
+    }
+    let bare = p.binaries()[0];
+    match provider::resolve_binary(p) {
+        Some(path) => {
+            let name = path
+                .file_name()
+                .map_or(bare.to_string(), |n| n.to_string_lossy().into_owned());
+            (path, name)
+        }
+        None => (PathBuf::from(bare), bare.to_string()),
+    }
+}
+
+/// The reviewer's binary as lines name it, as `cursor-agent`; empty when disabled.
+pub fn binary_name(cfg: &ResolvedReview) -> String {
+    cfg.provider
+        .provider()
+        .map_or(String::new(), |p| binary(cfg, p).1)
+}
+
+/// The command `cfg` would log in with, as `cursor-agent login`, naming the binary the probe runs.
+pub fn login_hint(cfg: &ResolvedReview) -> String {
+    let Some(p) = cfg.provider.provider() else {
+        return String::new();
+    };
+    let hint = p.login_hint();
+    let rest = hint.split_once(' ').map_or("", |(_, r)| r);
+    format!("{} {rest}", binary(cfg, p).1)
+}
+
 /// `cancel` firing ends the probe as unreviewed, so a stop never waits on a hung agent.
 pub fn probe(cfg: &Review, dir: &Path, cancel: Cancel) -> std::result::Result<(), String> {
-    let out = dir.join("list-models.txt");
-    let mut cmd = Command::new(&cfg.agent);
-    cmd.arg("--list-models");
+    probe_resolved(&cfg.into(), dir, cancel)
+}
+
+/// Cursor, agy and OpenCode must list the model; Claude and Codex only answer `--version`, which spends no tokens.
+pub fn probe_resolved(
+    cfg: &ResolvedReview,
+    dir: &Path,
+    cancel: Cancel,
+) -> std::result::Result<(), String> {
+    let p = match cfg.provider {
+        ReviewProvider::None => return Err(DISABLED.to_string()),
+        ReviewProvider::Provider(p) => p,
+    };
+    if cfg.model.trim().is_empty() {
+        return Err(format!(
+            "no {p} model set — `[review] model` in config.toml"
+        ));
+    }
+    let (bin, name) = binary(cfg, p);
+    let (args, file): (&[&str], &str) = match p {
+        Provider::Cursor => (&["--list-models"], "list-models.txt"),
+        Provider::Claude | Provider::Codex => (&["--version"], "version.txt"),
+        Provider::Agy | Provider::Opencode => (&["models"], "models.txt"),
+    };
+    let out = dir.join(file);
+    let mut cmd = Command::new(&bin);
+    cmd.args(args);
+    if p == Provider::Claude {
+        scrub_claude_session(&mut cmd);
+    }
     let secs = cfg.timeout_secs.min(PROBE_SECS);
     let ended = match run_logged(
         cmd,
@@ -581,6 +691,7 @@ pub fn probe(cfg: &Review, dir: &Path, cancel: Cancel) -> std::result::Result<()
         &out.with_extension("err"),
         Duration::from_secs(secs),
         cancel,
+        None,
     ) {
         Ok((ended, _)) => ended,
         Err(e) => return Err(e.to_string()),
@@ -596,21 +707,25 @@ pub fn probe(cfg: &Review, dir: &Path, cancel: Cancel) -> std::result::Result<()
         .find(|l| !l.is_empty())
         .unwrap_or("no output")
         .to_string();
+    let what = format!("{name} {}", args.join(" "));
+    let lists = !matches!(p, Provider::Claude | Provider::Codex);
     match ended {
         Ended::Stopped => Err("stopped".to_string()),
-        Ended::Killed => Err(format!(
-            "{} --list-models timed out after {secs} s",
-            cfg.agent
-        )),
+        Ended::Killed => Err(format!("{what} timed out after {secs} s")),
         Ended::Exited(code) if code != Some(0) => Err(format!(
-            "{} --list-models exited {}: {first}",
-            cfg.agent,
+            "{what} exited {}: {first}",
             code.map_or("on a signal".to_string(), |c| c.to_string())
         )),
-        _ if text.contains("login") || text.contains("Authentication required") => Err(first),
-        _ if !lists_model(&text, &cfg.model) => {
-            Err(format!("model {} not in --list-models", cfg.model))
+        _ if p == Provider::Cursor
+            && (text.contains("login") || text.contains("Authentication required")) =>
+        {
+            Err(first)
         }
+        _ if lists && !lists_model(&text, &cfg.model) => Err(if p == Provider::Cursor {
+            format!("model {} not in --list-models", cfg.model)
+        } else {
+            format!("model {} not in `{what}`", cfg.model)
+        }),
         _ => Ok(()),
     }
 }
@@ -641,33 +756,115 @@ impl Parsed {
 }
 
 pub fn parse_stream(text: &str) -> Parsed {
+    parse_stream_for(Provider::Cursor, text)
+}
+
+/// Each provider's own stream: Cursor, Claude and agy share stream-json, Codex and OpenCode have their own JSONL.
+pub fn parse_stream_for(provider: Provider, text: &str) -> Parsed {
     let mut p = Parsed::default();
+    let mut last = None;
     for line in text.lines() {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        match v["type"].as_str() {
-            Some("result") if v["is_error"] == true => {
-                p.error = Some(v["result"].as_str().unwrap_or_default().to_string());
-            }
-            Some("result") => {
-                if let Some(r) = v["result"].as_str() {
-                    p.result = Some(r.to_string());
-                }
-            }
-            Some("assistant") => {
-                for item in v["message"]["content"].as_array().into_iter().flatten() {
-                    if item["type"] == "text"
-                        && let Some(t) = item["text"].as_str()
-                    {
-                        p.partial.push_str(t);
-                    }
-                }
-            }
-            _ => {}
+        let kind = v["type"].as_str().unwrap_or_default();
+        match provider {
+            Provider::Cursor | Provider::Claude | Provider::Agy => stream_json(&mut p, kind, &v),
+            Provider::Codex => codex_json(&mut p, &mut last, kind, &v),
+            Provider::Opencode => opencode_json(&mut p, &mut last, kind, &v),
         }
     }
     p
+}
+
+fn stream_json(p: &mut Parsed, kind: &str, v: &Value) {
+    match kind {
+        "result" if v["is_error"] == true => {
+            p.error = Some(v["result"].as_str().unwrap_or_default().to_string());
+        }
+        "result" => {
+            if let Some(r) = v["result"].as_str() {
+                p.result = Some(r.to_string());
+            }
+        }
+        "assistant" => {
+            for item in v["message"]["content"].as_array().into_iter().flatten() {
+                if item["type"] == "text"
+                    && let Some(t) = item["text"].as_str()
+                {
+                    p.partial.push_str(t);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn first_str<'a>(v: &'a Value, paths: &[&[&str]]) -> Option<&'a str> {
+    paths.iter().find_map(|path| {
+        path.iter()
+            .try_fold(v, |v, k| v.get(k))
+            .and_then(Value::as_str)
+    })
+}
+
+/// The last agent message is the answer once the turn completes; before that it is partial.
+fn codex_json(p: &mut Parsed, last: &mut Option<String>, kind: &str, v: &Value) {
+    match kind {
+        "item.completed" if v["item"]["type"] == "agent_message" => {
+            if let Some(t) = v["item"]["text"].as_str() {
+                push_part(&mut p.partial, t);
+                *last = Some(t.to_string());
+            }
+        }
+        "turn.completed" => {
+            if let Some(t) = last.clone() {
+                p.result = Some(t);
+            }
+        }
+        "error" | "turn.failed" => {
+            let why = first_str(v, &[&["message"], &["error", "message"]]);
+            p.error = Some(why.unwrap_or_default().to_string());
+        }
+        _ => {}
+    }
+}
+
+/// A step that stops ends the answer; its text is the result.
+fn opencode_json(p: &mut Parsed, last: &mut Option<String>, kind: &str, v: &Value) {
+    match kind {
+        "text" => {
+            if let Some(t) = v["part"]["text"].as_str() {
+                push_part(&mut p.partial, t);
+                *last = Some(t.to_string());
+            }
+        }
+        "step_finish" if v["part"]["reason"] == "stop" => {
+            if let Some(t) = last.clone() {
+                p.result = Some(t);
+            }
+        }
+        "error" => {
+            let why = first_str(
+                v,
+                &[
+                    &["error", "message"],
+                    &["error", "data", "message"],
+                    &["data", "message"],
+                    &["message"],
+                ],
+            );
+            p.error = Some(why.unwrap_or_default().to_string());
+        }
+        _ => {}
+    }
+}
+
+fn push_part(partial: &mut String, t: &str) {
+    if !partial.is_empty() {
+        partial.push_str("\n\n");
+    }
+    partial.push_str(t);
 }
 
 #[derive(Debug, Clone)]
@@ -687,16 +884,114 @@ pub fn run_pass(
     prompt: &str,
     cancel: Cancel,
 ) -> Result<Outcome> {
+    run_pass_resolved(&cfg.into(), cwd, dir, n, prompt, cancel)
+}
+
+/// Every provider runs read-only: Cursor in ask mode, the others in plan mode or a read-only sandbox.
+pub fn run_pass_resolved(
+    cfg: &ResolvedReview,
+    cwd: &Path,
+    dir: &Path,
+    n: usize,
+    prompt: &str,
+    cancel: Cancel,
+) -> Result<Outcome> {
+    let ReviewProvider::Provider(p) = cfg.provider else {
+        return Err(Error::Msg(DISABLED.to_string()));
+    };
     let stream = dir.join(format!("review-{n}.jsonl"));
     let err = dir.join(format!("review-{n}.err"));
-    let mut cmd = Command::new(&cfg.agent);
-    cmd.arg("-p")
-        .args(FLAGS)
-        .args(["--model", &cfg.model])
-        .arg(prompt)
-        .current_dir(cwd);
+    let (bin, _) = binary(cfg, p);
+    let mut cmd = Command::new(&bin);
+    let model = cfg.model.as_str();
+    let effort = cfg.effort.as_deref();
+    let mut stdin = None;
+    match p {
+        Provider::Cursor => {
+            cmd.arg("-p")
+                .args(FLAGS)
+                .args(["--model", model])
+                .arg(prompt);
+        }
+        Provider::Claude => {
+            cmd.args([
+                "-p",
+                "--output-format",
+                "stream-json",
+                "--verbose",
+                "--permission-mode",
+                "plan",
+                "--tools",
+                "Read,Grep,Glob",
+                "--model",
+                model,
+            ]);
+            if let Some(e) = effort {
+                cmd.args(["--effort", e]);
+            }
+            // The diff sits in the log dir, outside the repo a print-mode read may touch.
+            cmd.arg("--add-dir").arg(dir).arg(prompt);
+            scrub_claude_session(&mut cmd);
+        }
+        Provider::Codex => {
+            cmd.args([
+                "exec",
+                "--json",
+                "--sandbox",
+                "read-only",
+                "--ephemeral",
+                "-m",
+                model,
+            ]);
+            if let Some(e) = effort {
+                cmd.args(["-c", &format!("model_reasoning_effort={e}")]);
+            }
+            cmd.arg("-");
+            let file = dir.join(format!("review-{n}.prompt"));
+            fs::write(&file, prompt).map_err(io(format!("write {}", file.display())))?;
+            stdin = Some(file);
+        }
+        Provider::Agy => {
+            cmd.args([
+                "-p",
+                "--mode",
+                "plan",
+                "--output-format",
+                "stream-json",
+                "--model",
+                model,
+            ]);
+            if let Some(e) = effort {
+                cmd.args(["--effort", e]);
+            }
+            cmd.arg("--add-dir").arg(dir).arg(prompt);
+        }
+        Provider::Opencode => {
+            // OpenCode takes the effort as the model's `#variant`, and reads no file outside the repo unless attached.
+            let model = match effort {
+                Some(e) => format!("{model}#{e}"),
+                None => model.to_string(),
+            };
+            cmd.args([
+                "run",
+                "--standalone",
+                "--format",
+                "json",
+                "--agent",
+                "plan",
+                "-m",
+                &model,
+            ]);
+            let diff = dir.join(format!("review-{n}.diff"));
+            if diff.is_file() {
+                cmd.arg("-f").arg(&diff);
+            }
+            cmd.arg(prompt);
+        }
+    }
+    cmd.current_dir(cwd);
     let timeout = Duration::from_secs(cfg.timeout_secs);
-    let (ended, elapsed) = run_logged(cmd, &stream, &err, timeout, cancel)?;
+    let (ended, elapsed) = run_logged(cmd, &stream, &err, timeout, cancel, stdin.as_deref())?;
     let text = fs::read(&stream).map_err(io(format!("read {}", stream.display())))?;
     let stderr = fs::read_to_string(&err)
         .unwrap_or_default()
@@ -708,9 +1003,18 @@ pub fn run_pass(
     Ok(Outcome {
         ended,
         elapsed,
-        parsed: parse_stream(&String::from_utf8_lossy(&text)),
+        parsed: parse_stream_for(p, &String::from_utf8_lossy(&text)),
         stderr,
     })
+}
+
+/// Inside a Claude Code session these variables would trip the nested-session guard.
+fn scrub_claude_session(cmd: &mut Command) {
+    for (k, _) in std::env::vars_os() {
+        if k.to_str().is_some_and(crate::worker::scrubbed) {
+            cmd.env_remove(&k);
+        }
+    }
 }
 
 /// One pass's outcome, or why it never ran, and how long it took.
@@ -737,7 +1041,7 @@ pub type Sink<'a> = Option<&'a mut dyn FnMut(Progress) -> Result<()>>;
 /// `cancel` firing kills every pass still running, each then ending [`Ended::Stopped`].
 #[allow(clippy::too_many_arguments)]
 pub fn run_passes(
-    cfg: &Review,
+    cfg: impl Into<ResolvedReview>,
     cwd: &Path,
     dir: &Path,
     passes: &[Pass],
@@ -746,6 +1050,8 @@ pub fn run_passes(
     mut sink: Sink,
     cancel: Cancel,
 ) -> Result<Vec<Ran>> {
+    let cfg: ResolvedReview = cfg.into();
+    let cfg = &cfg;
     // Written before any spawn: a failed write must not leave reviewers running for nothing.
     for (i, pass) in passes.iter().enumerate() {
         writeln!(
@@ -768,7 +1074,8 @@ pub fn run_passes(
             let ended = ended.clone();
             running.push(s.spawn(move || {
                 let started = Instant::now();
-                let outcome = prompt(n, pass).and_then(|p| run_pass(cfg, cwd, dir, n, &p, cancel));
+                let outcome =
+                    prompt(n, pass).and_then(|p| run_pass_resolved(cfg, cwd, dir, n, &p, cancel));
                 let elapsed = outcome.as_ref().map_or(started.elapsed(), |o| o.elapsed);
                 let _ = ended.send((n, elapsed));
                 Ran { outcome, elapsed }
@@ -833,8 +1140,8 @@ pub fn pass_text(ran: &Ran, timeout_secs: u64) -> (String, bool) {
     }
 }
 
-/// `Pass n — files (lines, seconds, model)`, the heading of a pass's findings.
-pub fn pass_header(n: usize, pass: &Pass, ran: &Ran, cfg: &Review) -> String {
+/// `Pass n — files (lines, seconds, model)`, the heading of a pass's findings; `provider:model` past Cursor.
+pub fn pass_header(n: usize, pass: &Pass, ran: &Ran, cfg: &ResolvedReview) -> String {
     let over = if pass.over {
         format!(" (over {}, alone)", cfg.pass_lines)
     } else {
@@ -845,8 +1152,15 @@ pub fn pass_header(n: usize, pass: &Pass, ran: &Ran, cfg: &Review) -> String {
         covers(pass),
         pass.lines,
         ran.elapsed.as_secs(),
-        cfg.model
+        reviewer_label(cfg)
     )
+}
+
+fn reviewer_label(cfg: &ResolvedReview) -> String {
+    match cfg.provider {
+        ReviewProvider::Provider(Provider::Cursor) => cfg.model.clone(),
+        p => format!("{p}:{}", cfg.model),
+    }
 }
 
 /// Writes the pass's slice of `range` into the log dir and asks the reviewer to read it.
@@ -975,6 +1289,27 @@ pub fn with_others(prompt: &str, others: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_login_hint_names_the_binary_the_probe_runs() {
+        let cfg = |p, b: &str| ResolvedReview {
+            provider: ReviewProvider::Provider(p),
+            binary: Some(b.into()),
+            model: "m".into(),
+            effort: None,
+            timeout_secs: 1,
+            pass_lines: 600,
+        };
+        assert_eq!(
+            login_hint(&cfg(Provider::Claude, "/opt/c/claude")),
+            "/opt/c/claude login"
+        );
+        assert_eq!(
+            login_hint(&cfg(Provider::Opencode, "/opt/o/opencode")),
+            "/opt/o/opencode auth login"
+        );
+        assert_eq!(login_hint(&cfg(Provider::Cursor, "agent")), "agent login");
+    }
 
     #[test]
     fn a_path_stays_on_its_own_line() {

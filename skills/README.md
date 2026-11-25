@@ -1,6 +1,6 @@
 # Skills
 
-Claude Code skills that ship with `factory`. `factory init` in a repo writes these into `.claude/skills/`, byte for byte, with a link per skill in `.agents/skills/` for Codex and a manifest that says which release they came from.
+Agent skills that ship with `factory`. `factory init` in a repo writes these into `.claude/skills/`, byte for byte, with a link per skill (and one for `_shared/`) in `.agents/skills/` for the other harnesses and a manifest that says which release they came from.
 
 In this repo `.claude/skills/<name>` are links to these folders instead, so a session here reads `skills/` live and an edit takes effect without a release.
 

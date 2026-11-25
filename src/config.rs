@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::provider::{Provider, ReviewProvider};
 use crate::{Error, Result};
 
 pub const DEFAULT_BUDGET: u64 = 30_000_000;
@@ -19,6 +20,7 @@ pub struct Config {
     pub source: Option<SourceRepo>,
     pub review: Review,
     pub ci: Ci,
+    pub cockpit: Cockpit,
 }
 
 /// Where a run's gate CI runs: on this machine or on the remote's checks.
@@ -50,6 +52,13 @@ pub struct Ci {
     pub mode: Option<CiMode>,
 }
 
+/// The agent CLI the owner drives factory from.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Cockpit {
+    pub provider: Option<Provider>,
+}
+
 /// `Source` is taken: it names the scope a knob came from.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceRepo {
@@ -57,29 +66,109 @@ pub struct SourceRepo {
 }
 
 /// The owner's own facts (a renamed binary, a rate-limited model) live here, never in the skills.
+/// `resolve_review` picks the reviewer; `agent` and `model` keep their legacy defaults for a file that names no provider.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Review {
+    pub provider: Option<ReviewProvider>,
     pub agent: String,
     pub model: String,
+    pub effort: Option<String>,
     pub timeout_secs: u64,
     pub pass_lines: u64,
 }
 
+/// The `[workers]` scalars are defaults every role inherits while it keeps their provider.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Workers {
+    pub provider: Option<Provider>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
     pub build: Worker,
     pub fix: Worker,
     pub checkpoint: Worker,
     pub polish: Worker,
 }
 
+/// `model` and `effort` hold what a Claude worker runs with; `Workers::resolved` gives any provider's.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Worker {
+    pub provider: Option<Provider>,
     pub model: String,
     pub effort: String,
+}
+
+/// What a role runs with once role, `[workers]` and provider defaults are layered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedWorker {
+    pub provider: Provider,
+    pub model: String,
+    pub effort: Option<String>,
+}
+
+impl Workers {
+    pub fn role(&self, role: &str) -> Option<&Worker> {
+        match role {
+            "build" => Some(&self.build),
+            "fix" => Some(&self.fix),
+            "checkpoint" => Some(&self.checkpoint),
+            "polish" => Some(&self.polish),
+            _ => None,
+        }
+    }
+
+    /// A role that switches provider never inherits the `[workers]` model or effort: slugs are provider-specific.
+    pub fn resolved(
+        &self,
+        sources: &RoleSources,
+        role: &str,
+        fallback_provider: Provider,
+    ) -> ResolvedWorker {
+        let (worker, set) = match (self.role(role), sources.role(role)) {
+            (Some(w), Some(s)) => (Some(w), s.clone()),
+            _ => (None, WorkerSources::default()),
+        };
+        let explicit = |src: Source, v: Option<&String>| {
+            (src != Source::Default).then(|| v.cloned()).flatten()
+        };
+        let role_provider = worker.and_then(|w| w.provider);
+        let provider = role_provider.or(self.provider).unwrap_or(fallback_provider);
+        let inherits = provider == self.provider.unwrap_or(fallback_provider);
+        let model = explicit(set.model, worker.map(|w| &w.model))
+            .or_else(|| self.model.clone().filter(|_| inherits))
+            .unwrap_or_else(|| provider.default_model().to_string());
+        let effort = if provider.effort_levels().is_empty() {
+            None
+        } else {
+            explicit(set.effort, worker.map(|w| &w.effort))
+                .or_else(|| self.effort.clone().filter(|_| inherits))
+                .or_else(|| provider.default_effort().map(str::to_string))
+        };
+        ResolvedWorker {
+            provider,
+            model,
+            effort,
+        }
+    }
+
+    /// Whether the role takes this `[workers]` default rather than its own value or the provider's.
+    fn inherited(&self, sources: &RoleSources, role: &str, model: bool) -> bool {
+        let Some(s) = sources.role(role) else {
+            return false;
+        };
+        let (own, default) = if model {
+            (s.model, self.model.is_some())
+        } else {
+            (s.effort, self.effort.is_some())
+        };
+        let claude = |p: Option<Provider>| p.unwrap_or(Provider::Claude) == Provider::Claude;
+        own == Source::Default
+            && default
+            && claude(self.provider)
+            && claude(self.role(role).and_then(|w| w.provider).or(self.provider))
+    }
 }
 
 impl Default for Config {
@@ -90,6 +179,7 @@ impl Default for Config {
             source: None,
             review: Review::default(),
             ci: Ci::default(),
+            cockpit: Cockpit::default(),
         }
     }
 }
@@ -97,8 +187,10 @@ impl Default for Config {
 impl Default for Review {
     fn default() -> Self {
         Review {
+            provider: None,
             agent: "cursor-agent".into(),
             model: "grok-4.7-high".into(),
+            effort: None,
             timeout_secs: 1800,
             pass_lines: 600,
         }
@@ -108,6 +200,7 @@ impl Default for Review {
 impl Default for Worker {
     fn default() -> Self {
         Worker {
+            provider: None,
             model: DEFAULT_MODEL.into(),
             effort: DEFAULT_EFFORT.into(),
         }
@@ -138,6 +231,17 @@ pub struct Sources {
     pub budget: Source,
     pub workers: RoleSources,
     pub ci: Source,
+    pub cockpit: Source,
+    pub review: ReviewSources,
+}
+
+/// Which `[review]` keys the file set; `Default` means left out.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct ReviewSources {
+    pub provider: Source,
+    pub agent: Source,
+    pub model: Source,
+    pub effort: Source,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -149,26 +253,38 @@ pub struct RoleSources {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+/// Set only by the role's own table: a `[workers]` default the role inherits stays `Default` here.
 pub struct WorkerSources {
+    pub provider: Source,
     pub model: Source,
     pub effort: Source,
 }
 
-const TOP_KEYS: [&str; 5] = [
+const TOP_KEYS: [&str; 6] = [
     "budget_weighted_tokens",
     "workers",
     "source",
     "review",
     "ci",
+    "cockpit",
 ];
-const PROJECT_TOP_KEYS: [&str; 5] = ["docs", "lanes", "leaks", "run", "workers"];
+const PROJECT_TOP_KEYS: [&str; 4] = ["docs", "lanes", "leaks", "run"];
 const RUN_KEYS: [&str; 1] = ["budget"];
 const ROLE_KEYS: [&str; 4] = ["build", "fix", "checkpoint", "polish"];
-const WORKER_KEYS: [&str; 2] = ["model", "effort"];
+const WORKER_KEYS: [&str; 3] = ["provider", "model", "effort"];
 const SOURCE_KEYS: [&str; 1] = ["path"];
-const REVIEW_KEYS: [&str; 4] = ["agent", "model", "timeout_secs", "pass_lines"];
+const REVIEW_KEYS: [&str; 6] = [
+    "provider",
+    "agent",
+    "model",
+    "effort",
+    "timeout_secs",
+    "pass_lines",
+];
 const CI_KEYS: [&str; 1] = ["mode"];
+const COCKPIT_KEYS: [&str; 1] = ["provider"];
 pub const CI_MODE_ENV: &str = "FACTORY_CI_MODE";
+pub const REVIEW_PROVIDER_ENV: &str = "FACTORY_REVIEW_PROVIDER";
 
 pub const PROJECT_FILE: &str = "docs/project.toml";
 
@@ -192,7 +308,18 @@ pub fn load(config_dir: &Path) -> Result<Loaded> {
     }
     loaded.sources.budget = scope(&table, &["budget_weighted_tokens"], Source::User);
     loaded.sources.ci = scope(&table, &["ci", "mode"], Source::User);
+    loaded.sources.cockpit = scope(&table, &["cockpit", "provider"], Source::User);
+    let r = &mut loaded.sources.review;
+    for (key, s) in [
+        ("provider", &mut r.provider),
+        ("agent", &mut r.agent),
+        ("model", &mut r.model),
+        ("effort", &mut r.effort),
+    ] {
+        *s = scope(&table, &["review", key], Source::User);
+    }
     for (role, s) in loaded.sources.workers.each_mut() {
+        s.provider = scope(&table, &["workers", role, "provider"], Source::User);
         s.model = scope(&table, &["workers", role, "model"], Source::User);
         s.effort = scope(&table, &["workers", role, "effort"], Source::User);
     }
@@ -205,7 +332,36 @@ pub fn load(config_dir: &Path) -> Result<Loaded> {
     if let Some(s) = &mut loaded.config.source {
         s.path = expand_home(&s.path);
     }
+    inherit_worker_defaults(&mut loaded.config.workers, &loaded.sources.workers);
     Ok(loaded)
+}
+
+/// Today's workers are Claude sessions, so a role that keeps Claude takes the `[workers]` model and effort.
+fn inherit_worker_defaults(workers: &mut Workers, sources: &RoleSources) {
+    let resolved: Vec<ResolvedWorker> = ROLE_KEYS
+        .iter()
+        .map(|role| workers.resolved(sources, role, Provider::Claude))
+        .collect();
+    for ((role, worker), r) in [
+        ("build", &mut workers.build),
+        ("fix", &mut workers.fix),
+        ("checkpoint", &mut workers.checkpoint),
+        ("polish", &mut workers.polish),
+    ]
+    .into_iter()
+    .zip(resolved)
+    {
+        if r.provider != Provider::Claude {
+            continue;
+        }
+        let s = sources.role(role).expect("a known role");
+        if s.model == Source::Default {
+            worker.model = r.model;
+        }
+        if let (Source::Default, Some(e)) = (s.effort, r.effort) {
+            worker.effort = e;
+        }
+    }
 }
 
 fn expand_home(path: &Path) -> PathBuf {
@@ -216,6 +372,7 @@ fn expand_home(path: &Path) -> PathBuf {
 }
 
 /// `[docs]`, `[lanes]` and `[leaks]` are known here only so they do not warn; `docs::project` and `leaks` read them.
+/// `[workers]` warns: model slugs are provider-specific, so they live only in the user's file.
 pub fn load_with_project(config_dir: &Path, repo: &Path) -> Result<Loaded> {
     let mut loaded = load(config_dir)?;
     let path = repo.join(PROJECT_FILE);
@@ -235,24 +392,6 @@ pub fn load_with_project(config_dir: &Path, repo: &Path) -> Result<Loaded> {
         loaded.config.budget_weighted_tokens = b;
         loaded.sources.budget = Source::Project;
     }
-    let p = project.workers;
-    let w = &mut loaded.config.workers;
-    let s = &mut loaded.sources.workers;
-    for (worker, sources, over) in [
-        (&mut w.build, &mut s.build, p.build),
-        (&mut w.fix, &mut s.fix, p.fix),
-        (&mut w.checkpoint, &mut s.checkpoint, p.checkpoint),
-        (&mut w.polish, &mut s.polish, p.polish),
-    ] {
-        if let Some(m) = over.model {
-            worker.model = m;
-            sources.model = Source::Project;
-        }
-        if let Some(e) = over.effort {
-            worker.effort = e;
-            sources.effort = Source::Project;
-        }
-    }
     Ok(loaded)
 }
 
@@ -266,9 +405,17 @@ pub fn knobs(loaded: &Loaded, lanes: Option<u32>, claude_version: Option<&str>) 
         ("checkpoint", &w.checkpoint, &s.checkpoint),
         ("polish", &w.polish, &s.polish),
     ] {
-        let mut o = json!({"model": worker.model, "effort": worker.effort, "source": src.model});
-        if src.effort != src.model {
-            o["effort_source"] = json!(src.effort);
+        let from = |own: Source, model: bool| {
+            if w.inherited(s, role, model) {
+                Source::User
+            } else {
+                own
+            }
+        };
+        let (model_source, effort_source) = (from(src.model, true), from(src.effort, false));
+        let mut o = json!({"model": worker.model, "effort": worker.effort, "source": model_source});
+        if effort_source != model_source {
+            o["effort_source"] = json!(effort_source);
         }
         workers.insert(role.to_string(), o);
     }
@@ -323,9 +470,105 @@ fn ci_mode_from(
     }
 }
 
+/// The reviewer a run gets a second opinion from, fully resolved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedReview {
+    pub provider: ReviewProvider,
+    /// The owner's own binary for the provider, when `[review] agent` names one.
+    pub binary: Option<String>,
+    pub model: String,
+    pub effort: Option<String>,
+    pub timeout_secs: u64,
+    pub pass_lines: u64,
+}
+
+/// `[review] provider`, then a legacy `[review] agent`, then `FACTORY_REVIEW_PROVIDER`; `None` means nobody chose.
+/// The third value warns of an env value that names no provider.
+pub fn resolve_review(loaded: &Loaded) -> (Option<ResolvedReview>, Source, Option<String>) {
+    let env = std::env::var(REVIEW_PROVIDER_ENV).ok();
+    review_from(loaded, env.as_deref())
+}
+
+fn review_from(
+    loaded: &Loaded,
+    env: Option<&str>,
+) -> (Option<ResolvedReview>, Source, Option<String>) {
+    let r = &loaded.config.review;
+    let set = &loaded.sources.review;
+    let agent = (set.agent != Source::Default).then(|| r.agent.clone());
+    let (provider, source) = if let Some(p) = r.provider {
+        (p, Source::User)
+    } else if let Some(a) = &agent {
+        let p = Provider::infer_from_binary(a).unwrap_or(Provider::Cursor);
+        (ReviewProvider::Provider(p), Source::User)
+    } else {
+        let raw = env.unwrap_or("");
+        let v = raw.trim();
+        if v.is_empty() {
+            return (None, Source::Default, None);
+        }
+        match v.parse::<ReviewProvider>() {
+            Ok(p) => (p, Source::Default),
+            Err(_) => {
+                return (
+                    None,
+                    Source::Default,
+                    Some(format!(
+                        "{REVIEW_PROVIDER_ENV}={raw:?} names no reviewer (claude, codex, cursor, agy, opencode or none), ignored"
+                    )),
+                );
+            }
+        }
+    };
+    let (binary, model, effort) = match provider {
+        ReviewProvider::None => (None, String::new(), None),
+        ReviewProvider::Provider(p) => {
+            let model = if set.model != Source::Default {
+                r.model.clone()
+            } else {
+                p.default_model().to_string()
+            };
+            let effort = r.effort.clone().filter(|_| !p.effort_levels().is_empty());
+            let binary = agent.filter(|a| Provider::infer_from_binary(a).is_none_or(|n| n == p));
+            (binary, model, effort)
+        }
+    };
+    let resolved = ResolvedReview {
+        provider,
+        binary,
+        model,
+        effort,
+        timeout_secs: r.timeout_secs,
+        pass_lines: r.pass_lines,
+    };
+    (Some(resolved), source, None)
+}
+
 /// Sets `[ci] mode` in `config_dir/config.toml`, keeping every other line as written.
-/// A symlinked `config.toml` keeps its link: the file it points at is the one rewritten, with its permissions.
 pub fn write_ci_mode(config_dir: &Path, mode: CiMode) -> Result<PathBuf> {
+    patch(
+        config_dir,
+        &[Patch {
+            table: "ci".into(),
+            key: "mode".into(),
+            value: Some(toml::Value::String(mode.as_str().into())),
+        }],
+    )
+}
+
+/// One scalar key under a table header; `value: None` removes the key.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Patch {
+    /// Dotted, as in its header: `workers.build`.
+    pub table: String,
+    pub key: String,
+    pub value: Option<toml::Value>,
+}
+
+/// Applies every edit to `config_dir/config.toml` in one atomic write, keeping every other line as written.
+/// A symlinked `config.toml` keeps its link: the file it points at is the one rewritten, with its permissions.
+/// An edit the lines cannot express, such as a key inside an inline table, refuses and leaves the file alone.
+pub fn patch(config_dir: &Path, edits: &[Patch]) -> Result<PathBuf> {
     fs::create_dir_all(config_dir)
         .map_err(crate::error::io(format!("create {}", config_dir.display())))?;
     let path = config_dir.join("config.toml");
@@ -341,18 +584,32 @@ pub fn write_ci_mode(config_dir: &Path, mode: CiMode) -> Result<PathBuf> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => (path.clone(), String::new(), None),
         Err(e) => return Err(crate::error::io(format!("read {}", path.display()))(e)),
     };
-    let text = with_ci_mode(&old, mode);
-    let parsed = toml::from_str::<toml::Table>(&text).map_err(|source| Error::Toml {
-        what: format!("check the new {}", path.display()),
-        source,
-    })?;
-    let set = parsed
-        .get("ci")
-        .and_then(|c| c.get("mode"))
-        .and_then(toml::Value::as_str);
-    if set != Some(mode.as_str()) {
+    let mut text = old;
+    let mut refused = None;
+    for (i, edit) in edits.iter().enumerate() {
+        text = patched_text(&text, edit);
+        let holds = |t: &toml::Table, e: &Patch| lookup(t, &e.table, &e.key) == e.value.as_ref();
+        let ok = toml::from_str::<toml::Table>(&text).is_ok_and(|t| {
+            edits[..=i].iter().enumerate().all(|(j, e)| {
+                let later = edits[j + 1..=i]
+                    .iter()
+                    .any(|l| (&l.table, &l.key) == (&e.table, &e.key));
+                later || holds(&t, e)
+            })
+        });
+        if !ok {
+            refused = Some(edit);
+            break;
+        }
+    }
+    if let Some(edit) = refused {
+        let table = &edit.table;
+        let by_hand = match &edit.value {
+            Some(v) => format!("set `{} = {v}` under `[{table}]`", edit.key),
+            None => format!("remove `{}` from `[{table}]`", edit.key),
+        };
         return Err(Error::Msg(format!(
-            "{} not changed: its `[ci]` table could not be patched line by line — set `mode = \"{mode}\"` under `[ci]` by hand",
+            "{} not changed: its `[{table}]` table could not be patched line by line — {by_hand} by hand",
             path.display()
         )));
     }
@@ -389,7 +646,15 @@ fn write_synced(path: &Path, text: &str, perms: Option<fs::Permissions>) -> std:
     file.sync_all()
 }
 
-/// The table a header line opens; an array-of-tables header is never `ci`.
+fn lookup<'a>(table: &'a toml::Table, dotted: &str, key: &str) -> Option<&'a toml::Value> {
+    let mut t = table;
+    for part in dotted.split('.').filter(|p| !p.is_empty()) {
+        t = t.get(part)?.as_table()?;
+    }
+    t.get(key)
+}
+
+/// The table a header line opens, its dotted parts unquoted; an array-of-tables header names no table.
 fn table_header(line: &str) -> Option<String> {
     let t = line.trim();
     if t.starts_with("[[") {
@@ -397,21 +662,41 @@ fn table_header(line: &str) -> Option<String> {
     }
     let inner = t.strip_prefix('[')?;
     let name = &inner[..inner.find(']')?];
-    Some(name.trim().trim_matches(['"', '\'']).to_string())
+    Some(
+        name.split('.')
+            .map(|p| p.trim().trim_matches(['"', '\'']))
+            .collect::<Vec<_>>()
+            .join("."),
+    )
 }
 
-fn is_mode_key(line: &str) -> bool {
-    line.split_once('=')
-        .is_some_and(|(k, _)| matches!(k.trim(), "mode" | "\"mode\"" | "'mode'"))
+fn is_key(line: &str, key: &str) -> bool {
+    line.split_once('=').is_some_and(|(k, _)| {
+        let k = k.trim();
+        k == key || k.trim_matches(['"', '\'']) == key && k.len() == key.len() + 2
+    })
 }
 
-fn with_ci_mode(old: &str, mode: CiMode) -> String {
-    let entry = format!("mode = \"{mode}\"");
+fn is_entry(line: &str) -> bool {
+    let t = line.trim();
+    !t.is_empty() && !t.starts_with('#')
+}
+
+fn patched_text(old: &str, edit: &Patch) -> String {
+    let entry = edit.value.as_ref().map(|v| format!("{} = {v}", edit.key));
     let mut lines: Vec<String> = old.lines().map(str::to_string).collect();
-    let Some(ci) = lines
-        .iter()
-        .position(|l| table_header(l).as_deref() == Some("ci"))
-    else {
+    let start = if edit.table.is_empty() {
+        Some(0)
+    } else {
+        lines
+            .iter()
+            .position(|l| table_header(l).as_deref() == Some(edit.table.as_str()))
+            .map(|i| i + 1)
+    };
+    let Some(start) = start else {
+        let Some(entry) = entry else {
+            return old.to_string();
+        };
         let mut text = old.to_string();
         if !text.is_empty() {
             if !text.ends_with('\n') {
@@ -419,15 +704,25 @@ fn with_ci_mode(old: &str, mode: CiMode) -> String {
             }
             text += "\n";
         }
-        return text + &format!("[ci]\n{entry}\n");
+        return text + &format!("[{}]\n{entry}\n", edit.table);
     };
-    let end = lines[ci + 1..]
+    let end = lines[start..]
         .iter()
         .position(|l| table_header(l).is_some())
-        .map_or(lines.len(), |i| ci + 1 + i);
-    match (ci + 1..end).find(|&i| is_mode_key(&lines[i])) {
-        Some(i) => lines[i] = entry,
-        None => lines.insert(ci + 1, entry),
+        .map_or(lines.len(), |i| start + i);
+    match ((start..end).find(|&i| is_key(&lines[i], &edit.key)), entry) {
+        (Some(i), Some(entry)) => lines[i] = entry,
+        (Some(i), None) => {
+            lines.remove(i);
+        }
+        (None, Some(entry)) => {
+            let after = (start..end)
+                .rev()
+                .find(|&i| is_entry(&lines[i]))
+                .map_or(start, |i| i + 1);
+            lines.insert(after, entry);
+        }
+        (None, None) => return old.to_string(),
     }
     lines.join("\n") + "\n"
 }
@@ -436,7 +731,6 @@ fn with_ci_mode(old: &str, mode: CiMode) -> String {
 #[serde(default)]
 struct Project {
     run: ProjectRun,
-    workers: ProjectWorkers,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -445,23 +739,17 @@ struct ProjectRun {
     budget: Option<u64>,
 }
 
-#[derive(Debug, Default, Deserialize)]
-#[serde(default)]
-struct ProjectWorkers {
-    build: ProjectWorker,
-    fix: ProjectWorker,
-    checkpoint: ProjectWorker,
-    polish: ProjectWorker,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(default)]
-struct ProjectWorker {
-    model: Option<String>,
-    effort: Option<String>,
-}
-
 impl RoleSources {
+    pub fn role(&self, role: &str) -> Option<&WorkerSources> {
+        match role {
+            "build" => Some(&self.build),
+            "fix" => Some(&self.fix),
+            "checkpoint" => Some(&self.checkpoint),
+            "polish" => Some(&self.polish),
+            _ => None,
+        }
+    }
+
     fn each_mut(&mut self) -> [(&'static str, &mut WorkerSources); 4] {
         [
             ("build", &mut self.build),
@@ -528,6 +816,7 @@ fn unknown_keys(table: &toml::Table, top: &[&str]) -> Vec<String> {
         ("source", &SOURCE_KEYS[..]),
         ("review", &REVIEW_KEYS[..]),
         ("ci", &CI_KEYS[..]),
+        ("cockpit", &COCKPIT_KEYS[..]),
     ] {
         if let (true, Some(toml::Value::Table(t))) = (top.contains(&name), table.get(name)) {
             out.extend(
@@ -537,8 +826,13 @@ fn unknown_keys(table: &toml::Table, top: &[&str]) -> Vec<String> {
             );
         }
     }
-    if let Some(toml::Value::Table(workers)) = table.get("workers") {
+    if let (true, Some(toml::Value::Table(workers))) =
+        (top.contains(&"workers"), table.get("workers"))
+    {
         for (role, v) in workers {
+            if WORKER_KEYS.contains(&role.as_str()) {
+                continue;
+            }
             if !ROLE_KEYS.contains(&role.as_str()) {
                 out.push(format!("workers.{role}"));
                 continue;
@@ -572,14 +866,14 @@ mod tests {
     }
 
     #[test]
-    fn the_project_file_overrides_the_user_file_key_by_key() {
+    fn the_project_file_overrides_the_budget_and_never_the_workers() {
         let (cfg, repo) = dirs(
-            Some("[workers.polish]\nmodel = \"opus\"\neffort = \"low\"\n"),
-            Some("[workers.polish]\nmodel = \"sonnet\"\n\n[run]\nbudget = 7\n"),
+            Some("[workers.polish]\nmodel = \"sonnet\"\neffort = \"low\"\n"),
+            Some("[workers.polish]\nmodel = \"haiku\"\n\n[run]\nbudget = 7\n"),
         );
         let l = load_with_project(cfg.path(), repo.path()).unwrap();
         assert_eq!(l.config.workers.polish.model, "sonnet");
-        assert_eq!(l.sources.workers.polish.model, Source::Project);
+        assert_eq!(l.sources.workers.polish.model, Source::User);
         assert_eq!(l.config.workers.polish.effort, "low");
         assert_eq!(l.sources.workers.polish.effort, Source::User);
         assert_eq!(l.config.workers.build.model, DEFAULT_MODEL);
@@ -587,12 +881,18 @@ mod tests {
         assert_eq!(l.sources.workers.build.effort, Source::Default);
         assert_eq!(l.config.budget_weighted_tokens, 7);
         assert_eq!(l.sources.budget, Source::Project);
-        assert!(l.warnings.is_empty(), "{:?}", l.warnings);
+        assert_eq!(l.warnings.len(), 1, "{:?}", l.warnings);
+        assert!(
+            l.warnings[0].contains(PROJECT_FILE)
+                && l.warnings[0].contains("unknown key `workers` ignored"),
+            "{:?}",
+            l.warnings
+        );
 
         let k = knobs(&l, Some(2), Some("2.1.296 (Claude Code)"));
         assert_eq!(
             k["workers"]["polish"],
-            json!({"model": "sonnet", "effort": "low", "source": "project", "effort_source": "user"})
+            json!({"model": "sonnet", "effort": "low", "source": "user"})
         );
         assert_eq!(
             k["workers"]["build"],
@@ -602,6 +902,197 @@ mod tests {
         assert_eq!(k["lanes"], 2);
         assert_eq!(k["factory_version"], env!("CARGO_PKG_VERSION"));
         assert_eq!(k["claude_version"], "2.1.296 (Claude Code)");
+    }
+
+    #[test]
+    fn config_loads_multi_provider_schema_maps_legacy_agent_and_ignores_project_workers() {
+        let user = "[cockpit]\nprovider = \"codex\"\n\n\
+                    [workers]\nprovider = \"claude\"\nmodel = \"sonnet\"\neffort = \"medium\"\n\n\
+                    [workers.build]\nprovider = \"codex\"\n\n\
+                    [workers.fix]\nprovider = \"cursor\"\neffort = \"max\"\n\n\
+                    [workers.checkpoint]\neffort = \"low\"\n\n\
+                    [review]\nprovider = \"agy\"\nmodel = \"gemini-x\"\neffort = \"xhigh\"\n\n\
+                    [ci]\nmode = \"local\"\n";
+        let (cfg, repo) = dirs(
+            Some(user),
+            Some("[workers]\nmodel = \"haiku\"\n[workers.polish]\nmodel = \"haiku\"\n"),
+        );
+        let l = load_with_project(cfg.path(), repo.path()).unwrap();
+        assert_eq!(l.warnings.len(), 1, "{:?}", l.warnings);
+        assert!(
+            l.warnings[0].contains(PROJECT_FILE)
+                && l.warnings[0].contains("unknown key `workers` ignored"),
+            "{:?}",
+            l.warnings
+        );
+        assert_eq!(l.config.workers, load(cfg.path()).unwrap().config.workers);
+        assert_eq!(l.config.cockpit.provider, Some(Provider::Codex));
+        assert_eq!(l.sources.cockpit, Source::User);
+        assert_eq!(l.config.ci.mode, Some(CiMode::Local));
+
+        let w = &l.config.workers;
+        let s = &l.sources.workers;
+        let resolved = |role| w.resolved(s, role, Provider::Claude);
+        let want = |p, m: &str, e: Option<&str>| ResolvedWorker {
+            provider: p,
+            model: m.to_string(),
+            effort: e.map(str::to_string),
+        };
+        assert_eq!(
+            resolved("build"),
+            want(Provider::Codex, "gpt-5.4", Some("high"))
+        );
+        assert_eq!(
+            resolved("fix"),
+            want(Provider::Cursor, "grok-4.7-high", None)
+        );
+        assert_eq!(
+            resolved("checkpoint"),
+            want(Provider::Claude, "sonnet", Some("low"))
+        );
+        assert_eq!(
+            resolved("polish"),
+            want(Provider::Claude, "sonnet", Some("medium"))
+        );
+        assert_eq!(
+            (w.polish.model.as_str(), w.polish.effort.as_str()),
+            ("sonnet", "medium")
+        );
+        assert_eq!(w.checkpoint.effort, "low");
+        let k = knobs(&l, None, None);
+        assert_eq!(
+            k["workers"]["polish"],
+            json!({"model": "sonnet", "effort": "medium", "source": "user"})
+        );
+
+        let (cfg, _) = dirs(
+            Some("[workers]\nmodel = \"sonnet\"\n[workers.build]\nprovider = \"claude\"\n"),
+            None,
+        );
+        let l = load(cfg.path()).unwrap();
+        let (w, s) = (&l.config.workers, &l.sources.workers);
+        assert_eq!(w.resolved(s, "build", Provider::Claude).model, "sonnet");
+        assert_eq!(w.resolved(s, "build", Provider::Codex).model, "opus");
+        assert_eq!(w.resolved(s, "fix", Provider::Codex).model, "sonnet");
+        assert_eq!(
+            w.resolved(s, "fix", Provider::Opencode),
+            want(Provider::Opencode, "sonnet", None)
+        );
+
+        let (rev, source, warning) = review_from(&load(cfg.path()).unwrap(), None);
+        assert_eq!((rev, source, warning), (None, Source::Default, None));
+
+        let (cfg, _) = dirs(Some(user), None);
+        let (rev, source, warning) = review_from(&load(cfg.path()).unwrap(), Some("none"));
+        assert_eq!((source, warning), (Source::User, None));
+        assert_eq!(
+            rev.unwrap(),
+            ResolvedReview {
+                provider: ReviewProvider::Provider(Provider::Agy),
+                binary: None,
+                model: "gemini-x".into(),
+                effort: Some("xhigh".into()),
+                timeout_secs: 1800,
+                pass_lines: 600,
+            }
+        );
+
+        for (agent, want) in [
+            ("cursor-agent", Provider::Cursor),
+            ("/opt/bin/agent", Provider::Cursor),
+            ("codex", Provider::Codex),
+            ("my-wrapper", Provider::Cursor),
+        ] {
+            let (cfg, _) = dirs(
+                Some(&format!(
+                    "[review]\nagent = \"{agent}\"\neffort = \"high\"\n"
+                )),
+                None,
+            );
+            let l = load(cfg.path()).unwrap();
+            assert!(l.warnings.is_empty(), "{:?}", l.warnings);
+            let (rev, source, warning) = review_from(&l, Some("claude"));
+            assert_eq!((source, warning), (Source::User, None), "{agent}");
+            let rev = rev.unwrap();
+            assert_eq!(rev.provider, ReviewProvider::Provider(want), "{agent}");
+            assert_eq!(rev.binary.as_deref(), Some(agent));
+            assert_eq!(rev.model, want.default_model());
+            let effort = (want == Provider::Codex).then(|| "high".to_string());
+            assert_eq!(rev.effort, effort, "{agent}");
+        }
+
+        let (cfg, _) = dirs(None, None);
+        let unset = load(cfg.path()).unwrap();
+        let (rev, source, warning) = review_from(&unset, Some(" Codex "));
+        assert_eq!((source, warning), (Source::Default, None));
+        let rev = rev.unwrap();
+        assert_eq!(rev.provider, ReviewProvider::Provider(Provider::Codex));
+        assert_eq!((rev.binary, rev.model.as_str()), (None, "gpt-5.4"));
+        let (rev, _, _) = review_from(&unset, Some("NONE"));
+        assert_eq!(rev.unwrap().provider, ReviewProvider::None);
+        assert_eq!(
+            review_from(&unset, Some("  ")),
+            (None, Source::Default, None)
+        );
+        let (rev, source, warning) = review_from(&unset, Some("gemini"));
+        assert_eq!((rev, source), (None, Source::Default));
+        assert!(warning.unwrap().contains(REVIEW_PROVIDER_ENV));
+
+        let (cfg, _) = dirs(
+            Some(
+                "[cockpit]\nprovider = \"codex\"\ntheme = 1\n\n[workers]\nprovider = \"claude\"\nlanes = 2\n\n\
+                 [workers.build]\nprovider = \"codex\"\nvariant = \"x\"\n\n[review]\nprovider = \"none\"\nflavor = 1\n",
+            ),
+            None,
+        );
+        let l = load(cfg.path()).unwrap();
+        let warned: Vec<&str> = l
+            .warnings
+            .iter()
+            .map(|w| w.rsplit('`').nth(1).unwrap())
+            .collect();
+        assert_eq!(
+            warned,
+            [
+                "review.flavor",
+                "cockpit.theme",
+                "workers.build.variant",
+                "workers.lanes"
+            ]
+        );
+        assert_eq!(l.config.review.provider, Some(ReviewProvider::None));
+        let (rev, _, _) = review_from(&l, None);
+        assert_eq!(rev.unwrap().model, "");
+
+        let (cfg, _) = dirs(Some("[review]\nprovider = \"gemini\"\n"), None);
+        assert!(matches!(load(cfg.path()), Err(Error::Toml { .. })));
+    }
+
+    #[test]
+    fn a_review_agent_runs_only_for_the_provider_it_names() {
+        let binary = |toml: &str| {
+            let (cfg, _) = dirs(Some(toml), None);
+            review_from(&load(cfg.path()).unwrap(), None)
+                .0
+                .unwrap()
+                .binary
+        };
+        assert_eq!(
+            binary("[review]\nprovider = \"codex\"\nagent = \"cursor-agent\"\n"),
+            None
+        );
+        assert_eq!(
+            binary("[review]\nprovider = \"codex\"\nagent = \"/opt/bin/codex\"\n"),
+            Some("/opt/bin/codex".into())
+        );
+        assert_eq!(
+            binary("[review]\nprovider = \"claude\"\nagent = \"/opt/bin/claude-work\"\n"),
+            Some("/opt/bin/claude-work".into())
+        );
+        assert_eq!(
+            binary("[review]\nagent = \"agent\"\n"),
+            Some("agent".into())
+        );
     }
 
     #[test]
@@ -896,6 +1387,130 @@ mod tests {
         assert!(e.to_string().contains("set `mode = \"local\"`"), "{e}");
         let path = cfg.path().join("config.toml");
         assert_eq!(fs::read_to_string(path).unwrap(), original);
+    }
+
+    #[test]
+    fn config_patch_updates_multiple_sections_atomically_preserving_comments() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let leftovers = |dir: &Path| -> Vec<String> {
+            fs::read_dir(dir)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .filter(|n| n != "config.toml")
+                .collect()
+        };
+        let s = |v: &str| Some(toml::Value::String(v.into()));
+        let edit = |table: &str, key: &str, value| Patch {
+            table: table.into(),
+            key: key.into(),
+            value,
+        };
+
+        let base = tempfile::tempdir().unwrap();
+        let fresh = base.path().join("factory");
+        let path = patch(
+            &fresh,
+            &[
+                edit("cockpit", "provider", s("claude")),
+                edit("workers.build", "provider", s("codex")),
+                edit("cockpit", "theme", None),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "[cockpit]\nprovider = \"claude\"\n\n[workers.build]\nprovider = \"codex\"\n"
+        );
+        assert!(leftovers(&fresh).is_empty(), "{:?}", leftovers(&fresh));
+
+        let dotfiles = tempfile::tempdir().unwrap();
+        let real = dotfiles.path().join("config.toml");
+        let original = "# the owner's notes\nbudget_weighted_tokens = 5 # inline\n\n\
+                        [workers]\n# shared defaults\nmodel = \"opus\"\neffort = \"high\" # keep high\n\n\
+                        [ \"workers\" . build ]\nmodel = \"opus\"\n\n\
+                        [review]\nagent = \"cursor-agent\" # legacy\ntimeout_secs = 2\n\n\
+                        [workers.fix]\neffort = \"low\"\n";
+        fs::write(&real, original).unwrap();
+        fs::set_permissions(&real, fs::Permissions::from_mode(0o600)).unwrap();
+        let cfg = tempfile::tempdir().unwrap();
+        let link = cfg.path().join("config.toml");
+        symlink(&real, &link).unwrap();
+
+        patch(
+            cfg.path(),
+            &[
+                edit("cockpit", "provider", s("codex")),
+                edit("workers", "provider", s("claude")),
+                edit("workers", "effort", None),
+                edit("workers.build", "provider", s("codex")),
+                edit("workers.build", "model", None),
+                edit("review", "provider", s("cursor")),
+                edit("review", "agent", None),
+                edit("review", "pass_lines", Some(toml::Value::Integer(400))),
+                edit("ci", "mode", s("local")),
+            ],
+        )
+        .unwrap();
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            fs::metadata(&real).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let want = "# the owner's notes\nbudget_weighted_tokens = 5 # inline\n\n\
+                    [workers]\n# shared defaults\nmodel = \"opus\"\nprovider = \"claude\"\n\n\
+                    [ \"workers\" . build ]\nprovider = \"codex\"\n\n\
+                    [review]\ntimeout_secs = 2\nprovider = \"cursor\"\npass_lines = 400\n\n\
+                    [workers.fix]\neffort = \"low\"\n\n\
+                    [cockpit]\nprovider = \"codex\"\n\n\
+                    [ci]\nmode = \"local\"\n";
+        assert_eq!(fs::read_to_string(&real).unwrap(), want);
+        assert!(leftovers(dotfiles.path()).is_empty());
+        assert!(leftovers(cfg.path()).is_empty());
+        let l = load(cfg.path()).unwrap();
+        assert!(l.warnings.is_empty(), "{:?}", l.warnings);
+        assert_eq!(l.config.cockpit.provider, Some(Provider::Codex));
+        assert_eq!(l.config.workers.provider, Some(Provider::Claude));
+        assert_eq!(l.config.workers.effort, None);
+        assert_eq!(l.config.workers.build.provider, Some(Provider::Codex));
+        assert_eq!(l.sources.workers.build.model, Source::Default);
+        assert_eq!(
+            l.config.review.provider,
+            Some(ReviewProvider::Provider(Provider::Cursor))
+        );
+        assert_eq!(l.sources.review.agent, Source::Default);
+        assert_eq!(l.config.review.pass_lines, 400);
+        assert_eq!(l.config.ci.mode, Some(CiMode::Local));
+
+        patch(cfg.path(), &[edit("review", "provider", s("cursor"))]).unwrap();
+        assert_eq!(fs::read_to_string(&real).unwrap(), want);
+
+        let inline = "workers = { build = { model = \"opus\" } }\n\n[review]\nmodel = \"m\"\n";
+        let (cfg, _) = dirs(Some(inline), None);
+        let e = patch(
+            cfg.path(),
+            &[
+                edit("review", "model", s("n")),
+                edit("workers.build", "model", s("sonnet")),
+            ],
+        )
+        .unwrap_err();
+        assert!(
+            e.to_string()
+                .contains("set `model = \"sonnet\"` under `[workers.build]` by hand"),
+            "{e}"
+        );
+        let e = patch(cfg.path(), &[edit("workers.build", "model", None)]).unwrap_err();
+        assert!(e.to_string().contains("remove `model`"), "{e}");
+        assert_eq!(
+            fs::read_to_string(cfg.path().join("config.toml")).unwrap(),
+            inline
+        );
+        assert!(leftovers(cfg.path()).is_empty());
     }
 
     #[test]

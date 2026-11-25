@@ -49,7 +49,7 @@ If the idea already sits in `docs/ideas/`, it graduates: claim the number with `
 
 **Do not draft until you have enough.** Expect **more than one round** — two interview rounds plus a review pass is the norm, not a sign something went wrong.
 
-**Use the AskUserQuestion tool as the default way to ask.** Not a fallback for tidy questions — the primary interview mechanism. Every decision fork, every "which of these shapes", every scope boundary goes through it with 2-4 concrete options, each labelled with what it costs. Put your recommendation first and mark it *(Recommended)*.
+**Ask with your harness's structured choice prompt as the default way to ask** (a multiple-choice question tool where it has one; a numbered list of options otherwise). Not a fallback for tidy questions — the primary interview mechanism. Every decision fork, every "which of these shapes", every scope boundary goes through it with 2-4 concrete options, each labelled with what it costs. Put your recommendation first and mark it *(Recommended)*.
 
 Fall back to plain prose questions only when the answer genuinely cannot be enumerated — an unbounded "what triggered this?", or a follow-up on something they just said. Batch 2-3 at a time; never interrogate one line at a time.
 
@@ -96,7 +96,7 @@ Collect it all in a **Verification notes** section at the end of the PRD, dated,
 
 ## 4. Adversarial pass — hand the draft to something that did not write it
 
-**Do not review your own draft.** An author defends its own reasoning; that is why this step used to find so little. The pass is delegated to a reviewer with **fresh eyes and no inherited context**, using the `second opinion` role in [_shared/models.md](../_shared/models.md): run `factory review second --doc docs/features/{NNN}-{slug}/prd.md --prompt "<the instruction in the next paragraph>"`, cross-vendor and unconditional. Exit 2 is unreviewed: give the same instruction to a fresh agent on the judgment model instead, and say so. Never a `fork`: a fork inherits the reasoning you are asking it to attack.
+**Do not review your own draft.** An author defends its own reasoning; that is why this step used to find so little. The pass is delegated to a reviewer with **fresh eyes and no inherited context**, using the `second opinion` role in [_shared/models.md](../_shared/models.md): run `factory review second --doc docs/features/{NNN}-{slug}/prd.md --prompt "<the instruction in the next paragraph>"`, its provider set by `[review]` (`factory setup review`). Exit 2 with `disabled:` means the owner opted out: say the second opinion was disabled and skip the fallback. Exit 2 with `unreviewed:` means it could not run: give the same instruction to a fresh local subagent on the judgment model instead, and say so. Never a `fork`: a fork inherits the reasoning you are asking it to attack.
 
 Give it the draft, the `file:line` claims, and one instruction: **find what cannot be true.** Not style, not scope, not whether the feature is a good idea, and not more failure scenarios the draft could also handle. Claims about the code that recon got wrong, decisions that contradict each other, acceptance criteria nothing could actually check, an FR that two sections define differently, an FR a `factory` run could not build without a human — and, **for every acceptance criterion, the surface that would show it moving**: a criterion with no observable surface passes every review and breaks at slicing (arca PRD-015 FR-40 reached the slicer before anyone noticed that nothing an integrator could see moved with a tenant clock).
 
@@ -116,7 +116,7 @@ The wrong version having been confidently argued is information for the next rea
 
 Extras pass the gate one at a time, each looking reasonable on its own; together they are where a PRD doubles. So once the adversarial pass is judged, **list every mechanism in the draft that no Why-now pain asks for**: each extra, each figure or counter, each recovery or release path, each place a mechanism is applied beyond where its evidence came from. Give each one line: the scenario it handles, its evidence or "none", and a rough size.
 
-Then ask **one multi-select AskUserQuestion: "keep which?"** Everything unticked is cut: its FR section stays, titled `RETIRED`, and it becomes a `Not handled:` line in §Non-goals. Nothing to list → skip the question and say so in the report; that is the result a good interview produces. The tool takes 2-4 options per question and up to four questions per call, so past four items split them by FR, one question each; a lone item is a keep/cut pair.
+Then ask **one multi-select structured question: "keep which?"** Everything unticked is cut: its FR section stays, titled `RETIRED`, and it becomes a `Not handled:` line in §Non-goals. Nothing to list → skip the question and say so in the report; that is the result a good interview produces. Keep it to 2-4 options per question and at most four questions per round, so past four items split them by FR, one question each; a lone item is a keep/cut pair.
 
 ## 6. Write it
 
@@ -162,12 +162,12 @@ End with one recommendation:
 - **Big / multi-FR** → `/slice` to slice it.
 - **Small** → no slices, build straight from `prd.md`. Say so in the summary so nobody looks for a missing slice board.
 - **Still open** → say which `OPEN-n` block the build, and that the PRD is deliberately unsliceable until they close.
-- **Agreed** (§7 set it `ready` and committed it) → the last act is one `AskUserQuestion`: **Build it now (Recommended)** / **Slice only** / **Stop here**. A tool question reaches the owner's phone; a prose offer does not.
-  - **Build it now** → invoke `/deliver NNN` with the Skill tool, in this session; it slices the PRD itself. Running it is the approval: it builds and proves each slice, polishes, and opens a pull request with CI green. It never merges.
+- **Agreed** (§7 set it `ready` and committed it) → the last act is one structured choice: **Build it now (Recommended)** / **Slice only** / **Stop here**. A structured question reaches the owner's phone where the harness supports it; a prose offer does not.
+  - **Build it now** → invoke `/deliver NNN` yourself, in this session; it slices the PRD itself. Running it is the approval: it builds and proves each slice, polishes, and opens a pull request with CI green. It never merges.
   - **Slice only** → invoke `/slice NNN`, attended.
   - **Stop here** → end with the recommendation above that fits.
 
-  The owner may still `/clear` and type `/deliver NNN` at any time.
+  The owner may still start a fresh session and type `/deliver NNN` at any time.
 
 And, whichever of those applies:
 

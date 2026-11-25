@@ -5,8 +5,9 @@ use std::process::{Command, Stdio};
 
 use super::board::{self, Feature};
 use super::{Branch, FeatureRef, Preflight, Slice, check, gate, log, project};
-use crate::config::{self, CiMode, Review};
+use crate::config::{self, CiMode};
 use crate::error::{io, json};
+use crate::provider::{self, Provider, ReviewProvider};
 use crate::{Result, leaks, paths, review, skills};
 
 pub fn git(root: &Path, args: &[&str]) -> Option<String> {
@@ -355,13 +356,32 @@ fn feature(
     Ok(())
 }
 
-/// Probes the second opinion: an ok line when it is ready, a judge line otherwise, never a refusal.
-/// Kept out of `run`, whose in-process callers must not spawn the agent.
-pub fn second_opinion(cfg: &Review, pf: &mut Preflight) {
+/// Starts every reviewer ask, so `factory answer` knows which ask writes `[review]`.
+pub const REVIEW_ASK_PREFIX: &str = "adversarial reviewer not set in config.toml";
+
+/// Probes the second opinion: an ok line when it is ready or disabled, a judge line when it is not, an ask when
+/// nobody chose a reviewer. Kept out of `run`, whose in-process callers must not spawn the agent.
+pub fn second_opinion(loaded: &config::Loaded, pf: &mut Preflight) {
+    let (resolved, source, warning) = config::resolve_review(loaded);
+    if let Some(w) = warning {
+        pf.judge.push(w);
+    }
+    let Some(cfg) = resolved else {
+        pf.ask.push(review_ask(&provider::detect_installed()));
+        return;
+    };
+    if cfg.provider == ReviewProvider::None {
+        let source = match source {
+            config::Source::Default => "env",
+            _ => "user",
+        };
+        pf.ok.push(format!("second opinion: disabled ({source})"));
+        return;
+    }
     let probed = review::new_log_dir(&paths::data_dir())
         .map_err(|e| e.to_string())
         .and_then(|dir| {
-            let probed = review::probe(cfg, &dir, None);
+            let probed = review::probe_resolved(&cfg, &dir, None);
             // The line carries the verdict; a log dir per preflight would only pile up.
             let _ = std::fs::remove_dir_all(&dir);
             probed
@@ -369,13 +389,43 @@ pub fn second_opinion(cfg: &Review, pf: &mut Preflight) {
     match probed {
         Ok(()) => pf.ok.push(format!(
             "second opinion: {} with {} ready",
-            cfg.agent, cfg.model
+            review::binary_name(&cfg),
+            cfg.model
         )),
         Err(reason) => pf.judge.push(format!(
-            "second opinion not ready: {reason} — run `{} login`; polish falls back to one Claude agent per {}-line pass",
-            cfg.agent, cfg.pass_lines
+            "second opinion not ready: {reason} — run `{}` or `factory setup review`; polish falls back to a fresh local subagent per {}-line pass",
+            review::login_hint(&cfg),
+            cfg.pass_lines
         )),
     }
+}
+
+/// Names the installed CLIs, or all five when none is on `PATH`.
+fn review_ask(installed: &[provider::Detected]) -> String {
+    let name = |p: Provider| {
+        if p.default_model().is_empty() {
+            format!("`{p}:<model>`")
+        } else {
+            format!("`{p}`")
+        }
+    };
+    let names: Vec<String> = if installed.is_empty() {
+        Provider::ALL.into_iter().map(name).collect()
+    } else {
+        installed.iter().map(|d| name(d.provider)).collect()
+    };
+    let which = if installed.is_empty() {
+        "none found on PATH, so any of"
+    } else {
+        "installed:"
+    };
+    format!(
+        "{REVIEW_ASK_PREFIX} — answer a provider ({which} {}), as `<provider>`, `<provider>:<model>` or \
+         `<provider>:<model>:<effort>`, to give every run a cross-vendor second opinion from it; \
+         `none` disables cross-vendor review; both are saved to config.toml for every repo. \
+         `proceed` skips the second opinion for this run only and leaves config.toml unset",
+        names.join(", ")
+    )
 }
 
 /// Starts every CI-mode ask, so `factory answer` knows which ask writes `[ci] mode`.
@@ -412,7 +462,7 @@ pub fn cli(root: &Path, reference: &str, as_json: bool, out: &mut dyn Write) -> 
     let (mut pf, _) = run(root, reference)?;
     match config::load(&paths::config_dir()) {
         Ok(loaded) => {
-            second_opinion(&loaded.config.review, &mut pf);
+            second_opinion(&loaded, &mut pf);
             ci_mode(&loaded, None, &mut pf);
         }
         Err(e) => {
