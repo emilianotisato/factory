@@ -3,6 +3,10 @@
 **Source**: [`prd.md`](prd.md) → §6 (FR-4), plus the `skills/deliver/SKILL.md` updates from §4 (FR-2) and §5 (FR-3). **Depends on**: — _(independent: edits only `skills/`, `src/skills.rs`, `Cargo.toml`, `Cargo.lock`, `tests/skills_bundle.rs`, and `tests/cockpit.rs`, none of which slices 01–03 touch)_
 **Created**: 2026-11-25
 
+**Progress**:
+- Checkpoint 1, FR-4 (`every_file_under_skills_is_in_the_bundle_byte_for_byte`, `bundle_lock_matches`, `gate_skill_carries_ci_economics_guidance`, `the_cockpit_skill_is_under_sixty_lines_and_names_the_five_commands` green): cp-1/FR-4/tests.txt
+- Checkpoint 1, FR-3 (`deliver_skill_handles_local_ci_mode` green): cp-1/FR-3/tests.txt
+
 **Slice**: Adds `skills/gate/references/ci.md` with the draft-silent PR CI design rule, split-tier CI guidance, and the 8-item CI cost audit checklist; updates `skills/gate/SKILL.md` (Round 1, §5 audit, §6 declare) and `skills/deliver/SKILL.md` (`--ci`, CI-mode `ASK-n`, §3 `[skip ci]` when `ci == "local"`) while keeping `deliver/SKILL.md` strictly under 60 lines; registers the new reference in `src/skills.rs`, bumps `Cargo.toml` to `0.15.0`, relocks `skills/bundle.lock`, and pins the new skill guidance with unique-passage tests.
 
 ## Current code / environment

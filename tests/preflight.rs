@@ -246,8 +246,8 @@ fn knobs_ci(fx: &Fixture) -> Value {
     serde_json::from_str::<Value>(row.knobs.as_deref().unwrap()).unwrap()["ci"].clone()
 }
 
-/// Starts a run that parks on the CI-mode ask as `ASK-1`.
-fn parked_on_ci_ask(fx: &Fixture) {
+/// Starts a run that parks on the CI-mode ask and returns the ask's id.
+fn parked_on_ci_ask(fx: &Fixture) -> String {
     fx.write_plan(&[
         json!({"outcome": "done"}),
         json!({"outcome": "done"}),
@@ -258,22 +258,23 @@ fn parked_on_ci_ask(fx: &Fixture) {
     let (code, out) = unset(fx, &["run", "001"]);
     assert_eq!(code, Some(0), "{out}");
     assert_eq!(run_state(fx)["phase"], "waiting-owner", "{out}");
-    let asks: Vec<String> = events(fx)
+    let asks: Vec<(String, String)> = events(fx)
         .iter()
         .filter(|e| e["kind"] == "ask_opened")
         .map(|e| {
-            format!(
-                "{} {}",
-                e["id"].as_str().unwrap(),
-                e["text"].as_str().unwrap()
+            (
+                e["id"].as_str().unwrap().to_string(),
+                e["text"].as_str().unwrap().to_string(),
             )
         })
         .collect();
     assert_eq!(asks.len(), 1, "{asks:?}");
-    assert!(asks[0].starts_with(&format!("ASK-1 {CI_ASK}")), "{asks:?}");
+    let (id, text) = &asks[0];
+    assert!(text.starts_with(CI_ASK), "{asks:?}");
     for choice in ["`local`", "`remote`", "`proceed`"] {
-        assert!(asks[0].contains(choice), "{choice}: {asks:?}");
+        assert!(text.contains(choice), "{choice}: {asks:?}");
     }
+    id.clone()
 }
 
 fn answered(fx: &Fixture) -> usize {
@@ -306,7 +307,7 @@ fn preflight_asks_when_ci_mode_is_unset_and_exits_two() {
     fs::remove_file(fx.path().join("stray.txt")).unwrap();
 
     let fresh = Fixture::new("run-ci-unset");
-    parked_on_ci_ask(&fresh);
+    let _ = parked_on_ci_ask(&fresh);
     assert!(run_state(&fresh)["ci_mode"].is_null());
     assert!(!config_toml(&fresh).exists());
 
@@ -325,8 +326,8 @@ fn preflight_asks_when_ci_mode_is_unset_and_exits_two() {
 #[test]
 fn answer_local_writes_config_and_clears_future_preflight() {
     let fx = Fixture::new("answer-ci-local");
-    parked_on_ci_ask(&fx);
-    let (code, out) = unset(&fx, &["answer", "ASK-1", "local"]);
+    let ask = parked_on_ci_ask(&fx);
+    let (code, out) = unset(&fx, &["answer", &ask, "local"]);
     assert_eq!(code, Some(0), "{out}");
     assert!(
         out.contains("every ask answered — the run proceeds"),
@@ -355,8 +356,8 @@ fn answer_local_writes_config_and_clears_future_preflight() {
 #[test]
 fn answer_proceed_keeps_config_unset_and_runs_remote() {
     let fx = Fixture::new("answer-ci-proceed");
-    parked_on_ci_ask(&fx);
-    let (code, out) = unset(&fx, &["answer", "ASK-1", "proceed"]);
+    let ask = parked_on_ci_ask(&fx);
+    let (code, out) = unset(&fx, &["answer", &ask, "proceed"]);
     assert_eq!(code, Some(0), "{out}");
     assert!(
         out.contains("every ask answered — the run proceeds"),
@@ -369,16 +370,16 @@ fn answer_proceed_keeps_config_unset_and_runs_remote() {
         knobs_ci(&fx),
         json!({"value": "remote", "source": "default"})
     );
-    assert!(run_dir(&fx).join("answers/ASK-1.json").is_file());
+    assert!(run_dir(&fx).join(format!("answers/{ask}.json")).is_file());
 }
 
 #[test]
 fn answer_invalid_ci_mode_refuses_and_keeps_ask_open() {
     let fx = Fixture::new("answer-ci-bogus");
-    parked_on_ci_ask(&fx);
+    let ask = parked_on_ci_ask(&fx);
     let log = fx.path().join(harness::FEATURE_DIR).join("log.jsonl");
     let log_before = fs::read_to_string(&log).unwrap_or_default();
-    let (code, out) = unset(&fx, &["answer", "ASK-1", "bogus"]);
+    let (code, out) = unset(&fx, &["answer", &ask, "bogus"]);
     assert_eq!(code, Some(1), "{out}");
     for choice in ["`local`", "`remote`", "`proceed`"] {
         assert!(out.contains(choice), "{choice}: {out}");
@@ -386,11 +387,11 @@ fn answer_invalid_ci_mode_refuses_and_keeps_ask_open() {
     assert!(!config_toml(&fx).exists());
     assert_eq!(fs::read_to_string(&log).unwrap_or_default(), log_before);
     assert_eq!(answered(&fx), 0);
-    assert!(!run_dir(&fx).join("answers/ASK-1.json").exists());
+    assert!(!run_dir(&fx).join(format!("answers/{ask}.json")).exists());
     assert_eq!(run_state(&fx)["phase"], "waiting-owner");
     assert!(run_state(&fx)["ci_mode"].is_null());
 
-    let (code, out) = unset(&fx, &["answer", "ASK-1", "Remote"]);
+    let (code, out) = unset(&fx, &["answer", &ask, "Remote"]);
     assert_eq!(code, Some(0), "{out}");
     assert_eq!(answered(&fx), 1);
     assert_eq!(run_state(&fx)["ci_mode"], "remote");

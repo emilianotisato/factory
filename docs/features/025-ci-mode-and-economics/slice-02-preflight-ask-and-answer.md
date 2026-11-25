@@ -3,6 +3,9 @@
 **Source**: [`prd.md`](prd.md) → §4 (FR-2). **Depends on**: 01 _(uses `CiMode`, `resolve_ci_mode`, `write_ci_mode`, `Run::set_ci_mode`, and edits `src/cli/run.rs`)_
 **Created**: 2026-11-25
 
+**Progress**:
+- Checkpoint 1, FR-2 (`preflight_asks_when_ci_mode_is_unset_and_exits_two`, `answer_local_writes_config_and_clears_future_preflight`, `answer_proceed_keeps_config_unset_and_runs_remote`, `answer_invalid_ci_mode_refuses_and_keeps_ask_open` green): cp-1/FR-2/tests.txt
+
 **Slice**: **Highest-risk slice** — any mistake in the preflight ask trigger or exit-code logic would park runs unexpectedly or break existing preflight tests. When CI mode is unset in `~/.config/factory/config.toml` (and no `--ci` flag or `FACTORY_CI_MODE` env var is present), `factory docs preflight` exits 2 with a clear `!` ask and `factory run` opens one `ASK-n` warning about `local` vs `remote` tradeoffs. Answering `local` or `remote` via `factory answer ASK-n` persists `[ci] mode` atomically to `config.toml`, updates `state.json` and `runs.knobs`, and wakes the run; `proceed` runs `remote` once without writing `config.toml`; any other text refuses cleanly with exit 1 leaving the ask open.
 
 ## Current code / environment

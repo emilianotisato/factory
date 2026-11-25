@@ -3,6 +3,9 @@
 **Source**: [`prd.md`](prd.md) → §5 (FR-3, Rust half). **Depends on**: 01 _(reads `CiMode` and `RunState.ci_mode`; touches no files in common with slice 02 or slice 04)_
 **Created**: 2026-11-25
 
+**Progress**:
+- Checkpoint 1, FR-3 (`local_ci_skips_watch_stamps_skip_ci_and_reports_local_status`, `remote_ci_keeps_plain_ship_subject_and_watches_checks` green; mutation on the `[skip ci]` stamp red then green): cp-1/FR-3/tests.txt, cp-1/FR-3/mutation-red.txt, cp-1/FR-3/mutation-restored.txt
+
 **Slice**: Implements the `local` CI closeout path in the driver: `ship()` and `refresh_numbers()` append ` [skip ci]` to their commit subjects, `closeout::run()` skips `watch_ci()` after opening the draft PR and emits `EventKind::CiLocal { head }`, and every status/live consumer (`events.rs`, `live/timeline.rs`, `live/label.rs`, `live/gate.rs`, `live/now.rs`, `cli/status.rs`) renders `"local"` cleanly without changing `factory wait`'s `finished: <pr_url>` output.
 
 ## Current code / environment

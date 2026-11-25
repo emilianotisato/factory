@@ -3,6 +3,9 @@
 **Source**: [`prd.md`](prd.md) → §3 (FR-1). **Depends on**: — _(independent spine: slices 02 and 03 build on `CiMode`, `resolve_ci_mode`, `write_ci_mode`, `RunState.ci_mode`, and the test-harness default)_
 **Created**: 2026-11-25
 
+**Progress**:
+- Checkpoint 1, FR-1 (`ci_mode_reads_user_config_flag_and_env_never_project_toml`, `write_ci_mode_preserves_comments_and_updates_idempotently`, `run_flag_ci_persists_across_daemon_and_resume` green): cp-1/FR-1/tests.txt
+
 **Slice**: Adds user-only CI mode (`[ci] mode = "local" | "remote"` in `~/.config/factory/config.toml`), a pure `resolve_ci_mode` helper (`--ci` → user `config.toml` → `FACTORY_CI_MODE` → unset), an atomic comment-preserving `write_ci_mode` writer, `--ci <local|remote>` on `factory run` persisted to `state.json` and `runs.knobs`, and `FACTORY_CI_MODE=remote` in `tests/harness/mod.rs` so all existing tests stay untouched. Preflight asking (slice 02) and local closeout behavior (slice 03) follow; until they land, behavior for existing runs is unchanged.
 
 ## Current code / environment
