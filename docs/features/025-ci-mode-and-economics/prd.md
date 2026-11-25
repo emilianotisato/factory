@@ -165,7 +165,16 @@ No row needs a human, so no `qa-guide.md` is generated.
 
 ## 9. Slices
 
-_(Not sliced yet. Run `/slice` once agreed.)_
+Four slices on one branch, `feat/ci-mode-and-economics`, one PR, one commit per slice, Prove driven at the checkpoints.
+
+- **01 — CI mode config, atomic writer, and `--ci` flag** (FR-1, spine). `src/config.rs`, `src/run.rs`, `src/cli/run.rs`, and `tests/harness/mod.rs` (`FACTORY_CI_MODE=remote`). Independent and the prerequisite for slices 02 and 03.
+- **02 — Preflight CI ask and persistent answer** (FR-2, highest-risk). `src/docs/preflight.rs`, `src/cli/run.rs`, `src/cli/answer.rs`, and `tests/preflight.rs`. **Depends on 01** for `CiMode`, `resolve_ci_mode`, `write_ci_mode`, `Run::set_ci_mode`, and `src/cli/run.rs`.
+- **03 — Local CI closeout, `[skip ci]` commits, and live status** (FR-3, Rust half). `src/events.rs`, `src/closeout.rs`, `src/live/{timeline,label,gate,now}.rs`, `src/cli/status.rs`, and `tests/closeout.rs`. **Depends on 01** for `CiMode` and `RunState.ci_mode`; independent of 02 and 04.
+- **04 — Gate CI economics guide and `/deliver` updates** (FR-4 + `/deliver` skill wording from FR-2/FR-3). `skills/gate/references/ci.md`, `skills/gate/SKILL.md`, `skills/deliver/SKILL.md`, `src/skills.rs`, `Cargo.toml` (`0.15.0`), `Cargo.lock`, `skills/bundle.lock`, `tests/skills_bundle.rs`, and `tests/cockpit.rs`. Independent of 01, 02, and 03 (zero file overlap).
+
+**Order and checkpoints.** Wave 1 runs **01** and **04** in parallel; **CP-1** lands right after both (`checkpoint_every = 2`), proving FR-1, FR-4, and the `/deliver` skill passages before anything builds on 01. Wave 2 runs **02** and **03** in parallel; **CP-2** (final checkpoint) proves FR-2, FR-3, and re-proves all rows.
+
+**No `qa-guide.md`:** no row in §8 QA plan is marked `Human? = yes`, so nothing is generated for human QA.
 
 ## 10. Non-goals
 
