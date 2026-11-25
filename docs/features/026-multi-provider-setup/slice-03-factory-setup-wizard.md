@@ -3,7 +3,12 @@
 **Source**: [`prd.md`](prd.md) → §5 (FR-3), §9, §11. **Depends on**: 01 (needs `Provider`, `ReviewProvider`, `detect_installed`, `discover_models`, extended `Config` schema, `resolve_review`, and `config::patch`)
 **Created**: 2026-11-25
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**:
+- **Built:** `src/cli/setup.rs` (`SetupArgs`/`SetupSection`/`WorkerRole`, `--show [--json]`, flag mode, non-TTY usage guard, `run_wizard` over an injected `BufRead`) wired as `Command::Setup` in `src/main.rs` and `src/cli/mod.rs`. `tests/setup.rs` has the three FR-3 tests: the wizard in-process with stub CLIs on a synthetic PATH, and flags, `--show --json` and the non-TTY guard through the binary.
+- **Inner loop:** 1 run, 0 red, ~2 min. Caught nothing.
+- **Seen red once:** `setup_wizard_configures_all_sections_and_keeps_defaults` failed when Enter cleared saved keys: the second all-Enter run rewrote `config.toml`. `setup_non_interactive_flags_and_show_json` failed with flag handling disabled: `setup review --provider codex …` exited 1 with the usage text. `setup_non_tty_without_flags_exits_one` failed with the TTY guard removed: "factory [\"setup\"] blocked on a piped stdin" after 10 s. All three were green again once restored.
+- **Deviations:** the spec gave `run_with(args, input, is_tty, config_dir, repo, out, err)`. It takes an `Env` struct instead (`config_dir`, `repo`, `path`, `is_tty`) because the PATH searched for CLIs is an input too, and eight positional parameters trip clippy. `run_wizard` takes the same `Env`. AD-9 covers what switching the review provider does to the legacy `agent` and the old model/effort. AD-10 covers Enter on an unset provider prompt saving the suggested CLI.
+- **Prove (CP-2):** the FR-3 row is left for the checkpoint.
 
 **Slice**: Adds the `factory setup` subcommand (`src/cli/setup.rs`) supporting interactive TTY wizard mode (`factory setup` and single-section `factory setup cockpit|workers|review|ci`), `--show [--json]` inspection without touching disk, and non-interactive scriptable flags for cockpit agents and automation. Leaves multi-provider `review.rs` & preflight ask to slice 04 and non-Claude worker provider selection to PRD-027.
 

@@ -1,4 +1,4 @@
-use std::io::{stderr, stdin, stdout};
+use std::io::{IsTerminal as _, stderr, stdin, stdout};
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -69,6 +69,8 @@ enum Command {
         #[command(subcommand)]
         verb: cli::lanes::LanesVerb,
     },
+    /// Choose the cockpit, worker models, reviewer and CI mode; --show prints them
+    Setup(cli::setup::SetupArgs),
     /// Replace this binary with the latest release
     Upgrade(cli::upgrade::UpgradeArgs),
     /// The feature-docs board: native on v3, `docs.mjs` on a v2 repo
@@ -103,6 +105,13 @@ fn main() -> ExitCode {
         Command::Skills { verb } => cli::skills::skills(&verb, &mut stdout()),
         Command::Cockpit { verb } => cli::cockpit::cockpit(&verb, &mut stdout()),
         Command::Lanes { verb } => cli::lanes::lanes(&verb, &mut stdout()),
+        Command::Setup(a) => cli::setup::setup(
+            &a,
+            &mut stdin().lock(),
+            stdin().is_terminal(),
+            &mut stdout(),
+            &mut stderr(),
+        ),
         Command::Upgrade(a) => cli::upgrade::upgrade(&a, &mut stdout()),
         Command::Docs { args } => cli::docs::docs(&args, &mut stdout(), &mut stderr()),
     };
