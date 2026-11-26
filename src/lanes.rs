@@ -1,4 +1,6 @@
 //! A lane is both what a worker gets (env, setup) and where it runs: a detached worktree under the data dir.
+use std::collections::HashSet;
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output};
@@ -96,7 +98,11 @@ impl Lane {
     }
 
     pub fn setup(&self, dir: &Path) -> Result<bool> {
-        let Some(out) = self.run_setup(dir)? else {
+        self.setup_capped(dir, None)
+    }
+
+    pub fn setup_capped(&self, dir: &Path, limit: Option<&str>) -> Result<bool> {
+        let Some(out) = self.run_setup_capped(dir, limit)? else {
             return Ok(false);
         };
         if !out.status.success() {
@@ -113,12 +119,15 @@ impl Lane {
     }
 
     pub fn run_setup(&self, dir: &Path) -> Result<Option<Output>> {
+        self.run_setup_capped(dir, None)
+    }
+
+    pub fn run_setup_capped(&self, dir: &Path, limit: Option<&str>) -> Result<Option<Output>> {
         let Some(cmd) = &self.setup else {
             return Ok(None);
         };
-        Command::new("sh")
-            .arg("-c")
-            .arg(cmd)
+        let (mut command, _) = crate::memcap::shell_command(cmd, limit, None);
+        command
             .current_dir(dir)
             .envs(self.env())
             .output()
@@ -136,6 +145,13 @@ impl Lane {
 }
 
 /// Via the common dir: `--show-toplevel` from a lane would answer the lane itself.
+pub fn same_repo(a: &Path, b: &Path) -> bool {
+    fn key(p: &Path) -> Option<PathBuf> {
+        main_tree(p).ok().or_else(|| p.canonicalize().ok())
+    }
+    matches!((key(a), key(b)), (Some(x), Some(y)) if x == y)
+}
+
 pub fn main_tree(from: &Path) -> Result<PathBuf> {
     let common = git(
         from,
@@ -222,9 +238,10 @@ pub fn ensure(data: &Path, main: &Path, n: u32, seed: &[String]) -> Result<Repor
         let force = if registered { "-f" } else { "--quiet" };
         git(main, &["worktree", "add", force, "--detach", &at, "HEAD"])?;
     }
+    sweep_seed_temps(&parent, n)?;
     let seeds = seed
         .iter()
-        .map(|p| Ok((p.clone(), seed_one(main, &lane, p)?)))
+        .map(|p| Ok((p.clone(), seed_one(main, &lane, n, p)?)))
         .collect::<Result<Vec<_>>>()?;
     Ok(Report {
         n,
@@ -246,7 +263,22 @@ fn worktrees(main: &Path) -> Result<Vec<PathBuf>> {
         .collect())
 }
 
-fn seed_one(main: &Path, lane: &Path, rel: &str) -> Result<Seeded> {
+fn sweep_seed_temps(parent: &Path, n: u32) -> Result<()> {
+    let prefix = format!(".seed-tmp-lane-{n}-");
+    let Ok(entries) = fs::read_dir(parent) else {
+        return Ok(());
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with(&prefix) && name.ends_with(".tmp") {
+            remove(&entry.path())?;
+        }
+    }
+    Ok(())
+}
+
+fn seed_one(main: &Path, lane: &Path, n: u32, rel: &str) -> Result<Seeded> {
     let inside = Path::new(rel)
         .components()
         .all(|c| matches!(c, Component::Normal(_) | Component::CurDir));
@@ -265,22 +297,40 @@ fn seed_one(main: &Path, lane: &Path, rel: &str) -> Result<Seeded> {
     if from.symlink_metadata().is_err() {
         return Ok(Seeded::Skipped);
     }
+    let lane_parent = lane.parent().expect("a lane dir has a parent");
     let to = lane.join(relative);
     if to.symlink_metadata().is_ok() {
         return Ok(Seeded::Kept);
     }
+    let tmp = lane_parent.join(format!(".seed-tmp-lane-{n}-{}.tmp", std::process::id()));
+    remove(&tmp)?;
     if let Some(parent) = to.parent() {
         fs::create_dir_all(parent).map_err(io(format!("mkdir {}", parent.display())))?;
     }
-    if cp(CLONE, &from, &to) {
+    if cp(CLONE, &from, &tmp) {
+        if fs::rename(&tmp, &to).is_err() {
+            remove(&tmp)?;
+            return Err(Error::Msg(format!(
+                "seed `{rel}`: rename {} to {}",
+                tmp.display(),
+                to.display()
+            )));
+        }
         return Ok(Seeded::Clone);
     }
-    // A partial clone left behind would read as `kept` next time.
-    remove(&to)?;
-    if cp(COPY, &from, &to) {
+    remove(&tmp)?;
+    if cp(COPY, &from, &tmp) {
+        if fs::rename(&tmp, &to).is_err() {
+            remove(&tmp)?;
+            return Err(Error::Msg(format!(
+                "seed `{rel}`: rename {} to {}",
+                tmp.display(),
+                to.display()
+            )));
+        }
         return Ok(Seeded::Copy);
     }
-    remove(&to)?;
+    remove(&tmp)?;
     Err(Error::Msg(format!(
         "seed `{rel}`: could not copy {} to {}",
         from.display(),
@@ -316,6 +366,10 @@ fn remove(p: &Path) -> Result<()> {
         fs::remove_file(p)
     }
     .map_err(io(format!("remove {}", p.display())))
+}
+
+pub fn head_rev(main: &Path) -> Result<String> {
+    Ok(git(main, &["rev-parse", "HEAD"])?.trim().to_string())
 }
 
 /// `clean -fd`, never `-x`: ignored seeded state stays.
@@ -356,6 +410,227 @@ pub fn remove_lane(main: &Path, lane: &Path) -> Result<()> {
 
 pub fn prune(main: &Path) -> Result<()> {
     git(main, &["worktree", "prune"]).map(|_| ())
+}
+
+pub fn dir_size(path: &Path) -> u64 {
+    let mut total = 0u64;
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(p) = stack.pop() {
+        let meta = match fs::symlink_metadata(&p) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        if meta.is_dir() {
+            if let Ok(rd) = fs::read_dir(&p) {
+                for e in rd.flatten() {
+                    stack.push(e.path());
+                }
+            }
+        } else if meta.is_file() {
+            total += meta.len();
+        }
+    }
+    total
+}
+
+fn canonical_existing(path: &Path) -> Option<PathBuf> {
+    if !path.exists() {
+        return None;
+    }
+    path.canonicalize().ok()
+}
+
+fn push_canonical(out: &mut HashSet<PathBuf>, path: &Path) {
+    if let Some(c) = canonical_existing(path) {
+        out.insert(c);
+    }
+}
+
+pub fn declared_cargo_targets(main: &Path, data: &Path) -> Result<HashSet<PathBuf>> {
+    let lanes_ref = main.join(DIR);
+    let mut out = HashSet::new();
+    let entries = match fs::read_dir(&lanes_ref) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+        Err(e) => return Err(io(format!("read {}", lanes_ref.display()))(e)),
+    };
+    for e in entries.flatten() {
+        let name = e.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let Some(digits) = name
+            .strip_prefix("lane-")
+            .and_then(|s| s.strip_suffix(".md"))
+        else {
+            continue;
+        };
+        let Ok(n) = digits.parse::<u32>() else {
+            continue;
+        };
+        let lane = load(main, n)?;
+        let Some(raw) = lane
+            .env
+            .iter()
+            .find_map(|(k, v)| (k == "CARGO_TARGET_DIR").then_some(v))
+        else {
+            continue;
+        };
+        let p = PathBuf::from(raw);
+        if p.is_absolute() {
+            push_canonical(&mut out, &p);
+            continue;
+        }
+        let lane_dir = dir(data, main, n);
+        push_canonical(&mut out, &lane_dir.join(&p));
+        push_canonical(&mut out, &main.join(&p));
+    }
+    Ok(out)
+}
+
+pub fn cache_dirs(main: &Path, lane_dir: &Path, n: u32) -> Result<Vec<(PathBuf, bool)>> {
+    let lane = load(main, n)?;
+    let mut raw: Vec<(PathBuf, bool)> = Vec::new();
+    if let Some(target) = lane
+        .env
+        .iter()
+        .find_map(|(k, v)| (k == "CARGO_TARGET_DIR").then(|| PathBuf::from(v)))
+    {
+        let p = if target.is_absolute() {
+            target
+        } else {
+            lane_dir.join(target)
+        };
+        raw.push((p, true));
+    }
+    raw.push((lane_dir.join("target"), true));
+    for rel in ["node_modules/.cache", ".next/cache", "vendor/.cache"] {
+        raw.push((lane_dir.join(rel), false));
+    }
+    let mut items: Vec<(PathBuf, bool)> = raw
+        .into_iter()
+        .filter_map(|(p, is_cargo)| canonical_existing(&p).map(|c| (c, is_cargo)))
+        .collect();
+    items.sort_by_key(|(p, _)| (p.components().count(), p.as_os_str().len()));
+    let mut kept: Vec<(PathBuf, bool)> = Vec::new();
+    for (path, is_cargo) in items {
+        if kept.iter().any(|(k, _)| path.starts_with(k)) {
+            continue;
+        }
+        kept.push((path, is_cargo));
+    }
+    Ok(kept)
+}
+
+pub fn stale_main_lane_targets(main: &Path, data: &Path) -> Result<Vec<PathBuf>> {
+    let target = main.join("target");
+    let live = declared_cargo_targets(main, data)?;
+    let entries = match fs::read_dir(&target) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(io(format!("read {}", target.display()))(e)),
+    };
+    let mut out = Vec::new();
+    for e in entries.flatten() {
+        let p = e.path();
+        if !p.is_dir() {
+            continue;
+        }
+        let name = e.file_name();
+        let name = name.to_string_lossy();
+        let Some(rest) = name.strip_prefix("lane-") else {
+            continue;
+        };
+        if rest.is_empty() || !rest.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        let Some(can) = canonical_existing(&p) else {
+            continue;
+        };
+        if live.contains(&can) {
+            continue;
+        }
+        out.push(p);
+    }
+    out.sort();
+    Ok(out)
+}
+
+fn cargo_target_env(lane_dir: &Path, dir: &Path) -> OsString {
+    match dir.strip_prefix(lane_dir) {
+        Ok(p) => p.as_os_str().to_os_string(),
+        Err(_) => dir.as_os_str().to_os_string(),
+    }
+}
+
+fn find_cargo_sweep() -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        let p = dir.join("cargo-sweep");
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    None
+}
+
+fn cache_dir_in_lane(lane_dir: &Path, dir: &Path) -> bool {
+    let Ok(lane) = lane_dir.canonicalize() else {
+        return false;
+    };
+    let meta = match fs::symlink_metadata(dir) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    if meta.file_type().is_symlink() {
+        return false;
+    }
+    dir.canonicalize()
+        .ok()
+        .is_some_and(|d| d.starts_with(&lane))
+}
+
+pub fn trim_cache_dir(
+    lane_dir: &Path,
+    dir: &Path,
+    is_cargo: bool,
+    days: u32,
+    force_remove: bool,
+) -> Result<u64> {
+    if !dir.exists() {
+        return Ok(0);
+    }
+    if !cache_dir_in_lane(lane_dir, dir) {
+        return Ok(0);
+    }
+    let before = dir_size(dir);
+    if is_cargo && !force_remove {
+        let sweep = std::env::var("FACTORY_CARGO_SWEEP").ok();
+        let skip = sweep.as_deref().is_some_and(|s| s == "off");
+        let run = if skip {
+            None
+        } else if let Some(ref p) = sweep.filter(|s| !s.is_empty()) {
+            Some(PathBuf::from(p))
+        } else {
+            find_cargo_sweep()
+        };
+        if let Some(exe) = run {
+            let ok = Command::new(&exe)
+                .args(["sweep", "--time", &days.to_string()])
+                .current_dir(lane_dir)
+                .env("CARGO_TARGET_DIR", cargo_target_env(lane_dir, dir))
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if ok {
+                let after = dir_size(dir);
+                return Ok(before.saturating_sub(after));
+            }
+        }
+    }
+    fs::remove_dir_all(dir).map_err(io(format!("remove {}", dir.display())))?;
+    Ok(before)
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<String> {
@@ -620,6 +895,55 @@ mod tests {
             fs::read(fresh.dir.join("big/nested/two.bin")).unwrap(),
             b"two"
         );
+    }
+
+    fn seed_temps(dir: &Path) -> Vec<PathBuf> {
+        fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with(".seed-tmp-"))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn seed_copy_uses_atomic_temp_sibling_and_cleans_up_on_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data = tmp.path().join("data");
+        let main = repo(tmp.path(), "app");
+        fs::create_dir_all(main.join("big")).unwrap();
+        fs::write(main.join("big/one.bin"), "one").unwrap();
+        let parent = data.join("lanes").join(key(&main));
+        fs::create_dir_all(&parent).unwrap();
+        fs::write(parent.join(".seed-tmp-lane-1-99999.tmp"), "stale").unwrap();
+
+        let report = ensure(&data, &main, 1, &["big".to_string()]).unwrap();
+        let lane_parent = report.dir.parent().unwrap();
+        assert!(!parent.join(".seed-tmp-lane-1-99999.tmp").exists());
+        assert!(seed_temps(&report.dir).is_empty());
+        assert!(seed_temps(lane_parent).is_empty());
+        assert_eq!(fs::read(report.dir.join("big/one.bin")).unwrap(), b"one");
+
+        let fail_data = tmp.path().join("fail-data");
+        let fail_main = repo(tmp.path(), "fail-app");
+        fs::create_dir_all(fail_main.join("blocked")).unwrap();
+        fs::write(fail_main.join("blocked/leaf.txt"), "leaf").unwrap();
+        let fail_lane = ensure(&fail_data, &fail_main, 1, &[]).unwrap().dir;
+        fs::write(fail_lane.join("blocked"), "not-a-dir").unwrap();
+        let err = ensure(&fail_data, &fail_main, 1, &["blocked/leaf.txt".to_string()]).unwrap_err();
+        assert!(err.to_string().contains("blocked"), "{err}");
+        assert!(!fail_lane.join("blocked/leaf.txt").exists());
+        let fail_parent = fail_lane.parent().unwrap();
+        assert!(seed_temps(&fail_lane).is_empty());
+        assert!(seed_temps(fail_parent).is_empty());
+        let again =
+            ensure(&fail_data, &fail_main, 1, &["blocked/leaf.txt".to_string()]).unwrap_err();
+        assert!(again.to_string().contains("blocked"), "{again}");
+        assert!(!fail_lane.join("blocked/leaf.txt").exists());
     }
 
     #[test]

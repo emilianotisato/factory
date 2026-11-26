@@ -136,6 +136,20 @@ pub struct RunState {
     pub worker_config: Option<ResolvedWorkers>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub authorized_tests: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_gate: Option<ActiveGate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActiveGate {
+    pub pid: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid_start: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pgid: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    pub checkpoint: u32,
 }
 
 impl RunState {
@@ -286,6 +300,7 @@ impl Run {
             review_override: None,
             worker_config: None,
             authorized_tests: Vec::new(),
+            active_gate: None,
         };
         write_state(&dir, &state)?;
         fs::write(dir.join(events::FILE), "")
@@ -403,6 +418,10 @@ impl Run {
 
     pub fn set_authorized_tests(&mut self, tests: Vec<String>) -> Result<()> {
         self.update(|s| s.authorized_tests = tests)
+    }
+
+    pub fn set_active_gate(&mut self, gate: Option<ActiveGate>) -> Result<()> {
+        self.update(|s| s.active_gate = gate)
     }
 
     pub fn add_authorized_tests(&mut self, paths: &[String]) -> Result<()> {
@@ -583,7 +602,7 @@ pub fn list_open(data_dir: &Path, repo: &Path) -> Result<Vec<RunState>> {
 fn list_all(data_dir: &Path, repo: &Path) -> Result<Vec<RunState>> {
     Ok(list_runs(data_dir)?
         .into_iter()
-        .filter(|s| s.repo == repo)
+        .filter(|s| crate::lanes::same_repo(&s.repo, repo))
         .collect())
 }
 

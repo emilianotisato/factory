@@ -1,3 +1,4 @@
+use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -23,6 +24,15 @@ pub enum LanesVerb {
         #[arg(long)]
         all: bool,
     },
+    /// Trim build caches and stale main-tree lane targets
+    Clean {
+        /// Report sizes only; no deletions
+        #[arg(long)]
+        dry: bool,
+        /// Age passed to cargo-sweep for Cargo target dirs
+        #[arg(long, default_value_t = 7)]
+        days: u32,
+    },
 }
 
 pub fn lanes(verb: &LanesVerb, out: &mut dyn Write) -> Result<i32> {
@@ -33,6 +43,7 @@ pub fn lanes(verb: &LanesVerb, out: &mut dyn Write) -> Result<i32> {
         LanesVerb::Up { prove: false } => up(&data, &main, out),
         LanesVerb::Up { prove: true } => prove(&data, &main, out),
         LanesVerb::Prune { all } => prune(&data, &main, *all, out),
+        LanesVerb::Clean { dry, days } => clean(&data, &main, *dry, *days, out),
     }
 }
 
@@ -44,10 +55,38 @@ fn count(main: &Path) -> Result<u32> {
     Ok(project::load(main)?.map_or(1, |p| p.lanes))
 }
 
-pub fn up(data: &Path, main: &Path, out: &mut dyn Write) -> Result<i32> {
+pub(crate) fn refuse_if_open(
+    data: &Path,
+    main: &Path,
+    verb: &str,
+    out: &mut dyn Write,
+) -> Result<bool> {
+    let open = run::list_open(data, main)?;
+    if open.is_empty() {
+        return Ok(false);
+    }
+    say(
+        out,
+        &format!("  ✗ {verb} refused: this repo has an unfinished run, which holds its lanes"),
+    )?;
+    for s in &open {
+        say(
+            out,
+            &format!("    run {}  feature {}  {}", s.id, s.feature, s.phase),
+        )?;
+    }
+    Ok(true)
+}
+
+fn up_lanes(data: &Path, main: &Path, reset_to_head: bool, out: &mut dyn Write) -> Result<i32> {
     let Some(seed) = project::seed(main)? else {
         say(out, &format!("  ✗ {}", lanes::NO_SEED))?;
         return Ok(1);
+    };
+    let head = if reset_to_head {
+        Some(lanes::head_rev(main)?)
+    } else {
+        None
     };
     let mut failed = false;
     for n in 1..=count(main)? {
@@ -59,8 +98,22 @@ pub fn up(data: &Path, main: &Path, out: &mut dyn Write) -> Result<i32> {
                 continue;
             }
         };
+        if let Some(head) = &head
+            && let Err(e) = lanes::reset(&report.dir, head)
+        {
+            say(out, &format!("lane-{n}  ✗ {e}"))?;
+            failed = true;
+            continue;
+        }
         // The lane file is read from the main tree: the lane's checkout may predate an edit to it.
-        let (exit, detail) = match lanes::load(main, n).and_then(|l| l.run_setup(&report.dir)) {
+        let configured = project::load(main)
+            .ok()
+            .flatten()
+            .and_then(|p| p.gate_memory_max);
+        let cap = crate::memcap::resolve_limit(configured.as_deref());
+        let (exit, detail) = match lanes::load(main, n)
+            .and_then(|l| l.run_setup_capped(&report.dir, cap.as_deref()))
+        {
             Ok(None) => ("-".to_string(), String::new()),
             Ok(Some(o)) if o.status.success() => ("0".to_string(), String::new()),
             Ok(Some(o)) => {
@@ -81,8 +134,18 @@ pub fn up(data: &Path, main: &Path, out: &mut dyn Write) -> Result<i32> {
     Ok(i32::from(failed))
 }
 
+pub fn up(data: &Path, main: &Path, out: &mut dyn Write) -> Result<i32> {
+    if refuse_if_open(data, main, "up", out)? {
+        return Ok(1);
+    }
+    up_lanes(data, main, false, out)
+}
+
 pub fn prove(data: &Path, main: &Path, out: &mut dyn Write) -> Result<i32> {
-    let code = up(data, main, out)?;
+    if refuse_if_open(data, main, "prove", out)? {
+        return Ok(1);
+    }
+    let code = up_lanes(data, main, true, out)?;
     if code != 0 {
         return Ok(code);
     }
@@ -152,19 +215,93 @@ pub fn prove(data: &Path, main: &Path, out: &mut dyn Write) -> Result<i32> {
 
 const TAIL: usize = 20;
 
-pub fn prune(data: &Path, main: &Path, all: bool, out: &mut dyn Write) -> Result<i32> {
-    let open = run::list_open(data, main)?;
-    if !open.is_empty() {
-        say(
-            out,
-            "  ✗ prune refused: this repo has an unfinished run, which holds its lanes",
-        )?;
-        for s in &open {
+fn format_bytes(n: u64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = KIB * 1024.0;
+    const GIB: f64 = MIB * 1024.0;
+    let f = n as f64;
+    if n < 1024 {
+        format!("{n} B")
+    } else if f < MIB {
+        format!("{:.1} KiB", f / KIB)
+    } else if f < GIB {
+        format!("{:.1} MiB", f / MIB)
+    } else {
+        format!("{:.1} GiB", f / GIB)
+    }
+}
+
+fn stale_label(main: &Path, p: &Path) -> String {
+    match p.strip_prefix(main) {
+        Ok(r) => r.display().to_string(),
+        Err(_) => p.display().to_string(),
+    }
+}
+
+fn lane_cache_bytes(main: &Path, lane_dir: &Path, n: u32) -> Result<u64> {
+    Ok(lanes::cache_dirs(main, lane_dir, n)?
+        .iter()
+        .map(|(p, _)| lanes::dir_size(p))
+        .sum())
+}
+
+pub fn clean(data: &Path, main: &Path, dry: bool, days: u32, out: &mut dyn Write) -> Result<i32> {
+    if !dry && refuse_if_open(data, main, "clean", out)? {
+        return Ok(1);
+    }
+    let on_disk = lanes::on_disk(data, main)?;
+    let mut total = 0u64;
+    for (n, lane_dir) in &on_disk {
+        let size = lane_cache_bytes(main, lane_dir, *n)?;
+        if dry {
             say(
                 out,
-                &format!("    run {}  feature {}  {}", s.id, s.feature, s.phase),
+                &format!("lane-{n}  build cache  {}", format_bytes(size)),
             )?;
+            total += size;
+        } else {
+            let mut freed = 0u64;
+            for (dir, is_cargo) in lanes::cache_dirs(main, lane_dir, *n)? {
+                freed += lanes::trim_cache_dir(lane_dir, &dir, is_cargo, days, false)?;
+            }
+            say(out, &format!("lane-{n}  freed  {}", format_bytes(freed)))?;
+            total += freed;
         }
+    }
+    for p in lanes::stale_main_lane_targets(main, data)? {
+        let size = lanes::dir_size(&p);
+        if dry {
+            say(
+                out,
+                &format!(
+                    "main  stale {}  {}",
+                    stale_label(main, &p),
+                    format_bytes(size)
+                ),
+            )?;
+            total += size;
+        } else if fs::remove_dir_all(&p).is_ok() {
+            say(
+                out,
+                &format!(
+                    "main  removed stale {}  {}",
+                    stale_label(main, &p),
+                    format_bytes(size)
+                ),
+            )?;
+            total += size;
+        }
+    }
+    if dry {
+        say(out, &format!("total  reclaimable  {}", format_bytes(total)))?;
+    } else {
+        say(out, &format!("total  freed  {}", format_bytes(total)))?;
+    }
+    Ok(0)
+}
+
+pub fn prune(data: &Path, main: &Path, all: bool, out: &mut dyn Write) -> Result<i32> {
+    if refuse_if_open(data, main, "prune", out)? {
         return Ok(1);
     }
     let keep = if all { 0 } else { count(main)? };
@@ -192,6 +329,55 @@ pub fn ensure_all(data: &Path, main: &Path, out: &mut dyn Write) -> Result<bool>
             Err(e) => {
                 say(out, &format!("  ✗ lane-{n}: {e}"))?;
                 return Ok(false);
+            }
+        }
+    }
+    if let Some(limit_gib) = project::clean_above_gb(main)?
+        && run::list_open(data, main)?.is_empty()
+    {
+        let threshold = (limit_gib * 1024.0 * 1024.0 * 1024.0) as u64;
+        for n in 1..=count(main)? {
+            let lane_dir = lanes::dir(data, main, n);
+            if !lane_dir.exists() {
+                continue;
+            }
+            let before = lane_cache_bytes(main, &lane_dir, n)?;
+            if before <= threshold {
+                continue;
+            }
+            for (dir, is_cargo) in lanes::cache_dirs(main, &lane_dir, n)? {
+                if let Err(e) = lanes::trim_cache_dir(&lane_dir, &dir, is_cargo, 7, false) {
+                    say(
+                        out,
+                        &format!("  lane-{n}  warning: could not trim {}: {e}", dir.display()),
+                    )?;
+                }
+            }
+            let mut after = lane_cache_bytes(main, &lane_dir, n)?;
+            if after > threshold {
+                for (dir, is_cargo) in lanes::cache_dirs(main, &lane_dir, n)? {
+                    if !dir.exists() {
+                        continue;
+                    }
+                    match lanes::trim_cache_dir(&lane_dir, &dir, is_cargo, 7, true) {
+                        Ok(_) => {}
+                        Err(e) => say(
+                            out,
+                            &format!("  lane-{n}  warning: could not trim {}: {e}", dir.display()),
+                        )?,
+                    }
+                }
+                after = lane_cache_bytes(main, &lane_dir, n)?;
+            }
+            if after < before || after <= threshold {
+                say(
+                    out,
+                    &format!(
+                        "  lane-{n}  trimmed build cache ({} > {:.1} GiB)",
+                        format_bytes(before),
+                        limit_gib
+                    ),
+                )?;
             }
         }
     }

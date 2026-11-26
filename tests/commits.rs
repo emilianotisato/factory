@@ -313,6 +313,18 @@ fn each_done_slice_lands_as_one_commit_from_its_lane() {
 
 // ── two lanes: landings interleave ─────────────────────────────────────────
 
+fn barrier_file(name: &str) -> String {
+    format!(
+        r#"test -f "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/scenario/{name}""#
+    )
+}
+
+fn touch_barrier(fx: &Fixture, name: &str) {
+    let p = fx.path().join("scenario").join(name);
+    fs::create_dir_all(p.parent().unwrap()).unwrap();
+    fs::write(&p, "").unwrap();
+}
+
 /// A stub barrier that passes once `subject` is on the main tree's log.
 fn landed(subject: &str) -> String {
     format!(
@@ -596,24 +608,25 @@ fn a_dirty_path_in_the_main_tree_parks_the_landing_and_keeps_the_owners_edit() {
     let fx = Fixture::with_index("commits-dirty", &[("checkpoint_every", "10")]);
     // The owner's file holds 01 where it lands; 02 lands meanwhile; 03 depends on 02.
     fx.write_plan(&[
-        json!({"outcome": "done", "delay_ms": 1500}),
-        json!({"outcome": "done", "delay_ms": 3000}),
+        json!({"outcome": "done", "wait_sh": barrier_file("release-01.txt")}),
+        json!({"outcome": "done", "wait_sh": barrier_file("release-02.txt")}),
         json!({"outcome": "done"}),
         json!({"outcome": "checkpoint"}),
     ]);
     let dir = start(&fx);
     let owned = fx.path().join("src/slice-01.txt");
     fs::write(&owned, "owner\n").unwrap();
+    touch_barrier(&fx, "release-01.txt");
 
     let park = "slice 01 cannot land: src/slice-01.txt changed in the main tree";
     wait_until(&fx, &dir, "slice 01's landing to park", 20, || {
         driver_log(&dir).contains(park)
     });
     wait_phase(&fx, &dir, "waiting-owner", 10);
+    touch_barrier(&fx, "release-02.txt");
     wait_until(&fx, &dir, "slice 02 to land while 01 waits", 20, || {
         count(&kinds(&dir), "slice_committed") == 1
     });
-    std::thread::sleep(Duration::from_millis(1000));
     assert_eq!(fs::read_to_string(&owned).unwrap(), "owner\n");
     assert_eq!(fx.slice_status(3), "pending");
     assert_eq!(fx.calls().len(), 2, "nothing spawns while a landing waits");
@@ -645,14 +658,15 @@ fn a_dirty_path_in_the_main_tree_parks_the_landing_and_keeps_the_owners_edit() {
 fn a_park_with_no_question_carries_its_reason() {
     let fx = Fixture::with_index("commits-dirty-reason", &[("checkpoint_every", "10")]);
     fx.write_plan(&[
-        json!({"outcome": "done", "delay_ms": 1500}),
-        json!({"outcome": "done", "delay_ms": 3000}),
+        json!({"outcome": "done", "wait_sh": barrier_file("release-01.txt")}),
+        json!({"outcome": "done", "wait_sh": barrier_file("release-02.txt")}),
         json!({"outcome": "done"}),
         json!({"outcome": "checkpoint"}),
     ]);
     let dir = start(&fx);
     let owned = fx.path().join("src/slice-01.txt");
     fs::write(&owned, "owner\n").unwrap();
+    touch_barrier(&fx, "release-01.txt");
     wait_phase(&fx, &dir, "waiting-owner", 30);
 
     let waiting: Vec<Value> = events(&dir)
@@ -676,6 +690,7 @@ fn a_park_with_no_question_carries_its_reason() {
     assert_eq!(parks[0]["reason"]["source"], "land");
     assert_eq!(live["now"]["waitingOn"], "owner");
 
+    touch_barrier(&fx, "release-02.txt");
     fs::remove_file(&owned).unwrap();
     wait_phase(&fx, &dir, "finished", 40);
 }

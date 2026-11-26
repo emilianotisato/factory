@@ -7,7 +7,7 @@ use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
 use factory::db::Db;
-use factory::run::pid_alive;
+use factory::run::{Phase, Run, pid_alive};
 use harness::Fixture;
 use serde_json::{Value, json};
 
@@ -197,9 +197,10 @@ fn two_lanes_build_two_slices_at_once_and_the_third_waits_for_its_dependency() {
     }
     fx.git(&["add", "-A"]);
     fx.git(&["commit", "-q", "-m", "chore: lane files"]);
+    let both_building = r#"test -f "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/scenario/both-building.txt""#.to_string();
     fx.write_plan(&[
-        json!({"outcome": "done", "delay_ms": 1500}),
-        json!({"outcome": "done", "delay_ms": 1500}),
+        json!({"outcome": "done", "wait_sh": both_building}),
+        json!({"outcome": "done", "wait_sh": both_building}),
         done(),
         checkpoint(),
     ]);
@@ -210,7 +211,6 @@ fn two_lanes_build_two_slices_at_once_and_the_third_waits_for_its_dependency() {
     let id = run_id(&dir);
     let driver = state(&dir)["pid"].as_u64().unwrap() as u32;
 
-    // The 1.5 s delays keep 01 and 02 alive together while 03 waits on 02.
     wait_until(&fx, &dir, "two workers", 20, || {
         fx.calls().len() == 2
             && state(&dir)["workers"]
@@ -232,6 +232,9 @@ fn two_lanes_build_two_slices_at_once_and_the_third_waits_for_its_dependency() {
     let board = fx.docs_json("status");
     assert_eq!(board["freeLanes"], json!([]), "{board}");
     assert_eq!(board["spawnable"], 0, "{board}");
+    let barrier = fx.path().join("scenario/both-building.txt");
+    fs::create_dir_all(barrier.parent().unwrap()).unwrap();
+    fs::write(&barrier, "").unwrap();
 
     wait_until(&fx, &dir, "the run to finish", 60, || {
         state(&dir)["phase"] == "finished"
@@ -1676,4 +1679,321 @@ fn lanes_prune_refuses_while_a_run_is_unfinished_and_removes_nothing() {
         assert_eq!(lane_worktrees(&fx).len(), 1);
         assert!(lanes[0].0.is_dir());
     }
+}
+
+fn factory_in(fx: &Fixture, cwd: &Path, args: &[&str]) -> Output {
+    fx.command(BIN)
+        .current_dir(cwd)
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+fn status_here_json(fx: &Fixture, cwd: &Path) -> Value {
+    let out = factory_in(fx, cwd, &["status", "--here", "--json"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    serde_json::from_str(stdout(&out).trim()).unwrap()
+}
+
+fn set_run_pid(dir: &Path, pid: u32) {
+    let path = dir.join("state.json");
+    let mut s: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    s["pid"] = json!(pid);
+    fs::write(&path, s.to_string()).unwrap();
+}
+
+#[test]
+fn lanes_up_and_prove_refuse_open_run_and_prove_resets_to_head() {
+    let fx = Fixture::with_index("lanes-up-refuse-open", &[("lanes", "1")]);
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let id = run_id(&only_run_dir(&fx));
+
+    for (args, verb) in [
+        (&["lanes", "up"][..], "up"),
+        (&["lanes", "up", "--prove"][..], "prove"),
+    ] {
+        let out = factory(&fx, args);
+        let text = stdout(&out);
+        assert_eq!(out.status.code(), Some(1), "{text}");
+        assert!(
+            text.contains(&format!("{verb} refused: this repo has an unfinished run")),
+            "{text}"
+        );
+        assert!(text.contains(&id), "{text}");
+        assert!(!text.contains("  inner  "), "{text}");
+    }
+
+    let out = factory(&fx, &["stop", &id]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    wait_until(&fx, &only_run_dir(&fx), "run stop", 30, || {
+        state(&only_run_dir(&fx))["phase"] == "finished"
+    });
+
+    let root = fx.path();
+    fs::create_dir_all(root.join("scenario")).unwrap();
+    fs::write(root.join("scenario/seed-marker"), "seeded\n").unwrap();
+    let lanes = root.join("docs/reference/lanes");
+    fs::create_dir_all(&lanes).unwrap();
+    fs::write(
+        lanes.join("lane-1.md"),
+        "---\nlane: 1\nenv: []\nsetup: echo prove-setup-ok > prove-setup-survivor.txt\n---\n",
+    )
+    .unwrap();
+    fx.git(&["add", "-A"]);
+    fx.git(&["commit", "-q", "-m", "chore: prove reset fixture"]);
+    fx.set_seed(&["scenario"]);
+
+    let out = factory(&fx, &["lanes", "up"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let lane = lane_path(&fx, 1);
+    let older = git_at(&fx, root, &["rev-parse", "HEAD"]).trim().to_string();
+    fx.git(&["commit", "-q", "--allow-empty", "-m", "older"]);
+    git_at(&fx, &lane, &["checkout", "-q", "--detach", &older]);
+    fs::write(lane.join("stray.txt"), "gone\n").unwrap();
+    let head = git_at(&fx, root, &["rev-parse", "HEAD"]).trim().to_string();
+
+    set_docs_key(
+        &fx,
+        "inner",
+        "\"test -f prove-setup-survivor.txt && test ! -e stray.txt\"",
+    );
+    let out = factory(&fx, &["lanes", "up", "--prove"]);
+    let text = stdout(&out);
+    assert_eq!(out.status.code(), Some(0), "{text}");
+    assert_eq!(
+        git_at(&fx, &lane, &["rev-parse", "HEAD"]).trim(),
+        head.as_str()
+    );
+    assert!(!lane.join("stray.txt").exists());
+    assert!(lane.join("prove-setup-survivor.txt").is_file());
+    assert!(lane.join("scenario/seed-marker").is_file());
+}
+
+#[test]
+fn linked_worktree_shares_main_tree_across_status_lanes_and_run() {
+    let fx = Fixture::with_index("lanes-linked-main", &[("lanes", "1")]);
+    let root = fx.path();
+    let base = data_dir(&fx).parent().unwrap().to_path_buf();
+    let linked = base.join("linked");
+
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let dir = only_run_dir(&fx);
+    let id = run_id(&dir);
+    wait_until(&fx, &dir, "park", 30, || {
+        state(&dir)["phase"] == "waiting-owner"
+    });
+
+    git_at(
+        &fx,
+        root,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            linked.to_str().unwrap(),
+            "HEAD",
+        ],
+    );
+    let v = status_here_json(&fx, &linked);
+    let ids: Vec<_> = v["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap())
+        .collect();
+    assert!(ids.iter().any(|i| *i == id), "{ids:?}");
+
+    for args in [&["lanes", "up"][..], &["lanes", "prune"][..]] {
+        let out = factory_in(&fx, &linked, args);
+        let text = stdout(&out);
+        assert_eq!(out.status.code(), Some(1), "{text}");
+        assert!(
+            text.contains("refused: this repo has an unfinished run"),
+            "{text}"
+        );
+    }
+
+    let out = factory(&fx, &["stop", &id]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    wait_until(&fx, &dir, "stop", 30, || state(&dir)["phase"] == "finished");
+
+    let linked_feat = base.join("linked-feat");
+    git_at(
+        &fx,
+        root,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "feat/fixture",
+            linked_feat.to_str().unwrap(),
+            "HEAD",
+        ],
+    );
+    assert_eq!(
+        git_at(&fx, root, &["symbolic-ref", "--short", "HEAD"]).trim(),
+        "main"
+    );
+
+    fx.write_plan(&[done()]);
+    let mut run = Run::create(
+        &data_dir(&fx),
+        &linked_feat,
+        harness::FEATURE,
+        Some("feat/fixture".into()),
+        1,
+    )
+    .unwrap();
+    run.set_phase(Phase::Paused).unwrap();
+    let rid = run.id().as_str().to_string();
+    set_run_pid(run.dir(), dead_pid());
+    drop(run);
+
+    let found = Run::find_resumable(&data_dir(&fx), root, harness::FEATURE)
+        .unwrap()
+        .expect("resumable from main tree");
+    assert_eq!(found.id().as_str(), rid);
+
+    let v = status_here_json(&fx, root);
+    let here: Vec<_> = v["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap())
+        .collect();
+    assert!(here.iter().any(|i| *i == rid), "{here:?}");
+
+    let out = factory(&fx, &["run", harness::FEATURE]);
+    let text = stdout(&out);
+    assert_eq!(out.status.code(), Some(0), "{text}");
+    assert!(text.contains(&format!("run {rid} resumed")), "{text}");
+    assert!(!text.contains("HEAD is on main"), "{text}");
+}
+
+fn write_bytes(path: &Path, n: usize) {
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, vec![b'x'; n]).unwrap();
+}
+
+#[test]
+fn lanes_clean_reports_trims_and_enforces_clean_above_gb_at_run_start() {
+    let fx = Fixture::with_index("lanes-clean-cache", &[("lanes", "2")]);
+    let root = fx.path();
+    let lanes_dir = root.join("docs/reference/lanes");
+    fs::create_dir_all(&lanes_dir).unwrap();
+    fs::write(
+        lanes_dir.join("lane-1.md"),
+        "---\nlane: 1\nenv: [CARGO_TARGET_DIR=target/lane-1]\n---\n",
+    )
+    .unwrap();
+    fs::write(lanes_dir.join("lane-2.md"), "---\nlane: 2\nenv: []\n---\n").unwrap();
+    fx.git(&["add", "-A"]);
+    fx.git(&["commit", "-q", "-m", "chore: lane clean fixture"]);
+    let ig = root.join(".gitignore");
+    let mut ignore = fs::read_to_string(&ig).unwrap();
+    if !ignore.contains("/target/") {
+        ignore.push_str("/target/\n");
+        fs::write(&ig, &ignore).unwrap();
+        fx.git(&["add", ".gitignore"]);
+        fx.git(&["commit", "-q", "-m", "chore: ignore target"]);
+    }
+
+    let out = factory(&fx, &["lanes", "up"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let lane1 = lane_path(&fx, 1);
+    let lane2 = lane_path(&fx, 2);
+
+    write_bytes(&lane1.join("target/lane-1/nested.bin"), 4000);
+    write_bytes(&lane1.join("target/outer.bin"), 2000);
+    write_bytes(&root.join("target/lane-9/stale.bin"), 6000);
+    write_bytes(&root.join("target/lane-1/live.bin"), 100);
+    assert!(root.join("target/lane-1").is_dir());
+    assert!(root.join("target/lane-9").is_dir());
+
+    let out = factory(&fx, &["lanes", "clean", "--dry"]);
+    let dry = stdout(&out);
+    assert_eq!(out.status.code(), Some(0), "{dry}");
+    assert!(dry.contains("lane-1  build cache"));
+    assert!(dry.contains("main  stale target/lane-9"));
+    assert!(
+        !dry.lines()
+            .any(|l| l.contains("stale") && l.contains("lane-1"))
+    );
+    assert!(root.join("target/lane-9").is_dir());
+    assert!(lane1.join("target/outer.bin").is_file());
+
+    let sweep_log = fx.stub_dir().join("sweep.log");
+    let sweep = fx.stub_dir().join("cargo-sweep-stub.sh");
+    fs::write(
+        &sweep,
+        format!(
+            "#!/bin/sh\necho \"$@\" \"CARGO_TARGET_DIR=$CARGO_TARGET_DIR\" >> {}\nexit 0\n",
+            sweep_log.display()
+        ),
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&sweep, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let out = fx
+        .command(BIN)
+        .env("FACTORY_CARGO_SWEEP", &sweep)
+        .args(["lanes", "clean"])
+        .output()
+        .unwrap();
+    let clean = stdout(&out);
+    assert_eq!(out.status.code(), Some(0), "{clean}");
+    assert!(!root.join("target/lane-9").exists());
+    assert!(root.join("target/lane-1/live.bin").is_file());
+    let log = fs::read_to_string(&sweep_log).unwrap();
+    assert!(log.contains("sweep --time 7"), "{log}");
+    assert!(log.contains("CARGO_TARGET_DIR="), "{log}");
+
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let out = factory(&fx, &["lanes", "clean"]);
+    let blocked = stdout(&out);
+    assert_eq!(out.status.code(), Some(1), "{blocked}");
+    assert!(blocked.contains("clean refused"));
+    let out = factory(&fx, &["lanes", "clean", "--dry"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+
+    let dir = only_run_dir(&fx);
+    let rid = run_id(&dir);
+    let out = factory(&fx, &["stop", &rid]);
+    assert_eq!(out.status.code(), Some(0));
+    wait_until(&fx, &dir, "run stop", 30, || {
+        state(&dir)["phase"] == "finished"
+    });
+
+    write_bytes(&lane1.join("target/huge.bin"), 50_000);
+    write_bytes(&lane2.join("target/tiny.bin"), 100);
+    let proj = root.join("docs/project.toml");
+    let mut toml = fs::read_to_string(&proj).unwrap();
+    if !toml.contains("clean_above_gb") {
+        toml = toml.replacen("[lanes]\n", "[lanes]\nclean_above_gb = 0.00001\n", 1);
+        fs::write(&proj, toml).unwrap();
+        fx.git(&["add", "docs/project.toml"]);
+        fx.git(&["commit", "-q", "-m", "chore: clean_above_gb knob"]);
+    }
+    fx.write_plan(&[done()]);
+    let out = fx
+        .command(BIN)
+        .env("FACTORY_CARGO_SWEEP", "off")
+        .args(["run", "001", "--foreground"])
+        .output()
+        .unwrap();
+    let run_text = stdout(&out);
+    assert_eq!(out.status.code(), Some(0), "{run_text}");
+    assert!(
+        run_text.contains("lane-1  trimmed build cache"),
+        "{run_text}"
+    );
+    assert!(!lane1.join("target/huge.bin").exists());
+    assert!(lane2.join("target/tiny.bin").is_file());
 }

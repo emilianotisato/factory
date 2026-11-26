@@ -15,7 +15,7 @@ use crate::config::Config;
 use crate::docs::{Docs, Status};
 use crate::error::io;
 use crate::events::{self, EventKind};
-use crate::land::{self, Landing};
+use crate::land::{self, LandOutcome, LandSpec};
 use crate::pack::{BlockSection, Pack};
 use crate::provider::Provider;
 use crate::quota::{self, Hold, Limit};
@@ -48,6 +48,7 @@ enum Orphans {
 }
 
 pub fn drive(run: &mut Run, docs: &Docs, cfg: &Config, out: &mut dyn Write) -> Result<Phase> {
+    let _ = crate::checkpoint::reap_active_gate(run, out)?;
     let mut table: Table = HashMap::new();
     match drive_inner(run, docs, cfg, &mut table, out) {
         Ok(phase) => Ok(phase),
@@ -798,7 +799,12 @@ pub(crate) fn prepare_lane(
     let lane_dir = open_lane(run, lane, fresh)?;
     if !run.state().lanes_set_up.contains(&lane) {
         if let Some(cmd) = &lane_def.setup {
-            lane_def.setup(&lane_dir)?;
+            let configured = crate::docs::project::load(&run.state().repo)
+                .ok()
+                .flatten()
+                .and_then(|p| p.gate_memory_max);
+            let cap = crate::memcap::resolve_limit(configured.as_deref());
+            lane_def.setup_capped(&lane_dir, cap.as_deref())?;
             say(out, &format!("lane {lane} setup ran: {cmd}"))?;
         }
         run.mark_lane_set_up(lane)?;
@@ -998,66 +1004,90 @@ fn land_slice(
         .unwrap_or_else(|| format!("slice {slice:02}"));
     let text = format!("slice-{slice:02} {title}");
     let subject = commit::subject(board, "feat", &text);
-    // Killed after the landing commit, before its record: a second pick would find nothing.
-    if let Some(base) = &base {
-        let range = format!("{base}..HEAD");
-        let tip = git_ok(&repo, &["log", "--format=%H %s", &range])?;
-        if let Some(landed) = tip
-            .lines()
-            .find_map(|l| l.split_once(' ').filter(|(_, s)| *s == subject))
-            .map(|(sha, _)| sha.to_string())
-        {
-            if resolve(&repo, &name)?.is_some() {
-                git_ok(&repo, &["update-ref", "-d", &name])?;
-            }
-            record_landing(run, slice, row_id, landed, out)?;
-            return Ok(Landed::Done);
-        }
-    }
     let held = resolve(&repo, &name)?;
     let on_base = match &held {
         Some(sha) => !merged || resolve(&repo, &format!("{sha}^"))? == base,
         None => false,
     };
-    let sha = match held {
-        Some(sha) if on_base => sha,
-        held => {
-            let Some(lane) = lane else {
-                return Err(Error::Msg(format!("slice {slice:02} is done with no lane")));
-            };
-            let Some(base) = base else {
-                return Err(Error::Msg(format!(
-                    "lane {lane} has no base in state.json to commit slice {slice:02} on"
-                )));
-            };
-            let message = match &held {
-                Some(sha) => git_ok(&repo, &["log", "-1", "--format=%B", sha])?
-                    .trim()
-                    .to_string(),
-                None => commit::message(board, "feat", &text),
-            };
-            let main = lanes::main_tree(&repo)?;
-            let Some(c) = land::commit_lane(
-                &lanes::dir(&paths::data_dir(), &main, lane),
-                &base,
-                &board_files,
-                &commit::protected_files(board),
-                &message,
-                &name,
-            )?
-            else {
-                // An empty merge is as likely a reset lane as a resolution: the owner says.
-                if merged && let Some(held) = &held {
-                    block_empty_merge(run, board, slice, held, lane, out)?;
-                    return Ok(Landed::Blocked);
-                }
-                if held.is_some() {
-                    git_ok(&repo, &["update-ref", "-d", &name])?;
-                }
-                say(out, &format!("slice {slice:02}: nothing to commit"))?;
-                return Ok(Landed::Done);
-            };
-            for path in &c.dropped {
+    if held.is_none() || !on_base {
+        let Some(lane) = lane else {
+            return Err(Error::Msg(format!("slice {slice:02} is done with no lane")));
+        };
+        let Some(_base) = &base else {
+            return Err(Error::Msg(format!(
+                "lane {lane} has no base in state.json to commit slice {slice:02} on"
+            )));
+        };
+    }
+    let Some(lane) = lane else {
+        return Err(Error::Msg(format!("slice {slice:02} is done with no lane")));
+    };
+    let Some(base) = &base else {
+        return Err(Error::Msg(format!(
+            "lane {lane} has no base in state.json to commit slice {slice:02} on"
+        )));
+    };
+    let main = lanes::main_tree(&repo)?;
+    let lane_dir = lanes::dir(&paths::data_dir(), &main, lane);
+    let spec = LandSpec {
+        repo: &repo,
+        lane_dir: &lane_dir,
+        base,
+        board_files: &board_files,
+        protected: &commit::protected_files(board),
+        message: &commit::message(board, "feat", &text),
+        subject: &subject,
+        ref_name: &name,
+        reuse_held: true,
+        require_parent_eq_base: merged,
+    };
+    map_slice_land(
+        run,
+        board,
+        slice,
+        row_id,
+        merged,
+        &name,
+        land::land_lane(&spec, None)?,
+        out,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn map_slice_land(
+    run: &mut Run,
+    board: &Status,
+    slice: u32,
+    row_id: i64,
+    merged: bool,
+    name: &str,
+    outcome: LandOutcome,
+    out: &mut dyn Write,
+) -> Result<Landed> {
+    match outcome {
+        LandOutcome::AlreadyLanded { sha } => {
+            record_landing(run, slice, row_id, sha, out)?;
+            Ok(Landed::Done)
+        }
+        LandOutcome::Nothing { had_held } => {
+            if merged && let Some(held) = &had_held {
+                let lane = board
+                    .slices
+                    .iter()
+                    .find(|s| s.number == slice)
+                    .and_then(|s| s.lane)
+                    .ok_or_else(|| Error::Msg(format!("slice {slice:02} is done with no lane")))?;
+                block_empty_merge(run, board, slice, held, lane, out)?;
+                return Ok(Landed::Blocked);
+            }
+            if had_held.is_some() {
+                git_ok(&run.state().repo, &["update-ref", "-d", name])?;
+            }
+            say(out, &format!("slice {slice:02}: nothing to commit"))?;
+            Ok(Landed::Done)
+        }
+        LandOutcome::Landed { sha, dropped } => {
+            for path in &dropped {
                 run.emit(EventKind::WorkerWroteProtectedFile {
                     slice,
                     path: path.clone(),
@@ -1069,20 +1099,44 @@ fn land_slice(
                     ),
                 )?;
             }
-            c.sha
-        }
-    };
-    undo_half_pick(&repo, &sha)?;
-    match land::land(&repo, &sha, &board_files)? {
-        Landing::Landed { sha: landed } => {
-            record_landing(run, slice, row_id, landed, out)?;
+            record_landing(run, slice, row_id, sha, out)?;
             Ok(Landed::Done)
         }
-        Landing::Dirty { paths } => Ok(Landed::Waiting(format!(
-            "slice {slice:02} cannot land: {} changed in the main tree — commit or discard them",
-            paths.join(", ")
-        ))),
-        Landing::Conflict { paths } => {
+        LandOutcome::Dirty { paths, dropped } => {
+            for path in &dropped {
+                run.emit(EventKind::WorkerWroteProtectedFile {
+                    slice,
+                    path: path.clone(),
+                })?;
+                say(
+                    out,
+                    &format!(
+                        "slice {slice:02} wrote {path}, which no worker may — left out of the commit"
+                    ),
+                )?;
+            }
+            Ok(Landed::Waiting(format!(
+                "slice {slice:02} cannot land: {} changed in the main tree — commit or discard them",
+                paths.join(", ")
+            )))
+        }
+        LandOutcome::Conflict {
+            sha,
+            paths,
+            dropped,
+        } => {
+            for path in &dropped {
+                run.emit(EventKind::WorkerWroteProtectedFile {
+                    slice,
+                    path: path.clone(),
+                })?;
+                say(
+                    out,
+                    &format!(
+                        "slice {slice:02} wrote {path}, which no worker may — left out of the commit"
+                    ),
+                )?;
+            }
             let session_id = run
                 .state()
                 .workers
@@ -1505,39 +1559,6 @@ fn record_landing(
         sha: landed,
         files,
     })?;
-    Ok(())
-}
-
-/// Paths staged exactly as `sha` has them are a killed driver's half pick, not the owner's work.
-pub(crate) fn undo_half_pick(repo: &Path, sha: &str) -> Result<()> {
-    let parent = format!("{sha}^");
-    let picked = nul_split(&git_ok(
-        repo,
-        &["diff", "--name-only", "--no-renames", "-z", &parent, sha],
-    )?);
-    if picked.is_empty() {
-        return Ok(());
-    }
-    let on = |args: &[&str]| -> Vec<String> {
-        args.iter()
-            .map(|a| a.to_string())
-            .chain(["--".to_string()])
-            .chain(picked.iter().cloned())
-            .collect()
-    };
-    let quiet = |args: &[&str]| -> Result<bool> {
-        let all = on(args);
-        let refs: Vec<&str> = all.iter().map(String::as_str).collect();
-        Ok(git_out(repo, &refs)?.status.success())
-    };
-    if !quiet(&["diff", "--cached", "--quiet", "HEAD"])?
-        && quiet(&["diff", "--cached", "--quiet", sha])?
-        && quiet(&["diff", "--quiet", sha])?
-    {
-        let all = on(&["restore", "--source=HEAD", "--staged", "--worktree"]);
-        let refs: Vec<&str> = all.iter().map(String::as_str).collect();
-        git_ok(repo, &refs)?;
-    }
     Ok(())
 }
 

@@ -3,6 +3,7 @@ use std::io::Write;
 
 use clap::Args;
 
+use crate::checkpoint;
 use crate::error::io;
 use crate::events::EventKind;
 use crate::run::Run;
@@ -34,6 +35,7 @@ pub fn stop(args: &StopArgs, out: &mut dyn Write) -> Result<i32> {
         )
         .map_err(io("stdout"))?;
     } else {
+        let _ = checkpoint::reap_active_gate(&mut run, out)?;
         let slices = scheduler::mark_stopped(&mut run)?;
         writeln!(
             out,

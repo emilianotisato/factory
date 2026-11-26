@@ -16,7 +16,7 @@ use crate::db::RetroRow;
 use crate::docs::{Docs, Ship, Status};
 use crate::error::io;
 use crate::events::EventKind;
-use crate::land::{self, Landing};
+use crate::land::{self, BeforeLand};
 use crate::pack::{self, Pack};
 use crate::provider::ReviewProvider;
 use crate::quota::{self, Hold, Limit};
@@ -235,7 +235,7 @@ fn polish(
         let attempt = run.state().workers.iter().filter(|w| mine(w)).count() as u32 + 1;
         let spawn = run.state().workers.len() as u32 + 1;
         let lane = closeout_lane(board);
-        let (lane_dir, lane_def) = scheduler::prepare_lane(run, lane, true, out)?;
+        let (lane_dir, lane_def) = scheduler::prepare_lane(run, lane, attempt == 1, out)?;
         let collected = collected(
             run,
             &lane_dir,
@@ -621,6 +621,30 @@ fn stand_ins(run: &mut Run, board: &Status, lane_dir: &Path, out: &mut dyn Write
     flag_body(run, &body)
 }
 
+struct PolishBefore<'a> {
+    run: &'a mut Run,
+    board: &'a Status,
+    repo: &'a Path,
+    out: &'a mut dyn Write,
+}
+
+impl BeforeLand for PolishBefore<'_> {
+    fn before_land(&mut self, dir: &Path) -> Result<Vec<String>> {
+        stand_ins(self.run, self.board, dir, self.out)?;
+        let prd_rel = format!("{}/prd.md", self.board.dir);
+        let lane_prd = dir.join(&prd_rel);
+        if lane_prd.is_file() {
+            let lane_at = crate::testguard::prd_authorized_tests(&lane_prd)?;
+            let repo_prd = self.repo.join(&prd_rel);
+            let repo_at = crate::testguard::prd_authorized_tests(&repo_prd)?;
+            if lane_at != repo_at {
+                return Ok(vec![prd_rel]);
+            }
+        }
+        Ok(Vec::new())
+    }
+}
+
 /// Safe to call again for the same worker: a resumed driver finishes the landing this way.
 fn land_worker(
     run: &mut Run,
@@ -645,57 +669,42 @@ fn land_worker(
     let name = who.ref_name(board);
     let subject = who.subject(board);
     let base = run.state().lane_bases.get(&lane).cloned();
-    // A driver killed after the landing commit and before its record.
-    if let Some(base) = &base {
-        let tip = scheduler::git_ok(&repo, &["log", "--format=%H %s", &format!("{base}..HEAD")])?;
-        if let Some(sha) = tip
-            .lines()
-            .find_map(|l| l.split_once(' ').filter(|(_, s)| *s == subject))
-            .map(|(sha, _)| sha.to_string())
-        {
-            if scheduler::resolve(&repo, &name)?.is_some() {
-                scheduler::git_ok(&repo, &["update-ref", "-d", &name])?;
-            }
+    let Some(base) = base else {
+        return Ok(Landed::Done(nothing(run, board, who, row_id, out)?));
+    };
+    let main = lanes::main_tree(&repo)?;
+    let lane_dir = lanes::dir(&paths::data_dir(), &main, lane);
+    let protected = who.protected(board);
+    let spec = land::LandSpec {
+        repo: &repo,
+        lane_dir: &lane_dir,
+        base: &base,
+        board_files: &board_files,
+        protected: &protected,
+        message: &who.message(board),
+        subject: &subject,
+        ref_name: &name,
+        reuse_held: true,
+        require_parent_eq_base: false,
+    };
+    let mut polish_before = PolishBefore {
+        run,
+        board,
+        repo: &repo,
+        out,
+    };
+    let before_hook =
+        matches!(who, Closer::Polish).then_some(&mut polish_before as &mut dyn BeforeLand);
+    match land::land_lane(&spec, before_hook)? {
+        land::LandOutcome::AlreadyLanded { sha } => {
             record(run, who, row_id, &sha, out)?;
-            return Ok(Landed::Done(Some(sha)));
+            Ok(Landed::Done(Some(sha)))
         }
-    }
-    let sha = match scheduler::resolve(&repo, &name)? {
-        Some(sha) => sha,
-        None => {
-            let main = lanes::main_tree(&repo)?;
-            let lane_dir = lanes::dir(&paths::data_dir(), &main, lane);
-            if matches!(who, Closer::Polish) {
-                stand_ins(run, board, &lane_dir, out)?;
-            }
-            let mut protected = who.protected(board);
-            if matches!(who, Closer::Polish) {
-                let prd_rel = format!("{}/prd.md", board.dir);
-                let lane_prd = lane_dir.join(&prd_rel);
-                if lane_prd.is_file() {
-                    let lane_at = crate::testguard::prd_authorized_tests(&lane_prd)?;
-                    let repo_prd = repo.join(&prd_rel);
-                    let repo_at = crate::testguard::prd_authorized_tests(&repo_prd)?;
-                    if lane_at != repo_at {
-                        protected.push(prd_rel);
-                    }
-                }
-            }
-            let committed = match &base {
-                Some(base) => land::commit_lane(
-                    &lane_dir,
-                    base,
-                    &board_files,
-                    &protected,
-                    &who.message(board),
-                    &name,
-                )?,
-                None => None,
-            };
-            let Some(c) = committed else {
-                return Ok(Landed::Done(nothing(run, board, who, row_id, out)?));
-            };
-            for path in &c.dropped {
+        land::LandOutcome::Nothing { .. } => {
+            Ok(Landed::Done(nothing(run, board, who, row_id, out)?))
+        }
+        land::LandOutcome::Landed { sha, dropped } => {
+            for path in &dropped {
                 say(
                     out,
                     &format!(
@@ -709,21 +718,47 @@ fn land_worker(
                     ),
                 )?;
             }
-            c.sha
-        }
-    };
-    scheduler::undo_half_pick(&repo, &sha)?;
-    match land::land(&repo, &sha, &board_files)? {
-        Landing::Landed { sha } => {
             record(run, who, row_id, &sha, out)?;
             Ok(Landed::Done(Some(sha)))
         }
-        Landing::Dirty { paths } => Ok(Landed::Waiting(format!(
-            "the {}'s commit cannot land: {} changed in the main tree — commit or discard them",
-            who.worker(),
-            paths.join(", ")
-        ))),
-        Landing::Conflict { paths } => Ok(Landed::Conflict { paths, name }),
+        land::LandOutcome::Dirty { paths, dropped } => {
+            for path in &dropped {
+                say(
+                    out,
+                    &format!(
+                        "{}: {} wrote {path}, which no {} may — left out of the commit",
+                        who.phase(),
+                        who.worker(),
+                        match who {
+                            Closer::Polish => "polish worker",
+                            Closer::CiFix { .. } => "fix",
+                        }
+                    ),
+                )?;
+            }
+            Ok(Landed::Waiting(format!(
+                "the {}'s commit cannot land: {} changed in the main tree — commit or discard them",
+                who.worker(),
+                paths.join(", ")
+            )))
+        }
+        land::LandOutcome::Conflict { paths, dropped, .. } => {
+            for path in &dropped {
+                say(
+                    out,
+                    &format!(
+                        "{}: {} wrote {path}, which no {} may — left out of the commit",
+                        who.phase(),
+                        who.worker(),
+                        match who {
+                            Closer::Polish => "polish worker",
+                            Closer::CiFix { .. } => "fix",
+                        }
+                    ),
+                )?;
+            }
+            Ok(Landed::Conflict { paths, name })
+        }
     }
 }
 
@@ -2109,7 +2144,7 @@ fn fix_round(
             .map(|b| b.id)
             .collect();
         let lane = closeout_lane(board);
-        let (lane_dir, lane_def) = scheduler::prepare_lane(run, lane, true, out)?;
+        let (lane_dir, lane_def) = scheduler::prepare_lane(run, lane, attempt == 1, out)?;
         let who = Closer::CiFix { round, check };
         drop_ref(run, board, &who)?;
         let resolved = worker::effective_worker(run, cfg, "fix");

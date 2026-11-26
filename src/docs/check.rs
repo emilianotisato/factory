@@ -106,6 +106,7 @@ pub fn run_on(root: &Path, board: Option<&Path>) -> Report {
         prd_max_kb: 120.0,
         slice_max_kb: 30.0,
         gate_failure: Vec::new(),
+        gate_memory_max: None,
     });
     let docs = root.join("docs");
     let board_features = board.map(|b| b.join("docs/features"));
@@ -230,7 +231,24 @@ fn read_project(root: &Path, r: &mut Report) -> Option<Option<Project>> {
             use toml::Value as T;
             let ok = match k.as_str() {
                 "framework" | "lanes" | "checkpoint_every" => matches!(v, T::Integer(_)),
-                "gate" | "inner" => matches!(v, T::String(_)),
+                "gate" | "inner" | "gate_memory_max" => match k.as_str() {
+                    "gate_memory_max" => match v {
+                        T::String(s) => match crate::memcap::normalize_limit(s) {
+                            Ok(_) => true,
+                            Err(e) => {
+                                r.err(
+                                    "E-PROJECT-INVALID",
+                                    format!(
+                                        "docs/project.toml [docs] gate_memory_max = {v:?}: {e}"
+                                    ),
+                                );
+                                false
+                            }
+                        },
+                        _ => false,
+                    },
+                    _ => matches!(v, T::String(_)),
+                },
                 "gate_parallel" => {
                     matches!(v, T::Boolean(_))
                         || matches!(v, T::String(s) if s == "true" || s == "false")
@@ -258,9 +276,31 @@ fn read_project(root: &Path, r: &mut Report) -> Option<Option<Project>> {
                 _ => true,
             };
             if !ok {
+                let gate_max_err = k.as_str() == "gate_memory_max"
+                    && matches!(v, toml::Value::String(s) if crate::memcap::normalize_limit(s).is_err());
+                if !gate_max_err {
+                    r.err(
+                        "E-PROJECT-INVALID",
+                        format!("docs/project.toml [docs] {k} = {v} is not a {}", kind_of(k)),
+                    );
+                }
+            }
+        }
+    }
+    if let Some(toml::Value::Table(lanes)) = table.get("lanes") {
+        use toml::Value as T;
+        if let Some(v) = lanes.get("clean_above_gb") {
+            let ok = match v {
+                T::Integer(i) => *i as f64 > 0.0,
+                T::Float(f) => *f > 0.0 && f.is_finite(),
+                _ => false,
+            };
+            if !ok {
                 r.err(
                     "E-PROJECT-INVALID",
-                    format!("docs/project.toml [docs] {k} = {v} is not a {}", kind_of(k)),
+                    format!(
+                        "docs/project.toml [lanes] clean_above_gb = {v} must be a positive number"
+                    ),
                 );
             }
         }
@@ -270,7 +310,7 @@ fn read_project(root: &Path, r: &mut Report) -> Option<Option<Project>> {
 
 fn kind_of(key: &str) -> &'static str {
     match key {
-        "gate" | "inner" => "string",
+        "gate" | "inner" | "gate_memory_max" => "string",
         "gate_parallel" => "boolean",
         "prd_max_kb" | "slice_max_kb" => "number",
         "gate_failure" => "list of regex strings",
@@ -1045,6 +1085,21 @@ mod tests {
                 append(root, "docs/project.toml", "lanes = \"two\"\n")
             }),
         ];
+        for (bad, label) in [
+            ("clean_above_gb = 0\n", "zero"),
+            ("clean_above_gb = -1\n", "negative"),
+            ("clean_above_gb = \"15G\"\n", "string"),
+            ("clean_above_gb = true\n", "bool"),
+        ] {
+            let d = tree();
+            append(d.path(), "docs/project.toml", &format!("[lanes]\n{bad}"));
+            assert_eq!(
+                codes(d.path()),
+                ["E-PROJECT-INVALID"],
+                "{label}: {:?}",
+                run(d.path()).lines()
+            );
+        }
         for (code, f) in cases {
             let d = tree();
             f(d.path());

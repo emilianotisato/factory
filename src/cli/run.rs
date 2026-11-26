@@ -85,7 +85,9 @@ pub fn run(args: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i
         // The driver commits only on the run's branch: a tree switched away refuses before the run is touched.
         if let Some(branch) = run.state().branch.clone() {
             let default = load_preflight(run.dir())?.and_then(|pf| pf.branch.default);
-            if let Some(why) = commit::branch_refusal(&repo, &branch, default.as_deref())? {
+            if let Some(why) =
+                commit::branch_refusal(&run.state().repo, &branch, default.as_deref())?
+            {
                 writeln!(out, "run {} not resumed: {why}", run.id()).map_err(io("stdout"))?;
                 return Ok(1);
             }
@@ -98,8 +100,9 @@ pub fn run(args: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i
         }
         run.emit(EventKind::RunResumed)?;
         writeln!(out, "run {} resumed ({})", run.id(), run.state().phase).map_err(io("stdout"))?;
-        print_board(&docs, &feature, out)?;
-        return launch(&mut run, &docs, &loaded.config, args.foreground, out);
+        let run_docs = Docs::open(&run.state().repo)?;
+        print_board(&run_docs, &feature, out)?;
+        return launch(&mut run, &run_docs, &loaded.config, args.foreground, out);
     }
 
     let mut specs = Vec::new();

@@ -1,23 +1,30 @@
 //! Every step is re-entrant from the board and the run dir alone: a resume lands here before any spawn.
 use std::collections::HashSet;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::Instant;
+use std::sync::atomic::{AtomicI32, Ordering};
+use std::thread;
+use std::time::{Duration, Instant};
+
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 
 use crate::answers;
 use crate::commit;
 use crate::config::Config;
 use crate::db::GateInsert;
+use crate::docs::project;
 use crate::docs::{Docs, Status};
 use crate::error::io;
 use crate::events::{Event, EventKind};
 use crate::gatecache::{self, Entry, GateCache};
-use crate::land::{self, Landing};
+use crate::land;
+use crate::memcap;
 use crate::pack::{Pack, QaRow};
 use crate::quota::{self, Hold, Limit};
-use crate::run::{Phase, Run, WorkerOutcome};
+use crate::run::{ActiveGate, Phase, Run, WorkerOutcome};
 use crate::scheduler::{self, DEATH_CAP, pad_list, say, short};
 use crate::stream::Summary;
 use crate::worker::{self, Exit, Job, Worker};
@@ -25,6 +32,45 @@ use crate::{Result, clock, lanes, metrics, paths};
 
 pub const RED_CAP: u32 = 3;
 pub const GATES_DIR: &str = "gates";
+
+static ACTIVE_GATE_PGID: AtomicI32 = AtomicI32::new(0);
+
+#[cfg(unix)]
+extern "C" fn forward_gate_signal(sig: libc::c_int) {
+    // SAFETY: async-signal-safe only.
+    unsafe {
+        let pgid = ACTIVE_GATE_PGID.load(Ordering::SeqCst);
+        if pgid > 0 {
+            libc::kill(-pgid, libc::SIGKILL);
+        }
+        libc::signal(sig, libc::SIG_DFL);
+        libc::raise(sig);
+    }
+}
+
+fn forward_gate_signals() {
+    #[cfg(unix)]
+    {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+                // SAFETY: zeroed `sigaction` is valid.
+                unsafe {
+                    let mut old: libc::sigaction = std::mem::zeroed();
+                    libc::sigaction(sig, std::ptr::null(), &mut old);
+                    if old.sa_sigaction == libc::SIG_IGN {
+                        continue;
+                    }
+                    let mut sa: libc::sigaction = std::mem::zeroed();
+                    sa.sa_sigaction =
+                        forward_gate_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
+                    libc::sigemptyset(&mut sa.sa_mask);
+                    libc::sigaction(sig, &sa, std::ptr::null_mut());
+                }
+            }
+        });
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
@@ -61,6 +107,8 @@ pub fn run(
             fresh: false,
         });
     }
+
+    let _ = reap_active_gate(run, out)?;
 
     let n = board.checkpoints.iter().map(|c| c.n).max().unwrap_or(0) + 1;
     let covers = board.unverified.clone();
@@ -158,14 +206,18 @@ pub fn run(
         let (reds, fixes) = reds_in_a_row(run, n)?;
         if reds >= RED_CAP {
             let tail = fs::read_to_string(&result.log).unwrap_or_default();
-            let line = failure_line(run, &result.log).unwrap_or_else(|| {
-                tail.lines()
-                    .rev()
-                    .map(str::trim)
-                    .find(|l| !l.is_empty())
-                    .unwrap_or("no output")
-                    .to_string()
-            });
+            let line = if let Some(cap) = &result.oom_cap {
+                format!("gate hit its memory cap ({cap})")
+            } else {
+                failure_line(run, &result.log).unwrap_or_else(|| {
+                    tail.lines()
+                        .rev()
+                        .map(str::trim)
+                        .find(|l| !l.is_empty())
+                        .unwrap_or("no output")
+                        .to_string()
+                })
+            };
             let title =
                 answers::block_title(&format!("gate red three times at checkpoint {n}: {line}"));
             let quoted: String = crate::pack::tail(&tail, 40)
@@ -539,6 +591,7 @@ struct GateResult {
     cached: bool,
     attempt: u32,
     log: PathBuf,
+    oom_cap: Option<String>,
 }
 
 fn reds_in_a_row(run: &Run, n: u32) -> Result<(u32, u32)> {
@@ -631,8 +684,16 @@ fn gate_once(
             cached: true,
             attempt,
             log: run.dir().join(&hit.log),
+            oom_cap: None,
         });
     }
+
+    let configured = project::load(&run.state().repo)
+        .ok()
+        .flatten()
+        .and_then(|p| p.gate_memory_max);
+    let limit = memcap::resolve_limit(configured.as_deref());
+    let unit = format!("factory-gate-{}-{n}-{attempt}", run.id());
 
     let rel = format!("{GATES_DIR}/{n}-{attempt}.log");
     run.emit(EventKind::GateStarted {
@@ -654,21 +715,60 @@ fn gate_once(
         &format!("checkpoint {n}: gate attempt {attempt} — `{gate}`"),
     )?;
     let started = Instant::now();
-    let status = Command::new("sh")
-        .arg("-c")
-        .arg(gate)
-        .current_dir(lane)
+    let (mut cmd, scope) = memcap::shell_command(gate, limit.as_deref(), Some(&unit));
+    cmd.current_dir(lane)
         .envs(env.iter().map(|(k, v)| (k, v)))
         .stdin(Stdio::null())
         .stdout(Stdio::from(file))
-        .stderr(Stdio::from(err))
-        .status()
-        .map_err(|e| crate::Error::Tool {
-            cmd: format!("sh -c {gate}"),
-            detail: format!("could not start the gate: {e}"),
-        })?;
+        .stderr(Stdio::from(err));
+    #[cfg(unix)]
+    {
+        cmd.process_group(0);
+        forward_gate_signals();
+    }
+    let mut child = cmd.spawn().map_err(|e| crate::Error::Tool {
+        cmd: format!("gate at checkpoint {n}"),
+        detail: format!("could not start the gate: {e}"),
+    })?;
+    let pid = child.id();
+    ACTIVE_GATE_PGID.store(pid as i32, Ordering::SeqCst);
+    if let Err(e) = run.set_active_gate(Some(ActiveGate {
+        pid,
+        pid_start: crate::run::start_time(pid),
+        pgid: Some(pid),
+        scope: scope.clone(),
+        checkpoint: n,
+    })) {
+        ACTIVE_GATE_PGID.store(0, Ordering::SeqCst);
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(e);
+    }
+    let status = child.wait().map_err(|e| {
+        ACTIVE_GATE_PGID.store(0, Ordering::SeqCst);
+        let _ = run.set_active_gate(None);
+        crate::Error::Tool {
+            cmd: format!("gate at checkpoint {n}"),
+            detail: format!("could not wait on the gate: {e}"),
+        }
+    })?;
+    ACTIVE_GATE_PGID.store(0, Ordering::SeqCst);
+    run.set_active_gate(None)?;
     let minutes = started.elapsed().as_secs_f64() / 60.0;
     let red = !status.success();
+    let mut oom_cap = None;
+    if red
+        && scope.is_some()
+        && let Some(cap) = &limit
+        && memcap::detect_oom(&status, scope.as_deref(), &tail_from_log(&log))
+    {
+        let msg = format!("\nfactory: gate hit its memory cap ({cap})\n");
+        let _ = OpenOptions::new()
+            .append(true)
+            .open(&log)
+            .and_then(|mut f| f.write_all(msg.as_bytes()));
+        oom_cap = Some(cap.clone());
+    }
     run.db().insert_gate(&GateInsert {
         run_id: run.id().as_str(),
         source: "driver",
@@ -711,7 +811,80 @@ fn gate_once(
         cached: false,
         attempt,
         log,
+        oom_cap,
     })
+}
+
+fn tail_from_log(log: &Path) -> String {
+    const MAX: usize = 32_768;
+    let Ok(meta) = fs::metadata(log) else {
+        return String::new();
+    };
+    let len = meta.len() as usize;
+    let Ok(bytes) = fs::read(log) else {
+        return String::new();
+    };
+    let start = len.saturating_sub(MAX);
+    String::from_utf8_lossy(&bytes[start..]).into_owned()
+}
+
+pub fn reap_active_gate(run: &mut Run, out: &mut dyn Write) -> Result<bool> {
+    let Some(g) = run.state().active_gate.clone() else {
+        return Ok(false);
+    };
+    if let Some(unit) = &g.scope {
+        let _ = Command::new("systemctl")
+            .args(["--user", "stop", &memcap::scope_unit_name(unit)])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    let pgid = g.pgid.unwrap_or(g.pid);
+    let pgid_i = pgid as i32;
+    let leader_alive = crate::run::alive(g.pid, g.pid_start);
+    #[cfg(unix)]
+    let group_alive = {
+        let pgid_live = unsafe { libc::kill(-pgid_i, 0) == 0 };
+        pgid_live
+            && (leader_alive
+                || g.pid_start
+                    .is_some_and(|want| crate::run::start_time(g.pid) == Some(want))
+                || (g.pid_start.is_some() && !leader_alive))
+    };
+    #[cfg(not(unix))]
+    let group_alive = false;
+    let mut reaped = false;
+    if leader_alive || group_alive {
+        #[cfg(unix)]
+        {
+            unsafe {
+                libc::kill(-pgid_i, libc::SIGTERM);
+            }
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while Instant::now() < deadline {
+                if unsafe { libc::kill(-pgid_i, 0) } != 0 {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+            if unsafe { libc::kill(-pgid_i, 0) } == 0 {
+                unsafe {
+                    libc::kill(-pgid_i, libc::SIGKILL);
+                }
+            }
+            reaped = true;
+            say(
+                out,
+                &format!(
+                    "reaped leftover gate pid {} (checkpoint {})",
+                    g.pid, g.checkpoint
+                ),
+            )?;
+        }
+    }
+    run.set_active_gate(None)?;
+    Ok(reaped)
 }
 
 enum Fixed {
@@ -898,49 +1071,38 @@ pub fn land_worker(
     let name = worker_ref(board, n, role);
     let subject = worker_subject(board, n, role);
     let base = lane.and_then(|l| run.state().lane_bases.get(&l).cloned());
-    // A driver killed after the landing commit and before its record.
-    if let Some(base) = &base {
-        let tip = scheduler::git_ok(&repo, &["log", "--format=%H %s", &format!("{base}..HEAD")])?;
-        if let Some(sha) = tip
-            .lines()
-            .find_map(|l| l.split_once(' ').filter(|(_, s)| *s == subject))
-            .map(|(sha, _)| sha.to_string())
-        {
-            if scheduler::resolve(&repo, &name)?.is_some() {
-                scheduler::git_ok(&repo, &["update-ref", "-d", &name])?;
-            }
+    let (Some(lane), Some(base)) = (lane, &base) else {
+        return Ok(Landed::Done(commit_board(
+            run, board, n, role, attempt, row_id, out,
+        )?));
+    };
+    let main = lanes::main_tree(&repo)?;
+    let lane_dir = lanes::dir(&paths::data_dir(), &main, lane);
+    let protected = commit::protected_files(board);
+    let spec = land::LandSpec {
+        repo: &repo,
+        lane_dir: &lane_dir,
+        base,
+        board_files: &board_files,
+        protected: &protected,
+        message: &worker_message(board, n, role),
+        subject: &subject,
+        ref_name: &name,
+        reuse_held: true,
+        require_parent_eq_base: false,
+    };
+    let who = if role == "fix" {
+        "fix"
+    } else {
+        "checkpoint worker"
+    };
+    match land::land_lane(&spec, None)? {
+        land::LandOutcome::AlreadyLanded { sha } => {
             record(run, n, role, attempt, row_id, &sha, out)?;
-            return Ok(Landed::Done(Some(sha)));
+            Ok(Landed::Done(Some(sha)))
         }
-    }
-    let sha = match scheduler::resolve(&repo, &name)? {
-        Some(sha) => sha,
-        None => {
-            let (Some(lane), Some(base)) = (lane, base) else {
-                return Ok(Landed::Done(commit_board(
-                    run, board, n, role, attempt, row_id, out,
-                )?));
-            };
-            let main = lanes::main_tree(&repo)?;
-            let Some(c) = land::commit_lane(
-                &lanes::dir(&paths::data_dir(), &main, lane),
-                &base,
-                &board_files,
-                &commit::protected_files(board),
-                &worker_message(board, n, role),
-                &name,
-            )?
-            else {
-                return Ok(Landed::Done(commit_board(
-                    run, board, n, role, attempt, row_id, out,
-                )?));
-            };
-            let who = if role == "fix" {
-                "fix"
-            } else {
-                "checkpoint worker"
-            };
-            for path in &c.dropped {
+        land::LandOutcome::Landed { sha, dropped } => {
+            for path in &dropped {
                 say(
                     out,
                     &format!(
@@ -948,20 +1110,37 @@ pub fn land_worker(
                     ),
                 )?;
             }
-            c.sha
-        }
-    };
-    scheduler::undo_half_pick(&repo, &sha)?;
-    match land::land(&repo, &sha, &board_files)? {
-        Landing::Landed { sha } => {
             record(run, n, role, attempt, row_id, &sha, out)?;
             Ok(Landed::Done(Some(sha)))
         }
-        Landing::Dirty { paths } => Ok(Landed::Waiting(format!(
-            "checkpoint {n} cannot land: {} changed in the main tree — commit or discard them",
-            paths.join(", ")
-        ))),
-        Landing::Conflict { paths } => Ok(Landed::Conflict { paths, name }),
+        land::LandOutcome::Nothing { .. } => Ok(Landed::Done(commit_board(
+            run, board, n, role, attempt, row_id, out,
+        )?)),
+        land::LandOutcome::Dirty { paths, dropped } => {
+            for path in &dropped {
+                say(
+                    out,
+                    &format!(
+                        "checkpoint {n}: {role} worker wrote {path}, which no {who} may — left out of the commit"
+                    ),
+                )?;
+            }
+            Ok(Landed::Waiting(format!(
+                "checkpoint {n} cannot land: {} changed in the main tree — commit or discard them",
+                paths.join(", ")
+            )))
+        }
+        land::LandOutcome::Conflict { paths, dropped, .. } => {
+            for path in &dropped {
+                say(
+                    out,
+                    &format!(
+                        "checkpoint {n}: {role} worker wrote {path}, which no {who} may — left out of the commit"
+                    ),
+                )?;
+            }
+            Ok(Landed::Conflict { paths, name })
+        }
     }
 }
 
