@@ -164,7 +164,14 @@ No row needs a human, so no `qa-guide.md` is generated.
 
 ## 9. Slices
 
-_(Not sliced yet. Run `/slice`.)_
+Four vertical slices in two conflict-free parallel branches (no two concurrent slices write the same file):
+
+- **Slice 01 — Worker env and git push-off hardening (`FR-3`, deps: —):** expands `GH_TOKEN_VARS` with `GITHUB_PERSONAL_ACCESS_TOKEN`, adds `help.autocorrect=0` to `push_off_env`, and wires `push_off_env_for_repo(&cwd, ...)` into `Worker::spawn` for full-URL `pushInsteadOf` and explicit `remote.*.pushurl` `insteadOf` rewrites (`src/worker.rs`, `tests/worker.rs`). Lands first on branch A so Slice 02 consumes the expanded `GH_TOKEN_VARS`.
+- **Slice 02 — Adversarial reviewer isolation and `--dry-run` (`FR-2`, deps: 01):** extracts `build_pass_command`, scrubs `GH_TOKEN_VARS` + Claude session vars across all five reviewers and `probe_resolved`, adds Claude `--setting-sources user --strict-mcp-config`, `--` prompt guards + clap `allow_hyphen_values = true`, OpenCode `OPENCODE_CONFIG_CONTENT` (top-level + `agent.plan`), and file-free `factory review second --dry-run` (`src/review.rs`, `src/cli/review.rs`, `tests/review.rs`).
+- **Slice 03 — Safe provider switches and setup/preflight fixes (`FR-1`, deps: —):** adds `config::stale_role_clears` (respecting `FACTORY_WORKER_PROVIDER`) wired into `setup` and `worker_answer` (disk + in-memory), validates resolved worker model/effort as preflight refusals and bad `[review]` as warnings, and fixes `workers_step`, `role_sources`, and `setup --show` spacing (`src/config.rs`, `src/cli/setup.rs`, `src/cli/answer.rs`, `src/docs/preflight.rs`, `tests/setup.rs`). Lands first on branch B so Slice 04 layers cleanly onto `src/docs/preflight.rs`.
+- **Slice 04 — Collect reuse, proceed wording, PATH order and `--title-file` (`FR-4`, deps: 03):** adds reviewer-stamped `collect::reusable_for`, `skipped_by_proceed` wording (+ `skills/polish/SKILL.md:65` and `0.17.0` → `0.18.0` crate/bundle/cockpit version bump), preflight config warnings, PATH-order `detect_installed_in` with `X_OK`, and `docs log add --title-file` (`src/collect.rs`, `src/closeout.rs`, `src/docs/preflight.rs`, `src/provider.rs`, `src/cli/docs.rs`, `skills/polish/SKILL.md`, `Cargo.toml`, `skills/bundle.lock`, `mods/cockpit/`, `tests/collect_and_provider.rs`).
+
+Checkpoints fall every 2 done slices (`checkpoint_every = 2`: after 01+03 / 02+04, and once at the end). Workflow: one branch (`feat/multi-provider-hardening`), one PR, one commit per slice, Prove rows driven at checkpoints. No QA plan row needs a human, so no `qa-guide.md` is generated.
 
 ## 10. Non-goals
 
