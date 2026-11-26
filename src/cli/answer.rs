@@ -150,6 +150,12 @@ fn answer_block(
     }
     // The `answer` entry before the flip: the respawned worker's pack quotes it from the log.
     answers::resolve(&feature_dir, &entry, text)?;
+    if entry.title.starts_with(crate::testguard::BLOCK_PREFIX)
+        && text.trim().eq_ignore_ascii_case("allow")
+        && let Some(run) = &mut run
+    {
+        crate::testguard::sync_allow_answers(run, &feature_dir)?;
+    }
     writeln!(out, "{id} resolved ({where_}): {text}").map_err(io("stdout"))?;
     deliver(repo, &feature_dir, &feature, slice, run, out)?;
     Ok(0)

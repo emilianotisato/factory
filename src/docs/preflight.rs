@@ -34,21 +34,17 @@ pub fn default_branch(root: &Path) -> Option<String> {
     ) {
         return Some(h.strip_prefix("origin/").unwrap_or(&h).to_string());
     }
-    ["main", "master"]
-        .into_iter()
-        .find(|b| {
-            git(
-                root,
-                &[
-                    "rev-parse",
-                    "--verify",
-                    "--quiet",
-                    &format!("refs/heads/{b}"),
-                ],
-            )
-            .is_some()
-        })
-        .map(str::to_string)
+    for b in ["main", "master"] {
+        for r in [
+            format!("refs/heads/{b}"),
+            format!("refs/remotes/origin/{b}"),
+        ] {
+            if git(root, &["rev-parse", "--verify", "--quiet", &r]).is_some() {
+                return Some(b.to_string());
+            }
+        }
+    }
+    None
 }
 
 /// The widest wave of a greedy schedule; an unlisted dependency counts as met, a cycle stops the count.
@@ -629,5 +625,65 @@ mod tests {
         assert_eq!(parallel_width(&cycle), 0);
         // A dependency on a slice nobody lists counts as met.
         assert_eq!(parallel_width(&[slice(1, &[9]), slice(2, &[])]), 2);
+    }
+
+    #[test]
+    fn default_branch_reads_origin_main_when_local_main_is_gone() {
+        use std::process::Command;
+        let run = |cwd: &Path, args: &[&str]| {
+            assert!(
+                Command::new("git")
+                    .args(args)
+                    .current_dir(cwd)
+                    .status()
+                    .unwrap()
+                    .success(),
+                "git {}",
+                args.join(" ")
+            );
+        };
+        let base = tempfile::tempdir().unwrap();
+        let origin = base.path().join("origin.git");
+        run(
+            base.path(),
+            &[
+                "init",
+                "-q",
+                "--bare",
+                "-b",
+                "main",
+                origin.to_str().unwrap(),
+            ],
+        );
+        let seed = base.path().join("seed");
+        run(
+            base.path(),
+            &["init", "-q", "-b", "main", seed.to_str().unwrap()],
+        );
+        run(&seed, &["config", "user.name", "T"]);
+        run(&seed, &["config", "user.email", "t@example.invalid"]);
+        std::fs::write(seed.join("README"), "seed\n").unwrap();
+        run(&seed, &["add", "README"]);
+        run(&seed, &["commit", "-q", "-m", "init"]);
+        run(
+            &seed,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
+        run(&seed, &["push", "-q", "origin", "main"]);
+        let work = base.path().join("work");
+        run(
+            base.path(),
+            &[
+                "clone",
+                "-q",
+                origin.to_str().unwrap(),
+                work.to_str().unwrap(),
+            ],
+        );
+        let r = work.as_path();
+        run(r, &["checkout", "-q", "-b", "feat/x"]);
+        run(r, &["branch", "-D", "main"]);
+        run(r, &["remote", "set-head", "origin", "-d"]);
+        assert_eq!(default_branch(r).as_deref(), Some("main"));
     }
 }

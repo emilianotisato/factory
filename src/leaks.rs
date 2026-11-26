@@ -40,7 +40,7 @@ pub struct Rule {
 
 macro_rules! ids {
     () => {
-        r"\b(?:PRD|FR|AD|CP|OPEN|OQ|DEC|BLOCK|ASK)-\d+|\bslice[- ]?\d+"
+        r"\b(?:PRD|FR|OQ|BLOCK)[-_]?\d+|\b(?:AD|CP|OPEN|DEC|ASK)-\d+|\bslice[- ]?\d+"
     };
 }
 
@@ -156,7 +156,7 @@ const QUIET: [(&str, &str); 4] = [
     ("id-comment", r"(?i)(?:\bRFC ?\d+|\bmanual)[^\w§]{0,3}§"),
 ];
 
-const SEMVER: &str = r"(?i)\b(?:PRD|FR|AD|CP|OPEN|OQ|DEC|BLOCK|ASK|slice)[- ]?\d+\.\d+\.\d+";
+const SEMVER: &str = r"(?i)\b(?:PRD|FR|AD|CP|OPEN|OQ|DEC|BLOCK|ASK|slice)[-_ ]?\d+\.\d+\.\d+";
 
 static QUIETS: LazyLock<Vec<(&str, Regex)>> = LazyLock::new(|| {
     QUIET
@@ -440,26 +440,16 @@ fn scope_of(allow: &[Allow], path: &str) -> Option<Scope> {
     covering.map(|a| a.scope).max_by_key(|s| *s == Scope::All)
 }
 
-/// `[leaks] allow` of `docs/project.toml`; no file or no table is an empty list.
-pub fn allowlist(root: &Path) -> Result<Vec<Allow>> {
-    let p = project::path(root);
-    let text = match fs::read_to_string(&p) {
-        Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(io(format!("read {}", p.display()))(e)),
-    };
+fn parse_allowlist(label: &str, text: &str) -> Result<Vec<Allow>> {
     let table: toml::Table = text.parse().map_err(|source| Error::Toml {
-        what: format!("read {}", p.display()),
+        what: label.to_string(),
         source,
     })?;
     let Some(allow) = table.get("leaks").and_then(|l| l.get("allow")) else {
         return Ok(Vec::new());
     };
     let bad = |what: &str, entry: &toml::Value| {
-        Error::Msg(format!(
-            "{}: [leaks] allow entry {entry}: {what}",
-            p.display()
-        ))
+        Error::Msg(format!("{label}: [leaks] allow entry {entry}: {what}"))
     };
     let Some(items) = allow.as_array() else {
         return Err(bad("`allow` is not a list", allow));
@@ -497,6 +487,41 @@ pub fn allowlist(root: &Path) -> Result<Vec<Allow>> {
         .collect()
 }
 
+/// `[leaks] allow` of `docs/project.toml`; no file or no table is an empty list.
+pub fn allowlist(root: &Path) -> Result<Vec<Allow>> {
+    let p = project::path(root);
+    let text = match fs::read_to_string(&p) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(io(format!("read {}", p.display()))(e)),
+    };
+    parse_allowlist(&p.display().to_string(), &text)
+}
+
+/// `[leaks] allow` from `docs/project.toml` at a git revision; missing file is an empty list.
+pub fn allowlist_at_ref(repo: &Path, git_ref: &str) -> Result<Vec<Allow>> {
+    if git_code(
+        repo,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{git_ref}^{{commit}}"),
+        ],
+    )? != 0
+    {
+        return Err(Error::Msg(format!(
+            "ref `{git_ref}` does not resolve to a commit"
+        )));
+    }
+    let blob = format!("{git_ref}:docs/project.toml");
+    if git_code(repo, &["cat-file", "-e", &blob])? != 0 {
+        return Ok(Vec::new());
+    }
+    let text = git(repo, &["show", &blob])?;
+    parse_allowlist(&blob, &text)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Added {
     pub path: String,
@@ -518,6 +543,7 @@ pub struct Report {
     pub hits: Vec<Hit>,
     pub comment_lines: u64,
     pub added_lines: u64,
+    pub allowlist_note: Option<String>,
 }
 
 fn rule(id: &str) -> &'static Rule {
@@ -565,6 +591,10 @@ impl Report {
                     None => out.push_str(&format!("  {}\n", h.path)),
                 }
             }
+            out.push('\n');
+        }
+        if let Some(note) = &self.allowlist_note {
+            out.push_str(note);
             out.push('\n');
         }
         out.push_str(&format!(
@@ -783,16 +813,47 @@ fn git(repo: &Path, args: &[&str]) -> Result<String> {
     Ok(out.stdout)
 }
 
+fn git_code(repo: &Path, args: &[&str]) -> Result<i32> {
+    Ok(ci::git(repo, args)?.code)
+}
+
+fn branch_allowlist_changed(repo: &Path, base_ref: &str) -> Option<String> {
+    let mb = git(repo, &["merge-base", base_ref, "HEAD"]).ok()?;
+    let mb = mb.trim();
+    if mb.is_empty() {
+        return None;
+    }
+    let at_fork = allowlist_at_ref(repo, mb).ok()?;
+    let at_head = allowlist_at_ref(repo, "HEAD").ok()?;
+    if at_fork == at_head {
+        return None;
+    }
+    Some(format!(
+        "note: [leaks] allow changed on this branch; scanned with {base_ref}'s allowlist"
+    ))
+}
+
 /// Lines and paths the input adds outside `docs/`, run through the rules and the repo's allowlist.
 pub fn scan(repo: &Path, input: Input) -> Result<Report> {
-    let allow = allowlist(repo)?;
-    let range: Vec<String> = match input {
+    let (allow, allowlist_note) = match input {
         Input::Base(base) if base.starts_with('-') => {
             return Err(Error::Msg(format!(
                 "base `{base}` starts with `-`, and git would read it as an option"
             )));
         }
-        Input::Base(base) => vec![format!("{base}...HEAD")],
+        Input::Base(base) => {
+            let base_ref = crate::commit::resolve_base_ref(repo, Some(base))?;
+            let allow = allowlist_at_ref(repo, &base_ref)?;
+            let allowlist_note = branch_allowlist_changed(repo, &base_ref);
+            (allow, allowlist_note)
+        }
+        Input::All => (allowlist(repo)?, None),
+    };
+    let range: Vec<String> = match input {
+        Input::Base(base) => {
+            let base_ref = crate::commit::resolve_base_ref(repo, Some(base))?;
+            vec![format!("{base_ref}...HEAD")]
+        }
         // A SHA-256 repo has another empty tree, so ask git for it.
         Input::All => vec![
             git(repo, &["hash-object", "-t", "tree", "/dev/null"])?
@@ -829,7 +890,9 @@ pub fn scan(repo: &Path, input: Input) -> Result<Report> {
         .collect();
     let lines = parse_diff(&git(repo, &diff)?);
     let paths = parse_name_status(&git(repo, &names)?);
-    Ok(check(&allow, &lines, &paths))
+    let mut report = check(&allow, &lines, &paths);
+    report.allowlist_note = allowlist_note;
+    Ok(report)
 }
 
 /// The doctor's and the preflight's `leaks` value: the whole tree's hits, `clean`, or why it could not scan.
@@ -904,6 +967,42 @@ mod tests {
         );
         assert!(hits("a.rs", "let version_3_store = open(dir);").is_empty());
         assert!(path_hits(&[], "tests/fixture/log-without-covers/x.jsonl").is_empty());
+    }
+
+    #[test]
+    fn leaks_catches_hyphenless_unambiguous_plan_ids_without_ambiguous_false_positives() {
+        for text in [
+            r#""fr123-7""#,
+            r#""fr123""#,
+            r#""FR_4""#,
+            r#""prd025""#,
+            r#""oq12""#,
+            r#""block101""#,
+            "// prd025 lands later",
+        ] {
+            for path in ["a.rs", "a.ts"] {
+                assert!(
+                    hits(path, text)
+                        .iter()
+                        .any(|r| *r == "id-string" || *r == "id-comment"),
+                    "{path}: {text}"
+                );
+            }
+        }
+        for text in [
+            r#""cp1252""#,
+            r#""dec2026""#,
+            r#""ad1""#,
+            r#""open2""#,
+            r#""ask1""#,
+            r#""block1.2.3""#,
+            "// cp1252 again",
+            "// dec2026 freeze",
+        ] {
+            for path in ["a.rs", "a.ts"] {
+                assert!(hits(path, text).is_empty(), "{path}: {text}");
+            }
+        }
     }
 
     #[test]

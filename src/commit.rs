@@ -8,8 +8,77 @@ use crate::docs::Status;
 use crate::{Error, Result};
 
 /// The files no worker may write: they are the orchestrator's.
-pub fn protected_files(board: &Status) -> [String; 2] {
-    [format!("{}/prd.md", board.dir), "docs/index.md".to_string()]
+pub fn protected_files(board: &Status) -> [String; 3] {
+    [
+        format!("{}/prd.md", board.dir),
+        "docs/index.md".to_string(),
+        "docs/project.toml".to_string(),
+    ]
+}
+
+/// A git revision range endpoint: local branch name, `origin/<name>`, or the default branch.
+pub fn resolve_base_ref(repo: &Path, preferred: Option<&str>) -> Result<String> {
+    if let Some(name) = preferred.filter(|n| !n.is_empty()) {
+        if name.starts_with('-') {
+            return Err(Error::Msg(format!(
+                "base `{name}` starts with `-`, and git would read it as an option"
+            )));
+        }
+        return resolve_one(repo, name).ok_or_else(|| {
+            Error::Msg(format!(
+                "base `{name}` does not resolve to a commit (tried `{name}` and `origin/{name}`)"
+            ))
+        });
+    }
+    let mut candidates = Vec::new();
+    if let Ok(head) = git(
+        repo,
+        &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+    ) {
+        let name = head.trim();
+        let plain = name.strip_prefix("origin/").unwrap_or(name);
+        if !plain.is_empty() {
+            push_once(&mut candidates, plain.to_string());
+        }
+    }
+    for b in ["main", "master"] {
+        push_once(&mut candidates, b.to_string());
+    }
+    for name in &candidates {
+        if let Some(resolved) = resolve_one(repo, name) {
+            return Ok(resolved);
+        }
+    }
+    Err(Error::Msg(format!(
+        "no base ref resolves to a commit (tried {})",
+        candidates.join(", ")
+    )))
+}
+
+fn resolve_one(repo: &Path, name: &str) -> Option<String> {
+    let ok = |refname: &str| {
+        git_code(
+            repo,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("{refname}^{{commit}}"),
+            ],
+        )
+        .ok()
+        .is_some_and(|c| c == 0)
+    };
+    if ok(name) {
+        return Some(name.to_string());
+    }
+    if !name.starts_with("origin/") {
+        let remote = format!("origin/{name}");
+        if ok(&remote) {
+            return Some(remote);
+        }
+    }
+    None
 }
 
 pub fn tool_files(board: &Status) -> [String; 2] {
@@ -400,5 +469,96 @@ mod tests {
             message_of(15, "docs", "checkpoint 2"),
             "docs(015): checkpoint 2"
         );
+    }
+
+    fn origin_only_main_repo() -> tempfile::TempDir {
+        let base = tempfile::tempdir().unwrap();
+        let origin = base.path().join("origin.git");
+        git(
+            base.path(),
+            &[
+                "init",
+                "-q",
+                "--bare",
+                "-b",
+                "main",
+                origin.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        let seed = base.path().join("seed");
+        git(
+            base.path(),
+            &["init", "-q", "-b", "main", seed.to_str().unwrap()],
+        )
+        .unwrap();
+        for args in [
+            vec!["config", "user.name", "T"],
+            vec!["config", "user.email", "t@example.invalid"],
+        ] {
+            git(seed.as_path(), &args).unwrap();
+        }
+        fs::write(seed.join("README"), "seed\n").unwrap();
+        git(seed.as_path(), &["add", "README"]).unwrap();
+        git(seed.as_path(), &["commit", "-q", "-m", "init"]).unwrap();
+        git(
+            seed.as_path(),
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        )
+        .unwrap();
+        git(seed.as_path(), &["push", "-q", "origin", "main"]).unwrap();
+        let work = base.path().join("work");
+        git(
+            base.path(),
+            &[
+                "clone",
+                "-q",
+                origin.to_str().unwrap(),
+                work.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        let r = work.as_path();
+        for args in [
+            vec!["config", "user.name", "T"],
+            vec!["config", "user.email", "t@example.invalid"],
+        ] {
+            git(r, &args).unwrap();
+        }
+        git(r, &["checkout", "-q", "-b", "feat/x"]).unwrap();
+        fs::write(r.join("feature.txt"), "on branch\n").unwrap();
+        git(r, &["add", "feature.txt"]).unwrap();
+        git(r, &["commit", "-q", "-m", "feat: on feat/x"]).unwrap();
+        git(r, &["branch", "-D", "main"]).unwrap();
+        git(r, &["remote", "set-head", "origin", "-d"]).unwrap();
+        base
+    }
+
+    #[test]
+    fn resolve_base_ref_falls_back_to_origin_when_local_default_branch_is_gone() {
+        let base = origin_only_main_repo();
+        let r = base.path().join("work");
+        assert_eq!(resolve_base_ref(&r, Some("main")).unwrap(), "origin/main");
+        assert_eq!(resolve_base_ref(&r, None).unwrap(), "origin/main");
+    }
+
+    #[test]
+    fn resolve_base_ref_errors_on_unknown_explicit_base() {
+        let base = origin_only_main_repo();
+        let r = base.path().join("work");
+        git(&r, &["remote", "set-head", "origin", "main"]).unwrap();
+        let err = resolve_base_ref(&r, Some("nonexistent"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("nonexistent"), "{err}");
+    }
+
+    #[test]
+    fn resolve_base_ref_rejects_option_like_base() {
+        let dir = repo();
+        let err = resolve_base_ref(dir.path(), Some("-foo"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("starts with `-`"), "{err}");
     }
 }

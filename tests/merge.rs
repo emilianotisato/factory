@@ -354,3 +354,149 @@ fn a_merge_that_leaves_a_deleted_side_unstaged_blocks_the_slice() {
     assert!(!fx.path().join("shared.txt").exists());
     stop(&fx, &dir);
 }
+
+const PROJECT_TOML_GUARD: &str = "Extending tool config (e.g. `phpstan.neon`, `tsconfig.json`) is allowed, while `docs/project.toml` itself stays protected from all workers — propose any `docs/project.toml` edit in the PR body or block.";
+
+#[test]
+fn project_toml_is_dropped_from_slice_and_polish_lane_commits() {
+    use factory::commit;
+    use factory::docs::Status;
+    use factory::land::{Landing, commit_lane, land};
+    use std::process::Command;
+
+    let autonomy =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/autonomy.md"))
+            .unwrap();
+    assert_eq!(
+        autonomy.matches(PROJECT_TOML_GUARD).count(),
+        1,
+        "expected exactly one autonomy guard sentence"
+    );
+
+    let board = Status {
+        number: 22,
+        dir: "docs/features/022-x".to_string(),
+        ..Default::default()
+    };
+    let protected = commit::protected_files(&board);
+    assert!(protected.contains(&"docs/project.toml".to_string()));
+
+    let run_git = |cwd: &Path, args: &[&str]| {
+        assert!(
+            Command::new("git")
+                .args(args)
+                .current_dir(cwd)
+                .status()
+                .unwrap()
+                .success(),
+            "git {}",
+            args.join(" ")
+        );
+    };
+
+    let base = tempfile::tempdir().unwrap();
+    let main = base.path().join("main");
+    let lanes = base.path().join("lanes");
+    fs::create_dir_all(&lanes).unwrap();
+    run_git(
+        base.path(),
+        &["init", "-q", "-b", "feat/x", main.to_str().unwrap()],
+    );
+    run_git(&main, &["config", "user.name", "T"]);
+    run_git(&main, &["config", "user.email", "t@example.invalid"]);
+    run_git(&main, &["config", "core.hooksPath", "/nonexistent-hooks"]);
+    for p in [
+        "docs/features/022-x/state.toml",
+        "docs/features/022-x/log.jsonl",
+        "docs/features/022-x/prd.md",
+        "docs/index.md",
+        "docs/project.toml",
+        "kept.txt",
+    ] {
+        let path = main.join(p);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "main\n").unwrap();
+    }
+    run_git(&main, &["add", "-A"]);
+    run_git(&main, &["commit", "-q", "-m", "init"]);
+
+    let lane = lanes.join("slice");
+    run_git(
+        &main,
+        &["worktree", "add", "-q", "--detach", lane.to_str().unwrap()],
+    );
+    let lane_base = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(&lane)
+        .output()
+        .unwrap();
+    let lane_base = String::from_utf8_lossy(&lane_base.stdout)
+        .trim()
+        .to_string();
+    fs::write(lane.join("kept.txt"), "worker\n").unwrap();
+    fs::write(lane.join("docs/project.toml"), "worker gate\n").unwrap();
+    let board_files = vec![
+        format!("{}/state.toml", board.dir),
+        format!("{}/log.jsonl", board.dir),
+    ];
+    let slice_protected: Vec<String> = protected.to_vec();
+    let c = commit_lane(
+        &lane,
+        &lane_base,
+        &board_files,
+        &slice_protected,
+        "feat(022): slice",
+        "refs/factory/022/slice",
+    )
+    .unwrap()
+    .unwrap();
+    assert!(!c.files.contains(&"docs/project.toml".to_string()));
+    assert!(c.dropped.contains(&"docs/project.toml".to_string()));
+    assert_eq!(
+        fs::read_to_string(main.join("docs/project.toml")).unwrap(),
+        "main\n"
+    );
+    match land(&main, &c.sha, &board_files).unwrap() {
+        Landing::Landed { .. } => {}
+        other => panic!("expected landed, got {other:?}"),
+    }
+    assert_eq!(
+        fs::read_to_string(main.join("docs/project.toml")).unwrap(),
+        "main\n"
+    );
+
+    let polish_lane = lanes.join("polish");
+    run_git(
+        &main,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            polish_lane.to_str().unwrap(),
+        ],
+    );
+    let polish_base = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(&polish_lane)
+        .output()
+        .unwrap();
+    let polish_base = String::from_utf8_lossy(&polish_base.stdout)
+        .trim()
+        .to_string();
+    fs::write(polish_lane.join("kept.txt"), "polish\n").unwrap();
+    fs::write(polish_lane.join("docs/project.toml"), "polish gate\n").unwrap();
+    let polish_protected = vec!["docs/index.md".to_string(), "docs/project.toml".to_string()];
+    let p = commit_lane(
+        &polish_lane,
+        &polish_base,
+        &board_files,
+        &polish_protected,
+        "feat(022): polish",
+        "refs/factory/022/polish",
+    )
+    .unwrap()
+    .unwrap();
+    assert!(!p.files.contains(&"docs/project.toml".to_string()));
+    assert!(p.dropped.contains(&"docs/project.toml".to_string()));
+}

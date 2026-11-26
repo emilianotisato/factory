@@ -554,10 +554,10 @@ impl Closer<'_> {
         commit::message(board, "fix", &self.text())
     }
 
-    /// Polish may write `prd.md` (its Status prose); `docs/index.md` stays the ship's.
+    /// Polish may write `prd.md` (its Status prose); `docs/index.md` and `docs/project.toml` stay the ship's.
     fn protected(&self, board: &Status) -> Vec<String> {
         match self {
-            Closer::Polish => vec!["docs/index.md".to_string()],
+            Closer::Polish => vec!["docs/index.md".to_string(), "docs/project.toml".to_string()],
             Closer::CiFix { .. } => commit::protected_files(board).to_vec(),
         }
     }
@@ -668,12 +668,25 @@ fn land_worker(
             if matches!(who, Closer::Polish) {
                 stand_ins(run, board, &lane_dir, out)?;
             }
+            let mut protected = who.protected(board);
+            if matches!(who, Closer::Polish) {
+                let prd_rel = format!("{}/prd.md", board.dir);
+                let lane_prd = lane_dir.join(&prd_rel);
+                if lane_prd.is_file() {
+                    let lane_at = crate::testguard::prd_authorized_tests(&lane_prd)?;
+                    let repo_prd = repo.join(&prd_rel);
+                    let repo_at = crate::testguard::prd_authorized_tests(&repo_prd)?;
+                    if lane_at != repo_at {
+                        protected.push(prd_rel);
+                    }
+                }
+            }
             let committed = match &base {
                 Some(base) => land::commit_lane(
                     &lane_dir,
                     base,
                     &board_files,
-                    &who.protected(board),
+                    &protected,
                     &who.message(board),
                     &name,
                 )?,
@@ -974,6 +987,32 @@ fn fallback_body(board: &Status, feature: &str) -> String {
     )
 }
 
+fn testguard_after_land(
+    run: &mut Run,
+    docs: &Docs,
+    board: &Status,
+    repo: &Path,
+    phase: &str,
+    out: &mut dyn Write,
+) -> Result<Option<Outcome>> {
+    let feature_dir = repo.join(&board.dir);
+    crate::testguard::sync_allow_answers(run, &feature_dir)?;
+    let base = default_branch(run, docs);
+    let base_ref = commit::resolve_base_ref(repo, Some(&base))?;
+    let violations = crate::testguard::check(repo, &base_ref, &run.state().authorized_tests)?;
+    if violations.is_empty() {
+        return Ok(None);
+    }
+    let summary = violations
+        .iter()
+        .map(|v| v.path.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let title = answers::block_title(&format!("{} {}", crate::testguard::BLOCK_PREFIX, summary));
+    let body = crate::testguard::format_block_body(&violations);
+    Ok(Some(block(run, &feature_dir, phase, &title, &body, out)?))
+}
+
 // ── ship ────────────────────────────────────────────────────────────────────
 
 fn ship(
@@ -986,6 +1025,9 @@ fn ship(
     let feature = run.state().feature.clone();
     let repo = run.state().repo.clone();
     let feature_dir = repo.join(&board.dir);
+    if let Some(o) = testguard_after_land(run, docs, board, &repo, "polish", out)? {
+        return Ok(Some(o));
+    }
     if let Some(o) = branch_guard(run, docs, &feature_dir, "polish", "ship", out)? {
         return Ok(Some(o));
     }
@@ -2156,6 +2198,16 @@ fn fix_round(
             }
             return Ok(Some(o));
         }
+        if let Some(o) = testguard_after_land(run, docs, board, &repo, "ci", out)? {
+            settle(
+                run,
+                row_id,
+                &session_id,
+                &exit.summary,
+                WorkerOutcome::Blocked,
+            )?;
+            return Ok(Some(o));
+        }
         settle(run, row_id, &session_id, &exit.summary, WorkerOutcome::Done)?;
         return Ok(None);
     }
@@ -2531,6 +2583,23 @@ mod tests {
                 path: path.into(),
             },
         }
+    }
+
+    #[test]
+    fn polish_keeps_project_toml_and_index_protected_not_prd() {
+        let board = Status {
+            number: 22,
+            dir: "docs/features/022-x".to_string(),
+            ..Default::default()
+        };
+        let p = Closer::Polish.protected(&board);
+        assert_eq!(
+            p,
+            vec!["docs/index.md".to_string(), "docs/project.toml".to_string(),]
+        );
+        let all = commit::protected_files(&board);
+        assert!(all.contains(&"docs/project.toml".to_string()));
+        assert!(!p.contains(&format!("{}/prd.md", board.dir)));
     }
 
     #[test]

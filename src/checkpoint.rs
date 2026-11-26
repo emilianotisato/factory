@@ -118,6 +118,40 @@ pub fn run(
                 say(out, &format!("checkpoint {n}: leaks not run — {e}"))?;
             }
             leaks = leaks_section(&base, scanned);
+            crate::testguard::sync_allow_answers(run, &feature_dir)?;
+            let base_ref = commit::resolve_base_ref(&lane_dir, Some(&base))?;
+            let violations =
+                crate::testguard::check(&lane_dir, &base_ref, &run.state().authorized_tests)?;
+            if !violations.is_empty() {
+                let summary = violations
+                    .iter()
+                    .map(|v| v.path.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let title = answers::block_title(&format!(
+                    "{} {}",
+                    crate::testguard::BLOCK_PREFIX,
+                    summary
+                ));
+                let body = crate::testguard::format_block_body(&violations);
+                let id = answers::add_block(&feature_dir, None, Some("checkpoint"), &title, &body)?;
+                run.emit(EventKind::CheckpointBlocked {
+                    n,
+                    block_id: id.clone(),
+                    question: title.clone(),
+                })?;
+                say(
+                    out,
+                    &format!(
+                        "checkpoint {n}: unauthorized test change — {id} written to log.jsonl"
+                    ),
+                )?;
+                return Ok(Outcome::Parked {
+                    what: park_line(&id, &title),
+                    id,
+                    fresh: true,
+                });
+            }
             break;
         }
         ran_red = true;
@@ -1515,7 +1549,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let scanned = crate::leaks::scan(tmp.path(), crate::leaks::Input::Base("main"));
         let body = leaks_section("main", scanned);
-        assert!(body.starts_with("not run: git "), "{body}");
+        assert!(body.starts_with("not run:"), "{body}");
         assert_eq!(body.lines().count(), 1, "{body}");
     }
 

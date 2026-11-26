@@ -139,6 +139,7 @@ pub fn run(args: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i
     }
     if !pf.ask.is_empty() {
         let mut run = Run::create(&data_dir, &repo, &feature, None, budget)?;
+        run.set_authorized_tests(read_authorized_tests(&docs, &feature)?)?;
         run.set_ci_mode(ci_mode)?;
         run.set_worker_config(worker_config.clone())?;
         record_start(
@@ -172,6 +173,7 @@ pub fn run(args: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i
 
     let branch = ensure_branch(&repo, &pf.branch)?;
     let mut run = Run::create(&data_dir, &repo, &feature, Some(branch), budget)?;
+    run.set_authorized_tests(read_authorized_tests(&docs, &feature)?)?;
     run.set_ci_mode(ci_mode)?;
     run.set_worker_config(worker_config)?;
     record_start(
@@ -470,4 +472,9 @@ fn feature_number(docs: &Docs, arg: &str) -> Result<String> {
         return Ok(format!("{n:03}"));
     }
     Ok(format!("{:03}", docs.status(arg)?.number))
+}
+
+fn read_authorized_tests(docs: &Docs, feature: &str) -> Result<Vec<String>> {
+    let dir = docs.dir(feature)?;
+    crate::testguard::prd_authorized_tests(&dir.join("prd.md"))
 }

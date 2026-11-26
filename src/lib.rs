@@ -36,6 +36,7 @@ pub mod settled;
 pub mod shell;
 pub mod skills;
 pub mod stream;
+pub mod testguard;
 pub mod upstream;
 pub mod worker;
 

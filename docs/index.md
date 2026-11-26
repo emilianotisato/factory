@@ -24,7 +24,7 @@
 
 A slice is `pending → building → done`, or `blocked` while it waits on the owner.
 
-**Build order:** 001 to 015, 017, 018, 023 and 024 are archived; 021, 025 and 026 are shipped. **027 (multi-provider-workers) is agreed (2026-11-25) and goes next**, unattended (builds directly on 026's provider registry, user-only `[workers]` schema, and `factory setup`). Four older drafts remain, none agreed and no order set: **016** (factory-as-a-consumer), **019** (grep-hook-and-ctx), **020** (runs-that-dont-hurt) and **022** (guards-a-branch-cant-loosen). The shared files among those older drafts: **020** rewrites `land_here` in `src/checkpoint.rs`; **022** edits `src/commit.rs` `protected_files` and carries two of 021's follow-ups (base-read list for authorized test changes and leaks allowlist read from base). When more than one feature is live, state the order here and say why: shared files, migration risk, whichever ships second eats the merge.
+**Build order:** 001 to 015, 017, 018, 023 and 024 are archived; 021, 025, 026 and 027 are shipped. **022 (guards-a-branch-cant-loosen) is agreed (2026-11-26) and goes next**, unattended (dogfooding the multi-provider worker/reviewer setup from 026/027). Three older drafts remain, none agreed and no order set: **016** (factory-as-a-consumer), **019** (grep-hook-and-ctx) and **020** (runs-that-dont-hurt). The shared files among those older drafts: **020** rewrites `land_here` in `src/checkpoint.rs`. When more than one feature is live, state the order here and say why: shared files, migration risk, whichever ships second eats the merge.
 
 **Retired numbers — never reused:** _(none yet)_
 

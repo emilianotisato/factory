@@ -1492,3 +1492,139 @@ fn review_second_runs_all_five_providers_and_none_mode() {
     );
     assert_eq!(logs(&reviews), before);
 }
+
+#[test]
+fn base_ref_resolver_handles_origin_only_default_branch_across_leaks_review_retro_and_pack() {
+    use factory::collect::{self, Options};
+    use factory::config::ResolvedReview;
+    use factory::docs::{Docs, Status};
+    use factory::leaks::{self, Input};
+    use factory::pack::Pack;
+    use factory::provider::ReviewProvider;
+    use factory::retro;
+    use factory::review::{self, Range};
+    use std::process::Command;
+
+    let run = |cwd: &Path, args: &[&str]| {
+        assert!(
+            Command::new("git")
+                .args(args)
+                .current_dir(cwd)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .status()
+                .unwrap()
+                .success(),
+            "git {}",
+            args.join(" ")
+        );
+    };
+    let base = tempfile::tempdir().unwrap();
+    let origin = base.path().join("origin.git");
+    run(
+        base.path(),
+        &[
+            "init",
+            "-q",
+            "--bare",
+            "-b",
+            "main",
+            origin.to_str().unwrap(),
+        ],
+    );
+    let seed = base.path().join("seed");
+    run(
+        base.path(),
+        &["init", "-q", "-b", "main", seed.to_str().unwrap()],
+    );
+    run(&seed, &["config", "user.name", "T"]);
+    run(&seed, &["config", "user.email", "t@example.invalid"]);
+    fs::write(seed.join("README"), "seed\n").unwrap();
+    run(&seed, &["add", "README"]);
+    run(&seed, &["commit", "-q", "-m", "init"]);
+    run(
+        &seed,
+        &["remote", "add", "origin", origin.to_str().unwrap()],
+    );
+    run(&seed, &["push", "-q", "origin", "main"]);
+    let repo = base.path().join("repo");
+    run(
+        base.path(),
+        &[
+            "clone",
+            "-q",
+            origin.to_str().unwrap(),
+            repo.to_str().unwrap(),
+        ],
+    );
+    run(&repo, &["config", "user.name", "T"]);
+    run(&repo, &["config", "user.email", "t@example.invalid"]);
+    run(&repo, &["checkout", "-q", "-b", "feat/x"]);
+    fs::create_dir_all(repo.join("src")).unwrap();
+    fs::write(repo.join("src/change.txt"), "branch work\n").unwrap();
+    fs::create_dir_all(repo.join("docs/features/022-x")).unwrap();
+    fs::write(
+        repo.join("docs/project.toml"),
+        "[docs]\nframework = 3\ngate = \"true\"\ninner = \"true\"\n\n[lanes]\nseed = []\n",
+    )
+    .unwrap();
+    fs::write(
+        repo.join("docs/features/022-x/prd.md"),
+        "---\n---\n\n# PRD\n",
+    )
+    .unwrap();
+    run(&repo, &["add", "-A"]);
+    run(
+        &repo,
+        &["commit", "-q", "-m", "feat: origin-only branch tip"],
+    );
+    run(&repo, &["branch", "-D", "main"]);
+    run(&repo, &["remote", "set-head", "origin", "-d"]);
+
+    leaks::scan(&repo, Input::Base("main")).expect("leaks");
+    review::numstat(&repo, Range::Base("main"), &[]).expect("numstat");
+    review::diff(&repo, Range::Base("main"), &["src/change.txt".to_string()]).expect("diff");
+    let cfg = ResolvedReview {
+        provider: ReviewProvider::None,
+        binary: None,
+        model: "stub".to_string(),
+        effort: None,
+        timeout_secs: 1,
+        pass_lines: 100,
+    };
+    let mut progress = Vec::new();
+    collect::collect(&repo, &Options::new("main"), cfg, &mut progress, None).expect("collect");
+    retro::changed_lines(&repo, "main").expect("retro");
+
+    let docs = Docs::open(&repo).expect("docs");
+    let board = Status {
+        number: 22,
+        dir: "docs/features/022-x".to_string(),
+        ..Default::default()
+    };
+    let run_dir = tempfile::tempdir().unwrap();
+    let packs = repo.join("packs");
+    fs::create_dir_all(&packs).unwrap();
+    let pack = Pack::for_polish(
+        &docs,
+        &board,
+        run_dir.path(),
+        "main",
+        "feat/x",
+        "collected ok",
+        "# Retro",
+        &packs,
+        1,
+    )
+    .expect("polish pack");
+    let text = fs::read_to_string(&pack.path).unwrap();
+    assert!(text.contains("Default branch: `main`"), "{text}");
+    assert!(
+        text.contains("feat: origin-only branch tip"),
+        "expected commit subject in log:\n{text}"
+    );
+    assert!(
+        !text.contains("(no commits listed)"),
+        "git log should resolve origin/main:\n{text}"
+    );
+}

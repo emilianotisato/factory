@@ -134,6 +134,8 @@ pub struct RunState {
     /// Every role's worker, fixed when the run starts or its worker ask is answered; `config.toml` edits never reach it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker_config: Option<ResolvedWorkers>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub authorized_tests: Vec<String>,
 }
 
 impl RunState {
@@ -283,6 +285,7 @@ impl Run {
             ci_mode: None,
             review_override: None,
             worker_config: None,
+            authorized_tests: Vec::new(),
         };
         write_state(&dir, &state)?;
         fs::write(dir.join(events::FILE), "")
@@ -396,6 +399,20 @@ impl Run {
 
     pub fn set_worker_config(&mut self, w: Option<ResolvedWorkers>) -> Result<()> {
         self.update(|s| s.worker_config = w)
+    }
+
+    pub fn set_authorized_tests(&mut self, tests: Vec<String>) -> Result<()> {
+        self.update(|s| s.authorized_tests = tests)
+    }
+
+    pub fn add_authorized_tests(&mut self, paths: &[String]) -> Result<()> {
+        self.update(|s| {
+            for p in paths {
+                if !s.authorized_tests.iter().any(|have| have == p) {
+                    s.authorized_tests.push(p.clone());
+                }
+            }
+        })
     }
 
     pub fn request_stop(&mut self) -> Result<()> {
