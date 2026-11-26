@@ -258,7 +258,14 @@ No row needs a human, so no `qa-guide.md` is generated.
 
 ## 13. Slices
 
-_(Not sliced yet. Run `/slice`.)_
+Four vertical slices on one feature branch (`feat/runs-that-dont-hurt`), one PR, one commit per slice, Prove rows driven at checkpoints (`checkpoint_every = 2`). No QA row needs a human, so no `qa-guide.md` is generated.
+
+- **Slice 01 — Main-tree identity, atomic seeds and open-run lane guards** (`FR-5`, `FR-6`, `FR-7`, `deps: —`): stages seed copies atomically outside the lane worktree (`data/lanes/<key>/.seed-tmp-lane-*`), unifies repo matching on `lanes::same_repo` (`lanes::main_tree`) across `run`, `lanes`, and `status --here` (fixing worktree resume `branch_refusal`), and makes `lanes up` / `--prove` refuse open runs with `--prove` resetting lanes before setup.
+- **Slice 02 — Lanes clean and run-start build-cache trimming** (`FR-3`, `deps: 01`): adds `[lanes] clean_above_gb` parsing/validation, `factory lanes clean [--dry] [--days N]` (deduplicating nested `CARGO_TARGET_DIR`, excluding live declared `main/target/lane-*`, invoking `cargo-sweep sweep`), and run-start trimming in `ensure_all`.
+- **Slice 03 — Gate memory cap and orphan gate reaping** (`FR-1`, `FR-2`, `deps: 02`): adds `src/memcap.rs` (`systemd-run --user --scope` with normalized `MemoryMax`, `OOMPolicy=kill`, live probe + cgroup delegation check, `OOM` detection, `FACTORY_GATE_MEMCAP=off` in test harness), wires it into `gate_once`, `Lane::setup_capped`, and `preflight::run`, and records `ActiveGate` in `RunState` with safe `process_group(0)` + signal forwarding and process-group/scope reaping on resume and dead-driver stop.
+- **Slice 04 — Unified `land_lane`, respawn lane retention and `wait_sh` barriers** (`FR-4`, `FR-8`, `deps: 03`): keeps polish and CI-fix lanes on respawn (`attempt == 1`), unifies the three landing callers into `land::land_lane` with a `before_commit` hook, adds checkpoint-conflict, polish-conflict, and claim-to-spawn crash-recovery tests, and converts the three authorized multi-lane ordering tests from `delay_ms` to `wait_sh` barriers.
+
+Checkpoint 1 runs after slices 01 and 02 (proving FR-3, FR-5, FR-6, FR-7); the final checkpoint runs after slices 03 and 04 (proving FR-1, FR-2, FR-4, FR-8 and re-proving all 8 FRs with the full gate).
 
 ## 14. Non-goals
 
