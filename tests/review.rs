@@ -1300,6 +1300,7 @@ fn review_second_runs_all_five_providers_and_none_mode() {
                 "max",
                 "--add-dir",
                 "<log>",
+                "--",
             ]),
         ),
         (

@@ -930,7 +930,8 @@ pub fn run_pass_resolved(
                 cmd.args(["--effort", e]);
             }
             // The diff sits in the log dir, outside the repo a print-mode read may touch.
-            cmd.arg("--add-dir").arg(dir).arg(prompt);
+            // `--add-dir` is variadic in Claude Code, so `--` ends its list before the prompt.
+            cmd.arg("--add-dir").arg(dir).arg("--").arg(prompt);
             scrub_claude_session(&mut cmd);
         }
         Provider::Codex => {
