@@ -14,6 +14,43 @@ pub struct LaneCommit {
     pub dropped: Vec<String>,
 }
 
+#[derive(Debug)]
+pub struct LandSpec<'a> {
+    pub repo: &'a Path,
+    pub lane_dir: &'a Path,
+    pub base: &'a str,
+    pub board_files: &'a [String],
+    pub protected: &'a [String],
+    pub message: &'a str,
+    pub subject: &'a str,
+    pub ref_name: &'a str,
+    pub reuse_held: bool,
+    pub require_parent_eq_base: bool,
+}
+
+#[derive(Debug)]
+pub enum LandOutcome {
+    AlreadyLanded {
+        sha: String,
+    },
+    Nothing {
+        had_held: Option<String>,
+    },
+    Landed {
+        sha: String,
+        dropped: Vec<String>,
+    },
+    Dirty {
+        paths: Vec<String>,
+        dropped: Vec<String>,
+    },
+    Conflict {
+        sha: String,
+        paths: Vec<String>,
+        dropped: Vec<String>,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Landing {
     /// The main tree's new HEAD.
@@ -176,6 +213,137 @@ pub fn land(main: &Path, sha: &str, board: &[String]) -> Result<Landing> {
         git(main, &["update-ref", "-d", r])?;
     }
     Ok(Landing::Landed { sha: head })
+}
+
+pub trait BeforeLand {
+    fn before_land(&mut self, lane_dir: &Path) -> Result<Vec<String>>;
+}
+
+pub fn land_lane(
+    spec: &LandSpec<'_>,
+    before_commit: Option<&mut dyn BeforeLand>,
+) -> Result<LandOutcome> {
+    let tip = git(
+        spec.repo,
+        &["log", "--format=%H %s", &format!("{}..HEAD", spec.base)],
+    )?;
+    if let Some(sha) = tip
+        .lines()
+        .find_map(|l| l.split_once(' ').filter(|(_, s)| *s == spec.subject))
+        .map(|(sha, _)| sha.to_string())
+    {
+        if resolve(spec.repo, spec.ref_name)?.is_some() {
+            git(spec.repo, &["update-ref", "-d", spec.ref_name])?;
+        }
+        return Ok(LandOutcome::AlreadyLanded { sha });
+    }
+    let held = resolve(spec.repo, spec.ref_name)?;
+    let reuse = match &held {
+        Some(h) if spec.reuse_held => {
+            !spec.require_parent_eq_base || parent_of(spec.repo, h)? == Some(spec.base.to_string())
+        }
+        _ => false,
+    };
+    let (sha, dropped) = if reuse {
+        (held.unwrap(), Vec::new())
+    } else {
+        let mut protected = spec.protected.to_vec();
+        if let Some(cb) = before_commit {
+            protected.extend(cb.before_land(spec.lane_dir)?);
+        }
+        let message = if let Some(h) = &held {
+            git(spec.repo, &["log", "-1", "--format=%B", h])?
+                .trim()
+                .to_string()
+        } else {
+            spec.message.to_string()
+        };
+        let Some(c) = commit_lane(
+            spec.lane_dir,
+            spec.base,
+            spec.board_files,
+            &protected,
+            &message,
+            spec.ref_name,
+        )?
+        else {
+            return Ok(LandOutcome::Nothing { had_held: held });
+        };
+        (c.sha, c.dropped)
+    };
+    undo_half_pick(spec.repo, &sha)?;
+    match land(spec.repo, &sha, spec.board_files)? {
+        Landing::Landed { sha: landed } => Ok(LandOutcome::Landed {
+            sha: landed,
+            dropped,
+        }),
+        Landing::Dirty { paths } => Ok(LandOutcome::Dirty { paths, dropped }),
+        Landing::Conflict { paths } => Ok(LandOutcome::Conflict {
+            sha,
+            paths,
+            dropped,
+        }),
+    }
+}
+
+/// Paths staged exactly as `sha` has them are a killed driver's half pick, not the owner's work.
+pub(crate) fn undo_half_pick(repo: &Path, sha: &str) -> Result<()> {
+    let parent = format!("{sha}^");
+    let picked = nul_list(&git(
+        repo,
+        &["diff", "--name-only", "--no-renames", "-z", &parent, sha],
+    )?);
+    if picked.is_empty() {
+        return Ok(());
+    }
+    let on = |args: &[&str]| -> Vec<String> {
+        args.iter()
+            .map(|a| a.to_string())
+            .chain(["--".to_string()])
+            .chain(picked.iter().cloned())
+            .collect()
+    };
+    let quiet = |args: &[&str]| -> Result<bool> {
+        let all = on(args);
+        let refs: Vec<&str> = all.iter().map(String::as_str).collect();
+        Ok(run_git(repo, &refs)?.status.success())
+    };
+    if !quiet(&["diff", "--cached", "--quiet", "HEAD"])?
+        && quiet(&["diff", "--cached", "--quiet", sha])?
+        && quiet(&["diff", "--quiet", sha])?
+    {
+        let all = on(&["restore", "--source=HEAD", "--staged", "--worktree"]);
+        let refs: Vec<&str> = all.iter().map(String::as_str).collect();
+        git(repo, &refs)?;
+    }
+    Ok(())
+}
+
+fn resolve(repo: &Path, name: &str) -> Result<Option<String>> {
+    let out = run_git(
+        repo,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{name}^{{commit}}"),
+        ],
+    )?;
+    Ok(out
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()))
+}
+
+fn parent_of(repo: &Path, sha: &str) -> Result<Option<String>> {
+    let out = run_git(
+        repo,
+        &["rev-parse", "--verify", "--quiet", &format!("{sha}^")],
+    )?;
+    Ok(out
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()))
 }
 
 fn commit_pick(main: &Path, sha: &str, picked: &[String], boards: &[String]) -> Result<()> {

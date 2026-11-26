@@ -20,7 +20,7 @@ use crate::docs::{Docs, Status};
 use crate::error::io;
 use crate::events::{Event, EventKind};
 use crate::gatecache::{self, Entry, GateCache};
-use crate::land::{self, Landing};
+use crate::land;
 use crate::memcap;
 use crate::pack::{Pack, QaRow};
 use crate::quota::{self, Hold, Limit};
@@ -1066,49 +1066,38 @@ pub fn land_worker(
     let name = worker_ref(board, n, role);
     let subject = worker_subject(board, n, role);
     let base = lane.and_then(|l| run.state().lane_bases.get(&l).cloned());
-    // A driver killed after the landing commit and before its record.
-    if let Some(base) = &base {
-        let tip = scheduler::git_ok(&repo, &["log", "--format=%H %s", &format!("{base}..HEAD")])?;
-        if let Some(sha) = tip
-            .lines()
-            .find_map(|l| l.split_once(' ').filter(|(_, s)| *s == subject))
-            .map(|(sha, _)| sha.to_string())
-        {
-            if scheduler::resolve(&repo, &name)?.is_some() {
-                scheduler::git_ok(&repo, &["update-ref", "-d", &name])?;
-            }
+    let (Some(lane), Some(base)) = (lane, &base) else {
+        return Ok(Landed::Done(commit_board(
+            run, board, n, role, attempt, row_id, out,
+        )?));
+    };
+    let main = lanes::main_tree(&repo)?;
+    let lane_dir = lanes::dir(&paths::data_dir(), &main, lane);
+    let protected = commit::protected_files(board);
+    let spec = land::LandSpec {
+        repo: &repo,
+        lane_dir: &lane_dir,
+        base,
+        board_files: &board_files,
+        protected: &protected,
+        message: &worker_message(board, n, role),
+        subject: &subject,
+        ref_name: &name,
+        reuse_held: true,
+        require_parent_eq_base: false,
+    };
+    let who = if role == "fix" {
+        "fix"
+    } else {
+        "checkpoint worker"
+    };
+    match land::land_lane(&spec, None)? {
+        land::LandOutcome::AlreadyLanded { sha } => {
             record(run, n, role, attempt, row_id, &sha, out)?;
-            return Ok(Landed::Done(Some(sha)));
+            Ok(Landed::Done(Some(sha)))
         }
-    }
-    let sha = match scheduler::resolve(&repo, &name)? {
-        Some(sha) => sha,
-        None => {
-            let (Some(lane), Some(base)) = (lane, base) else {
-                return Ok(Landed::Done(commit_board(
-                    run, board, n, role, attempt, row_id, out,
-                )?));
-            };
-            let main = lanes::main_tree(&repo)?;
-            let Some(c) = land::commit_lane(
-                &lanes::dir(&paths::data_dir(), &main, lane),
-                &base,
-                &board_files,
-                &commit::protected_files(board),
-                &worker_message(board, n, role),
-                &name,
-            )?
-            else {
-                return Ok(Landed::Done(commit_board(
-                    run, board, n, role, attempt, row_id, out,
-                )?));
-            };
-            let who = if role == "fix" {
-                "fix"
-            } else {
-                "checkpoint worker"
-            };
-            for path in &c.dropped {
+        land::LandOutcome::Landed { sha, dropped } => {
+            for path in &dropped {
                 say(
                     out,
                     &format!(
@@ -1116,20 +1105,37 @@ pub fn land_worker(
                     ),
                 )?;
             }
-            c.sha
-        }
-    };
-    scheduler::undo_half_pick(&repo, &sha)?;
-    match land::land(&repo, &sha, &board_files)? {
-        Landing::Landed { sha } => {
             record(run, n, role, attempt, row_id, &sha, out)?;
             Ok(Landed::Done(Some(sha)))
         }
-        Landing::Dirty { paths } => Ok(Landed::Waiting(format!(
-            "checkpoint {n} cannot land: {} changed in the main tree — commit or discard them",
-            paths.join(", ")
-        ))),
-        Landing::Conflict { paths } => Ok(Landed::Conflict { paths, name }),
+        land::LandOutcome::Nothing { .. } => Ok(Landed::Done(commit_board(
+            run, board, n, role, attempt, row_id, out,
+        )?)),
+        land::LandOutcome::Dirty { paths, dropped } => {
+            for path in &dropped {
+                say(
+                    out,
+                    &format!(
+                        "checkpoint {n}: {role} worker wrote {path}, which no {who} may — left out of the commit"
+                    ),
+                )?;
+            }
+            Ok(Landed::Waiting(format!(
+                "checkpoint {n} cannot land: {} changed in the main tree — commit or discard them",
+                paths.join(", ")
+            )))
+        }
+        land::LandOutcome::Conflict { paths, dropped, .. } => {
+            for path in &dropped {
+                say(
+                    out,
+                    &format!(
+                        "checkpoint {n}: {role} worker wrote {path}, which no {who} may — left out of the commit"
+                    ),
+                )?;
+            }
+            Ok(Landed::Conflict { paths, name })
+        }
     }
 }
 

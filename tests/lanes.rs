@@ -197,9 +197,10 @@ fn two_lanes_build_two_slices_at_once_and_the_third_waits_for_its_dependency() {
     }
     fx.git(&["add", "-A"]);
     fx.git(&["commit", "-q", "-m", "chore: lane files"]);
+    let both_building = r#"test -f "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/scenario/both-building.txt""#.to_string();
     fx.write_plan(&[
-        json!({"outcome": "done", "delay_ms": 1500}),
-        json!({"outcome": "done", "delay_ms": 1500}),
+        json!({"outcome": "done", "wait_sh": both_building}),
+        json!({"outcome": "done", "wait_sh": both_building}),
         done(),
         checkpoint(),
     ]);
@@ -210,7 +211,6 @@ fn two_lanes_build_two_slices_at_once_and_the_third_waits_for_its_dependency() {
     let id = run_id(&dir);
     let driver = state(&dir)["pid"].as_u64().unwrap() as u32;
 
-    // The 1.5 s delays keep 01 and 02 alive together while 03 waits on 02.
     wait_until(&fx, &dir, "two workers", 20, || {
         fx.calls().len() == 2
             && state(&dir)["workers"]
@@ -232,6 +232,9 @@ fn two_lanes_build_two_slices_at_once_and_the_third_waits_for_its_dependency() {
     let board = fx.docs_json("status");
     assert_eq!(board["freeLanes"], json!([]), "{board}");
     assert_eq!(board["spawnable"], 0, "{board}");
+    let barrier = fx.path().join("scenario/both-building.txt");
+    fs::create_dir_all(barrier.parent().unwrap()).unwrap();
+    fs::write(&barrier, "").unwrap();
 
     wait_until(&fx, &dir, "the run to finish", 60, || {
         state(&dir)["phase"] == "finished"

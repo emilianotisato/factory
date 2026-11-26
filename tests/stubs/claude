@@ -232,6 +232,8 @@ if (role === 'fix') {
   if (limited.includes(step.outcome)) rateLimited(step)
   if (step.delay_ms) sleep(Number(step.delay_ms))
   if (step.outcome === 'dead') {
+    const sh = runSh(step)
+    shCall(step, sh)
     emit(init)
     process.exit(137)
   }
@@ -269,6 +271,7 @@ if (role === 'checkpoint') {
   const cpFeature = featureOf(dirM[1])
   if (limited.includes(step.outcome)) rateLimited(step)
   if (step.delay_ms) sleep(Number(step.delay_ms))
+  if (step.wait_sh) waitFor(step.wait_sh)
   if (step.outcome === 'dead') {
     emit(init)
     process.exit(137)
@@ -380,7 +383,10 @@ if (role === 'polish') {
   const retro = path.join(featDir, 'retro.md')
   if (limited.includes(step.outcome)) rateLimited(step)
   if (step.delay_ms) sleep(Number(step.delay_ms))
+  if (step.wait_sh) waitFor(step.wait_sh)
   if (step.outcome === 'dead') {
+    const sh = runSh(step)
+    shCall(step, sh)
     emit(init)
     process.exit(137)
   }
@@ -502,6 +508,8 @@ if (ownsBoard) setStatus(feature, nn, 'building')
 if (step.delay_ms) sleep(Number(step.delay_ms))
 if (step.wait_sh) waitFor(step.wait_sh)
 if (step.outcome === 'dead') {
+  const sh = runSh(step)
+  shCall(step, sh)
   emit(init)
   process.exit(137)
 }

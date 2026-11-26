@@ -4,8 +4,9 @@ mod harness;
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::Output;
+use std::process::{Output, Stdio};
 use std::time::{Duration, Instant};
 
 use factory::db::Db;
@@ -2601,4 +2602,207 @@ fn remote_ci_keeps_plain_ship_subject_and_watches_checks() {
     assert!(!gh_calls(&fx, "pr checks").is_empty(), "{:?}", fx.gh_log());
     assert!(of_kind(&dir, "ci_local").is_empty(), "{:?}", kinds(&dir));
     assert_eq!(of_kind(&dir, "ci_green").len(), 1, "{:?}", kinds(&dir));
+}
+
+fn barrier_file(name: &str) -> String {
+    format!(
+        r#"test -f "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/scenario/{name}""#
+    )
+}
+
+fn touch_barrier(fx: &Fixture, name: &str) {
+    let p = fx.path().join("scenario").join(name);
+    fs::create_dir_all(p.parent().unwrap()).unwrap();
+    fs::write(&p, "").unwrap();
+}
+
+fn run_bg(fx: &Fixture) -> std::process::Child {
+    let mut cmd = fx.command(BIN);
+    cmd.args(["run", "001"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0);
+    cmd.spawn().unwrap()
+}
+
+#[test]
+fn polish_and_ci_fix_respawns_keep_their_lane_edits() {
+    let fx = Fixture::new("closeout-polish-respawn-lane");
+    fx.chain();
+    fx.write_plan(&plan_with(&[
+        json!({"outcome": "dead", "sh": "printf kept > kept-polish.txt"}),
+        json!({"outcome": "polish", "sh": "test -f kept-polish.txt"}),
+    ]));
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "finished", 120);
+    assert_eq!(count_subject(&fx, "fix(001): polish review fixes"), 1);
+    assert_eq!(fx.calls().len(), 7, "{:?}", fx.calls());
+    let polish_sha = sha_of(&fx, "fix(001): polish review fixes");
+    assert!(
+        files_of(&fx, &polish_sha).contains(&"kept-polish.txt".to_string()),
+        "{:?}",
+        files_of(&fx, &polish_sha)
+    );
+
+    let fx = Fixture::new("closeout-cifix-respawn-lane");
+    fx.chain();
+    fx.script_ci(&["red:test", "red:test", "green"]);
+    fx.write_plan(&plan_with(&[
+        step("polish"),
+        json!({"outcome": "dead", "sh": "printf kept > kept-cifix.txt && printf stale > stale-round1.txt"}),
+        json!({"outcome": "fix", "sh": "test -f kept-cifix.txt && rm -f stale-round1.txt && printf fixed\\n >> src/lib.txt"}),
+        json!({"outcome": "fix", "sh": "test ! -e stale-round1.txt"}),
+    ]));
+    let dir = start(&fx);
+    wait_phase(&fx, &dir, "finished", 180);
+    let fix_spawns = of_kind(&dir, "ci_fix_spawned");
+    assert!(
+        fix_spawns
+            .iter()
+            .any(|e| e["round"] == 1 && e["attempt"] == 2),
+        "{fix_spawns:?}"
+    );
+    assert!(fix_spawns.iter().any(|e| e["round"] == 2), "{fix_spawns:?}");
+    let round1 = of_kind(&dir, "ci_fix_committed")
+        .into_iter()
+        .find(|e| e["round"] == 1)
+        .expect("round 1 ci fix commit");
+    let files = files_of(&fx, round1["sha"].as_str().unwrap());
+    assert!(files.iter().any(|p| p == "kept-cifix.txt"), "{files:?}");
+    assert!(
+        !lane_path(&fx, 1).join("stale-round1.txt").exists(),
+        "round 2 should start on a reset lane"
+    );
+}
+
+#[test]
+fn unified_land_lane_handles_checkpoint_polish_conflicts_and_claim_kill_recovery() {
+    {
+        let barrier = barrier_file("main-shared.txt");
+        let fx = Fixture::new("land-lane-cp-conflict");
+        fx.chain();
+        fs::write(fx.path().join("shared.txt"), "1\n2\n3\n4\n").unwrap();
+        fx.git(&["add", "shared.txt"]);
+        fx.git(&["commit", "-q", "-m", "chore: shared"]);
+        let mut plan = built();
+        plan[2] = json!({"outcome": "checkpoint", "wait_sh": barrier});
+        fx.write_plan(&plan);
+        let mut child = run_bg(&fx);
+        wait_until(&fx, &data_dir(&fx).join("runs"), "run dir", 30, || {
+            fs::read_dir(data_dir(&fx).join("runs"))
+                .map(|d| d.count())
+                .unwrap_or(0)
+                == 1
+        });
+        let dir = only_run_dir(&fx);
+        wait_until(&fx, &dir, "checkpoint worker", 30, || {
+            of_kind(&dir, "checkpoint_spawned").len() == 1 && fx.calls().len() == 3
+        });
+        fs::write(lane_path(&fx, 1).join("shared.txt"), "1\n2\ncp\n4\n").unwrap();
+        fs::write(fx.path().join("shared.txt"), "1\n2\nmain\n4\n").unwrap();
+        fx.git(&["commit", "-q", "-am", "main side"]);
+        touch_barrier(&fx, "main-shared.txt");
+        wait_phase(&fx, &dir, "waiting-owner", 40);
+        let _ = child.kill();
+        let _ = child.wait();
+        let blocked = of_kind(&dir, "checkpoint_blocked");
+        assert_eq!(blocked.len(), 1, "{blocked:?}");
+        assert!(
+            blocked[0]["question"]
+                .as_str()
+                .unwrap()
+                .contains("shared.txt"),
+            "{:?}",
+            blocked[0]
+        );
+        assert!(
+            !fx.git(&["status", "--porcelain"]).contains("shared.txt"),
+            "main tree should not pick up the lane conflict"
+        );
+        assert_eq!(fx.read("shared.txt"), "1\n2\nmain\n4\n");
+        stop(&fx, &dir);
+    }
+    {
+        let barrier = barrier_file("main-shared.txt");
+        let fx = Fixture::new("land-lane-polish-conflict");
+        fx.chain();
+        fs::write(fx.path().join("shared.txt"), "1\n2\n3\n4\n").unwrap();
+        fx.git(&["add", "shared.txt"]);
+        fx.git(&["commit", "-q", "-m", "chore: shared"]);
+        fx.write_plan(&plan_with(&[json!({
+            "outcome": "polish",
+            "wait_sh": barrier,
+        })]));
+        let mut child = run_bg(&fx);
+        wait_until(&fx, &data_dir(&fx).join("runs"), "run dir", 60, || {
+            fs::read_dir(data_dir(&fx).join("runs"))
+                .map(|d| d.count())
+                .unwrap_or(0)
+                == 1
+        });
+        let dir = only_run_dir(&fx);
+        wait_until(&fx, &dir, "polish worker", 60, || {
+            of_kind(&dir, "polish_spawned").len() == 1
+        });
+        fs::write(lane_path(&fx, 1).join("shared.txt"), "1\n2\npolish\n4\n").unwrap();
+        fs::write(fx.path().join("shared.txt"), "1\n2\nmain\n4\n").unwrap();
+        fx.git(&["commit", "-q", "-am", "main side"]);
+        touch_barrier(&fx, "main-shared.txt");
+        wait_parked(&fx, &dir, 1, 40);
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(
+            !of_kind(&dir, "closeout_blocked").is_empty(),
+            "{:?}",
+            kinds(&dir)
+        );
+        let block_text = fx
+            .log_of("block")
+            .iter()
+            .map(|b| b.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            block_text.contains("shared.txt"),
+            "expected shared.txt in the closeout block:\n{block_text}"
+        );
+        assert!(
+            !fx.git(&["status", "--porcelain"]).contains("shared.txt"),
+            "main tree should not pick up the lane conflict"
+        );
+        assert_eq!(fx.read("shared.txt"), "1\n2\nmain\n4\n");
+        stop(&fx, &dir);
+    }
+    {
+        let fx = Fixture::with_index("land-lane-crash-marker", &[("checkpoint_every", "10")]);
+        fx.chain();
+        fx.write_plan(&[
+            json!({"outcome": "dead", "sh": "printf crash > crash-marker.txt"}),
+            json!({"outcome": "done", "sh": "test -f crash-marker.txt"}),
+            json!({"outcome": "done"}),
+            json!({"outcome": "checkpoint"}),
+        ]);
+        let dir = start(&fx);
+        wait_phase(&fx, &dir, "finished", 120);
+        let sha = sha_of(&fx, "feat(001): slice-01 A");
+        assert!(
+            files_of(&fx, &sha).contains(&"crash-marker.txt".to_string()),
+            "{:?}",
+            files_of(&fx, &sha)
+        );
+        assert_eq!(
+            count_subject(&fx, "feat(001): slice-01 A"),
+            1,
+            "{:?}",
+            subjects(&fx)
+        );
+        assert_eq!(
+            events(&dir)
+                .into_iter()
+                .filter(|e| e["kind"] == "slice_spawned" && e["slice"] == 1)
+                .count(),
+            2
+        );
+    }
 }
