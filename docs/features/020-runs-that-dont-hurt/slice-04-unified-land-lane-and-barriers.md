@@ -87,3 +87,8 @@
 - FR-8: `run unified_land_lane_handles_checkpoint_polish_conflicts_and_claim_kill_recovery` (evidence: test transcript)
 
 **Acceptance:** after the checkpoint, both tests (and all prior FR-1..FR-8 rows at the final checkpoint) run under `cargo test` with full gate green and transcripts recorded in Progress.
+
+**Code-review fixes (2026-11-26).**
+- `land_slice` on `LandOutcome::Dirty` now emits `WorkerWroteProtectedFile` like checkpoint/closeout paths.
+- `trim_cache_dir` skips paths outside the lane tree (symlinks / escapes); stale-target removal and trim messaging only claim success when something actually changed.
+- `a_park_with_no_question_carries_its_reason` touches `release-02.txt`; prove-reset test records `older` before the advancing empty commit.

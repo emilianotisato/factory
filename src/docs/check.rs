@@ -276,10 +276,14 @@ fn read_project(root: &Path, r: &mut Report) -> Option<Option<Project>> {
                 _ => true,
             };
             if !ok {
-                r.err(
-                    "E-PROJECT-INVALID",
-                    format!("docs/project.toml [docs] {k} = {v} is not a {}", kind_of(k)),
-                );
+                let gate_max_err = k.as_str() == "gate_memory_max"
+                    && matches!(v, toml::Value::String(s) if crate::memcap::normalize_limit(s).is_err());
+                if !gate_max_err {
+                    r.err(
+                        "E-PROJECT-INVALID",
+                        format!("docs/project.toml [docs] {k} = {v} is not a {}", kind_of(k)),
+                    );
+                }
             }
         }
     }

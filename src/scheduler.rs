@@ -1102,10 +1102,24 @@ fn map_slice_land(
             record_landing(run, slice, row_id, sha, out)?;
             Ok(Landed::Done)
         }
-        LandOutcome::Dirty { paths, .. } => Ok(Landed::Waiting(format!(
-            "slice {slice:02} cannot land: {} changed in the main tree — commit or discard them",
-            paths.join(", ")
-        ))),
+        LandOutcome::Dirty { paths, dropped } => {
+            for path in &dropped {
+                run.emit(EventKind::WorkerWroteProtectedFile {
+                    slice,
+                    path: path.clone(),
+                })?;
+                say(
+                    out,
+                    &format!(
+                        "slice {slice:02} wrote {path}, which no worker may — left out of the commit"
+                    ),
+                )?;
+            }
+            Ok(Landed::Waiting(format!(
+                "slice {slice:02} cannot land: {} changed in the main tree — commit or discard them",
+                paths.join(", ")
+            )))
+        }
         LandOutcome::Conflict {
             sha,
             paths,

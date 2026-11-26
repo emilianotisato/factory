@@ -575,6 +575,22 @@ fn find_cargo_sweep() -> Option<PathBuf> {
     None
 }
 
+fn cache_dir_in_lane(lane_dir: &Path, dir: &Path) -> bool {
+    let Ok(lane) = lane_dir.canonicalize() else {
+        return false;
+    };
+    let meta = match fs::symlink_metadata(dir) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    if meta.file_type().is_symlink() {
+        return false;
+    }
+    dir.canonicalize()
+        .ok()
+        .is_some_and(|d| d.starts_with(&lane))
+}
+
 pub fn trim_cache_dir(
     lane_dir: &Path,
     dir: &Path,
@@ -583,6 +599,9 @@ pub fn trim_cache_dir(
     force_remove: bool,
 ) -> Result<u64> {
     if !dir.exists() {
+        return Ok(0);
+    }
+    if !cache_dir_in_lane(lane_dir, dir) {
         return Ok(0);
     }
     let before = dir_size(dir);

@@ -740,6 +740,8 @@ fn gate_once(
         checkpoint: n,
     })) {
         ACTIVE_GATE_PGID.store(0, Ordering::SeqCst);
+        let _ = child.kill();
+        let _ = child.wait();
         return Err(e);
     }
     let status = child.wait().map_err(|e| {
@@ -756,6 +758,7 @@ fn gate_once(
     let red = !status.success();
     let mut oom_cap = None;
     if red
+        && scope.is_some()
         && let Some(cap) = &limit
         && memcap::detect_oom(&status, scope.as_deref(), &tail_from_log(&log))
     {
@@ -831,7 +834,7 @@ pub fn reap_active_gate(run: &mut Run, out: &mut dyn Write) -> Result<bool> {
     };
     if let Some(unit) = &g.scope {
         let _ = Command::new("systemctl")
-            .args(["--user", "stop", unit])
+            .args(["--user", "stop", &memcap::scope_unit_name(unit)])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -842,10 +845,12 @@ pub fn reap_active_gate(run: &mut Run, out: &mut dyn Write) -> Result<bool> {
     let leader_alive = crate::run::alive(g.pid, g.pid_start);
     #[cfg(unix)]
     let group_alive = {
-        let same_pid = g
-            .pid_start
-            .is_none_or(|want| crate::run::start_time(g.pid) == Some(want));
-        same_pid && unsafe { libc::kill(-pgid_i, 0) == 0 }
+        let pgid_live = unsafe { libc::kill(-pgid_i, 0) == 0 };
+        pgid_live
+            && (leader_alive
+                || g.pid_start
+                    .is_some_and(|want| crate::run::start_time(g.pid) == Some(want))
+                || (g.pid_start.is_some() && !leader_alive))
     };
     #[cfg(not(unix))]
     let group_alive = false;

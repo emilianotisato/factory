@@ -94,8 +94,16 @@ pub fn default_memory_max() -> String {
     let Some(kb) = parse_memtotal_kb(&text) else {
         return "8G".into();
     };
-    let gib = (kb / 1024 / 2).max(2);
+    let gib = (kb / 1024 / 1024 / 2).max(2);
     format!("{gib}G")
+}
+
+pub fn scope_unit_name(unit: &str) -> String {
+    if unit.ends_with(".scope") {
+        unit.to_string()
+    } else {
+        format!("{unit}.scope")
+    }
 }
 
 pub fn resolve_limit(configured: Option<&str>) -> Option<String> {
@@ -138,6 +146,7 @@ fn memory_controller_delegated() -> bool {
         if ctrl.is_file()
             && let Ok(s) = std::fs::read_to_string(&ctrl)
             && s.split_whitespace().any(|c| c == "memory")
+            && cgroup != Path::new("/sys/fs/cgroup")
         {
             return true;
         }
@@ -171,6 +180,10 @@ pub fn systemd_run_available() -> bool {
             "--quiet",
             "-p",
             "MemoryMax=1G",
+            "-p",
+            "MemorySwapMax=0",
+            "-p",
+            "OOMPolicy=kill",
             "--",
             "true",
         ])
@@ -188,7 +201,7 @@ pub fn shell_command(
 ) -> (Command, Option<String>) {
     if let Some(cap) = limit.filter(|_| systemd_run_available()) {
         let bin = systemd_bin();
-        let scope = unit.map(str::to_string);
+        let scope = unit.map(scope_unit_name);
         let mut c = Command::new(&bin);
         c.arg("--user").arg("--scope").arg("--quiet");
         if let Some(u) = unit {
@@ -225,29 +238,35 @@ pub fn detect_oom(status: &std::process::ExitStatus, unit: Option<&str>, log_tai
     if status.signal() == Some(9) {
         return true;
     }
-    if log_tail.contains("oom-kill") || log_tail.contains("MemoryMax") {
+    if log_tail.contains("oom-kill") {
         return true;
     }
-    if std::env::var("FACTORY_SYSTEMD_RUN")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .is_some()
-    {
-        return false;
+    if let Some(u) = unit {
+        if log_tail.contains("MemoryMax") {
+            return true;
+        }
+        if std::env::var("FACTORY_SYSTEMD_RUN")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .is_some()
+        {
+            return false;
+        }
+        let scoped = scope_unit_name(u);
+        let out = Command::new("systemctl")
+            .args(["--user", "show", "-p", "Result", "--value", &scoped])
+            .output()
+            .ok();
+        return out.is_some_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "oom-kill");
     }
-    let Some(u) = unit else {
-        return false;
-    };
-    let out = Command::new("systemctl")
-        .args(["--user", "show", "-p", "Result", "--value", u])
-        .output()
-        .ok();
-    out.is_some_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "oom-kill")
+    false
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn parse_memtotal_reads_kb() {
@@ -275,15 +294,15 @@ mod tests {
 
     #[test]
     fn default_memory_max_floors_at_two_gib() {
-        let info = "MemTotal:       2097152 kB\n";
-        let gib = parse_memtotal_kb(info).unwrap() / 1024 / 2;
-        assert!(gib >= 2);
+        let kb = parse_memtotal_kb("MemTotal:       2097152 kB\n").unwrap();
+        assert_eq!((kb / 1024 / 1024 / 2).max(2), 2);
+        let kb = parse_memtotal_kb("MemTotal:       33554432 kB\n").unwrap();
+        assert_eq!((kb / 1024 / 1024 / 2).max(2), 16);
     }
 
     fn with_gate_memcap_off(f: impl FnOnce()) {
-        // SAFETY: serialized by the test harness lock; restored after the closure.
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _g = LOCK.lock().unwrap();
+        // SAFETY: serialized by ENV_LOCK; restored after the closure.
+        let _g = ENV_LOCK.lock().unwrap();
         let saved = std::env::var("FACTORY_GATE_MEMCAP").ok();
         unsafe {
             std::env::set_var("FACTORY_GATE_MEMCAP", "off");
@@ -305,9 +324,7 @@ mod tests {
 
     #[test]
     fn resolve_limit_defaults_without_config() {
-        with_gate_memcap_off(|| ());
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _g = LOCK.lock().unwrap();
+        let _g = ENV_LOCK.lock().unwrap();
         let saved = std::env::var("FACTORY_GATE_MEMCAP").ok();
         unsafe {
             std::env::remove_var("FACTORY_GATE_MEMCAP");

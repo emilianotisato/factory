@@ -280,8 +280,7 @@ pub fn clean(data: &Path, main: &Path, dry: bool, days: u32, out: &mut dyn Write
                 ),
             )?;
             total += size;
-        } else {
-            let _ = fs::remove_dir_all(&p);
+        } else if fs::remove_dir_all(&p).is_ok() {
             say(
                 out,
                 &format!(
@@ -370,15 +369,16 @@ pub fn ensure_all(data: &Path, main: &Path, out: &mut dyn Write) -> Result<bool>
                 }
                 after = lane_cache_bytes(main, &lane_dir, n)?;
             }
-            let _ = after;
-            say(
-                out,
-                &format!(
-                    "  lane-{n}  trimmed build cache ({} > {:.1} GiB)",
-                    format_bytes(before),
-                    limit_gib
-                ),
-            )?;
+            if after < before || after <= threshold {
+                say(
+                    out,
+                    &format!(
+                        "  lane-{n}  trimmed build cache ({} > {:.1} GiB)",
+                        format_bytes(before),
+                        limit_gib
+                    ),
+                )?;
+            }
         }
     }
     Ok(true)

@@ -91,3 +91,9 @@
 - FR-2: `run killed_driver_reaps_leftover_gate_process_on_resume` (evidence: test transcript)
 
 **Acceptance:** after the checkpoint, both tests run under `cargo test` with full gate green and transcripts recorded in Progress.
+
+**Code-review fixes (2026-11-26).**
+- `default_memory_max` divided by MiB but formatted as GiB, so caps were ~1024× too large; fixed the arithmetic and tightened the unit test.
+- `systemctl` and stored scope names now use the `.scope` suffix `systemd-run` creates; probe matches production `MemorySwapMax`/`OOMPolicy`.
+- Gate reap treats a live process group whose leader exited as alive when `pid_start` was recorded; OOM labeling requires an actual capped scope.
+- Orphan gate killed when `set_active_gate` fails; `gate_memory_max` validation no longer emits a duplicate `E-PROJECT-INVALID`.

@@ -1747,8 +1747,8 @@ fn lanes_up_and_prove_refuse_open_run_and_prove_resets_to_head() {
     let out = factory(&fx, &["lanes", "up"]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
     let lane = lane_path(&fx, 1);
-    fx.git(&["commit", "-q", "--allow-empty", "-m", "older"]);
     let older = git_at(&fx, root, &["rev-parse", "HEAD"]).trim().to_string();
+    fx.git(&["commit", "-q", "--allow-empty", "-m", "older"]);
     git_at(&fx, &lane, &["checkout", "-q", "--detach", &older]);
     fs::write(lane.join("stray.txt"), "gone\n").unwrap();
     let head = git_at(&fx, root, &["rev-parse", "HEAD"]).trim().to_string();

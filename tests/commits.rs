@@ -690,6 +690,7 @@ fn a_park_with_no_question_carries_its_reason() {
     assert_eq!(parks[0]["reason"]["source"], "land");
     assert_eq!(live["now"]["waitingOn"], "owner");
 
+    touch_barrier(&fx, "release-02.txt");
     fs::remove_file(&owned).unwrap();
     wait_phase(&fx, &dir, "finished", 40);
 }
