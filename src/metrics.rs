@@ -12,6 +12,7 @@ use crate::db::{Db, GateInsert, ToolCallInsert};
 use crate::events::EventKind;
 use crate::measure::{self, Subagents, epoch_secs};
 use crate::paths;
+use crate::provider::Provider;
 use crate::run::{GateCmds, Run};
 use crate::shell;
 use crate::stream::{Summary, ToolUse};
@@ -445,19 +446,40 @@ pub fn transcript_of(config: &Path, cwd: Option<&Path>, repo: &Path, session: &s
     measure::transcript_path(config, worker_dir(cwd, repo), session)
 }
 
-/// No transcript is zeros: a worker killed before its first turn leaves none; the stream's subagent counts are early snapshots.
 pub fn record_subagents(
     run: &mut Run,
     worker_id: i64,
     session_id: &str,
     cwd: Option<&Path>,
 ) -> Result<()> {
-    let path = transcript_of(
-        &paths::claude_config_dir(),
-        cwd,
-        &run.state().repo,
-        session_id,
-    );
+    record_subagents_for(run, worker_id, session_id, cwd, Provider::Claude)
+}
+
+/// No transcript is zeros: a worker killed before its first turn leaves none; the stream's subagent counts are early snapshots.
+/// Only Claude writes subagent transcripts, so any other provider's worker is unmeasured.
+pub fn record_subagents_for(
+    run: &mut Run,
+    worker_id: i64,
+    session_id: &str,
+    cwd: Option<&Path>,
+    provider: Provider,
+) -> Result<()> {
+    let config = paths::claude_config_dir();
+    record_subagents_in(run, worker_id, session_id, cwd, provider, &config)
+}
+
+fn record_subagents_in(
+    run: &mut Run,
+    worker_id: i64,
+    session_id: &str,
+    cwd: Option<&Path>,
+    provider: Provider,
+    claude_config: &Path,
+) -> Result<()> {
+    if provider != Provider::Claude {
+        return run.db().set_worker_subagents(worker_id, None);
+    }
+    let path = transcript_of(claude_config, cwd, &run.state().repo, session_id);
     let written = match read_subagents(&path) {
         Ok(cols) => run.db().set_worker_subagents(worker_id, Some(cols)),
         Err(SubagentsUnread::TranscriptMissing) => run
@@ -910,5 +932,53 @@ mod tests {
             assert!(r.ts.is_some(), "recording lines carry timestamps");
         }
         assert_eq!(rows.first().map(|r| r.seq), Some(1));
+    }
+
+    #[test]
+    fn non_claude_worker_skips_claude_subagent_lookup_without_warning() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        let mut run = Run::create(&tmp.path().join("data"), &repo, "001", None, 1).unwrap();
+        let run_id = run.id().as_str().to_string();
+        let worker = |run: &Run, session: &str| {
+            run.db()
+                .insert_worker(&run_id, "build", Some(2), None, session, "m", "high", "x")
+                .unwrap()
+        };
+        let (codex, claude) = (worker(&run, "s-codex"), worker(&run, "s-claude"));
+        let config = tmp.path().join("claude");
+        fs::create_dir_all(&config).unwrap();
+        fs::set_permissions(&config, fs::Permissions::from_mode(0o000)).unwrap();
+        let codex_done =
+            record_subagents_in(&mut run, codex, "s-codex", None, Provider::Codex, &config);
+        let claude_done = record_subagents_in(
+            &mut run,
+            claude,
+            "s-claude",
+            None,
+            Provider::Claude,
+            &config,
+        );
+        fs::set_permissions(&config, fs::Permissions::from_mode(0o755)).unwrap();
+
+        codex_done.unwrap();
+        claude_done.unwrap();
+        let unread = run
+            .events()
+            .unwrap()
+            .into_iter()
+            .filter(|e| matches!(e.kind, EventKind::SubagentsUnread { .. }))
+            .count();
+        assert_eq!(unread, 0);
+        let rows = run.db().workers(&run_id).unwrap();
+        let row = |id: i64| rows.iter().find(|w| w.id == id).unwrap();
+        assert_eq!((row(codex).subagents, row(codex).sub_input), (None, None));
+        assert_eq!(
+            row(claude).subagents,
+            Some(0),
+            "a Claude worker still looks its transcript up"
+        );
     }
 }

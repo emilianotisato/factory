@@ -266,11 +266,12 @@ fn polish(
             .map(|b| b.id)
             .collect();
         drop_ref(run, board, &Closer::Polish)?;
+        let resolved = worker::effective_worker(run, cfg, "polish");
         let w = Worker::spawn(
             run,
             Job::Polish { attempt },
             &pack,
-            &cfg.workers.polish,
+            &resolved,
             &lane_def.env(),
             &lane_dir,
             Some(lane),
@@ -2069,11 +2070,12 @@ fn fix_round(
         let (lane_dir, lane_def) = scheduler::prepare_lane(run, lane, true, out)?;
         let who = Closer::CiFix { round, check };
         drop_ref(run, board, &who)?;
+        let resolved = worker::effective_worker(run, cfg, "fix");
         let w = Worker::spawn(
             run,
             Job::CiFix { round, attempt },
             &pack,
-            &cfg.workers.fix,
+            &resolved,
             &lane_def.env(),
             &lane_dir,
             Some(lane),
@@ -2468,7 +2470,9 @@ fn settle(
     run.db()
         .finish_worker(row_id, summary, outcome.as_str(), &clock::now_rfc3339())?;
     // Never fails the exit: an unreadable dir is an event and null columns.
-    let _ = metrics::record_subagents(run, row_id, session_id, summary.cwd.as_deref());
+    let provider = worker::provider_of(run, session_id);
+    let _ =
+        metrics::record_subagents_for(run, row_id, session_id, summary.cwd.as_deref(), provider);
     metrics::record_exit(run, row_id, summary)?;
     run.set_worker_outcome(session_id, outcome.as_str())
 }

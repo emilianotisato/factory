@@ -20,7 +20,7 @@ use crate::quota::{self, Hold, Limit};
 use crate::run::{Phase, Run, WorkerOutcome};
 use crate::scheduler::{self, DEATH_CAP, pad_list, say, short};
 use crate::stream::Summary;
-use crate::worker::{Exit, Job, Worker};
+use crate::worker::{self, Exit, Job, Worker};
 use crate::{Result, clock, lanes, metrics, paths};
 
 pub const RED_CAP: u32 = 3;
@@ -272,11 +272,12 @@ pub fn run(
             .collect();
         let (lane_dir, lane_def) = scheduler::prepare_lane(run, lane, true, out)?;
         drop_ref(run, board, n, "checkpoint")?;
+        let resolved = worker::effective_worker(run, cfg, "checkpoint");
         let worker = Worker::spawn(
             run,
             Job::Checkpoint { n, attempt },
             &pack,
-            &cfg.workers.checkpoint,
+            &resolved,
             &lane_def.env(),
             &lane_dir,
             Some(lane),
@@ -704,6 +705,7 @@ fn fix_once(
     let pack = Pack::for_fix(docs, board, n, attempt, gate_log, &packs, spawn)?;
     let (lane_dir, lane_def) = scheduler::prepare_lane(run, lane, true, out)?;
     drop_ref(run, board, n, "fix")?;
+    let resolved = worker::effective_worker(run, cfg, "fix");
     let worker = Worker::spawn(
         run,
         Job::Fix {
@@ -711,7 +713,7 @@ fn fix_once(
             attempt,
         },
         &pack,
-        &cfg.workers.fix,
+        &resolved,
         &lane_def.env(),
         &lane_dir,
         Some(lane),
@@ -1174,7 +1176,9 @@ fn settle(
     run.db()
         .finish_worker(row_id, summary, outcome.as_str(), &clock::now_rfc3339())?;
     // Never fails the exit: an unreadable dir is an event and null columns.
-    let _ = metrics::record_subagents(run, row_id, session_id, summary.cwd.as_deref());
+    let provider = worker::provider_of(run, session_id);
+    let _ =
+        metrics::record_subagents_for(run, row_id, session_id, summary.cwd.as_deref(), provider);
     metrics::record_exit(run, row_id, summary)?;
     run.set_worker_outcome(session_id, outcome.as_str())
 }

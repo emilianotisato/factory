@@ -241,3 +241,160 @@ fn live_worker_outcome_reads_the_status_below_the_first_line() {
     );
     assert_eq!(w["running"], Value::Null);
 }
+
+#[test]
+fn live_json_reads_non_claude_worker_streams() {
+    let fx = Fixture::new("live-workers-providers");
+    let on = |session: &str, role: &str, provider: &str| {
+        let mut w = alive(session, role);
+        w["provider"] = json!(provider);
+        w
+    };
+    write_run(
+        &fx,
+        json!({ "workers": [
+            on("codex", "slice", "codex"),
+            on("agy", "checkpoint", "agy"),
+            on("cursor", "polish", "cursor"),
+            on("opencode", "fix", "opencode"),
+            on("codex-on", "slice", "codex"),
+            on("cursor-fn", "polish", "cursor"),
+            alive("claude", "slice"),
+        ] }),
+        &[],
+    );
+    let repo = fx.path().display().to_string();
+    stream(
+        &fx,
+        "codex",
+        &lines(&[
+            json!({"type": "thread.started", "thread_id": "th1"}),
+            json!({"type": "turn.started"}),
+            json!({"type": "item.completed", "item": {"id": "i0", "type": "agent_message",
+                "text": "Reading the slice before the edit"}}),
+            json!({"type": "item.started", "item": {"id": "i1", "type": "command_execution",
+                "command": "cargo test", "status": "in_progress"}}),
+            json!({"type": "brand_new_kind", "x": {"y": 1}}),
+            json!({"type": "item.completed", "item": {"id": "i2", "type": "file_change",
+                "changes": [{"path": format!("{repo}/src/a.rs"), "kind": "update"}],
+                "status": "completed"}}),
+            json!({"type": "item.completed", "item": {"id": "i3", "type": "agent_message",
+                "text": "STATUS: blocked\nBLOCK: which index wins"}}),
+            json!({"type": "turn.completed", "usage": {"input_tokens": 10, "output_tokens": 2}}),
+        ]),
+    );
+    stream(
+        &fx,
+        "agy",
+        &lines(&[
+            json!({"type": "system", "subtype": "init", "session_id": "a1"}),
+            assistant(json!([
+                {"type": "text", "text": "Proving the rows"},
+                {"type": "tool_use", "id": "t1", "name": "Read",
+                    "input": {"file_path": format!("{repo}/docs/x.md")}},
+            ])),
+            tool_result("t1", "ok"),
+            json!({"type": "result", "is_error": false, "result": "STATUS: done\nBLOCK: none"}),
+        ]),
+    );
+    stream(
+        &fx,
+        "cursor",
+        &lines(&[
+            json!({"type": "system", "subtype": "init", "session_id": "c1", "model": "grok"}),
+            json!({"type": "assistant", "message": {"role": "assistant",
+                "content": [{"type": "text", "text": "Polishing the branch"}]}}),
+            json!({"type": "tool_call", "subtype": "started", "call_id": "c-1",
+                "tool_call": {"shellToolCall": {"args": {"command": "cargo test"}}}}),
+            json!({"type": "result", "subtype": "success", "is_error": false,
+                "result": "STATUS: blocked\nBLOCK: keep the finding?"}),
+        ]),
+    );
+    stream(
+        &fx,
+        "opencode",
+        &lines(&[
+            json!({"type": "step_start", "sessionID": "o1", "part": {"type": "step-start"}}),
+            json!({"type": "text", "sessionID": "o1", "part": {"id": "p1", "type": "text",
+                "text": "Fixing the red test"}}),
+            json!({"type": "tool_use", "part": {"id": "p2", "callID": "call_1", "tool": "edit",
+                "state": {"status": "completed", "input": {"filePath": format!("{repo}/src/b.rs")},
+                "output": "ok"}}}),
+            json!({"type": "text", "part": {"id": "p3", "type": "text",
+                "text": "STATUS: done\nFIXED: src/b.rs\nBLOCK: none"}}),
+            json!({"type": "step_finish", "part": {"tokens": {"input": 3, "output": 4}}}),
+        ]),
+    );
+
+    stream(
+        &fx,
+        "codex-on",
+        &lines(&[
+            json!({"type": "item.completed", "item": {"id": "i0", "type": "agent_message",
+                "text": "STATUS: done once the tests pass"}}),
+            json!({"type": "item.started", "item": {"id": "i1", "type": "command_execution",
+                "command": "cargo test", "status": "in_progress"}}),
+        ]),
+    );
+    let args = json!({"file_path": format!("{repo}/src/c.rs")}).to_string();
+    stream(
+        &fx,
+        "cursor-fn",
+        &lines(&[
+            json!({"type": "tool_call", "subtype": "started", "call_id": "c-1",
+            "tool_call": {"function": {"name": "Read", "arguments": args}}}),
+        ]),
+    );
+
+    let v = live(&fx, &[]);
+    let w = |s: &str| by_session(&v, s).clone();
+    for (s, p) in [
+        ("codex", "codex"),
+        ("agy", "agy"),
+        ("cursor", "cursor"),
+        ("opencode", "opencode"),
+        ("claude", "claude"),
+    ] {
+        assert_eq!(w(s)["provider"], p, "{}", w(s));
+    }
+
+    let c = w("codex");
+    assert_eq!(c["doing"]["tool"], "Edit", "{c}");
+    assert_eq!(c["doing"]["label"], "Edit src/a.rs", "{c}");
+    assert_eq!(c["narration"], "Reading the slice before the edit", "{c}");
+    assert_eq!(
+        c["outcome"],
+        json!({"status": "blocked", "block": "which index wins"})
+    );
+    assert_eq!(c["running"], Value::Null);
+
+    let a = w("agy");
+    assert_eq!(a["doing"]["label"], "Read docs/x.md", "{a}");
+    assert_eq!(a["narration"], "Proving the rows", "{a}");
+    assert_eq!(a["outcome"], json!({"status": "done", "block": null}));
+
+    let cu = w("cursor");
+    assert_eq!(cu["doing"]["tool"], "Bash", "{cu}");
+    assert_eq!(cu["doing"]["label"], "Bash", "{cu}");
+    assert_eq!(cu["narration"], "Polishing the branch", "{cu}");
+    assert_eq!(
+        cu["outcome"],
+        json!({"status": "blocked", "block": "keep the finding?"})
+    );
+
+    let o = w("opencode");
+    assert_eq!(o["doing"]["label"], "Edit src/b.rs", "{o}");
+    assert_eq!(o["narration"], "Fixing the red test", "{o}");
+    assert_eq!(o["outcome"], json!({"status": "done", "block": null}));
+
+    let on = w("codex-on");
+    assert_eq!(on["doing"]["tool"], "Bash", "{on}");
+    assert_eq!(on["outcome"], Value::Null, "{on}");
+    let f = w("cursor-fn");
+    assert_eq!(f["doing"]["label"], "Read src/c.rs", "{f}");
+
+    // A Claude worker reading nothing it knows stays null, never an error.
+    let cl = w("claude");
+    assert_eq!(cl["doing"], Value::Null);
+    assert_eq!(cl["outcome"], Value::Null);
+}

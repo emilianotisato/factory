@@ -68,7 +68,9 @@
 // The call record ($FACTORY_STUB_DIR/calls/<n>.json) carries argv, cwd, HEAD,
 // the FACTORY_* env, every env variable's name (never a value), GH_CONFIG_DIR,
 // the GIT_CONFIG_* variables with values, prompt, pack, session id, model,
-// effort and settings. `claude --version` alone prints a fixed string and
+// effort and settings; and, from a non-Claude worker stub
+// (workers/provider-worker.js), the provider, its own argv, the prompt file and
+// whether it carried the pack whole, and $PATH. `claude --version` alone prints a fixed string and
 // records no call; every assistant line's `message.model` is `init.model`.
 //
 // A `claude plugin …` call is recorded, then answered from
@@ -138,6 +140,11 @@ writeAtomic(path.join(callsDir, `${n}.json`), JSON.stringify({
   model: flags['--model'] ?? null,
   effort: flags['--effort'] ?? null,
   settings: flags['--settings'] ?? null,
+  provider: process.env.STUB_PROVIDER ?? 'claude',
+  provider_argv: process.env.STUB_PROVIDER_ARGV ? JSON.parse(process.env.STUB_PROVIDER_ARGV) : argv,
+  prompt_file: process.env.STUB_PROMPT_FILE ?? null,
+  prompt_ok: process.env.STUB_PROMPT_OK === undefined ? null : process.env.STUB_PROMPT_OK === '1',
+  path: process.env.PATH ?? null,
 }, null, 2))
 if (argv[0] === 'plugin') plugin(argv.slice(1))
 

@@ -19,7 +19,7 @@ const DISCOVER_TIMEOUT: Duration = Duration::from_secs(5);
 pub const USAGE: &str = "\
 factory setup asks its questions on a terminal; without one, pass flags:
   factory setup cockpit --provider <claude|codex|cursor|agy|opencode>
-  factory setup workers [--role <default|build|fix|checkpoint|polish>] [--model <m>] [--effort <low|medium|high|max>] [--clear]
+  factory setup workers [--role <default|build|fix|checkpoint|polish>] [--provider <claude|codex|cursor|agy|opencode>] [--model <m>] [--effort <e>] [--clear]
   factory setup review --provider <claude|codex|cursor|agy|opencode|none> [--model <m>] [--effort <e>]
   factory setup ci --mode <local|remote>
   factory setup --show [--json]
@@ -44,15 +44,17 @@ pub enum SetupSection {
         #[arg(long, value_enum)]
         provider: Option<Provider>,
     },
-    /// The Claude model and effort workers run with, by default or for one role
+    /// The agent CLI, model and effort workers run with, by default or for one role
     Workers {
         #[arg(long, value_enum)]
         role: Option<WorkerRole>,
+        #[arg(long, value_enum)]
+        provider: Option<Provider>,
         #[arg(long)]
         model: Option<String>,
         #[arg(long)]
         effort: Option<String>,
-        /// Remove the role's model and effort so it takes the defaults again
+        /// Remove the role's provider, model and effort so it takes the defaults again
         #[arg(long)]
         clear: bool,
     },
@@ -295,10 +297,11 @@ fn has_flags(section: &SetupSection) -> bool {
         SetupSection::Cockpit { provider } => provider.is_some(),
         SetupSection::Workers {
             role,
+            provider,
             model,
             effort,
             clear,
-        } => role.is_some() || model.is_some() || effort.is_some() || *clear,
+        } => role.is_some() || provider.is_some() || model.is_some() || effort.is_some() || *clear,
         SetupSection::Review {
             provider,
             model,
@@ -317,10 +320,18 @@ fn flagged(section: &SetupSection, env: &Env, out: &mut dyn Write) -> Result<i32
         }
         SetupSection::Workers {
             role,
+            provider,
             model,
             effort,
             clear,
-        } => worker_flags(*role, model.as_deref(), effort.as_deref(), *clear)?,
+        } => worker_flags(
+            &loaded,
+            *role,
+            *provider,
+            model.as_deref(),
+            effort.as_deref(),
+            *clear,
+        )?,
         SetupSection::Review {
             provider,
             model,
@@ -334,35 +345,135 @@ fn flagged(section: &SetupSection, env: &Env, out: &mut dyn Write) -> Result<i32
     save(&env.config_dir, &edits, out)
 }
 
+/// What one `[workers]` table holds, and the provider its model and effort belong to.
+struct TableNow {
+    table: &'static str,
+    own_provider: Option<Provider>,
+    /// A table that names no provider anywhere holds Claude slugs, as it did before workers had a provider.
+    provider: Provider,
+    model: Option<String>,
+    effort: Option<String>,
+    /// A model this table resolves to without holding one: a role's `[workers]` default for the same provider.
+    inherited_model: bool,
+}
+
+fn table_now(loaded: &Loaded, role: WorkerRole) -> TableNow {
+    let w = &loaded.config.workers;
+    let name = match role {
+        WorkerRole::Default => None,
+        WorkerRole::Build => Some("build"),
+        WorkerRole::Fix => Some("fix"),
+        WorkerRole::Checkpoint => Some("checkpoint"),
+        WorkerRole::Polish => Some("polish"),
+    };
+    let Some(name) = name else {
+        return TableNow {
+            table: role.table(),
+            own_provider: w.provider,
+            provider: w.provider.unwrap_or(Provider::Claude),
+            model: w.model.clone(),
+            effort: w.effort.clone(),
+            inherited_model: false,
+        };
+    };
+    let worker = w.role(name).expect("a known role");
+    let own = loaded
+        .sources
+        .workers
+        .role(name)
+        .cloned()
+        .unwrap_or_default();
+    let provider = worker.provider.or(w.provider).unwrap_or(Provider::Claude);
+    TableNow {
+        table: role.table(),
+        own_provider: worker.provider,
+        provider,
+        model: (own.model != Source::Default).then(|| worker.model.clone()),
+        effort: (own.effort != Source::Default).then(|| worker.effort.clone()),
+        inherited_model: w.model.is_some() && w.provider.unwrap_or(Provider::Claude) == provider,
+    }
+}
+
+/// The edits that set a table's provider, model and effort; a model or effort left as it was is dropped when the
+/// provider changes, as slugs and levels are provider-specific.
+fn worker_edits(
+    now: &TableNow,
+    provider: Answer,
+    chosen: Provider,
+    model: Answer,
+    effort: Answer,
+) -> Vec<Patch> {
+    let table = now.table;
+    let own = now.own_provider.map(Provider::as_str);
+    let switched = chosen != now.provider;
+    let fresh = |a: Answer| match a {
+        Answer::Keep if switched => Answer::Clear,
+        a => a,
+    };
+    let effort = if chosen.effort_levels().is_empty() {
+        Answer::Clear
+    } else {
+        fresh(effort)
+    };
+    let mut edits: Vec<Patch> = answer_patch(table, "provider", &provider, own)
+        .into_iter()
+        .collect();
+    edits.extend(answer_patch(
+        table,
+        "model",
+        &fresh(model),
+        now.model.as_deref(),
+    ));
+    edits.extend(answer_patch(
+        table,
+        "effort",
+        &effort,
+        now.effort.as_deref(),
+    ));
+    edits
+}
+
 fn worker_flags(
+    loaded: &Loaded,
     role: Option<WorkerRole>,
+    provider: Option<Provider>,
     model: Option<&str>,
     effort: Option<&str>,
     clear: bool,
 ) -> Result<Vec<Patch>> {
-    let table = role.unwrap_or(WorkerRole::Default).table();
+    let now = table_now(loaded, role.unwrap_or(WorkerRole::Default));
+    let table = now.table;
     if clear {
-        if model.is_some() || effort.is_some() {
-            return Err(msg("--clear takes no --model or --effort"));
+        if provider.is_some() || model.is_some() || effort.is_some() {
+            return Err(msg("--clear takes no --provider, --model or --effort"));
         }
-        return Ok(vec![unset(table, "model"), unset(table, "effort")]);
+        return Ok(vec![
+            unset(table, "provider"),
+            unset(table, "model"),
+            unset(table, "effort"),
+        ]);
     }
-    if model.is_none() && effort.is_none() {
-        return Err(msg("give --model, --effort or --clear"));
+    if provider.is_none() && model.is_none() && effort.is_none() {
+        return Err(msg("give --provider, --model, --effort or --clear"));
     }
-    let mut edits = Vec::new();
-    if let Some(m) = model {
-        edits.push(set(table, "model", &model_flag(m)?));
+    let p = provider.unwrap_or(now.provider);
+    let model = match model {
+        Some(m) => Answer::Set(model_flag(m)?),
+        None => Answer::Keep,
+    };
+    let effort = match effort {
+        Some(e) => Answer::Set(level(p.effort_levels(), e, p.as_str())?),
+        None => Answer::Keep,
+    };
+    let keeps_model = p == now.provider && (now.model.is_some() || now.inherited_model);
+    if p.default_model().is_empty() && model == Answer::Keep && !keeps_model {
+        return Err(msg(format!("{p} has no default model: give --model")));
     }
-    if let Some(e) = effort {
-        let claude = Provider::Claude;
-        edits.push(set(
-            table,
-            "effort",
-            &level(claude.effort_levels(), e, claude.as_str())?,
-        ));
-    }
-    Ok(edits)
+    let answer = match provider {
+        Some(p) => Answer::Set(p.as_str().to_string()),
+        None => Answer::Keep,
+    };
+    Ok(worker_edits(&now, answer, p, model, effort))
 }
 
 fn review_flags(
@@ -410,21 +521,36 @@ fn source_name(source: Source, resolved: bool) -> &'static str {
 
 fn effective(loaded: &Loaded, detected: &[Detected]) -> Value {
     let w = &loaded.config.workers;
-    let fallback = w.provider.unwrap_or(Provider::Claude);
+    let (_, worker_warning) = config::resolve_workers(loaded, &[]);
+    let env_provider = std::env::var(config::WORKER_PROVIDER_ENV)
+        .ok()
+        .and_then(|v| v.trim().parse::<Provider>().ok());
+    let fallback = w.provider.or(env_provider).unwrap_or(Provider::Claude);
+    let default_provider_source = match (w.provider, env_provider) {
+        (Some(_), _) => "user",
+        (None, Some(_)) => "env",
+        (None, None) => "default",
+    };
     let given = |set: bool| if set { "user" } else { "default" };
+    // A provider with no effort levels runs with none, as each role does.
+    let effort = w
+        .effort
+        .clone()
+        .filter(|_| !fallback.effort_levels().is_empty());
     let mut workers = serde_json::Map::new();
     workers.insert(
         "default".into(),
         json!({
             "provider": fallback.as_str(),
+            "provider_source": default_provider_source,
             "model": w.model.clone().unwrap_or_else(|| fallback.default_model().to_string()),
-            "effort": w.effort.clone().or_else(|| fallback.default_effort().map(str::to_string)),
+            "effort": effort.clone().or_else(|| fallback.default_effort().map(str::to_string)),
             "model_source": given(w.model.is_some()),
-            "effort_source": given(w.effort.is_some()),
+            "effort_source": given(effort.is_some()),
         }),
     );
     for role in ROLES {
-        let r = w.resolved(&loaded.sources.workers, role, Provider::Claude);
+        let r = w.resolved(&loaded.sources.workers, role, fallback);
         let own = loaded
             .sources
             .workers
@@ -439,6 +565,7 @@ fn effective(loaded: &Loaded, detected: &[Detected]) -> Value {
             role.into(),
             json!({
                 "provider": r.provider.as_str(),
+                "provider_source": if own.provider != Source::Default { "user" } else { default_provider_source },
                 "model": r.model,
                 "effort": r.effort,
                 "model_source": from(own.model, w.model.is_some()),
@@ -468,6 +595,7 @@ fn effective(loaded: &Loaded, detected: &[Detected]) -> Value {
     let warnings: Vec<&String> = loaded
         .warnings
         .iter()
+        .chain(worker_warning.iter())
         .chain(review_warning.iter())
         .chain(ci_warning.iter())
         .collect();
@@ -691,7 +819,7 @@ pub fn run_wizard(
         edits.extend(cockpit_step(&mut q, &loaded, &detected, env)?);
     }
     if wants("workers") {
-        edits.extend(workers_step(&mut q, &loaded)?);
+        edits.extend(workers_step(&mut q, &loaded, &detected, env)?);
     }
     if wants("review") {
         edits.extend(review_step(&mut q, &loaded, &detected, env)?);
@@ -744,26 +872,56 @@ fn cockpit_step(
     Ok(edits)
 }
 
-fn workers_step(q: &mut Prompter, loaded: &Loaded) -> Result<Vec<Patch>> {
-    q.say("\nWorkers — the Claude model and effort unattended workers run with")?;
-    let claude = Provider::Claude;
-    let w = &loaded.config.workers;
-    let models = plain(claude.curated_models());
-    let efforts = plain(claude.effort_levels());
-    let mut edits = Vec::new();
+fn workers_step(
+    q: &mut Prompter,
+    loaded: &Loaded,
+    detected: &[Detected],
+    env: &Env,
+) -> Result<Vec<Patch>> {
+    q.say("\nWorkers — the agent CLI, model and effort unattended workers run with")?;
+    let now = table_now(loaded, WorkerRole::Default);
+    let suggested = now
+        .own_provider
+        .or_else(|| detected.first().map(|d| d.provider));
+    q.say("Provider:")?;
+    let a = q.pick(
+        &provider_options(detected),
+        suggested.map_or("not set", Provider::as_str),
+        false,
+        false,
+    )?;
+    let provider = match a {
+        Answer::Keep | Answer::Clear => {
+            suggested.map_or(Answer::Keep, |p| Answer::Set(p.to_string()))
+        }
+        set => set,
+    };
+    let p = match &provider {
+        Answer::Set(v) => v.parse::<Provider>().map_err(Error::Msg)?,
+        _ => now.provider,
+    };
+    let same = p == now.provider;
     q.say("Model (a number, or type any model):")?;
-    let shown = w.model.as_deref().unwrap_or(claude.default_model());
-    let a = q.pick(&models, shown, true, false)?;
-    edits.extend(answer_patch("workers", "model", &a, w.model.as_deref()));
-    q.say("Effort:")?;
-    let shown = w
-        .effort
+    let shown = now
+        .model
         .as_deref()
-        .or(claude.default_effort())
-        .unwrap_or("");
-    let a = q.pick(&efforts, shown, false, false)?;
-    edits.extend(answer_patch("workers", "effort", &a, w.effort.as_deref()));
-    if !q.yes("Override any role (build, fix, checkpoint, polish)? [y/N]")? {
+        .filter(|_| same)
+        .or(Some(p.default_model()).filter(|m| !m.is_empty()));
+    let model = model_pick(q, p, env, shown, false)?;
+    let effort = effort_pick(
+        q,
+        "Effort:",
+        p,
+        now.effort
+            .as_deref()
+            .filter(|_| same)
+            .or(p.default_effort()),
+        false,
+    )?;
+    let mut edits = worker_edits(&now, provider, p, model, effort);
+    if !q.yes(
+        "Override any role (build, fix, checkpoint, polish) with a different provider/model/effort? [y/N]",
+    )? {
         return Ok(edits);
     }
     loop {
@@ -771,28 +929,87 @@ fn workers_step(q: &mut Prompter, loaded: &Loaded) -> Result<Vec<Patch>> {
         if typed.is_empty() {
             break;
         }
-        let Some(role) = ROLES.into_iter().find(|r| r.eq_ignore_ascii_case(&typed)) else {
+        let Some(role) = [
+            WorkerRole::Build,
+            WorkerRole::Fix,
+            WorkerRole::Checkpoint,
+            WorkerRole::Polish,
+        ]
+        .into_iter()
+        .find(|r| r.table().strip_prefix("workers.") == Some(typed.to_ascii_lowercase().as_str())) else {
             q.say(&format!("`{typed}` is not a role"))?;
             continue;
         };
-        let table = format!("workers.{role}");
-        let own = loaded
-            .sources
-            .workers
-            .role(role)
-            .cloned()
-            .unwrap_or_default();
-        let worker = w.role(role).expect("a known role");
-        let model_now = (own.model != Source::Default).then_some(worker.model.as_str());
-        let effort_now = (own.effort != Source::Default).then_some(worker.effort.as_str());
-        q.say(&format!("{role} model:"))?;
-        let a = q.pick(&models, model_now.unwrap_or("inherit"), true, true)?;
-        edits.extend(answer_patch(&table, "model", &a, model_now));
-        q.say(&format!("{role} effort:"))?;
-        let a = q.pick(&efforts, effort_now.unwrap_or("inherit"), false, true)?;
-        edits.extend(answer_patch(&table, "effort", &a, effort_now));
+        let name = &role.table()["workers.".len()..];
+        let now = table_now(loaded, role);
+        q.say(&format!("{name} provider:"))?;
+        let provider = q.pick(
+            &provider_options(detected),
+            now.own_provider.map_or("inherit", Provider::as_str),
+            false,
+            true,
+        )?;
+        let rp = match &provider {
+            Answer::Set(v) => v.parse::<Provider>().map_err(Error::Msg)?,
+            Answer::Keep => now.own_provider.unwrap_or(p),
+            Answer::Clear => p,
+        };
+        let same = rp == now.provider;
+        q.say(&format!("{name} model:"))?;
+        let shown = now.model.as_deref().filter(|_| same).unwrap_or("inherit");
+        let model = model_pick(q, rp, env, Some(shown), true)?;
+        let shown = now.effort.as_deref().filter(|_| same).unwrap_or("inherit");
+        let effort = effort_pick(q, &format!("{name} effort:"), rp, Some(shown), true)?;
+        edits.extend(worker_edits(&now, provider, rp, model, effort));
     }
     Ok(edits)
+}
+
+/// The CLI's own model list when it is on `PATH` and lists quickly, the curated one otherwise; with no `shown` value
+/// the provider has no default, so Enter asks again.
+fn model_pick(
+    q: &mut Prompter,
+    p: Provider,
+    env: &Env,
+    shown: Option<&str>,
+    clearable: bool,
+) -> Result<Answer> {
+    let models = match provider::resolve_binary_in(p, &env.path) {
+        Some(bin) => provider::discover_models(p, &bin, DISCOVER_TIMEOUT),
+        None => p.curated_models().iter().map(|m| m.to_string()).collect(),
+    };
+    let models: Vec<(String, String)> = models.into_iter().map(|m| (m.clone(), m)).collect();
+    loop {
+        let a = q.pick(&models, shown.unwrap_or("none"), true, clearable)?;
+        if a != Answer::Keep || shown.is_some() {
+            return Ok(a);
+        }
+        if q.eof {
+            return Err(msg(format!("{p} has no default model and none was chosen")));
+        }
+        q.say(&format!("{p} has no default model: pick or type one"))?;
+    }
+}
+
+/// Skipped for a CLI that takes no effort level.
+fn effort_pick(
+    q: &mut Prompter,
+    label: &str,
+    p: Provider,
+    shown: Option<&str>,
+    clearable: bool,
+) -> Result<Answer> {
+    let levels = p.effort_levels();
+    if levels.is_empty() {
+        return Ok(Answer::Keep);
+    }
+    q.say(label)?;
+    q.pick(
+        &plain(levels),
+        shown.unwrap_or("CLI default"),
+        false,
+        clearable,
+    )
 }
 
 fn review_step(

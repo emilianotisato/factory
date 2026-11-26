@@ -12,7 +12,19 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// An agent CLI that can run a worker or a review.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, clap::ValueEnum)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+    clap::ValueEnum,
+)]
 #[serde(rename_all = "lowercase")]
 #[value(rename_all = "lowercase")]
 pub enum Provider {
@@ -274,7 +286,7 @@ pub fn discover_models(provider: Provider, bin: &Path, timeout: Duration) -> Vec
 }
 
 /// `None` when it cannot start, exits non-zero or outlives `timeout`.
-fn run_bounded(bin: &Path, args: &[&str], timeout: Duration) -> Option<String> {
+pub(crate) fn run_bounded(bin: &Path, args: &[&str], timeout: Duration) -> Option<String> {
     let mut out = unlinked_file()?;
     let err = unlinked_file()?;
     let mut child = Command::new(bin)
@@ -282,6 +294,8 @@ fn run_bounded(bin: &Path, args: &[&str], timeout: Duration) -> Option<String> {
         .stdin(Stdio::null())
         .stdout(Stdio::from(out.try_clone().ok()?))
         .stderr(Stdio::from(err))
+        // Claude refuses to start inside another Claude session.
+        .env_remove("CLAUDECODE")
         // Its own group: a wrapper script's children die with it.
         .process_group(0)
         .spawn()

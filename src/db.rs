@@ -112,7 +112,7 @@ CREATE TABLE IF NOT EXISTS retros (
 ";
 
 /// SQLite's `ALTER TABLE ADD COLUMN` has no `IF NOT EXISTS`; each is guarded by the live column list.
-const COLUMNS: [(&str, &str, &str); 32] = [
+const COLUMNS: [(&str, &str, &str); 33] = [
     ("workers", "commit_sha", "TEXT"),
     ("workers", "checkpoint", "INTEGER"),
     ("gates", "cached", "INTEGER NOT NULL DEFAULT 0"),
@@ -145,6 +145,7 @@ const COLUMNS: [(&str, &str, &str); 32] = [
     ("runs", "comment_lines", "INTEGER"),
     ("runs", "nonblank_lines", "INTEGER"),
     ("runs", "id_hits", "INTEGER"),
+    ("workers", "provider", "TEXT"),
 ];
 
 pub const RETRO_COLUMNS: [&str; 19] = [
@@ -246,6 +247,8 @@ pub struct WorkerRow {
     pub subagents: Option<i64>,
     /// What answered, where `model` is what was asked for.
     pub model_id: Option<String>,
+    /// The CLI the worker ran on; `None` on a row written before workers had one.
+    pub provider: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -696,6 +699,14 @@ impl Db {
         Ok(())
     }
 
+    pub fn set_worker_provider(&self, id: i64, provider: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE workers SET provider = ?2 WHERE id = ?1",
+            params![id, provider],
+        )?;
+        Ok(())
+    }
+
     pub fn set_worker_commit(&self, id: i64, sha: &str) -> Result<()> {
         self.conn.execute(
             "UPDATE workers SET commit_sha = ?2 WHERE id = ?1",
@@ -710,7 +721,7 @@ impl Db {
                     output, thinking, cost_usd, num_turns, duration_ms, terminal_reason, outcome,
                     peak_context, started_at, ended_at, commit_sha, checkpoint, start_context,
                     pack_files, sub_input, sub_cache_write, sub_cache_read, sub_output, subagents, model_id,
-                    pack_parts
+                    pack_parts, provider
              FROM workers WHERE run_id = ?1 ORDER BY id",
         )?;
         let rows = stmt.query_map([run_id], |r| {
@@ -749,6 +760,7 @@ impl Db {
                 sub_output: r.get(27)?,
                 subagents: r.get(28)?,
                 model_id: r.get("model_id")?,
+                provider: r.get("provider")?,
             })
         })?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
@@ -1263,5 +1275,49 @@ mod tests {
         assert_eq!(figures(&a), (Some(2), Some(3), Some(1)));
         let b = db.run_row("b").unwrap().unwrap();
         assert_eq!(figures(&b), (None, None, None));
+    }
+
+    #[test]
+    fn a_store_without_worker_providers_gains_the_column_and_reads_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("factory.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            let has = |c: &Connection, table: &str, column: &str| {
+                c.query_row(
+                    &format!("SELECT count(*) FROM pragma_table_info('{table}') WHERE name = ?1"),
+                    [column],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap()
+                    > 0
+            };
+            for (table, column, decl) in COLUMNS {
+                if column != "provider" && !has(&conn, table, column) {
+                    conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"))
+                        .unwrap();
+                }
+            }
+            conn.execute_batch(&format!(
+                "INSERT INTO schema_version (version, applied_at) VALUES ({SCHEMA_VERSION}, 'then');
+                 INSERT INTO runs (id, repo, feature, started_at, phase, budget_weighted_tokens)
+                   VALUES ('r1', '/repo', 'f', 'then', 'done', 0);
+                 INSERT INTO workers (run_id, role, started_at, model)
+                   VALUES ('r1', 'build', 'then', 'opus');"
+            ))
+            .unwrap();
+            assert!(!has(&conn, "workers", "provider"));
+        }
+        let db = Db::open(&path).unwrap();
+        assert!(db.has_column("workers", "provider").unwrap());
+        let id = db
+            .insert_worker("r1", "build", Some(1), None, "s", "gpt-5.4", "high", "now")
+            .unwrap();
+        db.set_worker_provider(id, "codex").unwrap();
+        let rows = db.workers("r1").unwrap();
+        assert_eq!(rows[0].model.as_deref(), Some("opus"));
+        assert_eq!(rows[0].provider, None);
+        assert_eq!(rows[1].provider.as_deref(), Some("codex"));
     }
 }

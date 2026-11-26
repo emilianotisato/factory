@@ -15,6 +15,7 @@ use crate::error::{io, json};
 use crate::measure::{self, Measure};
 use crate::metrics::{self, CTX_KINDS, LOOKUP_KINDS, SubagentsUnread};
 use crate::pack::Part;
+use crate::provider::Provider;
 use crate::run::{GateCmds, Run};
 use crate::stream::Findings;
 use crate::{Error, Result, paths, quota, stream, worker};
@@ -177,6 +178,8 @@ impl Thresholds {
 pub struct PerWorker {
     pub id: i64,
     pub role: String,
+    /// `None` on a row written before workers had one.
+    pub provider: Option<String>,
     pub slice: Option<u32>,
     pub session_id: Option<String>,
     pub lookups: u64,
@@ -195,6 +198,10 @@ fn or_dash<T: std::fmt::Display>(v: Option<T>) -> String {
 
 impl PerWorker {
     fn text(&self) -> String {
+        let provider = self
+            .provider
+            .as_deref()
+            .map_or(String::new(), |p| format!(" {p}"));
         let slice = self
             .slice
             .map_or(String::new(), |n| format!(" slice {n:02}"));
@@ -202,7 +209,7 @@ impl PerWorker {
             format!(" ({})", s.chars().take(8).collect::<String>())
         });
         format!(
-            "worker {} {}{slice}{session}: lookups {}, ctx_share {:.3}, repeat_rate {:.3}, own {} sub {} subagents {}, model_id {}",
+            "worker {} {}{provider}{slice}{session}: lookups {}, ctx_share {:.3}, repeat_rate {:.3}, own {} sub {} subagents {}, model_id {}",
             self.id,
             self.role,
             self.lookups,
@@ -246,6 +253,7 @@ pub fn per_worker(workers: &[WorkerRow], calls: &[ToolCallRow]) -> Vec<PerWorker
             PerWorker {
                 id: w.id,
                 role: w.role.clone(),
+                provider: w.provider.clone(),
                 slice: w.slice,
                 session_id: w.session_id.clone(),
                 lookups,
@@ -729,6 +737,7 @@ fn findings_text(f: Option<Findings>) -> String {
     f.map_or_else(|| "—".to_string(), |f| f.text())
 }
 
+/// A row written before workers had a provider keeps its old `<model>/<effort>` and `claude <version>` shape.
 pub fn knobs_text(k: Option<&Value>) -> String {
     let Some(k) = k else {
         return "—".to_string();
@@ -743,7 +752,16 @@ pub fn knobs_text(k: Option<&Value>) -> String {
             if let Some(e) = w["effort_source"].as_str() {
                 src = format!("{src}/{e}");
             }
-            format!("{role} {}/{} {src}", s(&w["model"]), s(&w["effort"]))
+            match w["provider"].as_str() {
+                Some(p) => {
+                    let effort = w["effort"]
+                        .as_str()
+                        .filter(|e| !e.is_empty())
+                        .map_or(String::new(), |e| format!("/{e}"));
+                    format!("{role} {p}:{}{effort} {src}", s(&w["model"]))
+                }
+                None => format!("{role} {}/{} {src}", s(&w["model"]), s(&w["effort"])),
+            }
         })
         .collect();
     parts.extend([
@@ -754,17 +772,42 @@ pub fn knobs_text(k: Option<&Value>) -> String {
         ),
         format!("lanes {}", or_dash(k["lanes"].as_u64())),
         format!("factory {}", s(&k["factory_version"])),
-        // `2.1.296 (Claude Code)` reads `2.1.296`.
-        format!(
+    ]);
+    // A provider whose probe failed still shows, with no version.
+    let mut versions: BTreeMap<&str, Option<&str>> = k["workers"]
+        .as_object()
+        .into_iter()
+        .flat_map(|w| w.values())
+        .filter_map(|w| w["provider"].as_str())
+        .map(|p| (p, None))
+        .collect();
+    if let Some(probed) = k["provider_versions"].as_object() {
+        versions.extend(probed.iter().map(|(p, v)| (p.as_str(), v.as_str())));
+    }
+    match versions.is_empty() {
+        false => parts.extend(
+            versions
+                .iter()
+                .map(|(p, v)| format!("{p} {}", or_dash(v.map(version_number)))),
+        ),
+        true => parts.push(format!(
             "claude {}",
             or_dash(
                 k["claude_version"]
                     .as_str()
                     .and_then(|v| v.split_whitespace().next())
             )
-        ),
-    ]);
+        )),
+    }
     parts.join(" · ")
+}
+
+/// `2.1.296 (Claude Code)` reads `2.1.296`, `codex-cli 0.172.0` reads `0.172.0`.
+fn version_number(v: &str) -> &str {
+    v.split_whitespace()
+        .find(|w| w.starts_with(|c: char| c.is_ascii_digit()))
+        .or_else(|| v.split_whitespace().next())
+        .unwrap_or("—")
 }
 
 /// A live run is refused: the budget and the quota pause read these rows as it goes.
@@ -809,7 +852,12 @@ pub fn recount(run: &Run, out: &mut dyn Write) -> Result<()> {
                 path.display()
             ))
         })?;
-        ended.push((w, session, short, stream::parse(&text).1));
+        let provider = w
+            .provider
+            .as_deref()
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(Provider::Claude);
+        ended.push((w, session, short, stream::parse_for(provider, &text).1));
     }
     // The gate pair as the driver reads it, so an inner-loop run keeps its kind.
     let gate = Docs::open(&repo).ok().and_then(|d| {
@@ -832,12 +880,19 @@ pub fn recount(run: &Run, out: &mut dyn Write) -> Result<()> {
             &mut seen_run,
         )?;
         let transcript = metrics::transcript_of(&config, summary.cwd.as_deref(), &repo, session);
-        let (sub, note) = match metrics::read_subagents(&transcript) {
-            Ok(cols) => (Some(cols), String::new()),
-            Err(SubagentsUnread::TranscriptMissing) => {
-                (None, ", transcript missing, own tokens only".to_string())
-            }
-            Err(SubagentsUnread::Unreadable(e)) => (None, format!(", subagents unreadable: {e}")),
+        let claude = w.provider.as_deref().is_none_or(|p| p == "claude");
+        let (sub, note) = match claude.then(|| metrics::read_subagents(&transcript)) {
+            // Only Claude writes subagent transcripts.
+            None => (None, String::new()),
+            Some(read) => match read {
+                Ok(cols) => (Some(cols), String::new()),
+                Err(SubagentsUnread::TranscriptMissing) => {
+                    (None, ", transcript missing, own tokens only".to_string())
+                }
+                Err(SubagentsUnread::Unreadable(e)) => {
+                    (None, format!(", subagents unreadable: {e}"))
+                }
+            },
         };
         db.set_worker_subagents(w.id, sub)?;
         let u = summary.usage.as_ref();
@@ -1041,6 +1096,84 @@ mod tests {
         assert_eq!(
             knobs_text(Some(&old)),
             "budget 5 flag · lanes — · factory — · claude —"
+        );
+    }
+
+    #[test]
+    fn report_knobs_renders_multi_provider_and_legacy_rows() {
+        let k = serde_json::json!({
+            "workers": {
+                "build": {"provider": "codex", "model": "gpt-5.4", "effort": "xhigh", "source": "user"},
+                "fix": {"provider": "cursor", "model": "grok-4.7-high", "effort": null, "source": "user"},
+                "checkpoint": {"provider": "claude", "model": "opus", "effort": "high", "source": "default",
+                               "provider_source": "flag"},
+                "polish": {"provider": "opencode", "model": "zai/glm-5", "effort": "", "source": "flag",
+                           "effort_source": "default"},
+            },
+            "review": {"provider": "cursor", "model": "grok-4.7-high", "source": "default"},
+            "budget": {"value": 30000000, "source": "user"},
+            "lanes": 2,
+            "factory_version": "0.1.0",
+            "provider_versions": {"codex": "codex-cli 0.172.0", "claude": "2.1.296 (Claude Code)"},
+            "claude_version": "2.1.296 (Claude Code)",
+        });
+        assert_eq!(
+            knobs_text(Some(&k)),
+            "build codex:gpt-5.4/xhigh user · fix cursor:grok-4.7-high user · \
+             checkpoint claude:opus/high default · polish opencode:zai/glm-5 flag/default · \
+             budget 30000000 user · lanes 2 · factory 0.1.0 · claude 2.1.296 · codex 0.172.0 · \
+             cursor — · opencode —"
+        );
+
+        let legacy = serde_json::json!({
+            "workers": {
+                "build": {"model": "opus", "effort": "high", "source": "default"},
+                "polish": {"model": "sonnet", "effort": "low", "source": "user"},
+            },
+            "budget": {"value": 5, "source": "flag"},
+            "lanes": 1,
+            "factory_version": "0.1.0",
+            "claude_version": "2.1.296 (Claude Code)",
+        });
+        assert_eq!(
+            knobs_text(Some(&legacy)),
+            "build opus/high default · polish sonnet/low user · budget 5 flag · lanes 1 · factory 0.1.0 · \
+             claude 2.1.296"
+        );
+
+        let none_probed =
+            serde_json::json!({"workers": {}, "provider_versions": {}, "claude_version": null});
+        assert!(knobs_text(Some(&none_probed)).ends_with(" · claude —"));
+        let probe_failed = serde_json::json!({
+            "workers": {"build": {"provider": "codex", "model": "gpt-5.4", "effort": "high", "source": "user"}},
+            "provider_versions": {},
+            "claude_version": null,
+        });
+        assert!(knobs_text(Some(&probe_failed)).ends_with(" · factory — · codex —"));
+    }
+
+    #[test]
+    fn per_worker_lines_name_the_provider_when_the_row_has_one() {
+        let row = |id, provider: Option<&str>| WorkerRow {
+            id,
+            role: "build".to_string(),
+            slice: Some(1),
+            provider: provider.map(str::to_string),
+            ..WorkerRow::default()
+        };
+        let lines: Vec<String> = per_worker(&[row(1, Some("codex")), row(2, None)], &[])
+            .iter()
+            .map(PerWorker::text)
+            .collect();
+        assert!(
+            lines[0].starts_with("worker 1 build codex slice 01:"),
+            "{}",
+            lines[0]
+        );
+        assert!(
+            lines[1].starts_with("worker 2 build slice 01:"),
+            "{}",
+            lines[1]
         );
     }
 

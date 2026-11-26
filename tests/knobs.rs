@@ -2,7 +2,7 @@
 mod harness;
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Output;
 
 use factory::db::Db;
@@ -114,6 +114,11 @@ fn the_user_config_sets_the_polish_model_and_the_row_says_so() {
     assert_eq!(knobs["lanes"], 1);
     assert!(!knobs["factory_version"].as_str().unwrap().is_empty());
     assert_eq!(knobs["claude_version"], "2.1.296 (Claude Code)");
+    assert_eq!(
+        knobs["provider_versions"],
+        json!({"claude": "2.1.296 (Claude Code)"})
+    );
+    assert_eq!(knobs["workers"]["build"]["provider"], "claude");
     assert_eq!(row.hypothesis.as_deref(), Some(HYPOTHESIS));
 
     // What answered: the stub's `init.model` after the `--model` override.
@@ -143,11 +148,11 @@ fn the_user_config_sets_the_polish_model_and_the_row_says_so() {
     };
     let knobs_line = line("knobs");
     assert!(
-        knobs_line.contains("build opus/high default"),
+        knobs_line.contains("build claude:opus/high default"),
         "{knobs_line}"
     );
     assert!(
-        knobs_line.contains("polish sonnet/high user/default"),
+        knobs_line.contains("polish claude:sonnet/high user/default"),
         "{knobs_line}"
     );
     assert!(
@@ -161,7 +166,7 @@ fn the_user_config_sets_the_polish_model_and_the_row_says_so() {
     assert!(
         report
             .lines()
-            .any(|l| l.contains(" polish ") && l.ends_with("model_id sonnet")),
+            .any(|l| l.contains(" polish claude ") && l.ends_with("model_id sonnet")),
         "{report}"
     );
 
@@ -210,4 +215,126 @@ fn a_hypothesis_is_written_once_at_creation() {
     let row = db.run_row(&id).unwrap().unwrap();
     assert_eq!(row.hypothesis.as_deref(), Some(HYPOTHESIS));
     assert_eq!(only_run_id(&fx), id);
+}
+
+/// The fixture's `PATH` with the non-Claude worker stubs and every stub but `claude`.
+fn path_without_claude(fx: &Fixture) -> String {
+    let stubs = harness::stubs_dir();
+    let bin = fx.path().parent().unwrap().join("no-claude-bin");
+    fs::create_dir_all(&bin).unwrap();
+    for e in fs::read_dir(&stubs).unwrap() {
+        let e = e.unwrap();
+        if e.file_name() != "claude" && e.file_type().unwrap().is_file() {
+            std::os::unix::fs::symlink(e.path(), bin.join(e.file_name())).unwrap();
+        }
+    }
+    // A system dir that holds a real `claude` is mirrored without it.
+    let rest: Vec<String> = fx.env()["PATH"]
+        .split(':')
+        .filter(|d| Path::new(d) != stubs)
+        .enumerate()
+        .map(|(i, d)| {
+            if !Path::new(d).join("claude").exists() {
+                return d.to_string();
+            }
+            let mirror = fx.path().parent().unwrap().join(format!("no-claude-{i}"));
+            fs::create_dir_all(&mirror).unwrap();
+            for e in fs::read_dir(d).unwrap().flatten() {
+                if e.file_name() != "claude" {
+                    let _ = std::os::unix::fs::symlink(e.path(), mirror.join(e.file_name()));
+                }
+            }
+            mirror.display().to_string()
+        })
+        .collect();
+    let path = format!(
+        "{}:{}:{}",
+        bin.display(),
+        stubs.join("workers").display(),
+        rest.join(":")
+    );
+    for d in path.split(':') {
+        assert!(!Path::new(d).join("claude").exists(), "claude in {d}");
+    }
+    path
+}
+
+#[test]
+fn codex_only_run_without_claude_on_path_records_knobs_and_reports_cleanly() {
+    let fx = Fixture::with_index("knobs-codex", &[("checkpoint_every", "10"), ("lanes", "1")]);
+    fx.chain();
+    fx.write_plan(&[
+        json!({"outcome": "done"}),
+        json!({"outcome": "done"}),
+        json!({"outcome": "done"}),
+        json!({"outcome": "checkpoint"}),
+    ]);
+    let path = path_without_claude(&fx);
+    let factory = |args: &[&str]| {
+        fx.command(BIN)
+            .args(args)
+            .env("PATH", &path)
+            .env("FACTORY_WORKER_PROVIDER", "codex")
+            .output()
+            .unwrap()
+    };
+    let out = factory(&["run", "001", "--foreground"]);
+    let err = text(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{}{err}", text(&out.stdout));
+    assert!(!err.contains("--version"), "{err}");
+    let id = only_run_id(&fx);
+    assert!(fx.calls().iter().all(|c| c["provider"] == "codex"));
+
+    let db = db(&fx);
+    let knobs: Value =
+        serde_json::from_str(db.run_row(&id).unwrap().unwrap().knobs.as_deref().unwrap()).unwrap();
+    assert_eq!(
+        knobs["provider_versions"],
+        json!({"codex": "codex stub 1.0.0"})
+    );
+    assert!(knobs["claude_version"].is_null(), "{knobs}");
+    assert_eq!(
+        knobs["workers"]["build"],
+        json!({"provider": "codex", "model": "gpt-5.4", "effort": "high", "source": "default"})
+    );
+    assert_eq!(knobs["review"]["provider"], "cursor");
+    let workers = db.workers(&id).unwrap();
+    assert!(!workers.is_empty());
+    for w in &workers {
+        assert_eq!(
+            w.provider.as_deref(),
+            Some("codex"),
+            "{} {:?}",
+            w.role,
+            w.slice
+        );
+    }
+
+    let out = factory(&["report", &id, "--per-worker"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let report = text(&out.stdout);
+    let knobs_line = report.lines().find(|l| l.starts_with("knobs: ")).unwrap();
+    assert!(
+        knobs_line.contains("build codex:gpt-5.4/high default"),
+        "{knobs_line}"
+    );
+    assert!(knobs_line.ends_with(" · codex 1.0.0"), "{knobs_line}");
+    assert!(!knobs_line.contains("claude"), "{knobs_line}");
+    let worker_lines: Vec<&str> = report
+        .lines()
+        .filter(|l| l.starts_with("worker "))
+        .collect();
+    assert_eq!(worker_lines.len(), workers.len(), "{report}");
+    for (l, w) in worker_lines.iter().zip(&workers) {
+        assert!(
+            l.starts_with(&format!("worker {} {} codex", w.id, w.role)),
+            "{l}"
+        );
+    }
+
+    let out = factory(&["report", &id, "--per-worker", "--json"]);
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["knobs"], knobs);
+    let rows = v["per_worker"].as_array().unwrap_or_else(|| panic!("{v}"));
+    assert!(rows.iter().all(|r| r["provider"] == "codex"), "{v}");
 }

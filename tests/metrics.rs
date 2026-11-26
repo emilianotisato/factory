@@ -562,12 +562,12 @@ fn ctx_calls_are_labelled_and_the_report_reads_the_reversal_rule() {
         .collect();
     // `model_id` follows `subagents`, so the head is a prefix.
     let head = format!(
-        "worker {} build slice 01 ({sid}): lookups 5, ctx_share 0.400, repeat_rate 0.000, own {} sub 0 subagents 0",
+        "worker {} build claude slice 01 ({sid}): lookups 5, ctx_share 0.400, repeat_rate 0.000, own {} sub 0 subagents 0",
         first.id,
         quota::weigh_own(first).round() as u64
     );
     assert!(per[0].starts_with(&head), "{}", per[0]);
-    assert!(per[1].contains(" build slice 02 "), "{}", per[1]);
+    assert!(per[1].contains(" build claude slice 02 "), "{}", per[1]);
     assert!(
         per[1].contains("lookups 2, ctx_share 0.000, repeat_rate 0.000, own "),
         "{}",

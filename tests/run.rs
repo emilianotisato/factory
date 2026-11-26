@@ -726,6 +726,92 @@ fn run_flag_ci_persists_across_daemon_and_resume() {
     assert_eq!(run_dirs(&fx), dirs);
 }
 
+/// A `PATH` with a `codex` on it ahead of the fixture's own.
+fn with_codex(fx: &Fixture) -> String {
+    let bin = fx.stub_dir().join("codex-bin");
+    fs::create_dir_all(&bin).unwrap();
+    fs::write(bin.join("codex"), "#!/bin/sh\nexit 0\n").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(bin.join("codex"), fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    format!("{}:{}", bin.display(), fx.env()["PATH"])
+}
+
+fn factory_on(fx: &Fixture, path: &str, args: &[&str]) -> Output {
+    let out = fx
+        .command(BIN)
+        .args(args)
+        .env("PATH", path)
+        .output()
+        .unwrap();
+    eprintln!(
+        "$ factory {}\n{}{}exit={:?}",
+        args.join(" "),
+        stdout(&out),
+        String::from_utf8_lossy(&out.stderr),
+        out.status.code()
+    );
+    out
+}
+
+#[test]
+fn run_flag_worker_persists_across_daemon_and_resume() {
+    let fx = Fixture::new("run-worker-bad-spec");
+    for spec in ["opencode", "review=claude", "cursor:grok-4.7-high:high"] {
+        let out = factory(&fx, &["run", "001", "--worker", spec]);
+        assert_eq!(out.status.code(), Some(1), "{spec}: {}", stdout(&out));
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains(&format!("--worker {spec}:")), "{err}");
+        assert!(run_dirs(&fx).is_empty(), "{spec}");
+    }
+
+    // Unchained with one lane, the run parks on a preflight ask, so a second `run` resumes it.
+    let fx = Fixture::with_index("run-worker-resume", &[("lanes", "1")]);
+    let path = with_codex(&fx);
+    let out = factory_on(
+        &fx,
+        &path,
+        &["run", "001", "--worker", "build=codex:gpt-5.4:xhigh"],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let dirs = run_dirs(&fx);
+    assert_eq!(dirs.len(), 1, "{dirs:?}");
+    let dir = &dirs[0];
+    let id = dir.file_name().unwrap().to_str().unwrap().to_string();
+    assert_eq!(state(dir)["phase"], "waiting-owner");
+    let claude = json!({"provider": "claude", "model": "opus", "effort": "high"});
+    let want = json!({
+        "build": {"provider": "codex", "model": "gpt-5.4", "effort": "xhigh"},
+        "fix": claude,
+        "checkpoint": claude,
+        "polish": claude,
+    });
+    assert_eq!(state(dir)["worker_config"], want);
+
+    let out = factory_on(&fx, &path, &["run", "001", "--worker", "claude"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        err.matches(&format!("--worker ignored: run {id} already exists"))
+            .count(),
+        1,
+        "{err}"
+    );
+    let text = stdout(&out);
+    let pid: u64 = text
+        .split("driver pid ")
+        .nth(1)
+        .and_then(|r| r.split_whitespace().next())
+        .and_then(|p| p.parse().ok())
+        .unwrap_or_else(|| panic!("no driver pid: {text}"));
+    wait_until("the detached driver to take the run", 20, || {
+        state(dir)["pid"] == pid
+    });
+    assert_eq!(state(dir)["worker_config"], want);
+    assert_eq!(run_dirs(&fx), dirs);
+}
+
 fn knobs_ci(fx: &Fixture, dir: &Path) -> Value {
     let id = dir.file_name().unwrap().to_str().unwrap();
     let db = Db::open(&data_dir(fx).join("factory.db")).unwrap();
@@ -968,6 +1054,7 @@ fn worker_ref(session: &str) -> WorkerRef {
         row_id: 1,
         spawned_at: "2026-10-10T00:00:00Z".into(),
         outcome: None,
+        provider: None,
     }
 }
 

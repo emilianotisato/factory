@@ -618,12 +618,10 @@ fn describe(id: &str, events: &[Event]) -> String {
 }
 
 fn last_rate_limit(run: &Run) -> Option<RateLimit> {
-    run.state()
-        .workers
-        .iter()
-        .rev()
-        .take(5)
-        .find_map(|w| worker::summary_from_disk(run.dir(), &w.session_id).rate_limit)
+    run.state().workers.iter().rev().take(5).find_map(|w| {
+        let provider = w.provider.unwrap_or(crate::provider::Provider::Claude);
+        worker::summary_from_disk(run.dir(), &w.session_id, provider).rate_limit
+    })
 }
 
 fn last_three(events: &[Event]) -> String {

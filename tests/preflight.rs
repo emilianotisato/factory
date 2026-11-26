@@ -586,3 +586,222 @@ fn preflight_asks_when_review_unset_and_answer_persists_or_proceeds() {
             .is_file()
     );
 }
+
+const WORKER_ASK: &str = "worker provider not set in config.toml";
+
+/// No worker provider chosen: no `FACTORY_WORKER_PROVIDER`, and whatever `config_dir` holds.
+fn no_worker(fx: &Fixture, args: &[&str], env: &[(&str, &str)]) -> (Option<i32>, String) {
+    let mut c = fx.command(BIN);
+    c.args(args).env_remove("FACTORY_WORKER_PROVIDER");
+    for (k, v) in env {
+        c.env(k, v);
+    }
+    let o = c.output().unwrap();
+    let text = String::from_utf8_lossy(&o.stdout).into_owned();
+    eprintln!(
+        "$ factory {}\n{text}{}exit={:?}",
+        args.join(" "),
+        String::from_utf8_lossy(&o.stderr),
+        o.status.code()
+    );
+    (o.status.code(), text)
+}
+
+/// Starts a run that parks on the worker ask and returns the ask's id.
+fn parked_on_worker_ask(fx: &Fixture) -> String {
+    let (code, out) = no_worker(fx, &["run", "001"], &[]);
+    assert_eq!(code, Some(0), "{out}");
+    assert_eq!(run_state(fx)["phase"], "waiting-owner", "{out}");
+    assert!(run_state(fx)["worker_config"].is_null());
+    let asks: Vec<(String, String)> = events(fx)
+        .iter()
+        .filter(|e| e["kind"] == "ask_opened")
+        .map(|e| {
+            (
+                e["id"].as_str().unwrap().to_string(),
+                e["text"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(asks.len(), 1, "{asks:?}");
+    assert!(asks[0].1.starts_with(WORKER_ASK), "{asks:?}");
+    asks[0].0.clone()
+}
+
+fn stub_bin(fx: &Fixture, name: &str) -> String {
+    let dir = fx.stub_dir().join("extra-bin");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join(name), "#!/bin/sh\nexit 0\n").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(dir.join(name), fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    format!("{}:{}", dir.display(), fx.env()["PATH"])
+}
+
+#[test]
+fn preflight_asks_when_worker_provider_unset_and_refuses_missing_binary() {
+    let other = Fixture::new("preflight-worker-unset");
+    let (code, out) = no_worker(&other, &["docs", "preflight", "001"], &[]);
+    assert_eq!(code, Some(2), "{out}");
+    let line = out
+        .lines()
+        .find(|l| l.starts_with(&format!("  ! {WORKER_ASK}")))
+        .unwrap_or_else(|| panic!("no worker ask\n{out}"));
+    for choice in [
+        "`claude`",
+        "`cursor`",
+        "`proceed` runs every role on claude",
+    ] {
+        assert!(line.contains(choice), "{choice}: {line}");
+    }
+    assert!(!out.contains("  ✓ workers:"), "{out}");
+    let (code, out) = no_worker(
+        &other,
+        &["docs", "preflight", "001"],
+        &[("FACTORY_WORKER_PROVIDER", "gemini")],
+    );
+    assert_eq!(code, Some(2), "{out}");
+    assert!(
+        out.contains("  ? FACTORY_WORKER_PROVIDER=\"gemini\" names no worker provider"),
+        "{out}"
+    );
+    let (code, out) = preflight(&other, &[]);
+    assert_eq!(code, Some(0), "{out}");
+    assert!(
+        out.contains("  ✓ workers: claude opus · high (every role)\n"),
+        "{out}"
+    );
+
+    let fx = Fixture::new("answer-worker-codex");
+    let ask = parked_on_worker_ask(&fx);
+    let log = fx.path().join(harness::FEATURE_DIR).join("log.jsonl");
+    let log_before = fs::read_to_string(&log).unwrap_or_default();
+    for bad in [
+        "bogus",
+        "build=codex",
+        "opencode",
+        "cursor:grok-4.7-high:high",
+    ] {
+        let (code, out) = no_worker(&fx, &["answer", &ask, bad], &[]);
+        assert_eq!(code, Some(1), "{bad}: {out}");
+        assert!(out.contains("`proceed`"), "{bad}: {out}");
+        assert!(!config_toml(&fx).exists(), "{bad}");
+        assert_eq!(fs::read_to_string(&log).unwrap_or_default(), log_before);
+        assert_eq!(answered(&fx), 0);
+        assert_eq!(run_state(&fx)["phase"], "waiting-owner");
+        assert!(run_state(&fx)["worker_config"].is_null());
+    }
+    let (code, out) = no_worker(&fx, &["answer", &ask, "codex:gpt-5.4:xhigh"], &[]);
+    assert_eq!(code, Some(1), "{out}");
+    assert!(
+        out.contains("worker provider codex (codex) not found on PATH"),
+        "{out}"
+    );
+    assert!(!config_toml(&fx).exists());
+    assert_eq!(run_state(&fx)["phase"], "waiting-owner");
+    let codex_path = stub_bin(&fx, "codex");
+    let (code, out) = no_worker(
+        &fx,
+        &["answer", &ask, "codex:gpt-5.4:xhigh"],
+        &[("PATH", &codex_path)],
+    );
+    assert_eq!(code, Some(0), "{out}");
+    assert!(
+        out.contains("every ask answered — the run proceeds"),
+        "{out}"
+    );
+    let saved = fs::read_to_string(config_toml(&fx)).unwrap();
+    assert!(
+        saved
+            .contains("[workers]\nprovider = \"codex\"\nmodel = \"gpt-5.4\"\neffort = \"xhigh\"\n"),
+        "{saved}"
+    );
+    let codex = json!({"provider": "codex", "model": "gpt-5.4", "effort": "xhigh"});
+    assert_eq!(
+        run_state(&fx)["worker_config"],
+        json!({"build": codex, "fix": codex, "checkpoint": codex, "polish": codex})
+    );
+    assert_eq!(answered(&fx), 1);
+
+    // The saved provider answers the next repo's preflight, which refuses it while codex is not on PATH.
+    let saved_dir = [(
+        "FACTORY_CONFIG_DIR",
+        fx.env()["FACTORY_CONFIG_DIR"].as_str(),
+    )];
+    let (code, out) = no_worker(&other, &["docs", "preflight", "001"], &saved_dir);
+    assert_eq!(code, Some(1), "{out}");
+    assert!(
+        out.contains(
+            "  ✗ worker provider codex (codex) not found on PATH — install it or run `factory setup workers`\n"
+        ),
+        "{out}"
+    );
+    assert!(!out.contains(WORKER_ASK), "{out}");
+    let (code, out) = no_worker(&other, &["run", "001"], &saved_dir);
+    assert_eq!(code, Some(1), "{out}");
+    assert!(out.contains("  ✗ worker provider codex (codex)"), "{out}");
+    assert!(!other.data_dir().join("runs").exists(), "{out}");
+    let path = stub_bin(&other, "codex");
+    let (code, out) = no_worker(
+        &other,
+        &["docs", "preflight", "001"],
+        &[saved_dir[0], ("PATH", &path)],
+    );
+    assert_eq!(code, Some(0), "{out}");
+    assert!(
+        out.contains("  ✓ workers: codex gpt-5.4 · xhigh (every role)\n"),
+        "{out}"
+    );
+
+    let opencode = Fixture::new("preflight-worker-opencode-no-model");
+    fs::write(
+        config_toml(&opencode),
+        "[workers]\nprovider = \"claude\"\n\n[workers.fix]\nprovider = \"opencode\"\n",
+    )
+    .unwrap();
+    let path = stub_bin(&opencode, "opencode");
+    let (code, out) = no_worker(&opencode, &["docs", "preflight", "001"], &[("PATH", &path)]);
+    assert_eq!(code, Some(1), "{out}");
+    assert!(
+        out.contains("  ✗ fix worker runs on opencode with no model"),
+        "{out}"
+    );
+
+    let legacy = Fixture::new("answer-worker-keeps-legacy-model");
+    fs::write(
+        config_toml(&legacy),
+        "[workers]\nmodel = \"sonnet\"\neffort = \"max\"\n",
+    )
+    .unwrap();
+    let ask = parked_on_worker_ask(&legacy);
+    let (code, out) = no_worker(&legacy, &["answer", &ask, "claude"], &[]);
+    assert_eq!(code, Some(0), "{out}");
+    assert!(
+        out.contains("workers: claude sonnet · max (every role)"),
+        "{out}"
+    );
+    let saved = fs::read_to_string(config_toml(&legacy)).unwrap();
+    assert!(
+        saved.contains("model = \"sonnet\"") && saved.contains("effort = \"max\""),
+        "{saved}"
+    );
+
+    let proceed = Fixture::new("answer-worker-proceed");
+    let ask = parked_on_worker_ask(&proceed);
+    let (code, out) = no_worker(&proceed, &["answer", &ask, "Proceed"], &[]);
+    assert_eq!(code, Some(0), "{out}");
+    assert!(out.contains("for this run only"), "{out}");
+    assert!(out.contains("driver pid "), "{out}");
+    assert!(!config_toml(&proceed).exists());
+    let claude = json!({"provider": "claude", "model": "opus", "effort": "high"});
+    assert_eq!(
+        run_state(&proceed)["worker_config"],
+        json!({"build": claude, "fix": claude, "checkpoint": claude, "polish": claude})
+    );
+    assert!(
+        run_dir(&proceed)
+            .join(format!("answers/{ask}.json"))
+            .is_file()
+    );
+}

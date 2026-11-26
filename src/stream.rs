@@ -5,6 +5,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use crate::provider::Provider;
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamEvent {
@@ -471,9 +473,591 @@ pub fn content_chars(content: Option<&Value>) -> u64 {
 }
 
 pub fn parse(text: &str) -> (Vec<StreamEvent>, Summary) {
-    let mut c = Collector::new();
-    let events = text.lines().filter_map(|l| c.push_line(l)).collect();
-    (events, c.finish())
+    parse_for(Provider::Claude, text)
+}
+
+/// Every provider's stream lands in the same `Summary`; the events are each line as a Claude stream would read it.
+pub fn parse_for(provider: Provider, text: &str) -> (Vec<StreamEvent>, Summary) {
+    let read: fn(&mut Norm, &Value, &StreamEvent) = match provider {
+        Provider::Claude => {
+            let mut c = Collector::new();
+            let events = text.lines().filter_map(|l| c.push_line(l)).collect();
+            return (events, c.finish());
+        }
+        Provider::Codex => Norm::codex,
+        Provider::Cursor => Norm::cursor,
+        Provider::Agy => Norm::agy,
+        Provider::Opencode => Norm::opencode,
+    };
+    let mut n = Norm {
+        claude: (provider == Provider::Agy).then(Collector::new),
+        ..Norm::default()
+    };
+    let (mut events, mut count, mut bad) = (Vec::new(), 0, 0);
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        let v = match serde_json::from_str::<Value>(line) {
+            Ok(v) if v.is_object() => v,
+            _ => {
+                bad += 1;
+                continue;
+            }
+        };
+        count += 1;
+        let ev = serde_json::from_value::<StreamEvent>(v.clone()).unwrap_or(StreamEvent::Unknown);
+        read(&mut n, &v, &ev);
+        events.push(ev);
+    }
+    let mut s = n.finish();
+    s.events = count;
+    s.bad_lines = bad;
+    (events, s)
+}
+
+/// A 429, a rate limit or a usage limit in an error is a rejection `quota::Limit::from` pauses on.
+pub fn detect_rate_limit(msg: &str, resets_at: Option<u64>) -> Option<RateLimit> {
+    let m = msg.to_ascii_lowercase();
+    let named = [
+        "rate limit",
+        "rate_limit",
+        "rate-limit",
+        "ratelimit",
+        "usage limit",
+        "usage_limit",
+        "too many requests",
+    ]
+    .iter()
+    .any(|p| m.contains(p));
+    let b = m.as_bytes();
+    // `src/lib.rs:429:10` is a line number, not a status.
+    let status = m.match_indices("429").any(|(i, _)| {
+        !(i > 0 && (b[i - 1].is_ascii_digit() || b[i - 1] == b':'))
+            && !b.get(i + 3).is_some_and(u8::is_ascii_digit)
+    });
+    (named || status).then(|| RateLimit {
+        status: Some("rejected".into()),
+        resets_at,
+        utilization_pct: None,
+    })
+}
+
+/// A 429 in a status field anywhere in an error event; other numbers, such as a duration, never count.
+fn status_429(v: &Value) -> bool {
+    match v {
+        Value::Object(m) => m.iter().any(|(k, v)| {
+            (matches!(
+                k.as_str(),
+                "status" | "statusCode" | "status_code" | "code" | "httpStatus" | "http_status"
+            ) && (v.as_u64() == Some(429) || v.as_str() == Some("429")))
+                || status_429(v)
+        }),
+        Value::Array(a) => a.iter().any(status_429),
+        _ => false,
+    }
+}
+
+fn resets_at(v: &Value) -> Option<u64> {
+    let Value::Object(m) = v else {
+        return None;
+    };
+    ["resets_at", "resetsAt", "reset_at", "resetAt"]
+        .iter()
+        .find_map(|k| m.get(*k).and_then(Value::as_u64))
+        .or_else(|| m.values().find_map(resets_at))
+}
+
+fn str_at<'a>(v: &'a Value, pointers: &[&str]) -> Option<&'a str> {
+    pointers
+        .iter()
+        .find_map(|p| v.pointer(p).and_then(Value::as_str))
+}
+
+fn u64_at(v: &Value, pointer: &str) -> Option<u64> {
+    v.pointer(pointer).and_then(Value::as_u64)
+}
+
+fn add(a: Option<u64>, b: Option<u64>) -> Option<u64> {
+    match (a, b) {
+        (None, None) => None,
+        _ => Some(a.unwrap_or(0).saturating_add(b.unwrap_or(0))),
+    }
+}
+
+fn add_usage(into: &mut Usage, u: &Usage) {
+    into.input_tokens = add(into.input_tokens, u.input_tokens);
+    into.cache_creation_input_tokens = add(
+        into.cache_creation_input_tokens,
+        u.cache_creation_input_tokens,
+    );
+    into.cache_read_input_tokens = add(into.cache_read_input_tokens, u.cache_read_input_tokens);
+    into.output_tokens = add(into.output_tokens, u.output_tokens);
+    if let Some(t) = u.thinking() {
+        let d = into
+            .output_tokens_details
+            .get_or_insert_with(Default::default);
+        d.thinking_tokens = add(d.thinking_tokens, Some(t));
+    }
+}
+
+/// A usage object in either casing; `None` when it names no tokens at all.
+fn usage_of(u: &Value) -> Option<Usage> {
+    let pick = |keys: &[&str]| keys.iter().find_map(|k| u.get(*k).and_then(Value::as_u64));
+    let usage = Usage {
+        input_tokens: pick(&["input_tokens", "inputTokens"]),
+        cache_creation_input_tokens: pick(&[
+            "cache_creation_input_tokens",
+            "cacheWriteTokens",
+            "cache_write_tokens",
+        ]),
+        cache_read_input_tokens: pick(&[
+            "cache_read_input_tokens",
+            "cacheReadTokens",
+            "cache_read_tokens",
+        ]),
+        output_tokens: pick(&["output_tokens", "outputTokens"]),
+        output_tokens_details: None,
+    };
+    (usage != Usage::default()).then_some(usage)
+}
+
+/// File tools carry the path where `metrics` reads a Claude one.
+fn claude_input(name: &str, mut input: Value) -> Value {
+    if matches!(name, "Read" | "Edit" | "Write")
+        && let Value::Object(m) = &mut input
+        && !m.contains_key("file_path")
+        && let Some(p) = ["filePath", "path"].iter().find_map(|k| m.get(*k).cloned())
+    {
+        m.insert("file_path".into(), p);
+    }
+    input
+}
+
+fn capitalized(name: &str) -> String {
+    let mut c = name.chars();
+    c.next()
+        .map(|f| f.to_uppercase().chain(c).collect())
+        .unwrap_or_default()
+}
+
+#[derive(Default)]
+struct Norm {
+    s: Summary,
+    /// The Claude-shaped stream's own reader, for a provider that writes one.
+    claude: Option<Collector>,
+    turns: u64,
+    /// The assistant text since the last tool call or step: the final message, never an earlier turn's narration.
+    turn: Vec<(Option<String>, String)>,
+    turn_closed: bool,
+    final_text: Option<String>,
+    error: Option<String>,
+    pending: HashMap<String, usize>,
+}
+
+impl Norm {
+    fn say(&mut self, id: Option<&str>, text: &str) {
+        if text.trim().is_empty() {
+            return;
+        }
+        if self.turn_closed {
+            self.turn.clear();
+            self.turn_closed = false;
+        }
+        match id.and_then(|id| self.turn.iter_mut().find(|(k, _)| k.as_deref() == Some(id))) {
+            Some(slot) => slot.1 = text.to_string(),
+            None => self.turn.push((id.map(str::to_string), text.to_string())),
+        }
+    }
+
+    /// The id its result is matched on: a stream that names none gets one per call.
+    fn tool(&mut self, id: &str, name: &str, input: Value) -> String {
+        self.turn_closed = true;
+        let id = match id {
+            "" => format!("call-{}", self.s.tool_uses.len()),
+            id => id.to_string(),
+        };
+        if let Some(&i) = self.pending.get(&id) {
+            let named = match &input {
+                Value::Object(m) => !m.is_empty(),
+                v => !v.is_null(),
+            };
+            if named {
+                self.s.tool_uses[i].input = claude_input(name, input);
+            }
+            return id;
+        }
+        self.pending.insert(id.clone(), self.s.tool_uses.len());
+        self.s.tool_uses.push(ToolUse {
+            id: id.clone(),
+            input: claude_input(name, input),
+            name: name.to_string(),
+            result_chars: None,
+            ts: None,
+            result_ts: None,
+            result_error: false,
+            result_head: None,
+            in_subagent: false,
+        });
+        id
+    }
+
+    fn tool_result(&mut self, id: &str, output: &Value, error: bool) {
+        let Some(&i) = self.pending.get(id) else {
+            return;
+        };
+        let t = &mut self.s.tool_uses[i];
+        t.result_chars = Some(content_chars(Some(output)));
+        t.result_error = error;
+        let head = if is_ctx_call(t) {
+            CTX_RESULT_HEAD
+        } else {
+            RESULT_HEAD
+        };
+        t.result_head = Some(content_head(Some(output), head));
+    }
+
+    fn step(&mut self, u: &Usage, context: bool) {
+        self.turns += 1;
+        self.turn_closed = true;
+        add_usage(self.s.usage.get_or_insert_with(Default::default), u);
+        if context {
+            let ctx = u.context();
+            self.s.peak_context = Some(self.s.peak_context.map_or(ctx, |p| p.max(ctx)));
+            self.s.start_context.get_or_insert(ctx);
+        }
+    }
+
+    /// A failure ends the worker the way a Claude error result does: its message, not earlier narration, is the result.
+    fn fail(&mut self, msg: &str, event: &Value) {
+        self.s.is_error = true;
+        self.s.has_result = true;
+        self.turn.clear();
+        self.final_text = None;
+        if !msg.trim().is_empty() {
+            self.error = Some(msg.to_string());
+        }
+        let limit = detect_rate_limit(msg, resets_at(event)).or_else(|| {
+            status_429(event).then(|| RateLimit {
+                status: Some("rejected".into()),
+                resets_at: resets_at(event),
+                utilization_pct: None,
+            })
+        });
+        if let Some(rl) = limit {
+            self.s.rate_limit = Some(rl);
+        }
+    }
+
+    fn init(&mut self, v: &Value) {
+        if self.s.session_id.is_none() {
+            self.s.session_id =
+                str_at(v, &["/session_id", "/sessionID", "/thread_id"]).map(str::to_string);
+        }
+        if self.s.cwd.is_none() {
+            self.s.cwd = str_at(v, &["/cwd"]).map(PathBuf::from);
+        }
+        if self.s.model_id.is_none() {
+            self.s.model_id = str_at(v, &["/model"]).map(str::to_string);
+        }
+    }
+
+    fn codex(&mut self, v: &Value, _: &StreamEvent) {
+        match str_at(v, &["/type"]).unwrap_or("") {
+            "thread.started" => self.init(v),
+            "item.completed" => {
+                let item = &v["item"];
+                let id = str_at(item, &["/id"]).unwrap_or("");
+                match str_at(item, &["/type"]).unwrap_or("") {
+                    "agent_message" => {
+                        // Each message is whole: the last one is the worker's answer.
+                        self.turn_closed = true;
+                        self.say(None, str_at(item, &["/text"]).unwrap_or(""));
+                    }
+                    "command_execution" => {
+                        let cmd = str_at(item, &["/command"]).unwrap_or("");
+                        let id = self.tool(id, "Bash", serde_json::json!({ "command": cmd }));
+                        let failed = item["exit_code"].as_i64().is_some_and(|c| c != 0)
+                            || str_at(item, &["/status"]) == Some("failed");
+                        let out = item.get("aggregated_output").unwrap_or(&Value::Null);
+                        self.tool_result(&id, out, failed);
+                    }
+                    "file_change" => {
+                        let failed = str_at(item, &["/status"]) == Some("failed");
+                        let changes = item["changes"].as_array().cloned().unwrap_or_default();
+                        for (n, change) in changes.iter().enumerate() {
+                            let path = str_at(change, &["/path"]).unwrap_or("");
+                            let input = serde_json::json!({ "file_path": path, "change": change });
+                            let call = match n {
+                                0 => id.to_string(),
+                                n => format!("{id}#{n}"),
+                            };
+                            let call = self.tool(&call, "Edit", input);
+                            self.tool_result(&call, &Value::Null, failed);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            "turn.completed" => {
+                let cached = u64_at(v, "/usage/cached_input_tokens");
+                let u = Usage {
+                    // An OpenAI input count includes its cached part; Claude's does not.
+                    input_tokens: u64_at(v, "/usage/input_tokens")
+                        .map(|i| i.saturating_sub(cached.unwrap_or(0))),
+                    cache_read_input_tokens: cached,
+                    output_tokens: u64_at(v, "/usage/output_tokens"),
+                    ..Usage::default()
+                };
+                self.step(&u, false);
+                // A completed turn outlived any error before it, such as a retried disconnect.
+                self.s.has_result = true;
+                self.s.is_error = false;
+                self.s.rate_limit = None;
+                self.error = None;
+            }
+            "turn.failed" => {
+                let msg = str_at(v, &["/error/message", "/message"]).unwrap_or("turn failed");
+                self.fail(msg, v);
+            }
+            "error" => {
+                let msg = str_at(v, &["/message", "/error/message"]).unwrap_or("error");
+                self.fail(msg, v);
+            }
+            _ => {}
+        }
+    }
+
+    fn content_blocks(&mut self, v: &Value) {
+        let Some(blocks) = v.pointer("/message/content").and_then(Value::as_array) else {
+            if let Some(text) = str_at(v, &["/message/content"]) {
+                self.say(None, text);
+            }
+            return;
+        };
+        for b in blocks {
+            match str_at(b, &["/type"]).unwrap_or("") {
+                "text" => self.say(None, str_at(b, &["/text"]).unwrap_or("")),
+                "tool_use" => {
+                    let id = str_at(b, &["/id"]).unwrap_or("");
+                    let name = str_at(b, &["/name"]).unwrap_or("");
+                    let input = b.get("input").cloned().unwrap_or(Value::Null);
+                    self.tool(id, name, input);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn cursor(&mut self, v: &Value, _: &StreamEvent) {
+        match str_at(v, &["/type"]).unwrap_or("") {
+            "system" => self.init(v),
+            "assistant" => self.content_blocks(v),
+            "user" => self.tool_results(v),
+            "tool_call" if str_at(v, &["/subtype"]) == Some("completed") => {
+                let id = str_at(v, &["/call_id", "/id"]).unwrap_or("");
+                let Some((key, call)) = v
+                    .get("tool_call")
+                    .and_then(Value::as_object)
+                    .and_then(|m| m.iter().next())
+                else {
+                    return;
+                };
+                let (name, args) = if key == "function" {
+                    let args = str_at(call, &["/arguments"])
+                        .and_then(|a| serde_json::from_str(a).ok())
+                        .unwrap_or(Value::Null);
+                    (str_at(call, &["/name"]).unwrap_or("").to_string(), args)
+                } else {
+                    let short = key.strip_suffix("ToolCall").unwrap_or(key);
+                    let name = match short {
+                        "shell" => "Bash".to_string(),
+                        "ls" => "LS".to_string(),
+                        other => capitalized(other),
+                    };
+                    (name, call.get("args").cloned().unwrap_or(Value::Null))
+                };
+                let id = self.tool(id, &name, args);
+                let result = call.get("result").unwrap_or(&Value::Null);
+                let failed = ["error", "failure", "rejected"]
+                    .iter()
+                    .any(|k| result.get(*k).is_some())
+                    || result
+                        .pointer("/success/exitCode")
+                        .and_then(Value::as_i64)
+                        .is_some_and(|c| c != 0);
+                let out = ["/success/stdout", "/success/content", "/success/output"]
+                    .iter()
+                    .find_map(|p| result.pointer(p))
+                    .unwrap_or(result);
+                self.tool_result(&id, out, failed);
+            }
+            "result" => {
+                self.s.has_result = true;
+                self.init(v);
+                self.s.duration_ms = u64_at(v, "/duration_ms");
+                if let Some(u) = v.get("usage").and_then(usage_of) {
+                    self.s.usage = Some(u);
+                }
+                let text = str_at(v, &["/result"]).unwrap_or("");
+                if !text.trim().is_empty() {
+                    self.final_text = Some(text.to_string());
+                }
+                if v["is_error"].as_bool() == Some(true) {
+                    self.fail(text, v);
+                }
+            }
+            "error" => {
+                let msg = str_at(v, &["/message", "/error/message", "/error"]).unwrap_or("error");
+                self.fail(msg, v);
+            }
+            _ => {}
+        }
+    }
+
+    fn tool_results(&mut self, v: &Value) {
+        let Some(blocks) = v.pointer("/message/content").and_then(Value::as_array) else {
+            return;
+        };
+        for b in blocks {
+            if str_at(b, &["/type"]) != Some("tool_result") {
+                continue;
+            }
+            let id = str_at(b, &["/tool_use_id"]).unwrap_or("");
+            let out = b.get("content").unwrap_or(&Value::Null);
+            self.tool_result(id, out, b["is_error"].as_bool() == Some(true));
+        }
+    }
+
+    fn agy(&mut self, v: &Value, ev: &StreamEvent) {
+        if let Some(c) = &mut self.claude {
+            c.push(ev);
+        }
+        match str_at(v, &["/type"]).unwrap_or("") {
+            "assistant" => {
+                for b in v
+                    .pointer("/message/content")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    match str_at(b, &["/type"]) {
+                        Some("text") => self.say(None, str_at(b, &["/text"]).unwrap_or("")),
+                        Some("tool_use") => self.turn_closed = true,
+                        _ => {}
+                    }
+                }
+            }
+            "result" => {
+                self.s.cost_usd = v["cost_usd"].as_f64();
+                if v["is_error"].as_bool() == Some(true) {
+                    let msg = str_at(v, &["/result", "/error/message", "/subtype"]).unwrap_or("");
+                    self.fail(msg, v);
+                }
+            }
+            "error" => {
+                let msg = str_at(v, &["/message", "/error/message", "/error"]).unwrap_or("error");
+                self.fail(msg, v);
+            }
+            _ => {}
+        }
+    }
+
+    fn opencode(&mut self, v: &Value, _: &StreamEvent) {
+        let part = &v["part"];
+        match str_at(v, &["/type"]).unwrap_or("") {
+            "text" => {
+                if self.s.session_id.is_none() {
+                    self.init(v);
+                }
+                self.say(
+                    str_at(part, &["/id"]),
+                    str_at(part, &["/text"]).unwrap_or(""),
+                );
+            }
+            "tool_use" => {
+                let id = str_at(part, &["/callID", "/id"]).unwrap_or("");
+                let name = capitalized(str_at(part, &["/tool"]).unwrap_or(""));
+                let input = part.pointer("/state/input").cloned().unwrap_or(Value::Null);
+                let id = self.tool(id, &name, input);
+                let failed = str_at(part, &["/state/status"]) == Some("error");
+                let out = ["/state/output", "/state/error"]
+                    .iter()
+                    .find_map(|p| part.pointer(p))
+                    .unwrap_or(&Value::Null);
+                self.tool_result(&id, out, failed);
+            }
+            "step_finish" => {
+                let reasoning = u64_at(part, "/tokens/reasoning");
+                let u = Usage {
+                    input_tokens: u64_at(part, "/tokens/input"),
+                    cache_creation_input_tokens: u64_at(part, "/tokens/cache/write"),
+                    cache_read_input_tokens: u64_at(part, "/tokens/cache/read"),
+                    // Reasoning rides inside output, as a Claude stream counts thinking.
+                    output_tokens: add(u64_at(part, "/tokens/output"), reasoning),
+                    output_tokens_details: reasoning.map(|r| OutputDetails {
+                        thinking_tokens: Some(r),
+                    }),
+                };
+                self.step(&u, true);
+                if str_at(part, &["/reason"]) != Some("tool-calls") {
+                    self.s.has_result = true;
+                }
+                if let Some(c) = part["cost"].as_f64() {
+                    self.s.cost_usd = Some(self.s.cost_usd.unwrap_or(0.0) + c);
+                }
+            }
+            "error" => {
+                let msg = str_at(
+                    v,
+                    &[
+                        "/error/message",
+                        "/error/data/message",
+                        "/data/message",
+                        "/message",
+                    ],
+                )
+                .unwrap_or("error");
+                self.fail(msg, v);
+            }
+            _ => {}
+        }
+    }
+
+    fn finish(mut self) -> Summary {
+        let mut s = match self.claude.take() {
+            Some(c) => {
+                let mut s = c.finish();
+                s.is_error |= self.s.is_error;
+                s.has_result |= self.s.has_result;
+                s.cost_usd = s.cost_usd.or(self.s.cost_usd);
+                if let Some(mut rl) = self.s.rate_limit.take() {
+                    rl.resets_at = rl
+                        .resets_at
+                        .or(s.rate_limit.as_ref().and_then(|r| r.resets_at));
+                    s.rate_limit = Some(rl);
+                }
+                s
+            }
+            None => {
+                let mut s = std::mem::take(&mut self.s);
+                s.num_turns = (self.turns > 0).then_some(self.turns);
+                s
+            }
+        };
+        let said = (!self.turn.is_empty()).then(|| {
+            self.turn
+                .iter()
+                .map(|(_, t)| t.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        });
+        s.result_text = s
+            .result_text
+            .filter(|t| !t.trim().is_empty())
+            .or(self.final_text)
+            .or(said)
+            .or(self.error);
+        s.status_hint = s.result_text.as_deref().and_then(StatusHint::from_result);
+        s
+    }
 }
 
 #[cfg(test)]
@@ -581,5 +1165,274 @@ mod tests {
         let (_, s) = parse(&text);
         assert_eq!(s.model_id.as_deref(), Some("claude-opus-x"));
         assert_eq!(parse("").1.model_id, None);
+    }
+
+    const FINAL: &str =
+        "Built it.\nSTATUS: done\nFINDINGS: high=1 medium=0 low=2 fixed=1 parked=0\nBLOCK: none";
+
+    fn fixture(provider: Provider, last: &str) -> String {
+        let last = serde_json::to_string(last).unwrap();
+        let early =
+            serde_json::to_string("Looking around.\nSTATUS: failed if the build breaks").unwrap();
+        let lines = match provider {
+            Provider::Claude => vec![
+                r#"{"type":"system","subtype":"init","cwd":"/x/lane-2","session_id":"s1"}"#.to_string(),
+                r#"{"type":"assistant","message":{"id":"m1","model":"claude-x","content":[{"type":"text","text":"Running tests"},{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"cargo test"}}],"usage":{"input_tokens":10,"output_tokens":5}}}"#.to_string(),
+                r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}"#.to_string(),
+                format!(r#"{{"type":"result","is_error":false,"result":{last},"usage":{{"input_tokens":10,"cache_read_input_tokens":100,"output_tokens":5}}}}"#),
+            ],
+            Provider::Codex => vec![
+                r#"{"type":"thread.started","thread_id":"th1"}"#.to_string(),
+                r#"{"type":"turn.started"}"#.to_string(),
+                format!(r#"{{"type":"item.completed","item":{{"id":"i0","type":"agent_message","text":{early}}}}}"#),
+                r#"{"type":"item.started","item":{"id":"i1","type":"command_execution","command":"cargo test","status":"in_progress"}}"#.to_string(),
+                r#"{"type":"item.completed","item":{"id":"i1","type":"command_execution","command":"cargo test","aggregated_output":"test result: ok","exit_code":0,"status":"completed"}}"#.to_string(),
+                r#"{"type":"item.completed","item":{"id":"i2","type":"file_change","changes":[{"path":"src/a.rs","kind":"update"}],"status":"completed"}}"#.to_string(),
+                r#"{"type":"item.completed","item":{"id":"i3","type":"reasoning","text":"thinking"}}"#.to_string(),
+                format!(r#"{{"type":"item.completed","item":{{"id":"i4","type":"agent_message","text":{last}}}}}"#),
+                r#"{"type":"turn.completed","usage":{"input_tokens":1000,"cached_input_tokens":800,"output_tokens":50}}"#.to_string(),
+            ],
+            Provider::Cursor => vec![
+                r#"{"type":"system","subtype":"init","cwd":"/x/lane-2","session_id":"c1","model":"gpt-5"}"#.to_string(),
+                format!(r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":{early}}}]}}}}"#),
+                r#"{"type":"tool_call","subtype":"started","call_id":"c-1","tool_call":{"shellToolCall":{"args":{"command":"cargo test"}}}}"#.to_string(),
+                r#"{"type":"tool_call","subtype":"completed","call_id":"c-1","tool_call":{"shellToolCall":{"args":{"command":"cargo test"},"result":{"success":{"stdout":"test result: ok","exitCode":0}}}}}"#.to_string(),
+                r#"{"type":"tool_call","subtype":"completed","call_id":"c-2","tool_call":{"editToolCall":{"args":{"path":"src/a.rs"},"result":{"success":{}}}}}"#.to_string(),
+                format!(r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":{last}}}]}}}}"#),
+                format!(r#"{{"type":"result","subtype":"success","is_error":false,"duration_ms":1200,"result":{last},"session_id":"c1","usage":{{"inputTokens":40,"outputTokens":7,"cacheReadTokens":300}}}}"#),
+            ],
+            Provider::Agy => vec![
+                r#"{"type":"system","subtype":"init","cwd":"/x/lane-2","session_id":"a1"}"#.to_string(),
+                format!(r#"{{"type":"assistant","message":{{"id":"m1","model":"gemini-x","content":[{{"type":"text","text":{early}}},{{"type":"tool_use","id":"t1","name":"Bash","input":{{"command":"cargo test"}}}}],"usage":{{"input_tokens":10,"output_tokens":5}}}}}}"#),
+                r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"test result: ok"}]}}"#.to_string(),
+                format!(r#"{{"type":"assistant","message":{{"id":"m2","model":"gemini-x","content":[{{"type":"text","text":{last}}}],"usage":{{"input_tokens":12,"output_tokens":9}}}}}}"#),
+                format!(r#"{{"type":"result","is_error":false,"duration_ms":900,"result":{last},"cost_usd":0.03,"usage":{{"input_tokens":22,"output_tokens":14}}}}"#),
+            ],
+            Provider::Opencode => vec![
+                r#"{"type":"step_start","sessionID":"o1","part":{"type":"step-start"}}"#.to_string(),
+                format!(r#"{{"type":"text","sessionID":"o1","part":{{"id":"p1","type":"text","text":{early}}}}}"#),
+                r#"{"type":"tool_use","part":{"id":"p2","callID":"call_1","tool":"bash","state":{"status":"completed","input":{"command":"cargo test"},"output":"test result: ok"}}}"#.to_string(),
+                r#"{"type":"tool_use","part":{"id":"p3","callID":"call_2","tool":"read","state":{"status":"error","input":{"filePath":"src/b.rs"},"error":"no such file"}}}"#.to_string(),
+                r#"{"type":"step_finish","part":{"tokens":{"input":10,"output":5,"reasoning":2,"cache":{"read":100,"write":20}},"cost":0.01}}"#.to_string(),
+                r#"{"type":"step_start","part":{"type":"step-start"}}"#.to_string(),
+                format!(r#"{{"type":"text","part":{{"id":"p4","type":"text","text":{last}}}}}"#),
+                r#"{"type":"step_finish","part":{"tokens":{"input":3,"output":4,"reasoning":0,"cache":{"read":120,"write":0}},"cost":0.02}}"#.to_string(),
+            ],
+        };
+        let mut lines = lines;
+        lines.insert(1, r#"{"type":"brand_new_kind","x":{"y":1}}"#.to_string());
+        lines.insert(2, "not json at all".to_string());
+        lines.join("\n")
+    }
+
+    fn rate_limited(provider: Provider) -> String {
+        match provider {
+            Provider::Claude => unreachable!("Claude reports its own rate_limit_event"),
+            Provider::Codex => [
+                r#"{"type":"thread.started","thread_id":"th1"}"#,
+                r#"{"type":"item.completed","item":{"id":"i0","type":"agent_message","text":"Working on it"}}"#,
+                r#"{"type":"error","message":"exceeded retry limit, last status: 429 Too Many Requests"}"#,
+                r#"{"type":"turn.failed","error":{"message":"stream disconnected before completion"}}"#,
+            ]
+            .join("\n"),
+            Provider::Cursor => [
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Working on it"}]}}"#,
+                r#"{"type":"result","subtype":"error","is_error":true,"duration_ms":10,"result":"HTTP 429: Too Many Requests"}"#,
+            ]
+            .join("\n"),
+            Provider::Agy => [
+                r#"{"type":"assistant","message":{"id":"m1","content":[{"type":"text","text":"Working on it"}]}}"#,
+                r#"{"type":"result","subtype":"error_during_execution","is_error":true,"result":"RESOURCE_EXHAUSTED (429)","error":{"resets_at":1791592200}}"#,
+            ]
+            .join("\n"),
+            Provider::Opencode => [
+                r#"{"type":"text","part":{"id":"p1","type":"text","text":"Working on it"}}"#,
+                r#"{"type":"error","error":{"name":"APIError","data":{"message":"Provider returned error","statusCode":429,"isRetryable":true}}}"#,
+            ]
+            .join("\n"),
+        }
+    }
+
+    #[test]
+    fn stream_normalizers_parse_status_findings_usage_and_rate_limits_for_all_five_providers() {
+        let findings = Findings {
+            high: 1,
+            medium: 0,
+            low: 2,
+            fixed: 1,
+            parked: 0,
+        };
+        for p in Provider::ALL {
+            let (events, s) = parse_for(p, &fixture(p, FINAL));
+            let who = p.as_str();
+            assert!(s.has_result, "{who}");
+            assert!(!s.is_error, "{who}");
+            assert_eq!(s.status_hint, Some(StatusHint::Done), "{who}");
+            let text = s.result_text.as_deref().unwrap();
+            assert_eq!(Findings::from_result(text), Some(findings), "{who}");
+            let usage = s.usage.as_ref().expect(who);
+            assert!(usage.output_tokens.unwrap_or(0) > 0, "{who}");
+            assert!(!s.tool_uses.is_empty(), "{who}");
+            assert_eq!(s.tool_uses[0].name, "Bash", "{who}");
+            assert_eq!(s.tool_uses[0].input["command"], "cargo test", "{who}");
+            assert!(s.tool_uses[0].result_chars.is_some(), "{who}");
+            assert_eq!(s.bad_lines, 1, "{who}");
+            assert_eq!(s.events, events.len(), "{who}");
+            assert_eq!(crate::quota::Limit::from(&s), None, "{who}");
+
+            let blocked = FINAL.replace("STATUS: done", "STATUS: blocked");
+            let (_, s) = parse_for(p, &fixture(p, &blocked));
+            assert_eq!(s.status_hint, Some(StatusHint::Blocked), "{who}");
+        }
+
+        let (_, codex) = parse_for(Provider::Codex, &fixture(Provider::Codex, FINAL));
+        let u = codex.usage.unwrap();
+        assert_eq!(
+            (u.input_tokens, u.cache_read_input_tokens, u.output_tokens),
+            (Some(200), Some(800), Some(50))
+        );
+        assert_eq!(codex.num_turns, Some(1));
+        assert_eq!(codex.session_id.as_deref(), Some("th1"));
+        let names: Vec<_> = codex.tool_uses.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["Bash", "Edit"]);
+        assert_eq!(codex.tool_uses[1].input["file_path"], "src/a.rs");
+
+        let (_, cursor) = parse_for(Provider::Cursor, &fixture(Provider::Cursor, FINAL));
+        assert_eq!(cursor.duration_ms, Some(1200));
+        assert_eq!(cursor.model_id.as_deref(), Some("gpt-5"));
+        assert_eq!(cursor.usage.unwrap().cache_read_input_tokens, Some(300));
+        assert_eq!(cursor.tool_uses[1].input["file_path"], "src/a.rs");
+
+        let (_, agy) = parse_for(Provider::Agy, &fixture(Provider::Agy, FINAL));
+        assert_eq!(agy.model_id.as_deref(), Some("gemini-x"));
+        assert_eq!(agy.cost_usd, Some(0.03));
+        assert_eq!(agy.tool_uses[0].result_chars, Some(15));
+
+        let (_, oc) = parse_for(Provider::Opencode, &fixture(Provider::Opencode, FINAL));
+        let u = oc.usage.unwrap();
+        assert_eq!(
+            (
+                u.input_tokens,
+                u.cache_read_input_tokens,
+                u.cache_creation_input_tokens
+            ),
+            (Some(13), Some(220), Some(20))
+        );
+        assert_eq!((u.output_tokens, u.thinking()), (Some(11), Some(2)));
+        assert_eq!(oc.num_turns, Some(2));
+        assert!((oc.cost_usd.unwrap() - 0.03).abs() < 1e-9);
+        assert!(oc.tool_uses[1].result_error);
+        assert_eq!(oc.tool_uses[1].name, "Read");
+        assert_eq!(oc.tool_uses[1].input["file_path"], "src/b.rs");
+
+        for p in [
+            Provider::Codex,
+            Provider::Cursor,
+            Provider::Agy,
+            Provider::Opencode,
+        ] {
+            let who = p.as_str();
+            let (_, s) = parse_for(p, &rate_limited(p));
+            assert!(s.has_result && s.is_error, "{who}");
+            let rl = s.rate_limit.as_ref().expect(who);
+            assert_eq!(rl.status.as_deref(), Some("rejected"), "{who}");
+            assert!(s.result_text.is_some(), "{who}");
+            assert!(crate::quota::Limit::from(&s).is_some(), "{who}");
+        }
+        let (_, agy) = parse_for(Provider::Agy, &rate_limited(Provider::Agy));
+        assert_eq!(
+            crate::quota::Limit::from(&agy).unwrap().until,
+            Some(1_791_592_200)
+        );
+    }
+
+    #[test]
+    fn a_worker_killed_mid_narration_is_dead() {
+        let codex = [
+            r#"{"type":"thread.started","thread_id":"th1"}"#,
+            r#"{"type":"item.completed","item":{"id":"i0","type":"agent_message","text":"Running tests"}}"#,
+        ]
+        .join("\n");
+        assert!(parse_for(Provider::Codex, &codex).1.is_dead());
+        let opencode = [
+            r#"{"type":"text","part":{"id":"p1","type":"text","text":"Running tests"}}"#,
+            r#"{"type":"step_finish","part":{"reason":"tool-calls","tokens":{"input":1,"output":1}}}"#,
+        ]
+        .join("\n");
+        assert!(parse_for(Provider::Opencode, &opencode).1.is_dead());
+    }
+
+    #[test]
+    fn a_failure_outranks_earlier_narration_and_a_completed_turn_outranks_a_retry() {
+        let done = serde_json::to_string(FINAL).unwrap();
+        let failed = [
+            format!(r#"{{"type":"item.completed","item":{{"id":"i0","type":"agent_message","text":{done}}}}}"#),
+            r#"{"type":"turn.failed","error":{"message":"429 Too Many Requests"}}"#.to_string(),
+        ]
+        .join("\n");
+        let (_, s) = parse_for(Provider::Codex, &failed);
+        assert_eq!(s.status_hint, None);
+        assert!(crate::quota::Limit::from(&s).is_some());
+
+        let retried = [
+            r#"{"type":"error","message":"Reconnecting... 1/5 (429 Too Many Requests)"}"#.to_string(),
+            r#"{"type":"item.completed","item":{"id":"i0","type":"agent_message","text":"STATUS: failed if the build breaks"}}"#.to_string(),
+            format!(r#"{{"type":"item.completed","item":{{"id":"i1","type":"agent_message","text":{done}}}}}"#),
+            r#"{"type":"turn.completed","usage":{"input_tokens":5,"output_tokens":1}}"#.to_string(),
+        ]
+        .join("\n");
+        let (_, s) = parse_for(Provider::Codex, &retried);
+        assert!(!s.is_error && s.rate_limit.is_none());
+        assert_eq!(s.status_hint, Some(StatusHint::Done));
+    }
+
+    #[test]
+    fn a_tool_call_updated_under_its_id_keeps_its_last_input() {
+        let opencode = [
+            r#"{"type":"tool_use","part":{"callID":"c1","tool":"bash","state":{"status":"pending","input":{}}}}"#,
+            r#"{"type":"tool_use","part":{"callID":"c1","tool":"bash","state":{"status":"completed","input":{"command":"cargo test"},"output":"ok"}}}"#,
+        ]
+        .join("\n");
+        let (_, s) = parse_for(Provider::Opencode, &opencode);
+        assert_eq!(s.tool_uses.len(), 1);
+        assert_eq!(s.tool_uses[0].input["command"], "cargo test");
+
+        let codex = r#"{"type":"item.completed","item":{"id":"i1","type":"file_change","changes":[{"path":"src/a.rs"},{"path":"src/b.rs"}],"status":"completed"}}"#;
+        let (_, s) = parse_for(Provider::Codex, codex);
+        let paths: Vec<_> = s.tool_uses.iter().map(|t| &t.input["file_path"]).collect();
+        assert_eq!(paths, ["src/a.rs", "src/b.rs"]);
+    }
+
+    #[test]
+    fn an_agy_usage_limit_keeps_the_reset_its_rate_limit_event_named() {
+        let agy = [
+            r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1791592200}}"#,
+            r#"{"type":"result","is_error":true,"result":"You've hit your usage limit"}"#,
+        ]
+        .join("\n");
+        let (_, s) = parse_for(Provider::Agy, &agy);
+        assert_eq!(s.rate_limit.unwrap().resets_at, Some(1_791_592_200));
+    }
+
+    #[test]
+    fn only_an_error_naming_a_limit_is_a_rate_limit() {
+        assert!(detect_rate_limit("Usage Limit reached", None).is_some());
+        assert!(detect_rate_limit("status 429", Some(5)).unwrap().resets_at == Some(5));
+        assert!(detect_rate_limit("rate_limit_exceeded", None).is_some());
+        assert!(detect_rate_limit("line 14290 failed", None).is_none());
+        assert!(detect_rate_limit("compile error", None).is_none());
+        assert!(detect_rate_limit("rustc: src/lib.rs:429:10 mismatched types", None).is_none());
+        let (_, s) = parse_for(
+            Provider::Cursor,
+            r#"{"type":"result","is_error":true,"duration_ms":429,"result":"sandbox denied"}"#,
+        );
+        assert!(s.rate_limit.is_none());
+        let (_, s) = parse_for(
+            Provider::Codex,
+            r#"{"type":"turn.failed","error":{"message":"sandbox denied"}}"#,
+        );
+        assert!(s.has_result && s.is_error && s.rate_limit.is_none());
+        assert_eq!(s.result_text.as_deref(), Some("sandbox denied"));
+        assert_eq!(crate::quota::Limit::from(&s), None);
     }
 }

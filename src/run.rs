@@ -7,11 +7,11 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::CiMode;
+use crate::config::{CiMode, ResolvedWorkers};
 use crate::db::Db;
 use crate::error::{io, json};
 use crate::events::{self, Event, EventKind};
-use crate::provider::ReviewProvider;
+use crate::provider::{Provider, ReviewProvider};
 use crate::{Error, Result, clock, paths};
 
 pub const STATE_FILE: &str = "state.json";
@@ -131,6 +131,9 @@ pub struct RunState {
     /// Set by a `proceed` or `none` answer to the reviewer ask; wins over `config.toml` for this run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_override: Option<ReviewProvider>,
+    /// Every role's worker, fixed when the run starts or its worker ask is answered; `config.toml` edits never reach it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_config: Option<ResolvedWorkers>,
 }
 
 impl RunState {
@@ -158,6 +161,8 @@ pub struct WorkerRef {
     pub row_id: i64,
     pub spawned_at: String,
     pub outcome: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<Provider>,
 }
 
 impl WorkerRef {
@@ -277,6 +282,7 @@ impl Run {
             lane_bases: BTreeMap::new(),
             ci_mode: None,
             review_override: None,
+            worker_config: None,
         };
         write_state(&dir, &state)?;
         fs::write(dir.join(events::FILE), "")
@@ -386,6 +392,10 @@ impl Run {
 
     pub fn set_review_override(&mut self, v: Option<ReviewProvider>) -> Result<()> {
         self.update(|s| s.review_override = v)
+    }
+
+    pub fn set_worker_config(&mut self, w: Option<ResolvedWorkers>) -> Result<()> {
+        self.update(|s| s.worker_config = w)
     }
 
     pub fn request_stop(&mut self) -> Result<()> {
