@@ -39,3 +39,31 @@ Nothing in this branch argues for lowering an existing gate tier. The memcap def
 ## Score
 
 4/5 — checkpoints and mutation catches were strong; polish still had to fix a shipping memcap math bug the gate green-lit because the test mirrored the mistake.
+
+## Numbers
+
+<!-- factory:numbers -->
+| role | workers | own | subagents | weighted | minutes | turns |
+|---|---:|---:|---:|---:|---:|---:|
+| build | 4 | 2376062 | — | 2376062 | 46 | — |
+| checkpoint | 2 | 420513 | — | 420513 | 6 | — |
+| polish | 1 | 396145 | — | 396145 | 10 | — |
+| total | 7 | 3192721 | — | 3192721 | 62 | — |
+
+Knobs: build cursor:composer-2.5 user/default · fix cursor:composer-2.5 user/default · checkpoint cursor:composer-2.5 user/default · polish cursor:composer-2.5 user/default · budget 30000000 default · lanes 4 · factory 0.17.0 · cursor 2026.11.22-e9042b2
+
+Hypothesis: none
+
+quality: gate_red 0 · worker_gate_red 0 · fix_commits 0 · ci_red_rounds 0 · ci_reruns 0 · findings high=1 medium=6 low=5 fixed=12 parked=2 · decisions 2 decide 0 blocks 2
+
+Pack (build): slice 12584 · prd_sections 9414 · log 480 · outline 11854 · lookup 1115 · contract 3685 · autonomy 10282 · inner_loop 86 · total 49499 · start_context —
+
+Compared with:
+
+| run | feature | weighted | slices | per slice | lines changed | per line | comment share | id hits |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 020-20261126-3c05 (this run) | 020 | 3192721 | 4 | 798180 | 3476 | 919 | 0.4% | 0 |
+| 022-20261126-a09f | 022 | 2872907 | 3 | 957636 | 2330 | 1233 | 0.3% | 0 |
+| 019-20261126-eafc | 019 | 3022280 | 3 | 1007427 | 1673 | 1807 | 0.1% | 0 |
+| 027-20261125-904f | 027 | 7178094 | 4 | 1794524 | 5173 | 1388 | 2.9% | 0 |
+<!-- /factory:numbers -->
