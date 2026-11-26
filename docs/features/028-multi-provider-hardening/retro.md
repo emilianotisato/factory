@@ -43,3 +43,31 @@ Written by `/deliver` in the closeout commit, from the agent's side of the run.
 ## Score
 
 Second opinion and checkpoint mutation were worth it; owner still owes two `authorized_tests` lines before the next run on this branch.
+
+## Numbers
+
+<!-- factory:numbers -->
+| role | workers | own | subagents | weighted | minutes | turns |
+|---|---:|---:|---:|---:|---:|---:|
+| build | 4 | 3617106 | — | 3617106 | 52 | — |
+| checkpoint | 2 | 295645 | — | 295645 | 4 | — |
+| polish | 1 | 277683 | — | 277683 | 7 | — |
+| total | 7 | 4190434 | — | 4190434 | 63 | — |
+
+Knobs: build cursor:composer-2.5 user/default · fix cursor:composer-2.5 user/default · checkpoint cursor:composer-2.5 user/default · polish cursor:composer-2.5 user/default · budget 30000000 default · lanes 4 · factory 0.17.0 · cursor 2026.11.22-e9042b2
+
+Hypothesis: none
+
+quality: gate_red 0 · worker_gate_red 0 · fix_commits 0 · ci_red_rounds 0 · ci_reruns 0 · findings high=1 medium=2 low=6 fixed=8 parked=4 · decisions 1 decide 1 blocks 1
+
+Pack (build): slice 11011 · prd_sections 5231 · log 423 · outline 10514 · lookup 1115 · contract 3685 · autonomy 10282 · inner_loop 86 · total 42346 · start_context —
+
+Compared with:
+
+| run | feature | weighted | slices | per slice | lines changed | per line | comment share | id hits |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 028-20261126-93f3 (this run) | 028 | 4190434 | 4 | 1047609 | 2374 | 1765 | 0.8% | 0 |
+| 022-20261126-a09f | 022 | 2872907 | 3 | 957636 | 2330 | 1233 | 0.3% | 0 |
+| 020-20261126-3c05 | 020 | 3192721 | 4 | 798180 | 3476 | 919 | 0.4% | 0 |
+| 019-20261126-eafc | 019 | 3022280 | 3 | 1007427 | 1673 | 1807 | 0.1% | 0 |
+<!-- /factory:numbers -->
