@@ -3,7 +3,7 @@
 **Source**: [`prd.md`](prd.md) → §5 (FR-3). **Depends on**: — _(independent; lands first so Slice 02 reuses the expanded `GH_TOKEN_VARS`)_
 **Created**: 2026-11-26
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**: cp-1/FR-3/transcript.txt
 
 **Slice**: Closes all three `dec-2` PATH-shim bypasses in worker spawn env: strips `GITHUB_PERSONAL_ACCESS_TOKEN` alongside the existing GitHub token vars, injects `help.autocorrect=0` into `push_off_env`, and introduces `push_off_env_for_repo(&cwd, ...)` wired into `Worker::spawn` to emit full-URL `pushInsteadOf` rules for every `remote.*.url` (beating shorter user `pushInsteadOf` prefixes by git's longest-match rule) plus `insteadOf` rules for every explicit `remote.*.pushurl`. Leaves reviewer isolation to Slice 02.
 

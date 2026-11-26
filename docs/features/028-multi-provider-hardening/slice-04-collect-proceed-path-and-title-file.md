@@ -3,7 +3,7 @@
 **Source**: [`prd.md`](prd.md) → §6 (FR-4). **Depends on**: Slice 03 _(both edit `src/docs/preflight.rs`)_
 **Created**: 2026-11-26
 
-**Progress**: Built reviewer-tagged collect, `skipped_by_proceed`, preflight config warnings, PATH-order `detect_installed_in` + `X_OK`, `docs log add --title-file`, `tests/collect_and_provider.rs`, polish SKILL + 0.18.0 bundle/cockpit bump. Inner loop: 5 runs, 3 red, ~12 min — clippy `then_some`, `skills_bundle` exact passage after first SKILL rewrite, transient cockpit `factory` version before `cargo build --bin factory`. Deliberate red: `reusable_for` stub `false` → `collect_reuse_…` failed on matching `(head, reviewer)`.
+**Progress**: Built reviewer-tagged collect, `skipped_by_proceed`, preflight config warnings, PATH-order `detect_installed_in` + `X_OK`, `docs log add --title-file`, `tests/collect_and_provider.rs`, polish SKILL + 0.18.0 bundle/cockpit bump. Inner loop: 5 runs, 3 red, ~12 min — clippy `then_some`, `skills_bundle` exact passage after first SKILL rewrite, transient cockpit `factory` version before `cargo build --bin factory`. Deliberate red: `reusable_for` stub `false` → `collect_reuse_…` failed on matching `(head, reviewer)`. cp-1/FR-4/transcript.txt
 
 **Slice**: Stamps `collect.md` with `<!-- reviewer: <tag> -->` and wires `collect::reusable_for` into `closeout::collected` so mid-run `[review]` switches never reuse a stale vendor's collect; distinguishes `proceed` skips from `disabled in config` (aligning `skills/polish/SKILL.md:65` and bumping crate/bundle/cockpit version `0.17.0` → `0.18.0`); surfaces `loaded.warnings` in `preflight::cli`; sorts `provider::detect_installed_in` by `PATH` order with `libc::access(X_OK)`; and adds `--title-file` on `factory docs log add`.
 

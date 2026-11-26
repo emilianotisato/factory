@@ -3,7 +3,7 @@
 **Source**: [`prd.md`](prd.md) → §3 (FR-1). **Depends on**: — _(independent of Slices 01–02; lands before Slice 04 because both edit `src/docs/preflight.rs`)_
 **Created**: 2026-11-26
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**: cp-1/FR-1/transcript.txt
 
 **Slice**: Clears stale `model`/`effort` on provider-less `[workers.<role>]` tables whenever `[workers] provider` switches (via `factory setup workers`, the setup wizard, or `factory answer ASK-n`), validates resolved worker model/effort in `preflight::worker_refusals` (and warns on bad `[review]` in `preflight::second_opinion`), and fixes `workers_step` default bracketing + repeated role edits, `config::role_sources` under `FACTORY_WORKER_PROVIDER` with `--worker`, and `setup --show` role spacing (`  {role:<12}`).
 
