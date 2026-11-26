@@ -192,6 +192,16 @@ impl Workers {
         }
     }
 
+    pub(crate) fn role_mut(&mut self, role: &str) -> Option<&mut Worker> {
+        match role {
+            "build" => Some(&mut self.build),
+            "fix" => Some(&mut self.fix),
+            "checkpoint" => Some(&mut self.checkpoint),
+            "polish" => Some(&mut self.polish),
+            _ => None,
+        }
+    }
+
     /// A role that switches provider never inherits the `[workers]` model or effort: slugs are provider-specific.
     pub fn resolved(
         &self,
@@ -511,6 +521,116 @@ pub fn worker_knobs(
     Value::Object(out)
 }
 
+/// Patches that drop provider-less role `model`/`effort` overrides after `[workers] provider` switches.
+pub fn stale_role_clears(
+    loaded: &Loaded,
+    env_provider: Option<Provider>,
+    new_provider: Provider,
+) -> Vec<Patch> {
+    let prev = loaded
+        .config
+        .workers
+        .provider
+        .or(env_provider)
+        .unwrap_or(Provider::Claude);
+    if new_provider == prev {
+        return Vec::new();
+    }
+    let w = &loaded.config.workers;
+    let mut out = Vec::new();
+    for role in ROLE_KEYS {
+        let Some(worker) = w.role(role) else {
+            continue;
+        };
+        if worker.provider.is_some() {
+            continue;
+        }
+        let Some(set) = loaded.sources.workers.role(role) else {
+            continue;
+        };
+        if set.model != Source::Default {
+            out.push(Patch {
+                table: format!("workers.{role}"),
+                key: "model".into(),
+                value: None,
+            });
+        }
+        if set.effort != Source::Default {
+            out.push(Patch {
+                table: format!("workers.{role}"),
+                key: "effort".into(),
+                value: None,
+            });
+        }
+    }
+    out
+}
+
+/// Applies stale-clear patches on `loaded` so in-memory resolution matches the disk patches.
+pub fn clear_stale_roles_in_memory(loaded: &mut Loaded, clears: &[Patch]) {
+    apply_worker_patches(loaded, clears);
+}
+
+/// Applies worker-table patches onto a loaded config without touching disk.
+pub fn apply_worker_patches(loaded: &mut Loaded, patches: &[Patch]) {
+    for p in patches {
+        if p.table == "workers" {
+            match p.key.as_str() {
+                "provider" => loaded.config.workers.provider = patch_provider(p),
+                "model" => loaded.config.workers.model = patch_string(p),
+                "effort" => loaded.config.workers.effort = patch_string(p),
+                _ => {}
+            }
+            continue;
+        }
+        let Some(role) = p.table.strip_prefix("workers.") else {
+            continue;
+        };
+        let Some(worker) = loaded.config.workers.role_mut(role) else {
+            continue;
+        };
+        let Some(set) = loaded.sources.workers.role_mut(role) else {
+            continue;
+        };
+        match p.key.as_str() {
+            "provider" => worker.provider = patch_provider(p),
+            "model" => {
+                if let Some(v) = patch_string(p) {
+                    worker.model = v;
+                    set.model = Source::User;
+                } else {
+                    worker.model = DEFAULT_MODEL.into();
+                    set.model = Source::Default;
+                }
+            }
+            "effort" => {
+                if let Some(v) = patch_string(p) {
+                    worker.effort = v;
+                    set.effort = Source::User;
+                } else {
+                    worker.effort = DEFAULT_EFFORT.into();
+                    set.effort = Source::Default;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn patch_provider(p: &Patch) -> Option<Provider> {
+    p.value
+        .as_ref()
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse().ok())
+}
+
+fn patch_string(p: &Patch) -> Option<String> {
+    p.value
+        .as_ref()
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
 /// Where a resolved role's provider, model and effort came from. A layer counts only when it holds the value the
 /// role resolved to, so a `FACTORY_WORKER_PROVIDER` the sources cannot see is never mistaken for a file's.
 fn role_sources(
@@ -523,6 +643,9 @@ fn role_sources(
     let (Some(worker), Some(set)) = (w.role(role), loaded.sources.workers.role(role)) else {
         return (Source::Default, Source::Default, Source::Default);
     };
+    let env_provider = std::env::var(WORKER_PROVIDER_ENV)
+        .ok()
+        .and_then(|v| v.trim().parse::<Provider>().ok());
     let spec = specs
         .iter()
         .rev()
@@ -537,7 +660,7 @@ fn role_sources(
     } else {
         Source::Default
     };
-    let own = spec.is_none() || worker.provider.or(w.provider) == Some(r.provider);
+    let own = spec.is_none() || worker.provider.or(w.provider).or(env_provider) == Some(r.provider);
     let inherits = w.provider.is_none_or(|p| p == r.provider);
     let pick = |flag: bool, set: Source, own_value: &str, default: Option<&String>, value: &str| {
         if flag {
@@ -1056,6 +1179,16 @@ impl RoleSources {
         }
     }
 
+    pub(crate) fn role_mut(&mut self, role: &str) -> Option<&mut WorkerSources> {
+        match role {
+            "build" => Some(&mut self.build),
+            "fix" => Some(&mut self.fix),
+            "checkpoint" => Some(&mut self.checkpoint),
+            "polish" => Some(&mut self.polish),
+            _ => None,
+        }
+    }
+
     fn each_mut(&mut self) -> [(&'static str, &mut WorkerSources); 4] {
         [
             ("build", &mut self.build),
@@ -1157,7 +1290,14 @@ fn unknown_keys(table: &toml::Table, top: &[&str]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Mutex, OnceLock};
+
     use super::*;
+
+    fn env_test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     /// Every role on Claude, as `FACTORY_WORKER_PROVIDER=claude` gives.
     fn knobs_of(l: &Loaded, lanes: Option<u32>, versions: &[(Provider, &str)]) -> Value {
@@ -1953,6 +2093,53 @@ mod tests {
         let (cfg, _) = dirs(Some("[workers]\nprovider = \"opencode\"\n"), None);
         let (got, _) = resolve_workers_from(&load(cfg.path()).unwrap(), &[], None);
         assert_eq!(got.unwrap().build, rw(Provider::Opencode, "", None));
+    }
+
+    #[test]
+    fn stale_role_clears_drops_provider_less_slugs_on_switch() {
+        let (cfg, _) = dirs(
+            Some(
+                "[workers]\nprovider = \"claude\"\n\n[workers.build]\nmodel = \"sonnet\"\neffort = \"low\"\n\n\
+                 [workers.fix]\nprovider = \"claude\"\nmodel = \"opus\"\n",
+            ),
+            None,
+        );
+        let l = load(cfg.path()).unwrap();
+        let patches = stale_role_clears(&l, None, Provider::Codex);
+        assert!(
+            patches
+                .iter()
+                .any(|p| p.table == "workers.build" && p.key == "model")
+        );
+        assert!(
+            patches
+                .iter()
+                .any(|p| p.table == "workers.build" && p.key == "effort")
+        );
+        assert!(patches.iter().all(|p| p.table != "workers.fix"));
+        assert!(stale_role_clears(&l, None, Provider::Claude).is_empty());
+        let (cfg, _) = dirs(Some("[workers.build]\nmodel = \"sonnet\"\n"), None);
+        let bare = load(cfg.path()).unwrap();
+        assert!(stale_role_clears(&bare, Some(Provider::Codex), Provider::Codex).is_empty());
+    }
+
+    #[test]
+    fn role_sources_treats_env_provider_as_own_under_a_worker_spec() {
+        let _guard = env_test_lock().lock().unwrap();
+        // SAFETY: serialized with `env_test_lock`; removed before return.
+        unsafe { std::env::set_var(WORKER_PROVIDER_ENV, "claude") };
+        let (cfg, _) = dirs(Some("[workers.build]\nmodel = \"sonnet\"\n"), None);
+        let l = load(cfg.path()).unwrap();
+        assert_eq!(
+            std::env::var(WORKER_PROVIDER_ENV).ok().as_deref(),
+            Some("claude")
+        );
+        assert_eq!(l.sources.workers.build.model, Source::User);
+        let specs = [spec("claude")];
+        let resolved = resolve_workers(&l, &specs).0.unwrap();
+        let (_, model, _) = role_sources(&l, "build", resolved.for_role("build"), &specs);
+        assert_eq!(model, Source::User, "{model:?}");
+        unsafe { std::env::remove_var(WORKER_PROVIDER_ENV) };
     }
 
     #[test]

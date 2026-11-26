@@ -381,6 +381,21 @@ pub fn second_opinion(loaded: &config::Loaded, pf: &mut Preflight) {
         pf.ok.push(format!("second opinion: disabled ({source})"));
         return;
     }
+    if let ReviewProvider::Provider(p) = cfg.provider {
+        if !cfg.model.is_empty() && !provider::is_model_name(&cfg.model) {
+            pf.judge.push(format!(
+                "review model {:?} is not a valid model id — run `factory setup review --model <m>`",
+                cfg.model
+            ));
+        }
+        if let Some(e) = &cfg.effort
+            && (p.effort_levels().is_empty() || !p.effort_levels().contains(&e.as_str()))
+        {
+            pf.judge.push(format!(
+                "review effort {e:?} is not valid for {p} — run `factory setup review`"
+            ));
+        }
+    }
     let probed = review::new_log_dir(&paths::data_dir())
         .map_err(|e| e.to_string())
         .and_then(|dir| {
@@ -499,6 +514,20 @@ pub fn worker_refusals(resolved: &config::ResolvedWorkers) -> Vec<String> {
         if w.model.is_empty() {
             refused.push(format!(
                 "{role} worker runs on {} with no model — set one with `factory setup workers --role {role} --model <m>`",
+                w.provider
+            ));
+        } else if !provider::is_model_name(&w.model) {
+            refused.push(format!(
+                "{role} worker model {:?} is not a valid model id — set one with `factory setup workers --role {role} --model <m>`",
+                w.model
+            ));
+        }
+        if let Some(e) = &w.effort
+            && (w.provider.effort_levels().is_empty()
+                || !w.provider.effort_levels().contains(&e.as_str()))
+        {
+            refused.push(format!(
+                "{role} worker effort {e:?} is not valid for {} — set one with `factory setup workers --role {role}`",
                 w.provider
             ));
         }

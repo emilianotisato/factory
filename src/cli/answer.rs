@@ -515,19 +515,24 @@ fn worker_answer(run: &mut Run, id: &str, text: &str, out: &mut dyn Write) -> Re
     };
     let config_dir = paths::config_dir();
     let mut planned = config::load(&config_dir)?;
-    let table = &mut planned.config.workers;
     // The ask fires only while `[workers]` names no provider, and such a table holds Claude's model and effort.
     let (model, effort) = match p {
         Provider::Claude => (
-            model.or_else(|| table.model.clone()),
-            effort.or_else(|| table.effort.clone()),
+            model.or_else(|| planned.config.workers.model.clone()),
+            effort.or_else(|| planned.config.workers.effort.clone()),
         ),
         _ => (model, effort),
     };
     let model = model.unwrap_or_else(|| p.default_model().to_string());
+    let env_provider = std::env::var(config::WORKER_PROVIDER_ENV)
+        .ok()
+        .and_then(|v| v.trim().parse::<Provider>().ok());
+    let clears = config::stale_role_clears(&planned, env_provider, p);
+    let table = &mut planned.config.workers;
     table.provider = Some(p);
     table.model = Some(model.clone());
     table.effort = effort.clone();
+    config::clear_stale_roles_in_memory(&mut planned, &clears);
     let Some(resolved) = config::resolve_workers(&planned, &[]).0 else {
         return Err(Error::Msg(format!(
             "[workers] provider {p} leaves a role with no provider"
@@ -548,14 +553,13 @@ fn worker_answer(run: &mut Run, id: &str, text: &str, out: &mut dyn Write) -> Re
         key: key.into(),
         value: v.map(|v| toml::Value::String(v.into())),
     };
-    let path = config::patch(
-        &config_dir,
-        &[
-            set("provider", Some(p.as_str())),
-            set("model", Some(&model)),
-            set("effort", effort.as_deref()),
-        ],
-    )?;
+    let mut patches = vec![
+        set("provider", Some(p.as_str())),
+        set("model", Some(&model)),
+        set("effort", effort.as_deref()),
+    ];
+    patches.extend(clears.iter().cloned());
+    let path = config::patch(&config_dir, &patches)?;
     let loaded = config::load(&config_dir)?;
     run.set_worker_config(Some(resolved.clone()))?;
     super::run::set_worker_knobs(run, Some(&loaded), out)?;
@@ -566,6 +570,9 @@ fn worker_answer(run: &mut Run, id: &str, text: &str, out: &mut dyn Write) -> Re
         path.display()
     )
     .map_err(io("stdout"))?;
+    for e in &clears {
+        writeln!(out, "  [{}] {} removed", e.table, e.key).map_err(io("stdout"))?;
+    }
     Ok(true)
 }
 

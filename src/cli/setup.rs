@@ -473,7 +473,14 @@ fn worker_flags(
         Some(p) => Answer::Set(p.as_str().to_string()),
         None => Answer::Keep,
     };
-    Ok(worker_edits(&now, answer, p, model, effort))
+    let env_provider = std::env::var(config::WORKER_PROVIDER_ENV)
+        .ok()
+        .and_then(|v| v.trim().parse::<Provider>().ok());
+    let mut edits = worker_edits(&now, answer, p, model, effort);
+    if role.is_none() && provider.is_some() {
+        edits.extend(config::stale_role_clears(loaded, env_provider, p));
+    }
+    Ok(edits)
 }
 
 fn review_flags(
@@ -652,7 +659,7 @@ fn show(env: &Env, as_json: bool, out: &mut dyn Write) -> Result<i32> {
         format!("workers     {}", worker(&v["workers"]["default"])),
     ];
     for role in ROLES {
-        lines.push(format!("  {role:<10}{}", worker(&v["workers"][role])));
+        lines.push(format!("  {role:<12}{}", worker(&v["workers"][role])));
     }
     let r = &v["review"];
     let mut review = s(&r["provider"]);
@@ -879,9 +886,15 @@ fn workers_step(
     env: &Env,
 ) -> Result<Vec<Patch>> {
     q.say("\nWorkers — the agent CLI, model and effort unattended workers run with")?;
+    let env_provider = std::env::var(config::WORKER_PROVIDER_ENV)
+        .ok()
+        .and_then(|v| v.trim().parse::<Provider>().ok());
+    let mut working = loaded.clone();
     let now = table_now(loaded, WorkerRole::Default);
     let suggested = now
         .own_provider
+        .or(env_provider)
+        .or_else(|| (now.model.is_some() || now.effort.is_some()).then_some(Provider::Claude))
         .or_else(|| detected.first().map(|d| d.provider));
     q.say("Provider:")?;
     let a = q.pick(
@@ -919,6 +932,8 @@ fn workers_step(
         false,
     )?;
     let mut edits = worker_edits(&now, provider, p, model, effort);
+    edits.extend(config::stale_role_clears(loaded, env_provider, p));
+    config::apply_worker_patches(&mut working, &edits);
     if !q.yes(
         "Override any role (build, fix, checkpoint, polish) with a different provider/model/effort? [y/N]",
     )? {
@@ -941,7 +956,7 @@ fn workers_step(
             continue;
         };
         let name = &role.table()["workers.".len()..];
-        let now = table_now(loaded, role);
+        let now = table_now(&working, role);
         q.say(&format!("{name} provider:"))?;
         let provider = q.pick(
             &provider_options(detected),
@@ -960,9 +975,24 @@ fn workers_step(
         let model = model_pick(q, rp, env, Some(shown), true)?;
         let shown = now.effort.as_deref().filter(|_| same).unwrap_or("inherit");
         let effort = effort_pick(q, &format!("{name} effort:"), rp, Some(shown), true)?;
-        edits.extend(worker_edits(&now, provider, rp, model, effort));
+        let role_edits = worker_edits(&now, provider, rp, model, effort);
+        for patch in role_edits.clone() {
+            replace_patch(&mut edits, patch);
+        }
+        config::apply_worker_patches(&mut working, &role_edits);
     }
     Ok(edits)
+}
+
+fn replace_patch(edits: &mut Vec<Patch>, patch: Patch) {
+    if let Some(i) = edits
+        .iter()
+        .position(|e| e.table == patch.table && e.key == patch.key)
+    {
+        edits[i] = patch;
+    } else {
+        edits.push(patch);
+    }
 }
 
 /// The CLI's own model list when it is on `PATH` and lists quickly, the curated one otherwise; with no `shown` value
