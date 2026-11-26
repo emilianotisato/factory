@@ -165,8 +165,10 @@ enum LogVerb {
         feature: String,
         #[arg(long, value_enum)]
         kind: log::Kind,
-        #[arg(long)]
-        title: String,
+        #[arg(long, conflicts_with = "title_file")]
+        title: Option<String>,
+        #[arg(long, conflicts_with = "title")]
+        title_file: Option<String>,
         /// The slice it belongs to; for a checkpoint, the last one it covers
         #[arg(long)]
         slice: Option<u32>,
@@ -402,6 +404,7 @@ fn dispatch(root: &Path, verb: Verb, out: &mut dyn Write, err: &mut dyn Write) -
                 feature,
                 kind,
                 title,
+                title_file,
                 slice,
                 flag,
                 reference,
@@ -410,6 +413,7 @@ fn dispatch(root: &Path, verb: Verb, out: &mut dyn Write, err: &mut dyn Write) -
                 covers,
                 body_file,
             } => {
+                let title = resolve_log_title(title.as_deref(), title_file.as_deref(), &body_file)?;
                 let body = match body_file.as_deref() {
                     None => String::new(),
                     Some(p) => read_body(p)?,
@@ -502,6 +506,36 @@ fn read_body(spec: &str) -> Result<String> {
         return Ok(b);
     }
     std::fs::read_to_string(spec).map_err(io(format!("read {spec}")))
+}
+
+fn resolve_log_title(
+    title: Option<&str>,
+    title_file: Option<&str>,
+    body_file: &Option<String>,
+) -> Result<String> {
+    match (title, title_file) {
+        (Some(t), None) => Ok(t.to_string()),
+        (None, Some(p)) => {
+            if p == "-" && body_file.as_deref() == Some("-") {
+                return Err(Error::Msg(
+                    "cannot read --title-file and --body-file both from stdin".into(),
+                ));
+            }
+            let raw = read_body(p)?;
+            let t = raw.trim();
+            if t.is_empty() {
+                return Err(Error::Msg("--title-file is empty after trimming".into()));
+            }
+            if t.contains('\n') {
+                return Err(Error::Msg("--title-file must be a single line".into()));
+            }
+            Ok(t.to_string())
+        }
+        (None, None) => Err(Error::Msg(
+            "one of --title or --title-file is required".into(),
+        )),
+        (Some(_), Some(_)) => unreachable!("clap rejects both --title and --title-file"),
+    }
 }
 
 fn idea(root: &Path, action: IdeaVerb, out: &mut dyn Write, err: &mut dyn Write) -> Result<()> {

@@ -587,6 +587,9 @@ pub fn cli(root: &Path, reference: &str, as_json: bool, out: &mut dyn Write) -> 
     let (mut pf, _) = run(root, reference)?;
     match config::load(&paths::config_dir()) {
         Ok(loaded) => {
+            for w in &loaded.warnings {
+                pf.judge.push(format!("config.toml: {w}"));
+            }
             workers(&loaded, &[], &mut pf);
             second_opinion(&loaded, &mut pf);
             ci_mode(&loaded, None, &mut pf);

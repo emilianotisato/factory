@@ -408,7 +408,7 @@ fn collected(
 ) -> Result<String> {
     if let Ok(head) = ci::head(lane_dir)
         && let Ok(text) = fs::read_to_string(file)
-        && collect::reusable(&text, &head)
+        && collect::reusable_for(&text, &head, review)
     {
         say(
             out,
@@ -431,10 +431,14 @@ fn collected(
     // Read from disk: `emit` holds `run`, and `factory stop` writes from another process.
     let run_dir = run.dir().to_path_buf();
     let stopped = move || crate::run::load_state(&run_dir).is_ok_and(|s| s.stop_requested);
+    let skipped_by_proceed = run.state().review_override == Some(ReviewProvider::None)
+        && config::load(&paths::config_dir())
+            .is_ok_and(|l| l.config.review.provider != Some(ReviewProvider::None));
     let opts = collect::Options {
         since: since.as_deref(),
         feature: Some(&feature),
         cancel: Some(&stopped),
+        skipped_by_proceed,
         ..collect::Options::new(base)
     };
     let started = Instant::now();
@@ -2823,6 +2827,7 @@ mod tests {
         let head = repo_on_main(&lane);
         let file = tmp.path().join(COLLECT_FILE);
         let cfg = ResolvedReview::from(&config::Review::default());
+        let reviewer = collect::reviewer_tag(&cfg);
         let mut run = Run::create(&tmp.path().join("data"), &lane, "001", None, 1).unwrap();
         for (plan, reused) in [
             (
@@ -2838,7 +2843,13 @@ mod tests {
                 false,
             ),
         ] {
-            fs::write(&file, format!("<!-- head: {head} -->\n\n## Plan\n\n{plan}")).unwrap();
+            fs::write(
+                &file,
+                format!(
+                    "<!-- head: {head} -->\n<!-- reviewer: {reviewer} -->\n\n## Plan\n\n{plan}"
+                ),
+            )
+            .unwrap();
             let mut out = Vec::new();
             collected(&mut run, &lane, "main", &cfg, &file, &mut out).unwrap();
             let log = String::from_utf8(out).unwrap();
