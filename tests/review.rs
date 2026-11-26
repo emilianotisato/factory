@@ -1181,9 +1181,10 @@ const path = require('node:path')
 const name = path.basename(process.argv[1])
 const argv = process.argv.slice(2)
 const stdin = argv[argv.length - 1] === '-' ? fs.readFileSync(0, 'utf8') : null
+const token = (k) => process.env[k] ?? null
 fs.appendFileSync(
   path.join(process.env.FACTORY_STUB_DIR, `${name}.calls`),
-  `${JSON.stringify({ argv, stdin, claudecode: process.env.CLAUDECODE ?? null, entry: process.env.CLAUDE_CODE_ENTRYPOINT ?? null })}\n`,
+  `${JSON.stringify({ argv, stdin, claudecode: process.env.CLAUDECODE ?? null, entry: process.env.CLAUDE_CODE_ENTRYPOINT ?? null, gh_token: token('GH_TOKEN'), github_token: token('GITHUB_TOKEN'), github_pat: token('GITHUB_PERSONAL_ACCESS_TOKEN'), opencode_cfg: process.env.OPENCODE_CONFIG_CONTENT ?? null })}\n`,
 )
 const say = (v) => process.stdout.write(`${JSON.stringify(v)}\n`)
 const found = `FINDING ${name}: a:1 breaks on empty input`
@@ -1277,6 +1278,7 @@ fn review_second_runs_all_five_providers_and_none_mode() {
                 "--stream-partial-output",
                 "--model",
                 "m-cursor",
+                "--",
             ]),
         ),
         (
@@ -1296,6 +1298,9 @@ fn review_second_runs_all_five_providers_and_none_mode() {
                 "Read,Grep,Glob",
                 "--model",
                 "m-claude",
+                "--setting-sources",
+                "user",
+                "--strict-mcp-config",
                 "--effort",
                 "max",
                 "--add-dir",
@@ -1340,6 +1345,7 @@ fn review_second_runs_all_five_providers_and_none_mode() {
                 "low",
                 "--add-dir",
                 "<log>",
+                "--",
             ]),
         ),
         (
@@ -1357,6 +1363,7 @@ fn review_second_runs_all_five_providers_and_none_mode() {
                 "plan",
                 "-m",
                 "prov/m-opencode#medium",
+                "--",
             ]),
         ),
     ] {
@@ -1407,7 +1414,9 @@ fn review_second_runs_all_five_providers_and_none_mode() {
                 .collect();
             let mut flags = flags.clone();
             if provider == "opencode" && mode == "diff" {
+                let end = flags.pop().expect("prompt guard");
                 flags.extend(s(&["-f", "<diff>"]));
+                flags.push(end);
             }
             let prompt = if provider == "codex" {
                 assert_eq!(pass, flags, "{provider} {mode}");
@@ -1424,10 +1433,12 @@ fn review_second_runs_all_five_providers_and_none_mode() {
                     "{provider}: {prompt}"
                 ),
             }
-            let scrubbed = provider == "claude";
             for call in &calls {
                 for var in ["claudecode", "entry"] {
-                    assert_eq!(call[var].is_null(), scrubbed, "{provider} {var}");
+                    assert!(call[var].is_null(), "{provider} {var}");
+                }
+                for var in ["gh_token", "github_token", "github_pat"] {
+                    assert!(call[var].is_null(), "{provider} {var}");
                 }
             }
         }
@@ -1490,6 +1501,135 @@ fn review_second_runs_all_five_providers_and_none_mode() {
         "{}",
         stdout(&o)
     );
+    assert_eq!(logs(&reviews), before);
+}
+
+#[test]
+fn review_second_isolates_all_five_providers_and_supports_dry_run() {
+    let fx = branch("review-isolate", 20, &[("a", 100), ("b", 80)]);
+    let stubs = provider_stubs(&fx);
+    let path = format!("{}:{}", stubs.display(), fx.env()["PATH"]);
+    let cfg = PathBuf::from(&fx.env()["FACTORY_CONFIG_DIR"]).join("config.toml");
+    let doc = format!("{}/prd.md", harness::FEATURE_DIR);
+    let reviews = PathBuf::from(&fx.env()["FACTORY_DATA_DIR"]).join("reviews");
+    let logs = |d: &PathBuf| fs::read_dir(d).map_or(0, |r| r.count());
+    let deny = |v: &Value| {
+        assert_eq!(v["edit"], "deny");
+        assert_eq!(v["bash"], "deny");
+        assert_eq!(v["webfetch"], "deny");
+        assert_eq!(v["task"], "deny");
+    };
+    let run = |args: &[&str]| {
+        fx.command(BIN)
+            .args(["review", "second"])
+            .args(args)
+            .env("PATH", &path)
+            .env("GH_TOKEN", "secret")
+            .env("GITHUB_TOKEN", "secret")
+            .env("GITHUB_PERSONAL_ACCESS_TOKEN", "secret")
+            .env("CLAUDECODE", "1")
+            .env("CLAUDE_CODE_ENTRYPOINT", "cli")
+            .output()
+            .unwrap()
+    };
+    let s = |v: &[&str]| v.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+    for (provider, bin, model, effort) in [
+        ("cursor", "cursor-agent", "m-cursor", None),
+        ("claude", "claude", "m-claude", Some("max")),
+        ("codex", "codex", "m-codex", Some("xhigh")),
+        ("agy", "agy", "m-agy", Some("low")),
+        ("opencode", "opencode", "prov/m-opencode", Some("medium")),
+    ] {
+        let effort_line = effort.map_or(String::new(), |e| format!("effort = \"{e}\"\n"));
+        fs::write(
+            &cfg,
+            format!(
+                "[review]\nprovider = \"{provider}\"\nmodel = \"{model}\"\n{effort_line}timeout_secs = 20\n"
+            ),
+        )
+        .unwrap();
+        let o = run(&["--doc", &doc, "--prompt", "-check this"]);
+        assert_eq!(o.status.code(), Some(0), "{}", stdout(&o));
+        let calls = provider_calls(&fx, bin);
+        assert_eq!(calls.len(), 2, "{provider}");
+        for call in &calls {
+            for var in [
+                "claudecode",
+                "entry",
+                "gh_token",
+                "github_token",
+                "github_pat",
+            ] {
+                assert!(call[var].is_null(), "{provider} {var}");
+            }
+        }
+        let pass_argv = argv(&calls[1]);
+        if provider != "codex" {
+            let pos = pass_argv
+                .iter()
+                .position(|a| a == "--")
+                .expect("prompt guard: {provider}");
+            assert!(
+                pass_argv[pos + 1].starts_with("-check this"),
+                "{provider} {pass_argv:?}"
+            );
+        } else {
+            let prompt = calls[1]["stdin"].as_str().unwrap();
+            assert!(prompt.starts_with("-check this"), "{provider}");
+        }
+        if provider == "claude" {
+            assert!(
+                pass_argv
+                    .windows(3)
+                    .any(|w| w == ["--setting-sources", "user", "--strict-mcp-config"]),
+                "{pass_argv:?}"
+            );
+        }
+        if provider == "opencode" {
+            let cfg_json: Value =
+                serde_json::from_str(calls[1]["opencode_cfg"].as_str().unwrap()).unwrap();
+            deny(&cfg_json["permission"]);
+            deny(&cfg_json["agent"]["plan"]["permission"]);
+        }
+    }
+
+    fs::write(
+        &cfg,
+        "[review]\nprovider = \"claude\"\nmodel = \"m-claude\"\neffort = \"max\"\ntimeout_secs = 20\n",
+    )
+    .unwrap();
+    let before = logs(&reviews);
+    for (args, want_diff) in [
+        (s(&["--doc", &doc, "--prompt", "hi", "--dry-run"]), false),
+        (s(&["--diff", "main", "--dry-run"]), true),
+    ] {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let o = run(&args);
+        let out = stdout(&o);
+        assert_eq!(o.status.code(), Some(0), "{out}");
+        assert!(out.starts_with("review second dry-run\n"), "{out}");
+        assert!(out.contains("provider: claude\n"), "{out}");
+        assert!(out.contains("command: claude "), "{out}");
+        assert!(
+            out.contains(" --setting-sources user --strict-mcp-config "),
+            "{out}"
+        );
+        assert!(out.contains("env-remove:\n"), "{out}");
+        for k in [
+            "GH_TOKEN",
+            "GITHUB_TOKEN",
+            "GITHUB_PERSONAL_ACCESS_TOKEN",
+            "CLAUDECODE",
+        ] {
+            assert!(out.contains(&format!("  {k}\n")), "{out}");
+        }
+        if want_diff {
+            assert!(out.contains("review-1.diff"), "{out}");
+        }
+        for bin in ["claude", "codex", "cursor-agent", "agy", "opencode"] {
+            assert!(provider_calls(&fx, bin).is_empty(), "{bin}");
+        }
+    }
     assert_eq!(logs(&reviews), before);
 }
 

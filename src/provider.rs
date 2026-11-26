@@ -1,7 +1,9 @@
 //! The agent CLIs factory knows: their binaries, models and effort levels.
-use std::ffi::OsStr;
+use std::ffi::{CString, OsStr};
 use std::fs::File;
 use std::io::{Read as _, Seek as _, SeekFrom};
+use std::os::unix::ffi::OsStrExt;
+#[cfg(any(test, not(unix)))]
 use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
@@ -245,17 +247,43 @@ pub fn resolve_binary(provider: Provider) -> Option<PathBuf> {
 }
 
 /// `metadata` follows symlinks, so a linked binary counts as the file it points at.
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|m| m.is_file())
+        && CString::new(path.as_os_str().as_bytes())
+            .is_ok_and(|c| unsafe { libc::access(c.as_ptr(), libc::X_OK) == 0 })
+}
+
+#[cfg(not(unix))]
 fn is_executable(path: &Path) -> bool {
     std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
 pub fn detect_installed_in(path_env: &OsStr) -> Vec<Detected> {
-    Provider::ALL
-        .into_iter()
-        .filter_map(|provider| {
-            resolve_binary_in(provider, path_env).map(|binary| Detected { provider, binary })
-        })
-        .collect()
+    let dirs: Vec<PathBuf> = std::env::split_paths(path_env)
+        .filter(|d| !d.as_os_str().is_empty())
+        .collect();
+    let mut hits: Vec<(usize, usize, Detected)> = Vec::new();
+    for (provider_rank, provider) in Provider::ALL.iter().enumerate() {
+        let found = dirs.iter().enumerate().find_map(|(dir_index, dir)| {
+            provider.binaries().iter().find_map(|name| {
+                let path = dir.join(name);
+                is_executable(&path).then_some((dir_index, path))
+            })
+        });
+        if let Some((dir_index, binary)) = found {
+            hits.push((
+                dir_index,
+                provider_rank,
+                Detected {
+                    provider: *provider,
+                    binary,
+                },
+            ));
+        }
+    }
+    hits.sort_by_key(|(d, r, _)| (*d, *r));
+    hits.into_iter().map(|(_, _, det)| det).collect()
 }
 
 pub fn detect_installed() -> Vec<Detected> {

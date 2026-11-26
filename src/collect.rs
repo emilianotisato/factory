@@ -22,11 +22,28 @@ pub const LOCAL_ONLY_LINES: u64 = 50;
 const FALLBACK_OWED: &str = "fallback owed";
 /// The `second opinion:` state when the owner turned it off: nothing is owed.
 const DISABLED: &str = "skipped (disabled in config)";
+/// The `second opinion:` state when the owner answered `proceed` for this run only.
+const PROCEED: &str = "skipped (proceed for this run)";
 /// The leaks `verdict:` when the scan errored.
 const DID_NOT_RUN: &str = "did not run";
 
 fn head_line(head: &str) -> String {
     format!("<!-- head: {head} -->")
+}
+
+fn reviewer_line(cfg: &ResolvedReview) -> String {
+    format!("<!-- reviewer: {} -->", reviewer_tag(cfg))
+}
+
+/// The tag stored on line 2 of a collect file for `reusable_for`.
+pub fn reviewer_tag(cfg: &ResolvedReview) -> String {
+    match cfg.provider {
+        ReviewProvider::None => "none".into(),
+        ReviewProvider::Provider(p) => match &cfg.effort {
+            Some(e) => format!("{}:{}:{}", p, cfg.model, e),
+            None => format!("{}:{}", p, cfg.model),
+        },
+    }
 }
 
 /// Whether a collected `text` may stand in for a fresh collect at `head`. A file from another HEAD reviewed other
@@ -36,6 +53,11 @@ pub fn reusable(text: &str, head: &str) -> bool {
         && !text.contains(&format!("\nsecond opinion: {FALLBACK_OWED}"))
         && !text.contains(&format!("\nverdict: {DID_NOT_RUN}"))
         && !text.contains(&format!("\n{}", review::STOPPED))
+}
+
+/// Whether `text` may stand in for a fresh collect at `head` for this reviewer.
+pub fn reusable_for(text: &str, head: &str, review: &ResolvedReview) -> bool {
+    reusable(text, head) && text.lines().nth(1) == Some(reviewer_line(review).as_str())
 }
 
 /// A collected `text`'s pass count and review log dir, from its second opinion's pass headings and `log:` line.
@@ -71,6 +93,8 @@ pub struct Options<'a> {
     pub feature: Option<&'a str>,
     /// Kills the second opinion's running reviewers when it fires.
     pub cancel: Cancel<'a>,
+    /// The owner answered `proceed` for this run while config still names a reviewer.
+    pub skipped_by_proceed: bool,
 }
 
 impl<'a> Options<'a> {
@@ -80,6 +104,7 @@ impl<'a> Options<'a> {
             since: None,
             feature: None,
             cancel: None,
+            skipped_by_proceed: false,
         }
     }
 
@@ -118,10 +143,17 @@ pub fn collect(
                 dir: None,
             })?;
         }
-        (
-            DISABLED.to_string(),
-            format!("skipped: {}\n", review::DISABLED),
-        )
+        if opts.skipped_by_proceed {
+            (
+                PROCEED.to_string(),
+                "skipped: second opinion skipped for this run (proceed)\n".into(),
+            )
+        } else {
+            (
+                DISABLED.to_string(),
+                format!("skipped: {}\n", review::DISABLED),
+            )
+        }
     } else if second {
         let settled = opts.feature.and_then(|f| settled::for_feature(root, f));
         let reviewing = Reviewing {
@@ -176,8 +208,9 @@ pub fn collect(
     }
     plan.push_str(&skip.lines());
     Ok(format!(
-        "{}\n\n## Plan\n\n{plan}size: {size}\nsecond opinion: {state}\n\n## Leaks\n\n{leaks}\n## Second opinion\n\n{opinion}",
-        head_line(&head)
+        "{}\n{}\n\n## Plan\n\n{plan}size: {size}\nsecond opinion: {state}\n\n## Leaks\n\n{leaks}\n## Second opinion\n\n{opinion}",
+        head_line(&head),
+        reviewer_line(cfg),
     ))
 }
 

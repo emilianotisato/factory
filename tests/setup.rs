@@ -459,7 +459,7 @@ fn setup_workers_configures_mixed_roles() {
     assert_eq!(v["polish"]["provider_source"], "user");
     let o = dirs.factory(&["setup", "--show"]);
     assert!(
-        text(&o.stdout).contains("  fix       cursor grok-4.7-high ("),
+        text(&o.stdout).contains("  fix         cursor grok-4.7-high ("),
         "{}",
         text(&o.stdout)
     );
@@ -551,5 +551,176 @@ fn setup_workers_configures_mixed_roles() {
     assert_eq!(
         worker(&v, "polish"),
         want("opencode", "ollama/llama3:8b", Some("high"))
+    );
+}
+
+#[path = "harness/mod.rs"]
+mod harness;
+
+use factory::docs::preflight::WORKER_ASK_PREFIX;
+use harness::Fixture;
+
+fn config_toml(fx: &Fixture) -> PathBuf {
+    PathBuf::from(&fx.env()["FACTORY_CONFIG_DIR"]).join("config.toml")
+}
+
+fn run_state(fx: &Fixture) -> Value {
+    let runs = PathBuf::from(&fx.env()["FACTORY_DATA_DIR"]).join("runs");
+    let dir = fs::read_dir(&runs).unwrap().next().unwrap().unwrap().path();
+    serde_json::from_str(&fs::read_to_string(dir.join("state.json")).unwrap()).unwrap()
+}
+
+fn harness_events(fx: &Fixture) -> Vec<Value> {
+    let runs = PathBuf::from(&fx.env()["FACTORY_DATA_DIR"]).join("runs");
+    let dir = fs::read_dir(&runs).unwrap().next().unwrap().unwrap().path();
+    fs::read_to_string(dir.join("events.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).expect(l))
+        .collect()
+}
+
+fn stub_bin(fx: &Fixture, name: &str) -> String {
+    let dir = fx.stub_dir().join("extra-bin");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join(name), "#!/bin/sh\nexit 0\n").unwrap();
+    fs::set_permissions(dir.join(name), fs::Permissions::from_mode(0o755)).unwrap();
+    format!("{}:{}", dir.display(), fx.env()["PATH"])
+}
+
+fn parked_on_worker_ask(fx: &Fixture) -> String {
+    let mut c = fx.command(BIN);
+    c.args(["run", "001"]).env_remove("FACTORY_WORKER_PROVIDER");
+    let o = c.output().unwrap();
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{out}");
+    assert_eq!(run_state(fx)["phase"], "waiting-owner");
+    let ask = harness_events(fx)
+        .into_iter()
+        .find(|e| e["kind"] == "ask_opened")
+        .expect("ask");
+    assert!(ask["text"].as_str().unwrap().starts_with(WORKER_ASK_PREFIX));
+    ask["id"].as_str().unwrap().to_string()
+}
+
+fn factory_out(fx: &Fixture, args: &[&str], env: &[(&str, &str)]) -> Output {
+    let mut c = fx.command(BIN);
+    c.args(args).env_remove("FACTORY_WORKER_PROVIDER");
+    for (k, v) in env {
+        c.env(k, v);
+    }
+    c.output().unwrap()
+}
+
+#[test]
+fn provider_switch_clears_stale_role_slugs_and_preflight_refuses_bad_config() {
+    let dirs = Dirs::new(&["codex", "claude", "cursor-agent"]);
+    fs::write(
+        dirs.config_file(),
+        "[workers]\nprovider = \"claude\"\n\n[workers.build]\nmodel = \"sonnet\"\n",
+    )
+    .unwrap();
+    let o = dirs.factory(&["setup", "workers", "--provider", "codex"]);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
+    assert!(
+        text(&o.stdout).contains("[workers.build] model removed"),
+        "{}",
+        text(&o.stdout)
+    );
+    assert_eq!(get(&dirs.config(), &["workers", "build", "model"]), None);
+    let v = show_workers(&dirs);
+    assert_eq!(worker(&v, "build"), want("codex", "gpt-5.4", Some("high")));
+
+    let dirs2 = Dirs::new(&["codex"]);
+    fs::write(
+        dirs2.config_file(),
+        "[workers.build]\nmodel = \"gpt-5.4\"\n",
+    )
+    .unwrap();
+    let o = dirs2
+        .command(&["setup", "workers", "--provider", "codex"])
+        .env("FACTORY_WORKER_PROVIDER", "codex")
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(0));
+    assert_eq!(
+        str_at(&dirs2.config(), &["workers", "build", "model"]),
+        Some("gpt-5.4")
+    );
+
+    let fx = Fixture::new("setup-answer-stale-clear");
+    fs::write(
+        config_toml(&fx),
+        "[workers]\nmodel = \"sonnet\"\n\n[workers.build]\nmodel = \"sonnet\"\n",
+    )
+    .unwrap();
+    let ask = parked_on_worker_ask(&fx);
+    let path = stub_bin(&fx, "codex");
+    let o = factory_out(&fx, &["answer", &ask, "codex"], &[("PATH", &path)]);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
+    assert!(
+        text(&o.stdout).contains("[workers.build] model removed"),
+        "{}",
+        text(&o.stdout)
+    );
+    let saved =
+        toml::from_str::<toml::Table>(&fs::read_to_string(config_toml(&fx)).unwrap()).unwrap();
+    assert_eq!(get(&saved, &["workers", "build", "model"]), None);
+    let wc = &run_state(&fx)["worker_config"];
+    assert_eq!(wc["build"]["model"], "gpt-5.4");
+    assert_eq!(wc["build"]["provider"], "codex");
+
+    let fx = Fixture::new("setup-preflight-bad-worker");
+    let path = format!("{}:{}", fx.stub_dir().display(), fx.env()["PATH"]);
+    fs::write(
+        config_toml(&fx),
+        "[workers]\nprovider = \"codex\"\n\n[workers.build]\nmodel = \"--bad\"\n",
+    )
+    .unwrap();
+    let o = factory_out(&fx, &["docs", "preflight", "001"], &[("PATH", &path)]);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(1), "{out}");
+    assert!(
+        out.contains("build worker model \"--bad\" is not a valid model id"),
+        "{out}"
+    );
+
+    fs::write(
+        config_toml(&fx),
+        "[workers]\nprovider = \"codex\"\n\n[workers.build]\nprovider = \"codex\"\neffort = \"max\"\n",
+    )
+    .unwrap();
+    let o = factory_out(&fx, &["docs", "preflight", "001"], &[("PATH", &path)]);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(1), "{out}");
+    assert!(
+        out.contains("build worker effort \"max\" is not valid for codex"),
+        "{out}"
+    );
+
+    fs::write(
+        config_toml(&fx),
+        "[workers]\nprovider = \"claude\"\n\n[review]\nprovider = \"codex\"\nmodel = \"--bad\"\n",
+    )
+    .unwrap();
+    let o = factory_out(&fx, &["docs", "preflight", "001"], &[("PATH", &path)]);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{out}");
+    assert!(
+        out.contains("  ? review model \"--bad\" is not a valid model id"),
+        "{out}"
+    );
+    assert!(!out.contains("  ✗ build worker"), "{out}");
+
+    fs::write(
+        dirs.config_file(),
+        "[workers]\nprovider = \"claude\"\n\n[workers.checkpoint]\nprovider = \"cursor\"\n",
+    )
+    .unwrap();
+    let o = dirs.factory(&["setup", "--show"]);
+    assert!(
+        text(&o.stdout).contains("  checkpoint  cursor"),
+        "{}",
+        text(&o.stdout)
     );
 }

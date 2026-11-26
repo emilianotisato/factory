@@ -23,11 +23,12 @@ pub const DIR: &str = "workers";
 /// A prefix rule cannot see `true && gh …` or `git -c k=v push`; `cli::hook::guard` catches those.
 pub const DENY_RULES: [&str; 3] = ["Bash(gh)", "Bash(gh *)", "Bash(git push*)"];
 
-pub const GH_TOKEN_VARS: [&str; 4] = [
+pub const GH_TOKEN_VARS: [&str; 5] = [
     "GH_TOKEN",
     "GITHUB_TOKEN",
     "GH_ENTERPRISE_TOKEN",
     "GITHUB_ENTERPRISE_TOKEN",
+    "GITHUB_PERSONAL_ACCESS_TOKEN",
 ];
 
 pub const KEEP_CLAUDE_VARS: [&str; 9] = [
@@ -71,10 +72,8 @@ pub const PUSH_OFF_PREFIXES: [&str; 5] = ["git@", "ssh://", "https://", "http://
 /// worker runs it through `PATH`, not when git runs it from its own exec path (`git subtree push`, a hook).
 pub fn push_off_env(inherited: Option<&str>) -> Vec<(String, String)> {
     let n: usize = inherited.and_then(|c| c.parse().ok()).unwrap_or(0);
-    let mut env = vec![(
-        GIT_CONFIG_COUNT.to_string(),
-        (n + PUSH_OFF_PREFIXES.len()).to_string(),
-    )];
+    let base = PUSH_OFF_PREFIXES.len() + 1;
+    let mut env = vec![(GIT_CONFIG_COUNT.to_string(), (n + base).to_string())];
     for (i, prefix) in PUSH_OFF_PREFIXES.iter().enumerate() {
         env.push((
             format!("GIT_CONFIG_KEY_{}", n + i),
@@ -82,6 +81,74 @@ pub fn push_off_env(inherited: Option<&str>) -> Vec<(String, String)> {
         ));
         env.push((format!("GIT_CONFIG_VALUE_{}", n + i), (*prefix).to_string()));
     }
+    let i = n + PUSH_OFF_PREFIXES.len();
+    env.push((
+        format!("GIT_CONFIG_KEY_{i}"),
+        "help.autocorrect".to_string(),
+    ));
+    env.push((format!("GIT_CONFIG_VALUE_{i}"), "0".to_string()));
+    env
+}
+
+fn git_config_values(repo: &Path, pattern: &str) -> Vec<String> {
+    let out = Command::new("git")
+        .current_dir(repo)
+        .args(["config", "--get-regexp", pattern])
+        .output();
+    let Ok(out) = out else {
+        return Vec::new();
+    };
+    if out.status.code() == Some(1) {
+        return Vec::new();
+    }
+    if !out.status.success() {
+        return Vec::new();
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut values = Vec::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let Some((_, v)) = line.split_once([' ', '\t']) else {
+            continue;
+        };
+        let v = v.trim();
+        if seen.insert(v.to_string()) {
+            values.push(v.to_string());
+        }
+    }
+    values
+}
+
+pub fn push_off_env_for_repo(repo: &Path, inherited: Option<&str>) -> Vec<(String, String)> {
+    let n: usize = inherited.and_then(|c| c.parse().ok()).unwrap_or(0);
+    let mut env = push_off_env(inherited);
+    let mut idx = n + PUSH_OFF_PREFIXES.len() + 1;
+    let fetch_urls = git_config_values(repo, r"^remote\..*\.url$");
+    for url in fetch_urls.iter() {
+        env.push((
+            format!("GIT_CONFIG_KEY_{idx}"),
+            format!("url.{PUSH_OFF_BASE}.pushInsteadOf"),
+        ));
+        env.push((format!("GIT_CONFIG_VALUE_{idx}"), url.clone()));
+        idx += 1;
+    }
+    for pushurl in git_config_values(repo, r"^remote\..*\.pushurl$") {
+        if pushurl.is_empty() {
+            continue;
+        }
+        if fetch_urls
+            .iter()
+            .any(|url| url.starts_with(&pushurl) || pushurl.starts_with(url))
+        {
+            continue;
+        }
+        env.push((
+            format!("GIT_CONFIG_KEY_{idx}"),
+            format!("url.{PUSH_OFF_BASE}.insteadOf"),
+        ));
+        env.push((format!("GIT_CONFIG_VALUE_{idx}"), pushurl));
+        idx += 1;
+    }
+    env[0].1 = idx.to_string();
     env
 }
 
@@ -531,7 +598,7 @@ impl Worker {
             .find(|(k, _)| k == GIT_CONFIG_COUNT)
             .map(|(_, v)| v.clone())
             .or_else(|| std::env::var(GIT_CONFIG_COUNT).ok());
-        cmd.envs(push_off_env(inherited.as_deref()));
+        cmd.envs(push_off_env_for_repo(&cwd, inherited.as_deref()));
         let path_env = env
             .iter()
             .rev()
@@ -824,7 +891,7 @@ mod tests {
     fn the_push_off_env_goes_after_the_inherited_git_config() {
         let key = format!("url.{PUSH_OFF_BASE}.pushInsteadOf");
         let ours = |from: usize| -> Vec<(String, String)> {
-            let mut v = vec![(GIT_CONFIG_COUNT.to_string(), (from + 5).to_string())];
+            let mut v = vec![(GIT_CONFIG_COUNT.to_string(), (from + 6).to_string())];
             for (i, p) in ["git@", "ssh://", "https://", "http://", "git://"]
                 .iter()
                 .enumerate()
@@ -832,6 +899,12 @@ mod tests {
                 v.push((format!("GIT_CONFIG_KEY_{}", from + i), key.clone()));
                 v.push((format!("GIT_CONFIG_VALUE_{}", from + i), p.to_string()));
             }
+            let i = from + 5;
+            v.push((
+                format!("GIT_CONFIG_KEY_{i}"),
+                "help.autocorrect".to_string(),
+            ));
+            v.push((format!("GIT_CONFIG_VALUE_{i}"), "0".to_string()));
             v
         };
         assert_eq!(push_off_env(None), ours(0));
@@ -843,6 +916,60 @@ mod tests {
         );
         assert_eq!(push_off_env(Some("2")), ours(2));
         assert_eq!(push_off_env(Some("bogus")), ours(0));
+    }
+
+    #[test]
+    fn push_off_env_for_repo_adds_url_and_pushurl_rules() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        Command::new("git")
+            .current_dir(repo)
+            .args(["init", "-q", "-b", "main"])
+            .status()
+            .unwrap();
+        Command::new("git")
+            .current_dir(repo)
+            .args([
+                "remote",
+                "add",
+                "origin",
+                "https://example.invalid/fetch.git",
+            ])
+            .status()
+            .unwrap();
+        Command::new("git")
+            .current_dir(repo)
+            .args([
+                "config",
+                "remote.origin.pushurl",
+                "git@example.invalid:push.git",
+            ])
+            .status()
+            .unwrap();
+        let env = push_off_env_for_repo(repo, None);
+        assert_eq!(env[0].1, "8");
+        let pairs: Vec<_> = env
+            .iter()
+            .filter(|(k, _)| k.starts_with("GIT_CONFIG_KEY_"))
+            .map(|(k, v)| {
+                let i = k.strip_prefix("GIT_CONFIG_KEY_").unwrap();
+                let val = env
+                    .iter()
+                    .find(|(kk, _)| *kk == format!("GIT_CONFIG_VALUE_{i}"))
+                    .map(|(_, v)| v.as_str())
+                    .unwrap();
+                (v.as_str(), val)
+            })
+            .collect();
+        assert!(pairs.contains(&(
+            "url.factory-no-push://.pushInsteadOf",
+            "https://example.invalid/fetch.git"
+        )));
+        assert!(pairs.contains(&(
+            "url.factory-no-push://.insteadOf",
+            "git@example.invalid:push.git"
+        )));
+        assert!(pairs.contains(&("help.autocorrect", "0")));
     }
 
     #[test]
