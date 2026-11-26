@@ -201,6 +201,8 @@ fn a_script_that_gets_gh_or_push_from_around_it_is_denied() {
         "php -derror_reporting=E_ALL -r 'system(\"gh pr list\");'",
         "perl -e 'print 1' -e 'system(\"git push\")'",
         "deno eval --ext ts \"spawn('gh')\"",
+        "bun -e 'await Bun.$`git push`'",
+        "node -e \"import('zx').then(({$})=>$`gh pr create`)\"",
     ]);
     for cmd in [
         "php -r '$c->push(1); print_r($c);'",

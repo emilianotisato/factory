@@ -88,3 +88,7 @@
 - FR-5: `run hook_guard_replays_the_denied_corpus_and_allowed_exceptions` (evidence: test transcript)
 
 **Acceptance:** after the checkpoint, both tests run under `cargo test` with full gate green (including `claude plugin validate mods/cockpit && claude plugin test mods/cockpit`) and transcripts recorded in Progress.
+
+**Code-review fixes (2026-11-26).**
+- Scoping backticks away from Node/Bun left `Bun.$` and zx `` $` `` shell execution undetected; `process_call` now matches `Bun.$` and `` $` `` for `node`/`bun`/`deno`.
+- The denied corpus lacked Ruby/Perl backtick/`%x`/`qx` and PHP backtick cases; five entries and two integration asserts close that hole.

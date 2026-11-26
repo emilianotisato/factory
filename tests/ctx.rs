@@ -817,6 +817,13 @@ test('{long_title}', function () {{}});
     assert_eq!(first.0, 0);
     assert!(first.1.contains("constant"));
 
+    let second = ctx_in(
+        root,
+        &["def", "Second", "--kind", "constant", "--in", "consts.go"],
+    );
+    assert_eq!(second.0, 0);
+    assert!(second.1.contains("constant"));
+
     let first_filtered = ctx_in(
         root,
         &["def", "First", "--kind", "constant", "--in", "consts.go"],

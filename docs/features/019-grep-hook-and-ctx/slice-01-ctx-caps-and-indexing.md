@@ -70,3 +70,6 @@
 - FR-3: `run ctx_indexes_go_consts_php_class_consts_and_pest_outline_tests` (evidence: test transcript)
 
 **Acceptance:** after the checkpoint, the test runs under `cargo test` with full gate green and transcript recorded in Progress.
+
+**Code-review fixes (2026-11-26).**
+- Grouped Go `iota` tempdir test now also asserts `ctx def Second --kind constant` so bare grouped identifiers stay covered.

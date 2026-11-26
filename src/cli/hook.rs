@@ -613,7 +613,7 @@ fn is_word(b: u8) -> bool {
 }
 
 fn process_call(program: &str, text: &str) -> bool {
-    const CALLS: [&str; 22] = [
+    const CALLS: [&str; 23] = [
         "subprocess",
         "os.system",
         "os.popen",
@@ -636,9 +636,11 @@ fn process_call(program: &str, text: &str) -> bool {
         "pcntl_exec",
         "posix_spawn",
         "posix_spawnp",
+        "Bun.$",
     ];
     let calls_match = CALLS.iter().any(|c| text.contains(c))
         || (matches!(program, "ruby" | "perl" | "php") && text.contains('`'))
+        || (matches!(program, "node" | "bun" | "deno") && text.contains("$`"))
         || (program == "ruby" && text.contains("%x"))
         || (program == "perl" && text.contains("qx"));
     let paren_calls = ["system(", "exec(", "spawn(", "popen("].iter().any(|c| {
@@ -714,15 +716,21 @@ fn answered(name: &str, search_root: &Path, repo: &Path, here: &Path) -> Option<
         print::defs(name, &d, false)
     );
     if reason.len() > MAX_DENY_BYTES {
-        let budget = MAX_DENY_BYTES - TRUNC_SUFFIX.len();
+        let mut budget = MAX_DENY_BYTES - TRUNC_SUFFIX.len();
+        while !reason.is_char_boundary(budget) {
+            budget -= 1;
+        }
         while reason.len() > budget {
-            if let Some(pos) = reason[..budget].rfind('\n') {
+            let end = reason
+                .char_indices()
+                .take_while(|(i, _)| *i < budget)
+                .map(|(i, c)| i + c.len_utf8())
+                .last()
+                .unwrap_or(0);
+            if let Some(pos) = reason[..end].rfind('\n') {
                 reason.truncate(pos);
             } else {
-                reason.truncate(budget);
-                while !reason.is_char_boundary(reason.len()) {
-                    reason.pop();
-                }
+                reason.truncate(end);
             }
         }
         reason.push_str(TRUNC_SUFFIX);
@@ -976,7 +984,11 @@ fn rg_search(args: &[String]) -> Option<Search<'_>> {
             continue;
         }
         if let Some(cluster) = a.strip_prefix('-').filter(|c| !c.is_empty()) {
-            if cluster.chars().any(|c| matches!(c, 'g' | 't' | 'T')) {
+            let flags = cluster
+                .split_once(|c| ['e', 'f'].contains(&c))
+                .map(|(p, _)| p)
+                .unwrap_or(cluster);
+            if flags.chars().any(|c| matches!(c, 'g' | 't' | 'T')) {
                 return None;
             }
             if let Some((k, c)) = cluster.char_indices().find(|(_, c)| SHORT_ARG.contains(*c)) {
@@ -1291,6 +1303,7 @@ mod tests {
             deny_starts_with_hint(bash_in(cmd, root, root));
         }
         assert_eq!(bash_in("rg -n -e _recon2", root, root), Verdict::Allow);
+        assert_eq!(bash_in("rg -egetUser src", root, root), Verdict::Allow);
         for cmd in [
             "grep -rn \"fn main\" src",
             "grep -rn 'foo\\|bar' src",

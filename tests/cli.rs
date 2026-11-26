@@ -205,6 +205,11 @@ fn grep_hook_denies_only_standalone_unfiltered_code_searches_with_ctx_hits() {
     std::fs::create_dir_all(root.join("app")).unwrap();
     std::fs::create_dir_all(root.join("docs")).unwrap();
     std::fs::create_dir_all(root.join("storage/logs")).unwrap();
+    std::fs::write(
+        root.join("storage/alpha.rs"),
+        "pub fn alpha() -> u8 { 2 }\n",
+    )
+    .unwrap();
     std::fs::write(root.join("src/lib.rs"), "pub fn alpha() -> u8 { 1 }\n").unwrap();
     std::fs::write(root.join("app/main.rs"), "fn main() { alpha(); }\n").unwrap();
     std::fs::write(root.join("docs/readme.md"), "# checkpoint_every\n").unwrap();
@@ -290,8 +295,7 @@ fn ctx_output_caps_line_width_def_count_and_hook_denial_size() {
     let defs_out = print::defs("longref", &d, false);
     let def_line = defs_out
         .lines()
-        .find(|l| l.contains("min.js") && l.contains("kind"))
-        .or_else(|| defs_out.lines().find(|l| l.contains("min.js")))
+        .find(|l| l.contains("min.js") && l.contains("  fn  "))
         .expect("def line");
     let text = def_line
         .rsplit_once("  ")

@@ -72,3 +72,8 @@
 - FR-2: `run ctx_output_caps_line_width_def_count_and_hook_denial_size` (evidence: test transcript)
 
 **Acceptance:** after the checkpoint, both tests run under `cargo test` with full gate green and transcripts recorded in Progress.
+
+**Code-review fixes (2026-11-26).**
+- Denial truncation sliced `reason[..budget]` on a byte index and could panic on multi-byte `…` or source text; truncation now steps the budget to a char boundary and drops whole lines only on safe indices.
+- `rg` short-flag parsing treated letters glued to `-e` patterns as `-g`/`-t` flags; only the prefix before `e`/`f` is scanned for filter letters now.
+- `grep_hook_denies…` allow cases for `storage/` were vacuous with empty dirs; the fixture now seeds `storage/alpha.rs` so removing `ROOT_DIRS` would fail the test.
