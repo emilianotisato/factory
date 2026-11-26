@@ -691,9 +691,7 @@ pub fn probe_resolved(
     let out = dir.join(file);
     let mut cmd = Command::new(&bin);
     cmd.args(args);
-    if p == Provider::Claude {
-        scrub_claude_session(&mut cmd);
-    }
+    scrub_reviewer_env(&mut cmd);
     let secs = cfg.timeout_secs.min(PROBE_SECS);
     let ended = match run_logged(
         cmd,
@@ -897,6 +895,20 @@ pub fn run_pass(
     run_pass_resolved(&cfg.into(), cwd, dir, n, prompt, cancel)
 }
 
+const OPENCODE_REVIEW_CFG: &str = r#"{"permission":{"edit":"deny","bash":"deny","webfetch":"deny"},"agent":{"plan":{"permission":{"edit":"deny","bash":"deny","webfetch":"deny"}}}}"#;
+
+/// One adversarial reviewer pass, built for a live run or a dry-run printout.
+#[derive(Debug)]
+pub struct PassCommand {
+    pub cmd: Command,
+    pub bin: String,
+    pub args: Vec<String>,
+    pub stdin: Option<PathBuf>,
+    pub env_set: Vec<(String, String)>,
+    pub env_remove: Vec<String>,
+    pub stdin_note: Option<String>,
+}
+
 /// Every provider runs read-only: Cursor in ask mode, the others in plan mode or a read-only sandbox.
 pub fn run_pass_resolved(
     cfg: &ResolvedReview,
@@ -906,24 +918,93 @@ pub fn run_pass_resolved(
     prompt: &str,
     cancel: Cancel,
 ) -> Result<Outcome> {
+    let stream = dir.join(format!("review-{n}.jsonl"));
+    let err = dir.join(format!("review-{n}.err"));
+    let built = build_pass_command(cfg, cwd, dir, n, prompt, false)?;
+    let stdin = built.stdin.as_deref();
+    let timeout = Duration::from_secs(cfg.timeout_secs);
+    let (ended, elapsed) = run_logged(built.cmd, &stream, &err, timeout, cancel, stdin)?;
+    let text = fs::read(&stream).map_err(io(format!("read {}", stream.display())))?;
+    let stderr = fs::read_to_string(&err)
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or_default()
+        .to_string();
+    Ok(Outcome {
+        ended,
+        elapsed,
+        parsed: parse_stream_for(
+            cfg.provider
+                .provider()
+                .expect("checked in build_pass_command"),
+            &String::from_utf8_lossy(&text),
+        ),
+        stderr,
+    })
+}
+
+/// The argv and env rules for one pass; `dry_run` skips every write under `dir`.
+pub fn build_pass_command(
+    cfg: &ResolvedReview,
+    cwd: &Path,
+    dir: &Path,
+    n: usize,
+    prompt: &str,
+    dry_run: bool,
+) -> Result<PassCommand> {
     let ReviewProvider::Provider(p) = cfg.provider else {
         return Err(Error::Msg(DISABLED.to_string()));
     };
-    let stream = dir.join(format!("review-{n}.jsonl"));
-    let err = dir.join(format!("review-{n}.err"));
-    let (bin, _) = binary(cfg, p);
-    let mut cmd = Command::new(&bin);
+    let (bin_path, bin) = binary(cfg, p);
     let model = cfg.model.as_str();
     let effort = cfg.effort.as_deref();
+    let mut args = Vec::new();
+    let mut cmd = Command::new(&bin_path);
     let mut stdin = None;
+    let mut stdin_note = None;
+    let mut env_set = Vec::new();
+    let env_remove = reviewer_env_remove_snapshot();
     match p {
         Provider::Cursor => {
+            args.push("-p".into());
+            args.extend(FLAGS.iter().map(|s| (*s).to_string()));
+            args.push("--model".into());
+            args.push(model.into());
+            args.push("--".into());
+            args.push(prompt.into());
             cmd.arg("-p")
                 .args(FLAGS)
                 .args(["--model", model])
+                .arg("--")
                 .arg(prompt);
         }
         Provider::Claude => {
+            args.extend([
+                "-p".into(),
+                "--output-format".into(),
+                "stream-json".into(),
+                "--verbose".into(),
+                "--permission-mode".into(),
+                "plan".into(),
+                "--tools".into(),
+                "Read,Grep,Glob".into(),
+                "--model".into(),
+                model.into(),
+                "--setting-sources".into(),
+                "user".into(),
+                "--strict-mcp-config".into(),
+            ]);
+            if let Some(e) = effort {
+                args.push("--effort".into());
+                args.push(e.into());
+            }
+            let add_dir = dir.display().to_string();
+            args.push("--add-dir".into());
+            args.push(add_dir.clone());
+            args.push("--".into());
+            args.push(prompt.into());
             cmd.args([
                 "-p",
                 "--output-format",
@@ -935,16 +1016,30 @@ pub fn run_pass_resolved(
                 "Read,Grep,Glob",
                 "--model",
                 model,
+                "--setting-sources",
+                "user",
+                "--strict-mcp-config",
             ]);
             if let Some(e) = effort {
                 cmd.args(["--effort", e]);
             }
-            // The diff sits in the log dir, outside the repo a print-mode read may touch.
-            // `--add-dir` is variadic in Claude Code, so `--` ends its list before the prompt.
             cmd.arg("--add-dir").arg(dir).arg("--").arg(prompt);
-            scrub_claude_session(&mut cmd);
         }
         Provider::Codex => {
+            args.extend([
+                "exec".into(),
+                "--json".into(),
+                "--sandbox".into(),
+                "read-only".into(),
+                "--ephemeral".into(),
+                "-m".into(),
+                model.into(),
+            ]);
+            if let Some(e) = effort {
+                args.push("-c".into());
+                args.push(format!("model_reasoning_effort={e}"));
+            }
+            args.push("-".into());
             cmd.args([
                 "exec",
                 "--json",
@@ -958,11 +1053,33 @@ pub fn run_pass_resolved(
                 cmd.args(["-c", &format!("model_reasoning_effort={e}")]);
             }
             cmd.arg("-");
-            let file = dir.join(format!("review-{n}.prompt"));
-            fs::write(&file, prompt).map_err(io(format!("write {}", file.display())))?;
-            stdin = Some(file);
+            if dry_run {
+                stdin_note = Some("prompt on stdin".into());
+            } else {
+                let file = dir.join(format!("review-{n}.prompt"));
+                fs::write(&file, prompt).map_err(io(format!("write {}", file.display())))?;
+                stdin = Some(file);
+            }
         }
         Provider::Agy => {
+            args.extend([
+                "-p".into(),
+                "--mode".into(),
+                "plan".into(),
+                "--output-format".into(),
+                "stream-json".into(),
+                "--model".into(),
+                model.into(),
+            ]);
+            if let Some(e) = effort {
+                args.push("--effort".into());
+                args.push(e.into());
+            }
+            let add_dir = dir.display().to_string();
+            args.push("--add-dir".into());
+            args.push(add_dir);
+            args.push("--".into());
+            args.push(prompt.into());
             cmd.args([
                 "-p",
                 "--mode",
@@ -975,14 +1092,23 @@ pub fn run_pass_resolved(
             if let Some(e) = effort {
                 cmd.args(["--effort", e]);
             }
-            cmd.arg("--add-dir").arg(dir).arg(prompt);
+            cmd.arg("--add-dir").arg(dir).arg("--").arg(prompt);
         }
         Provider::Opencode => {
-            // OpenCode takes the effort as the model's `#variant`, and reads no file outside the repo unless attached.
             let model = match effort {
                 Some(e) => format!("{model}#{e}"),
                 None => model.to_string(),
             };
+            args.extend([
+                "run".into(),
+                "--standalone".into(),
+                "--format".into(),
+                "json".into(),
+                "--agent".into(),
+                "plan".into(),
+                "-m".into(),
+                model.clone(),
+            ]);
             cmd.args([
                 "run",
                 "--standalone",
@@ -993,30 +1119,80 @@ pub fn run_pass_resolved(
                 "-m",
                 &model,
             ]);
+            cmd.env("OPENCODE_CONFIG_CONTENT", OPENCODE_REVIEW_CFG);
+            env_set.push(("OPENCODE_CONFIG_CONTENT".into(), OPENCODE_REVIEW_CFG.into()));
             let diff = dir.join(format!("review-{n}.diff"));
-            if diff.is_file() {
+            let attach_diff = if dry_run {
+                prompt.contains(&diff.display().to_string())
+                    || prompt.contains(&format!("review-{n}.diff"))
+            } else {
+                diff.is_file()
+            };
+            if attach_diff {
+                let path = diff.display().to_string();
+                args.push("-f".into());
+                args.push(path.clone());
                 cmd.arg("-f").arg(&diff);
             }
-            cmd.arg(prompt);
+            args.push("--".into());
+            args.push(prompt.into());
+            cmd.arg("--").arg(prompt);
         }
     }
+    scrub_reviewer_env(&mut cmd);
     cmd.current_dir(cwd);
-    let timeout = Duration::from_secs(cfg.timeout_secs);
-    let (ended, elapsed) = run_logged(cmd, &stream, &err, timeout, cancel, stdin.as_deref())?;
-    let text = fs::read(&stream).map_err(io(format!("read {}", stream.display())))?;
-    let stderr = fs::read_to_string(&err)
-        .unwrap_or_default()
-        .lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty())
-        .unwrap_or_default()
-        .to_string();
-    Ok(Outcome {
-        ended,
-        elapsed,
-        parsed: parse_stream_for(p, &String::from_utf8_lossy(&text)),
-        stderr,
+    Ok(PassCommand {
+        cmd,
+        bin,
+        args,
+        stdin,
+        env_set,
+        env_remove,
+        stdin_note,
     })
+}
+
+pub fn shell_quote_word(s: &str) -> String {
+    if !s.is_empty() && s.bytes().all(|b| {
+        matches!(
+            b,
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'/' | b'.' | b'-' | b'_' | b'=' | b':' | b'+'
+        )
+    }) {
+        return s.to_owned();
+    }
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+pub fn shell_quote_argv(bin: &str, args: &[String]) -> String {
+    std::iter::once(shell_quote_word(bin))
+        .chain(args.iter().map(|a| shell_quote_word(a)))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn reviewer_env_remove_snapshot() -> Vec<String> {
+    let mut out: Vec<String> = crate::worker::GH_TOKEN_VARS
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    if !out.iter().any(|k| k == "CLAUDECODE") {
+        out.push("CLAUDECODE".into());
+    }
+    for (k, _) in std::env::vars() {
+        if crate::worker::scrubbed(&k) && k != "CLAUDECODE" && !out.contains(&k) {
+            out.push(k);
+        }
+    }
+    out.sort();
+    out
+}
+
+fn scrub_reviewer_env(cmd: &mut Command) {
+    for k in crate::worker::GH_TOKEN_VARS {
+        cmd.env_remove(k);
+    }
+    scrub_claude_session(cmd);
 }
 
 /// Inside a Claude Code session these variables would trip the nested-session guard.
@@ -1300,6 +1476,51 @@ pub fn with_others(prompt: &str, others: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dry_run_builds_isolated_argv_without_touching_the_log_dir() {
+        let dir = std::env::temp_dir().join("factory-review-dry-pass");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let cfg = ResolvedReview {
+            provider: ReviewProvider::Provider(Provider::Opencode),
+            binary: Some("opencode".into()),
+            model: "m".into(),
+            effort: Some("low".into()),
+            timeout_secs: 1,
+            pass_lines: 600,
+        };
+        let prompt = format!("read {}", dir.join("review-1.diff").display());
+        let built = build_pass_command(&cfg, Path::new("/tmp"), &dir, 1, &prompt, true).unwrap();
+        assert!(built.stdin.is_none());
+        assert!(!dir.join("review-1.prompt").exists());
+        assert!(
+            built
+                .args
+                .windows(2)
+                .any(|w| w == ["-f", &dir.join("review-1.diff").display().to_string()])
+        );
+        assert_eq!(built.args[built.args.len() - 2], "--");
+        assert_eq!(built.env_set.len(), 1);
+        assert_eq!(built.env_set[0].0, "OPENCODE_CONFIG_CONTENT");
+        let claude = ResolvedReview {
+            provider: ReviewProvider::Provider(Provider::Claude),
+            binary: Some("claude".into()),
+            model: "m".into(),
+            effort: None,
+            timeout_secs: 1,
+            pass_lines: 600,
+        };
+        let built = build_pass_command(&claude, Path::new("/tmp"), &dir, 1, "hi", true).unwrap();
+        assert!(
+            built
+                .args
+                .windows(3)
+                .any(|w| w == ["--setting-sources", "user", "--strict-mcp-config"])
+        );
+        assert_eq!(built.args[built.args.len() - 2], "--");
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn the_login_hint_names_the_binary_the_probe_runs() {

@@ -3,7 +3,7 @@
 **Source**: [`prd.md`](prd.md) → §4 (FR-2). **Depends on**: Slice 01 _(uses expanded `crate::worker::GH_TOKEN_VARS` including `GITHUB_PERSONAL_ACCESS_TOKEN`)_
 **Created**: 2026-11-26
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**: `scrub_reviewer_env`, `build_pass_command`/`PassCommand`, `factory review second --dry-run`, `allow_hyphen_values` on `--prompt`; tests `review_second_isolates_all_five_providers_and_supports_dry_run` + updated authorized run. Inner loop: 3 runs, 1 red, ~2 min — Codex argv order and OpenCode `-f`/`--` test expectation. Deliberate red: stripped Claude `--setting-sources` from `args` → isolation test failed on dry-run output; restored → green.
 
 **Slice**: Isolates all five adversarial reviewer providers (and their probes) from GitHub tokens, Claude session vars, branch hooks/MCPs (Claude `--setting-sources user --strict-mcp-config`), OpenCode branch config overrides (`OPENCODE_CONFIG_CONTENT` denying top-level + `agent.plan` `edit`/`bash`/`webfetch`), and `-`-leading prompt flag injection (`--` before prompt + clap `allow_hyphen_values = true`), and adds file-free `factory review second --dry-run` sharing one `build_pass_command` builder with `run_pass_resolved`.
 

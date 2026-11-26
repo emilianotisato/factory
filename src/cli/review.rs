@@ -31,8 +31,11 @@ pub struct SecondArgs {
     #[arg(long, value_name = "FILE")]
     pub doc: Option<PathBuf>,
     /// The instruction for --doc
-    #[arg(long, value_name = "TEXT")]
+    #[arg(long, value_name = "TEXT", allow_hyphen_values = true)]
     pub prompt: Option<String>,
+    /// Print pass 1's argv and env rules without running a reviewer or writing log files
+    #[arg(long)]
+    pub dry_run: bool,
     /// The other reviewers' one-line findings, asked what fixing them misses
     #[arg(long, value_name = "FILE")]
     pub others: Option<PathBuf>,
@@ -60,7 +63,7 @@ pub struct CollectArgs {
     pub feature: Option<String>,
 }
 
-const USAGE: &str = "usage: factory review second --diff <base> [--feature <NNN>] [--others <file>] [-- <paths>]\n       factory review second --doc <file> --prompt <text> [--others <file>]\n       factory review collect --base <branch> [--out <file>] [--since <commit>] [--feature <NNN>]";
+const USAGE: &str = "usage: factory review second --diff <base> [--feature <NNN>] [--others <file>] [--dry-run] [-- <paths>]\n       factory review second --doc <file> --prompt <text> [--others <file>] [--dry-run]\n       factory review collect --base <branch> [--out <file>] [--since <commit>] [--feature <NNN>]";
 
 enum Mode {
     Diff(String),
@@ -181,6 +184,61 @@ fn second(a: &SecondArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<i3
         (Mode::Diff(_), Some(f)) => settled::for_feature(&root, f),
         _ => None,
     };
+    if a.dry_run {
+        let dry_dir = Path::new("<log-dir>");
+        let mut sample = match &mode {
+            Mode::Doc(doc, text) => {
+                let abs =
+                    fs::canonicalize(doc).map_err(io(format!("resolve {}", doc.display())))?;
+                review::doc_prompt(text, &abs)
+            }
+            Mode::Diff(base) => {
+                let pass = passes.first().expect("non-empty passes");
+                let what = format!("The diff of {}", pass.files.join(" "));
+                let diff_file = dry_dir.join("review-1.diff");
+                review::diff_prompt(&what, &format!("against {base}"), &diff_file)
+            }
+        };
+        if let Some(s) = settled.as_deref() {
+            sample = review::with_settled(&sample, s);
+        }
+        if let Some(o) = others.as_deref() {
+            sample = review::with_others(&sample, o);
+        }
+        let built = review::build_pass_command(&cfg, &root, dry_dir, 1, &sample, true)?;
+        let p = cfg.provider.provider().expect("not disabled");
+        writeln!(out, "review second dry-run").map_err(io("stdout"))?;
+        writeln!(out, "provider: {p}").map_err(io("stdout"))?;
+        writeln!(out, "model: {}", cfg.model).map_err(io("stdout"))?;
+        match &cfg.effort {
+            Some(e) => writeln!(out, "effort: {e}").map_err(io("stdout"))?,
+            None => writeln!(out, "effort: (none)").map_err(io("stdout"))?,
+        }
+        writeln!(out, "binary: {}", built.bin).map_err(io("stdout"))?;
+        writeln!(out, "passes: {}", passes.len()).map_err(io("stdout"))?;
+        writeln!(
+            out,
+            "command: {}",
+            review::shell_quote_argv(&built.bin, &built.args)
+        )
+        .map_err(io("stdout"))?;
+        writeln!(out, "env-set:").map_err(io("stdout"))?;
+        if built.env_set.is_empty() {
+            writeln!(out, "  (none)").map_err(io("stdout"))?;
+        } else {
+            for (k, v) in &built.env_set {
+                writeln!(out, "  {k}={}", review::shell_quote_word(v)).map_err(io("stdout"))?;
+            }
+        }
+        writeln!(out, "env-remove:").map_err(io("stdout"))?;
+        for k in &built.env_remove {
+            writeln!(out, "  {k}").map_err(io("stdout"))?;
+        }
+        if let Some(note) = built.stdin_note {
+            writeln!(out, "stdin: {note}").map_err(io("stdout"))?;
+        }
+        return Ok(0);
+    }
     let dir = review::new_log_dir(&paths::data_dir())?;
     if let Err(reason) = review::probe_resolved(&cfg, &dir, None) {
         writeln!(out, "unreviewed: {reason}\n\nlog: {}", dir.display()).map_err(io("stdout"))?;
