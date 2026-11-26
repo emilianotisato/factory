@@ -3,7 +3,7 @@
 **Source**: [`prd.md`](prd.md) → §5 FR-3, §12 QA plan. **Depends on**: 01 (reuses `refuse_if_open` and edits `src/lanes.rs`, `src/cli/lanes.rs`, `tests/lanes.rs` after slice 01).
 **Created**: 2026-11-26
 
-**Progress**: `clean_above_gb` + docs check validation; `lanes clean [--dry] [--days N]` with nested dedup, live `main/target/lane-*` exclusion, `FACTORY_CARGO_SWEEP` direct invoke; `ensure_all` run-start trim when no open run. Inner loop 5 runs / 1 red / ~12 min (`collapsible_if`, `strip_prefix`→`Result` on edition 2024, dirty-tree preflight). Deliberate red: dropping live-target exclusion failed `lanes_clean_…` on stale `lane-1` line. QA FR-3 left for checkpoint.
+**Progress**: `clean_above_gb` + docs check validation; `lanes clean [--dry] [--days N]` with nested dedup, live `main/target/lane-*` exclusion, `FACTORY_CARGO_SWEEP` direct invoke; `ensure_all` run-start trim when no open run. Inner loop 5 runs / 1 red / ~12 min (`collapsible_if`, `strip_prefix`→`Result` on edition 2024, dirty-tree preflight). Deliberate red: dropping live-target exclusion failed `lanes_clean_…` on stale `lane-1` line. cp-1: FR-3 `cp-1/FR-3/transcript.txt`.
 
 **Slice**: Adds `[lanes] clean_above_gb` parsing and validation, implements `factory lanes clean [--dry] [--days N]` (deduplicating nested `CARGO_TARGET_DIR` paths, preserving live declared `main/target/lane-*` directories, invoking `cargo-sweep sweep --time <days>` directly with removal fallback), and enforces `[lanes] clean_above_gb` trimming during `ensure_all` at fresh run start when no other open run holds the repo's lanes. Leaves gate memory caps / reaping to slice 03 and `land_lane` / respawn lane retention to slice 04.
 

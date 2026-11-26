@@ -3,7 +3,7 @@
 **Source**: [`prd.md`](prd.md) → §7 FR-5, §8 FR-6, §9 FR-7, §12 QA plan. **Depends on**: — (foundational lane/repo identity fixes that slices 02–04 build on).
 **Created**: 2026-11-26
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**: main_tree unification, atomic `seed_one`, open-run guards on `up`/`prove`, prove resets before setup. cp-1: FR-5 `cp-1/FR-5/transcript.txt`; FR-6 `cp-1/FR-6/transcript.txt`; FR-7 `cp-1/FR-7/transcript.txt`.
 
 **Slice**: Unifies repository matching on `lanes::main_tree` across `run::list_all`, `cli::run` resume, `cli::lanes`, and `cli::status --here`; stages lane seed copies atomically outside the lane worktree before renaming; and makes `lanes up` and `lanes up --prove` refuse during an open run while having `--prove` reset each lane to `HEAD` before running lane setup. Leaves `lanes clean` to slice 02, gate memory caps / reaping to slice 03, and `land_lane` / respawn lane retention to slice 04.
 
