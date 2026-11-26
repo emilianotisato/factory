@@ -24,7 +24,7 @@
 
 A slice is `pending → building → done`, or `blocked` while it waits on the owner.
 
-**Build order:** 001 to 015, 017, 018, 023 and 024 are archived; 021, 025, 026 and 027 are shipped. **022 (guards-a-branch-cant-loosen) is agreed (2026-11-26) and goes next**, unattended (dogfooding the multi-provider worker/reviewer setup from 026/027). Three older drafts remain, none agreed and no order set: **016** (factory-as-a-consumer), **019** (grep-hook-and-ctx) and **020** (runs-that-dont-hurt). The shared files among those older drafts: **020** rewrites `land_here` in `src/checkpoint.rs`. When more than one feature is live, state the order here and say why: shared files, migration risk, whichever ships second eats the merge.
+**Build order:** 001 to 015, 017, 018, 023 and 024 are archived; 021, 022, 025, 026 and 027 are shipped. **019 (grep-hook-and-ctx) is agreed (2026-11-26) and goes next**, unattended (zero shared files with 020; 020 follows right after, then `/harvest`). Two older drafts remain: **016** (factory-as-a-consumer) and **020** (runs-that-dont-hurt, scheduled next after 019). The shared files among those drafts: **020** rewrites `land_here` in `src/checkpoint.rs`. When more than one feature is live, state the order here and say why: shared files, migration risk, whichever ships second eats the merge.
 
 **Retired numbers — never reused:** _(none yet)_
 

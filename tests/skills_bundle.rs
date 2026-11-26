@@ -594,3 +594,19 @@ fn every_skill_that_fills_a_date_names_utc() {
         assert_unique_passage(&rel, &text, "the UTC date, `date -u +%F`");
     }
 }
+
+#[test]
+fn guard_loosening_acceptance_lines_occur_once_in_prd_and_slice_skills() {
+    let prd = fs::read_to_string(root().join("skills/prd/SKILL.md")).unwrap();
+    assert_unique_passage(
+        "prd/SKILL.md",
+        &prd,
+        "Any FR that loosens a guard (a hook, a deny rule, a validator) carries the acceptance line: everything the old guard denied that this FR does not mean to allow stays denied, proven by replaying a regression corpus.",
+    );
+    let slice = fs::read_to_string(root().join("skills/slice/SKILL.md")).unwrap();
+    assert_unique_passage(
+        "slice/SKILL.md",
+        &slice,
+        "When a PRD FR loosens a guard, carry its regression-corpus replay into the Prove task.",
+    );
+}

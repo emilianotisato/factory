@@ -153,7 +153,7 @@ pub fn first_command(cmd: &str) -> (Vec<String>, Option<&'static str>) {
 /// The third: each skipped leading `cd`/`pushd` target in order, `None` for a bare `cd`.
 pub type FirstCommand = (Vec<String>, Option<&'static str>, Vec<Option<String>>);
 
-pub fn first_command_in(cmd: &str) -> FirstCommand {
+pub fn first_command_standalone(cmd: &str) -> (FirstCommand, bool) {
     let toks = tokens(cmd);
     let mut i = 0;
     let mut cds = Vec::new();
@@ -187,8 +187,24 @@ pub fn first_command_in(cmd: &str) -> FirstCommand {
             cds.push(target.cloned());
             continue;
         }
-        return (words, end, cds);
+        let standalone = first_cmd_standalone(end, &toks[i..]);
+        return ((words, end, cds), standalone);
     }
+}
+
+fn first_cmd_standalone(end: Option<&'static str>, rest: &[Tok]) -> bool {
+    match end {
+        None => true,
+        Some("|") | Some("|&") | Some("&&") | Some("||") => false,
+        Some(";") | Some("&") => rest
+            .iter()
+            .all(|t| matches!(t, Tok::Op(";") | Tok::Op("&"))),
+        _ => false,
+    }
+}
+
+pub fn first_command_in(cmd: &str) -> FirstCommand {
+    first_command_standalone(cmd).0
 }
 
 fn is_prefix(w: &str) -> bool {
@@ -699,6 +715,19 @@ mod tests {
         assert_eq!(words("cd src"), (vec!["cd", "src"], None));
         assert_eq!(words(""), (vec![], None));
         assert_eq!(program("/usr/bin/grep"), "grep");
+    }
+
+    #[test]
+    fn first_command_standalone_separates_pipes_and_chains() {
+        let standalone = |cmd: &str| first_command_standalone(cmd).1;
+        assert!(standalone("grep -rn foo src"));
+        assert!(standalone("grep -rn foo src;"));
+        assert!(standalone("grep -rn foo src\n"));
+        assert!(standalone("cd repo && grep -rn foo src"));
+        assert!(!standalone("grep -rn foo src | head"));
+        assert!(!standalone("grep -rn foo src && echo ok"));
+        assert!(!standalone("cd repo && grep -rn foo src && sed -n 1,20p x"));
+        assert!(!standalone("grep -rn foo src; ls"));
     }
 
     #[test]

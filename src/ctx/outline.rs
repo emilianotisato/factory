@@ -158,7 +158,7 @@ fn outlined(text: &str, d: &Definition) -> Option<bool> {
             .get(d.range.clone())
             .is_some_and(|t| t.contains('{'))
             .then_some(true),
-        "fn" | "method" | "type" => Some(false),
+        "fn" | "method" | "type" | "test" => Some(false),
         _ => None,
     }
 }

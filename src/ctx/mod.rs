@@ -33,7 +33,7 @@ pub struct DefArgs {
     /// The symbol: a class, function, method or type name
     pub symbol: String,
     /// Only definitions of this kind (`fn` takes methods too)
-    #[arg(long, value_parser = ["class", "fn", "method", "type"])]
+    #[arg(long, value_parser = ["class", "fn", "method", "type", "constant"])]
     pub kind: Option<String>,
     /// Search this file or directory only
     #[arg(long = "in", value_name = "PATH")]

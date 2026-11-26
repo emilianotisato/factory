@@ -45,6 +45,7 @@ impl Table {
             Table::Php => vec![
                 r"((abstract|final|readonly)\s+)*(class|interface|trait|enum)\s+NAME\b",
                 r"((public|protected|private|static|abstract|final)\s+)*function\s+&?NAME\s*\(",
+                r"((public|protected|private|final)\s+)*const\s+([A-Za-z_\\|?]+\s+)?NAME\b",
             ],
             Table::Ts => vec![
                 r"((export|default|declare|abstract|const)\s+)*(class|interface|type|enum)\s+NAME\b",
@@ -55,7 +56,9 @@ impl Table {
             Table::Go => vec![
                 r"func\s+(\([^)]*\)\s*)?NAME\s*[(\[]",
                 r"type\s+NAME\b",
+                r"const\s+NAME\b",
                 r"NAME(\[[^\]]*\])?\s+(=\s*)?[\w.*\[({]",
+                r"NAME\s*(?://.*)?$",
             ],
             Table::Rust => vec![
                 r#"(pub(\([^)]*\))?\s+)?((default|const|async|unsafe|extern(\s+"[^"]*")?)\s+)*(fn|struct|enum|union|trait|type|mod|const|static(\s+mut)?)\s+NAME\b"#,
@@ -71,7 +74,7 @@ impl Table {
     fn keywords(self) -> (&'static [&'static str], &'static str) {
         match self {
             Table::Php => (
-                &["class", "interface", "trait", "enum", "function"],
+                &["class", "interface", "trait", "enum", "function", "const"],
                 "function",
             ),
             Table::Ts => (
@@ -87,7 +90,7 @@ impl Table {
                 ],
                 "method",
             ),
-            Table::Go => (&["func", "type"], "type"),
+            Table::Go => (&["func", "type", "const"], "type"),
             Table::Rust => (
                 &[
                     "fn",
@@ -318,7 +321,7 @@ impl File<'_> {
 fn vocabulary(table: Table, keyword: &'static str) -> &'static str {
     match keyword {
         "class" | "interface" | "trait" | "enum" | "struct" | "union" => "class",
-        "const" | "static" if table == Table::Rust => "constant",
+        "const" | "static" if matches!(table, Table::Rust | Table::Go | Table::Php) => "constant",
         "function" | "func" | "fn" | "const" | "let" | "var" => "fn",
         "mod" => "module",
         "macro_rules" => "macro",

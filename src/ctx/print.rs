@@ -1,23 +1,39 @@
-//! Plain text, no colour, no width cap: a model reads it, not a terminal.
+//! Plain text, no colour: a model reads it, not a terminal. Source text fields cap at 200 chars.
+use std::borrow::Cow;
 use std::fmt::Write;
 
 use super::Searched;
 use super::def::{self, BODY_LINES};
 use super::{outline, refs};
 
+pub const MAX_LINE_CHARS: usize = 200;
+pub const MAX_DEFS: usize = 20;
+
+pub fn truncate_line(s: &str, max: usize) -> Cow<'_, str> {
+    if s.chars().count() <= max {
+        return Cow::Borrowed(s);
+    }
+    let cut: String = s.chars().take(max.saturating_sub(1)).collect();
+    Cow::Owned(format!("{cut}…"))
+}
+
 /// A body comes only with a single match: several bodies cost more than the narrowed call.
 pub fn defs(name: &str, found: &def::Found, body: bool) -> String {
     let n = found.hits.len();
     let withheld = body && n > 1;
     let body = body && n == 1;
+    let more = n.saturating_sub(MAX_DEFS);
     let mut out = String::new();
-    for d in &found.hits {
+    for d in found.hits.iter().take(MAX_DEFS) {
         block(&mut out, &d.path, d.line, d.kind, &d.signature);
         if body {
             for l in &d.body {
                 indented(&mut out, l);
             }
         }
+    }
+    if more > 0 {
+        let _ = writeln!(out, "\n{more} more definitions: narrow with --kind or --in");
     }
     if withheld {
         let _ = writeln!(
@@ -115,7 +131,8 @@ pub fn outline(found: &outline::Found) -> String {
         let _ = writeln!(out, "== {} ==", f.path);
         for e in &f.entries {
             let pad = "  ".repeat(e.depth - 1);
-            let _ = writeln!(out, "{pad}{}  {}  {}", e.line, e.kind, e.text);
+            let text = truncate_line(&e.text, MAX_LINE_CHARS);
+            let _ = writeln!(out, "{pad}{}  {}  {}", e.line, e.kind, text);
         }
     }
     let mut parts = Vec::new();
@@ -148,6 +165,7 @@ fn block(out: &mut String, path: &str, line: u64, kind: &str, text: &str) {
     if !out.is_empty() {
         out.push('\n');
     }
+    let text = truncate_line(text, MAX_LINE_CHARS);
     let _ = writeln!(out, "{path}:{line}  {kind}  {text}");
 }
 
@@ -155,6 +173,7 @@ fn indented(out: &mut String, line: &str) {
     if line.is_empty() {
         out.push('\n');
     } else {
+        let line = truncate_line(line, MAX_LINE_CHARS);
         let _ = writeln!(out, "    {line}");
     }
 }
@@ -186,4 +205,53 @@ fn finish(mut out: String, trailer: &str) -> String {
 
 fn plural(n: usize, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ctx::def::Def;
+
+    #[test]
+    fn truncate_line_caps_ascii_and_utf8() {
+        let long = "x".repeat(5000);
+        let t = truncate_line(&long, MAX_LINE_CHARS);
+        assert!(t.chars().count() <= MAX_LINE_CHARS);
+        assert!(t.ends_with('…'));
+
+        let exact = "é".repeat(200);
+        assert_eq!(truncate_line(&exact, MAX_LINE_CHARS), exact);
+
+        let over = format!("{}aaaa", "ø".repeat(198));
+        let t = truncate_line(&over, MAX_LINE_CHARS);
+        assert!(t.chars().count() <= MAX_LINE_CHARS);
+        assert!(t.ends_with('…'));
+        assert!(t.contains('ø'));
+    }
+
+    #[test]
+    fn defs_caps_location_count() {
+        let hits: Vec<Def> = (0..35)
+            .map(|i| Def {
+                path: format!("f{i}.rs"),
+                line: i as u64 + 1,
+                kind: "fn",
+                signature: format!("fn f{i}()"),
+                body: vec![],
+                cut: false,
+            })
+            .collect();
+        let found = def::Found {
+            hits,
+            searched: Searched {
+                files: 1,
+                ..Searched::default()
+            },
+            ..def::Found::default()
+        };
+        let out = defs("f", &found, false);
+        assert_eq!(out.lines().filter(|l| l.contains("  fn  ")).count(), 20);
+        assert!(out.contains("15 more definitions: narrow with --kind or --in"));
+        assert!(out.contains("35 definitions"));
+    }
 }

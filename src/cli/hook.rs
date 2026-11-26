@@ -5,7 +5,7 @@ use std::path::{Component, Path, PathBuf};
 use serde_json::{Value, json};
 
 use crate::Result;
-use crate::ctx::walk::{VENDOR_DIRS, WalkOpts};
+use crate::ctx::walk::{ROOT_DIRS, VENDOR_DIRS, WalkOpts};
 use crate::ctx::{def, print, refs};
 use crate::error::io;
 use crate::paths;
@@ -15,9 +15,13 @@ pub const PACK_ENV: &str = "FACTORY_PACK";
 
 pub const NEVER_HINT: &str = "workers never run gh or git push: the driver pushes the branch and talks to GitHub; commit locally, and put what you need from GitHub in your report";
 
+pub const MAX_DENY_BYTES: usize = 8 * 1024;
+
+const TRUNC_SUFFIX: &str = "\n… (truncated; run ctx with --in or --max to narrow)";
+
 pub fn grep_hint() -> String {
     format!(
-        "use: {} ctx refs <word> (or ctx def <symbol>; --vendor for vendor code): a bare name goes to ctx, grep anything else",
+        "use: {} ctx refs <word> (or ctx def <symbol>; --vendor for vendor code): a bare name goes to ctx; for string literals grep with quotes (e.g. grep '\"Word\"')",
         paths::factory_command()
     )
 }
@@ -112,7 +116,7 @@ fn bash(command: &str, held: &Held, repo: &Path, cwd: &Path) -> Verdict {
     if guard(command) {
         return Verdict::Deny(NEVER_HINT.to_string());
     }
-    let (words, end, cds) = shell::first_command_in(command);
+    let ((words, end, cds), standalone) = shell::first_command_standalone(command);
     // A `cd` the hook cannot follow (`cd`, `cd -`, `cd ~`, `cd $D`) leaves nothing to judge paths by.
     let mut here = cwd.to_path_buf();
     for target in cds {
@@ -134,8 +138,11 @@ fn bash(command: &str, held: &Held, repo: &Path, cwd: &Path) -> Verdict {
         "rg" => rg_search(args),
         _ => None,
     };
-    if let Some(name) = bare_name(search, &here, repo) {
-        return Verdict::Deny(answered(name, &here, repo));
+    if standalone
+        && let Some((name, search_root)) = bare_name(search, &here, repo)
+        && let Some(reason) = answered(name, &search_root, repo, &here)
+    {
+        return Verdict::Deny(reason);
     }
     match program {
         // `cat f | head`: a range, not the whole file.
@@ -197,9 +204,22 @@ fn mentions(text: &str) -> bool {
     ["gh", "push"].iter().any(|w| {
         let w = w.as_bytes();
         (0..b.len()).any(|i| {
-            b[i..].starts_with(w)
-                && (i == 0 || !word(b[i - 1]))
-                && b.get(i + w.len()).is_none_or(|c| !word(*c))
+            if !b[i..].starts_with(w) {
+                return false;
+            }
+            if i > 0 && word(b[i - 1]) {
+                return false;
+            }
+            if b.get(i + w.len()).is_some_and(|c| word(*c)) {
+                return false;
+            }
+            if w == b"push" {
+                let pre = &b[..i];
+                if pre.ends_with(b".") || pre.ends_with(b"->") || pre.ends_with(b"::") {
+                    return false;
+                }
+            }
+            true
         })
     })
 }
@@ -518,7 +538,7 @@ fn interpreter(program: &str, args: &[&str], stdin: &[String]) -> Reach {
         "deno" => {
             return match args {
                 ["eval", rest @ ..] if rest.iter().all(|a| a.starts_with('-')) => Reach::Unsure,
-                ["eval", rest @ ..] => inline_script(rest),
+                ["eval", rest @ ..] => inline_script(program, rest),
                 _ => Reach::Fine,
             };
         }
@@ -538,7 +558,7 @@ fn interpreter(program: &str, args: &[&str], stdin: &[String]) -> Reach {
                     return Reach::Unsure;
                 }
                 if long == f || long.strip_prefix(f).is_some_and(|v| v.starts_with('=')) {
-                    return inline_script(&args[i..]);
+                    return inline_script(program, &args[i..]);
                 }
             }
             continue;
@@ -551,24 +571,24 @@ fn interpreter(program: &str, args: &[&str], stdin: &[String]) -> Reach {
             if at + 1 == cluster.len() && i + 1 == args.len() {
                 return Reach::Unsure;
             }
-            return inline_script(&args[i..]);
+            return inline_script(program, &args[i..]);
         }
     }
     if stdin.is_empty() {
         return Reach::Unsure;
     }
-    let read: Vec<Reach> = stdin.iter().map(|doc| script(doc)).collect();
+    let read: Vec<Reach> = stdin.iter().map(|doc| script(program, doc)).collect();
     [Reach::Forbidden, Reach::Unsure]
         .into_iter()
         .find(|r| read.contains(r))
         .unwrap_or(Reach::Fine)
 }
 
-fn inline_script(words: &[&str]) -> Reach {
+fn inline_script(program: &str, words: &[&str]) -> Reach {
     if words.iter().any(|w| opaque(w)) {
         return Reach::Unsure;
     }
-    script(&words.join(" "))
+    script(program, &words.join(" "))
 }
 
 /// `$S`, `${S}` or `$(…)`: the shell hands the interpreter text the hook never sees.
@@ -580,16 +600,20 @@ fn opaque(word: &str) -> bool {
 }
 
 /// A process call that names neither gh nor push is unsure: an argument, a variable or stdin may hand it one.
-fn script(text: &str) -> Reach {
-    match (process_call(text), mentions(text)) {
+fn script(program: &str, text: &str) -> Reach {
+    match (process_call(program, text), mentions(text)) {
         (true, true) => Reach::Forbidden,
         (true, false) => Reach::Unsure,
         _ => Reach::Fine,
     }
 }
 
-fn process_call(text: &str) -> bool {
-    const CALLS: [&str; 17] = [
+fn is_word(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+fn process_call(program: &str, text: &str) -> bool {
+    const CALLS: [&str; 23] = [
         "subprocess",
         "os.system",
         "os.popen",
@@ -604,15 +628,42 @@ fn process_call(text: &str) -> bool {
         "shell_exec",
         "passthru",
         "proc_open",
-        "`",
-        "%x",
-        "qx",
+        "__import__",
+        "Deno.Command",
+        "Bun.spawn",
+        "io.popen",
+        "do shell script",
+        "pcntl_exec",
+        "posix_spawn",
+        "posix_spawnp",
+        "Bun.$",
     ];
-    CALLS.iter().any(|c| text.contains(c))
-        || ["system(", "exec(", "spawn(", "popen("].iter().any(|c| {
-            text.match_indices(c)
-                .any(|(i, _)| !text[..i].ends_with('.'))
-        })
+    let calls_match = CALLS.iter().any(|c| text.contains(c))
+        || (matches!(program, "ruby" | "perl" | "php") && text.contains('`'))
+        || (matches!(program, "node" | "bun" | "deno") && text.contains("$`"))
+        || (program == "ruby" && text.contains("%x"))
+        || (program == "perl" && text.contains("qx"));
+    let paren_calls = ["system(", "exec(", "spawn(", "popen("].iter().any(|c| {
+        text.match_indices(c)
+            .any(|(i, _)| i == 0 || !is_word(text.as_bytes()[i - 1]))
+    });
+    let parenless = matches!(program, "ruby" | "perl" | "tclsh" | "wish")
+        && ["system", "exec", "spawn"].iter().any(|kw| {
+            let kw = kw.as_bytes();
+            (0..text.len()).any(|i| {
+                if !text.as_bytes()[i..].starts_with(kw) {
+                    return false;
+                }
+                let before_ok = i == 0 || !is_word(text.as_bytes()[i - 1]);
+                let after = i + kw.len();
+                before_ok
+                    && text
+                        .as_bytes()
+                        .get(after)
+                        .is_some_and(|c| *c == b' ' || *c == b'\t')
+            })
+        });
+    calls_match || paren_calls || parenless
 }
 
 struct Search<'a> {
@@ -636,9 +687,9 @@ impl<'a> Search<'a> {
 
 /// The hint, then what `ctx refs` and `ctx def --no-body` print, so the worker skips the turn that runs them.
 /// A cwd outside the repo searches the repo: the walk never leaves it.
-fn answered(name: &str, here: &Path, repo: &Path) -> String {
+fn answered(name: &str, search_root: &Path, repo: &Path, here: &Path) -> Option<String> {
     let hint = grep_hint();
-    let here = if here.to_str().is_some_and(|h| under(h, repo)) {
+    let base = if here.to_str().is_some_and(|h| under(h, repo)) {
         here
     } else {
         repo
@@ -650,24 +701,49 @@ fn answered(name: &str, here: &Path, repo: &Path) -> String {
         tests: false,
     };
     let (Ok(r), Ok(d)) = (
-        refs::find(here, here, name, caps, &opts),
-        def::find(here, here, name, None, &opts),
+        refs::find(base, search_root, name, caps, &opts),
+        def::find(base, search_root, name, None, &opts),
     ) else {
-        return hint;
+        return None;
     };
     if r.total == 0 && d.hits.is_empty() {
-        return hint;
+        return None;
     }
     let factory = paths::factory_command();
-    format!(
+    let mut reason = format!(
         "{hint}\n\n$ {factory} ctx refs {name}\n{}\n$ {factory} ctx def {name} --no-body\n{}",
         print::refs(name, &r),
         print::defs(name, &d, false)
-    )
+    );
+    if reason.len() > MAX_DENY_BYTES {
+        let mut budget = MAX_DENY_BYTES - TRUNC_SUFFIX.len();
+        while !reason.is_char_boundary(budget) {
+            budget -= 1;
+        }
+        while reason.len() > budget {
+            let end = reason
+                .char_indices()
+                .take_while(|(i, _)| *i < budget)
+                .map(|(i, c)| i + c.len_utf8())
+                .last()
+                .unwrap_or(0);
+            if let Some(pos) = reason[..end].rfind('\n') {
+                reason.truncate(pos);
+            } else {
+                reason.truncate(end);
+            }
+        }
+        reason.push_str(TRUNC_SUFFIX);
+    }
+    Some(reason)
 }
 
 /// Only one bare identifier over repo code goes to ctx; literals, regex and vendor code are grep's.
-fn bare_name<'a>(search: Option<Search<'a>>, here: &Path, repo: &Path) -> Option<&'a str> {
+fn bare_name<'a>(
+    search: Option<Search<'a>>,
+    here: &Path,
+    repo: &Path,
+) -> Option<(&'a str, PathBuf)> {
     let s = search?;
     let [Some(pattern)] = s.patterns[..] else {
         return None;
@@ -678,8 +754,32 @@ fn bare_name<'a>(search: Option<Search<'a>>, here: &Path, repo: &Path) -> Option
         s.paths.clone()
     };
     let name = identifier(pattern)?;
-    (over_repo(&s.paths, here, repo) && !paths.iter().any(|p| vendored(p, here, repo)))
-        .then_some(name)
+    if !over_repo(&s.paths, here, repo) {
+        return None;
+    }
+    if paths
+        .iter()
+        .any(|p| vendored(p, here, repo) || root_dir_operand(p, here, repo))
+    {
+        return None;
+    }
+    let search_root = if s.paths.len() == 1 && !s.paths[0].contains(['*', '?', '[']) {
+        absolute(s.paths[0], here)
+            .filter(|full| under(full, repo) && Path::new(full).is_dir())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| clamp_cwd(here, repo))
+    } else {
+        clamp_cwd(here, repo)
+    };
+    Some((name, search_root))
+}
+
+fn clamp_cwd(here: &Path, repo: &Path) -> PathBuf {
+    if here.to_str().is_some_and(|h| under(h, repo)) {
+        here.to_path_buf()
+    } else {
+        repo.to_path_buf()
+    }
 }
 
 fn identifier(pattern: &str) -> Option<&str> {
@@ -693,6 +793,23 @@ fn identifier(pattern: &str) -> Option<&str> {
         .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
     word.then_some(name)
+}
+
+fn root_dir_operand(p: &str, here: &Path, repo: &Path) -> bool {
+    let (Some(full), Some(root)) = (absolute(p, here), repo.to_str()) else {
+        return false;
+    };
+    if !under(&full, repo) {
+        return false;
+    }
+    let root = root.trim_end_matches('/');
+    let Some(rel) = full.strip_prefix(root) else {
+        return false;
+    };
+    let rel = rel.strip_prefix('/').unwrap_or(rel);
+    rel.split('/')
+        .next()
+        .is_some_and(|c| ROOT_DIRS.contains(&c))
 }
 
 fn vendored(p: &str, here: &Path, repo: &Path) -> bool {
@@ -743,6 +860,9 @@ fn grep_search(args: &[String]) -> Option<Search<'_>> {
         }
         if let Some(long) = a.strip_prefix("--") {
             let (name, value) = long_value(long, args.get(i));
+            if matches!(name, "include" | "exclude" | "exclude-dir" | "exclude-from") {
+                return None;
+            }
             match name {
                 "recursive" | "dereference-recursive" => recursive = true,
                 "regexp" => patterns.push(value),
@@ -849,6 +969,9 @@ fn rg_search(args: &[String]) -> Option<Search<'_>> {
         }
         if let Some(long) = a.strip_prefix("--") {
             let (name, value) = long_value(long, args.get(i));
+            if matches!(name, "glob" | "iglob" | "type" | "type-not") {
+                return None;
+            }
             match name {
                 "files" | "type-list" => return None,
                 "regexp" => patterns.push(value),
@@ -861,6 +984,13 @@ fn rg_search(args: &[String]) -> Option<Search<'_>> {
             continue;
         }
         if let Some(cluster) = a.strip_prefix('-').filter(|c| !c.is_empty()) {
+            let flags = cluster
+                .split_once(|c| ['e', 'f'].contains(&c))
+                .map(|(p, _)| p)
+                .unwrap_or(cluster);
+            if flags.chars().any(|c| matches!(c, 'g' | 't' | 'T')) {
+                return None;
+            }
             if let Some((k, c)) = cluster.char_indices().find(|(_, c)| SHORT_ARG.contains(*c)) {
                 i += short_value(cluster, k, args.get(i), c, &mut patterns);
             }
@@ -1006,8 +1136,22 @@ mod tests {
         ] {
             std::fs::create_dir_all(tmp.path().join(d)).unwrap();
         }
+        std::fs::write(
+            tmp.path().join("src/one.php"),
+            "<?php\nfunction foo() {}\nclass Recon {}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("src/Http/Ctrl.php"),
+            "<?php\nclass Ctrl {\n    public function run(Recon $r) { foo(); }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("app/App.php"),
+            "<?php\nclass App {\n    public function foo() {}\n}\n",
+        )
+        .unwrap();
         for f in [
-            "src/one.php",
             "src/x.php",
             "storage/app.log",
             "storage/logs/laravel.log",
@@ -1019,6 +1163,14 @@ mod tests {
             std::fs::write(tmp.path().join(f), "x\n").unwrap();
         }
         tmp
+    }
+
+    fn deny_starts_with_hint(v: Verdict) -> String {
+        let Verdict::Deny(why) = v else {
+            panic!("expected deny");
+        };
+        assert!(why.starts_with(&grep_hint()), "{why}");
+        why
     }
 
     fn bash_in(cmd: &str, repo: &Path, cwd: &Path) -> Verdict {
@@ -1056,18 +1208,21 @@ mod tests {
         let tmp = repo();
         let root = tmp.path();
         let r = root.to_str().unwrap();
-        let hint = Verdict::Deny(grep_hint());
         for cmd in [
-            "grep -rn foo src".to_string(),
-            "grep -R foo".to_string(),
-            "grep -rn foo .".to_string(),
-            format!("cd {r} && grep -rni --include=*.php foo app/"),
-            "grep --recursive -e foo src/Http".to_string(),
-            "rg foo".to_string(),
-            format!("rg foo {r}/src | head -20"),
-            "grep -r foo *".to_string(),
+            "grep -rn foo src",
+            "grep -R foo",
+            "grep -rn foo .",
+            "grep --recursive -e foo src/Http",
+            "rg foo",
+            "grep -r foo *",
         ] {
-            assert_eq!(bash_in(&cmd, root, root), hint, "{cmd}");
+            deny_starts_with_hint(bash_in(cmd, root, root));
+        }
+        for cmd in [
+            format!("cd {r} && grep -rni --include=*.php foo app/"),
+            format!("rg foo {r}/src | head -20"),
+        ] {
+            assert_eq!(bash_in(&cmd, root, root), Verdict::Allow, "{cmd}");
         }
         for cmd in [
             "rg -n 'a b' src",
@@ -1128,7 +1283,7 @@ mod tests {
 
         assert_eq!(
             bash_in("grep -rn nothing_here src", root, root),
-            Verdict::Deny(grep_hint())
+            Verdict::Allow
         );
     }
 
@@ -1136,7 +1291,6 @@ mod tests {
     fn only_a_bare_name_outside_vendor_code_goes_to_ctx() {
         let tmp = repo();
         let root = tmp.path();
-        let hint = Verdict::Deny(grep_hint());
         for cmd in [
             "grep -rn Recon src",
             "grep -rnw Recon src",
@@ -1145,10 +1299,11 @@ mod tests {
             "grep -rn -eRecon src",
             "grep -rn --regexp=Recon src",
             "rg --regexp Recon src",
-            "rg -n -e _recon2",
         ] {
-            assert_eq!(bash_in(cmd, root, root), hint, "{cmd}");
+            deny_starts_with_hint(bash_in(cmd, root, root));
         }
+        assert_eq!(bash_in("rg -n -e _recon2", root, root), Verdict::Allow);
+        assert_eq!(bash_in("rg -egetUser src", root, root), Verdict::Allow);
         for cmd in [
             "grep -rn \"fn main\" src",
             "grep -rn 'foo\\|bar' src",
@@ -1178,7 +1333,7 @@ mod tests {
         ] {
             assert_eq!(bash_in(cmd, root, root), Verdict::Allow, "{cmd}");
         }
-        assert!(denied(bash_in("rg foo storage", root, root)));
+        assert_eq!(bash_in("rg foo storage", root, root), Verdict::Allow);
     }
 
     #[test]
@@ -1337,6 +1492,13 @@ mod tests {
         assert!(mentions("git-push"));
         assert!(mentions("'gh'"));
         assert!(mentions("$GH api"));
+        assert!(mentions("git push"));
+        assert!(mentions("\"push\""));
+        assert!(mentions("'push'"));
+        assert!(mentions("$PUSH"));
         assert!(!mentions("github pushd push_x ghost GH_TOKEN"));
+        assert!(!mentions("out.push(line)"));
+        assert!(!mentions("$c->push(1)"));
+        assert!(!mentions("Vec::push"));
     }
 }

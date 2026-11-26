@@ -3,7 +3,7 @@ use std::ops::Range;
 use std::path::Path;
 use std::sync::OnceLock;
 
-use tree_sitter::{Language, Parser, Tree};
+use tree_sitter::{Language, Node, Parser, Tree};
 use tree_sitter_tags::{TagsConfiguration, TagsContext};
 
 use super::vue;
@@ -22,6 +22,7 @@ pub enum Grammar {
 const PHP_EXTRA: &str = r"
 (method_declaration name: (name) @name) @definition.method
 (enum_declaration name: (name) @name) @definition.class
+(const_declaration (const_element (name) @name)) @definition.constant
 ";
 
 /// TypeScript's `tags.scm` leaves functions, classes and methods to JavaScript's, which this crate does not ship.
@@ -39,6 +40,7 @@ const TS_EXTRA: &str = r"
 const GO_EXTRA: &str = r"
 (type_spec name: (type_identifier) @name type: [(struct_type) (interface_type)]) @definition.class
 (type_alias name: (type_identifier) @name) @definition.type
+(const_spec name: (identifier) @name) @definition.constant
 ";
 
 /// An `impl` block is a definition so the outline can nest its methods under it.
@@ -169,7 +171,13 @@ impl<'a> Unit<'a> {
                 kind: kind(config.syntax_type_name(t.syntax_type_id)),
             })
             .collect::<Vec<_>>();
-        defs.sort_by_key(|d| (d.range.start, Reverse(d.range.end), d.name.start));
+        if self.grammar == Grammar::Php
+            && let Some(tree) = self.parse()
+        {
+            defs.extend(pest_tests(self, tree.root_node()));
+            defs.retain(|d| d.kind != "fn" || !closure_local_function(self, &tree, d.range.start));
+            defs.sort_by_key(|d| (d.range.start, Reverse(d.range.end), d.name.start));
+        }
         Some((defs, has_error))
     }
 
@@ -227,6 +235,106 @@ impl<'a> Parsed<'a> {
             .iter()
             .any(|(u, t)| u.in_comment_or_string(t, at.clone()))
     }
+}
+
+const PEST_SKIP: &[&str] = &[
+    "class_declaration",
+    "interface_declaration",
+    "trait_declaration",
+    "enum_declaration",
+    "function_definition",
+    "method_declaration",
+];
+
+fn pest_tests(unit: &Unit<'_>, root: Node<'_>) -> Vec<Definition> {
+    let mut out = Vec::new();
+    walk_pest(unit, root, &mut out);
+    out
+}
+
+fn walk_pest<'a>(unit: &Unit<'a>, node: Node<'a>, out: &mut Vec<Definition>) {
+    if PEST_SKIP.contains(&node.kind()) {
+        return;
+    }
+    if node.kind() == "function_call_expression"
+        && let Some(def) = pest_call(unit, node)
+    {
+        out.push(def);
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        walk_pest(unit, child, out);
+    }
+}
+
+fn pest_call(unit: &Unit<'_>, node: Node<'_>) -> Option<Definition> {
+    let func = callee_name(node)?;
+    let name = func.utf8_text(unit.text.as_bytes()).ok()?;
+    if name != "test" && name != "it" {
+        return None;
+    }
+    let args = node.child_by_field_name("arguments")?;
+    let title = first_string_arg(args)?;
+    let shift = |r: Range<usize>| r.start + unit.offset..r.end + unit.offset;
+    let starts = line_starts(unit.text);
+    let line = line_of(&starts, node.start_byte());
+    let from = starts[line];
+    let to = starts.get(line + 1).copied().unwrap_or(unit.text.len());
+    Some(Definition {
+        range: shift(node.byte_range()),
+        name: shift(title.byte_range()),
+        line: shift(from..to),
+        kind: "test",
+    })
+}
+
+fn closure_local_function(unit: &Unit<'_>, tree: &Tree, at: usize) -> bool {
+    let start = at.saturating_sub(unit.offset);
+    let Some(mut node) = tree
+        .root_node()
+        .descendant_for_byte_range(start, start.saturating_add(1))
+    else {
+        return false;
+    };
+    while let Some(parent) = node.parent() {
+        match parent.kind() {
+            "anonymous_function" | "arrow_function" => return true,
+            "class_declaration"
+            | "interface_declaration"
+            | "trait_declaration"
+            | "method_declaration" => return false,
+            _ => node = parent,
+        }
+    }
+    false
+}
+
+fn callee_name(node: Node<'_>) -> Option<Node<'_>> {
+    if let Some(f) = node.child_by_field_name("function")
+        && f.kind() == "name"
+    {
+        return Some(f);
+    }
+    let mut cursor = node.walk();
+    node.named_children(&mut cursor)
+        .find(|n| n.kind() == "name")
+}
+
+fn first_string_arg(arguments: Node<'_>) -> Option<Node<'_>> {
+    let mut cursor = arguments.walk();
+    for child in arguments.children(&mut cursor) {
+        if child.kind() == "argument" {
+            let mut inner = child.walk();
+            for arg in child.children(&mut inner) {
+                if matches!(arg.kind(), "string" | "encapsed_string") {
+                    return Some(arg);
+                }
+            }
+        } else if matches!(child.kind(), "string" | "encapsed_string") {
+            return Some(child);
+        }
+    }
+    None
 }
 
 pub fn kind(syntax: &'static str) -> &'static str {
@@ -287,6 +395,38 @@ mod tests {
             Grammar::Rust,
         ] {
             assert!(g.tags_config().syntax_type_name(0).len() > 1, "{g:?}");
+        }
+    }
+
+    #[test]
+    fn pest_call_node_shape() {
+        let src = "<?php\ntest('a', function(){});\n";
+        let unit = Unit::all(Path::new("t.php"), Lang::Php, src)[0];
+        let (defs, _) = unit.definitions().unwrap();
+        assert!(defs.iter().any(|d| d.kind == "test"), "{defs:?}");
+    }
+
+    #[test]
+    fn php_and_go_const_tags_compile() {
+        for (src, lang, path) in [
+            (
+                "<?php\nclass C { public const FOO = 1; public const string MODE = 'a'; }\nconst BAR = 2;\n",
+                Lang::Php,
+                "a.php",
+            ),
+            (
+                "package p\nconst Single = 1\nconst (\n\tFirst = iota\n\tSecond\n)\n",
+                Lang::Go,
+                "a.go",
+            ),
+        ] {
+            let unit = Unit::all(Path::new(path), lang, src)[0];
+            let (defs, broken) = unit.definitions().unwrap();
+            assert!(!broken, "{path}");
+            assert!(
+                defs.iter().any(|d| d.kind == "constant"),
+                "{path}: {defs:?}"
+            );
         }
     }
 

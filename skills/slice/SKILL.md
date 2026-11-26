@@ -85,6 +85,7 @@ This is what lets an agent execute the slice without reading the whole PRD.
 - **`**Acceptance:**`** — a test that could fail. Name what it asserts, not "it works", and name the test by that behavior, never by an FR or slice id.
   - **Name how it fails.** Each test an Acceptance names, and each behavioural Prove row, says how it fails if the feature is removed. The builder breaks the feature once by hand (a revert or a stub, never through git, which can lose uncommitted work), sees each test it runs go red, then restores the feature; a row only the harness drives just names its failure. Two "submit once" browser specs once passed with the feature's script removed.
   - **A skill-text Acceptance asserts that the passage it quotes occurs exactly once**, never a word it shares with other lines: a check that passes on a sibling line still passes after the rule it guards is deleted.
+  - When a PRD FR loosens a guard, carry its regression-corpus replay into the Prove task.
 
 **Every task traces to the PRD.** A task you cannot quote a source for is not written. This is where a slice quietly adds requirements that every later stage then treats as the spec: a figure nobody asked for, a guard for a case the PRD never names, a mechanism the PRD orders for one path copied to another path where its reason does not apply. Verify, Prove and the harness slice's task cite § QA plan. Ask the owner about an unsourced task with "Leave it out" as the recommended option; one they keep goes into the PRD as a decision first, so the slice has something to quote.
 
