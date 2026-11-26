@@ -752,3 +752,112 @@ fn the_walk_skips_vendor_and_gitignored_paths_unless_vendor() {
         "no definition of Blob found (searched 51 files); skipped 1 binary file, 1 file over 2 MB\n"
     );
 }
+
+#[test]
+fn ctx_indexes_go_consts_php_class_consts_and_pest_outline_tests() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("consts.go"),
+        "\
+package sample
+
+const Single = 1
+
+const (
+\tFirst = iota
+\tSecond // trailing
+)
+
+type S struct{}
+var _ = S{First: 1}
+",
+    )
+    .unwrap();
+    fs::write(
+        root.join("Consts.php"),
+        "<?php\nclass Order {\n    public const STATUS_OPEN = 'open';\n    public const string MODE = 'a';\n}\n",
+    )
+    .unwrap();
+    let long_title = "x".repeat(210);
+    fs::write(
+        root.join("BillingTest.php"),
+        format!(
+            "\
+<?php
+use function Pest\\Laravel\\test;
+
+test('creates invoice', function () {{}});
+
+it('rejects empty', function () {{}});
+
+describe('billing', function () {{
+    it('charges once', function () {{}});
+    function helper() {{}}
+}});
+
+class PestTrap {{
+    public function run() {{
+        test('not a pest test', function () {{}});
+    }}
+}}
+
+test('{long_title}', function () {{}});
+"
+        ),
+    )
+    .unwrap();
+
+    let single = ctx_in(root, &["def", "Single", "--in", "consts.go"]);
+    assert_eq!(single.0, 0);
+    assert!(single.1.contains("constant"));
+    assert!(single.1.contains("const Single"));
+
+    let first = ctx_in(root, &["def", "First", "--in", "consts.go"]);
+    assert_eq!(first.0, 0);
+    assert!(first.1.contains("constant"));
+
+    let first_filtered = ctx_in(
+        root,
+        &["def", "First", "--kind", "constant", "--in", "consts.go"],
+    );
+    assert_eq!(first_filtered.0, 0);
+    assert!(first_filtered.1.contains("constant"));
+    assert!(!first_filtered.1.contains("First: 1"));
+
+    let status = ctx_in(root, &["def", "STATUS_OPEN", "--kind", "constant"]);
+    assert_eq!(status.0, 0);
+    assert!(status.1.contains("constant"));
+
+    let mode = ctx_in(root, &["def", "MODE", "--kind", "constant"]);
+    assert_eq!(mode.0, 0);
+    assert!(mode.1.contains("constant"));
+
+    let outline = ctx_in(root, &["outline", "BillingTest.php"]);
+    assert_eq!(outline.0, 0);
+    let pest = |title: &str| {
+        outline
+            .1
+            .lines()
+            .any(|l| l.contains("  test  ") && l.contains(title))
+    };
+    assert!(pest("creates invoice"));
+    assert!(pest("rejects empty"));
+    assert!(pest("charges once"));
+    assert!(!outline.1.contains("helper"));
+    assert!(!outline.1.contains("not a pest test"));
+
+    let long_line = outline
+        .1
+        .lines()
+        .find(|l| l.contains("test(") && l.contains(&long_title[..20]))
+        .unwrap_or_else(|| {
+            outline
+                .1
+                .lines()
+                .find(|l| l.contains('…'))
+                .expect("truncated pest line")
+        });
+    assert!(long_line.chars().count() <= 220);
+    assert!(long_line.ends_with('…') || long_line.contains('…'));
+}
