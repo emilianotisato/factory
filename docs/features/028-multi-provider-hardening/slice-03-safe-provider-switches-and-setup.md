@@ -105,3 +105,6 @@
 - **FR-1**: run `cargo test --test setup provider_switch_clears_stale_role_slugs_and_preflight_refuses_bad_config -- --nocapture` and keep the transcript. Expected: passes proving stale role clears (setup + answer + env preservation), preflight worker refusals + review warning, and `setup --show` alignment.
 
 **Acceptance:** after the checkpoint, the FR-1 row has transcript evidence in this slice's **Progress**.
+
+**Code-review fixes (2026-11-26).**
+- `factory setup workers --clear` on the default table now runs `stale_role_clears` so provider-less role slugs are dropped when the top-level `[workers]` provider is cleared, matching a normal provider switch.

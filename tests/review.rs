@@ -1517,6 +1517,7 @@ fn review_second_isolates_all_five_providers_and_supports_dry_run() {
         assert_eq!(v["edit"], "deny");
         assert_eq!(v["bash"], "deny");
         assert_eq!(v["webfetch"], "deny");
+        assert_eq!(v["task"], "deny");
     };
     let run = |args: &[&str]| {
         fx.command(BIN)

@@ -16,8 +16,8 @@
 - **`Worker::spawn`**: `src/worker.rs:449-462` — `wdir = dir(&run_dir)` is the workers log dir (`run_dir/workers`), while `cwd` (`:462`) is the canonicalized lane worktree. `push_off_env` is called around line 560 with `std::env::var(GIT_CONFIG_COUNT).ok().as_deref()`.
 - **Existing tests that assert exact `GIT_CONFIG_COUNT` / `git_config` map**:
   - `src/worker.rs:824` (`the_push_off_env_goes_after_the_inherited_git_config`) — unit test in `src/`, asserts 5 entries; update to 6 (including `help.autocorrect = "0"`).
-  - `tests/worker.rs:134` (`a_worker_gets_no_github_and_no_session_but_keeps_the_account`) — **authorized in `prd.md`**; asserts `git["GIT_CONFIG_COUNT"] == "5"`; update to `"6"` (the fixture has no remote configured, so only base entries appear).
-  - `tests/worker.rs:202-218` (`a_worker_pushes_nowhere_through_the_git_push_off_env`) — **authorized in `prd.md`**; asserts `GIT_CONFIG_COUNT == "6"` (1 inherited + 5 base) and exact `want` map; update to `"7"` adding `GIT_CONFIG_KEY_6: "help.autocorrect"`, `GIT_CONFIG_VALUE_6: "0"`.
+  - `tests/worker.rs:134` (`a_worker_gets_no_github_and_no_session_but_keeps_the_account`) — **authorized in `prd.md`**; asserts `git["GIT_CONFIG_COUNT"]`; expect `"7"` (6 base + 1 harness `remote.*.url` pushInsteadOf rule).
+  - `tests/worker.rs:202-218` (`a_worker_pushes_nowhere_through_the_git_push_off_env`) — **authorized in `prd.md`**; asserts `GIT_CONFIG_COUNT` and exact `want` map; expect `"8"` (1 inherited + 6 base + 1 harness remote URL rule) including `GIT_CONFIG_KEY_6: "help.autocorrect"`, `GIT_CONFIG_VALUE_6: "0"`.
 - **`testguard` rule on `tests/worker.rs`**: Only the two functions named above are authorized for modification in `tests/worker.rs`. Add any new `use` imports on their own lines — never merge or edit existing top-level `use` lines.
 - **Deliberate non-changes** — *(prd §5 Accepted cost & §10 Non-goals)*:
   - Do not attempt to reorder interactive `.bashrc` PATH inside non-Claude shells.
@@ -72,3 +72,7 @@
 - **FR-3**: run `cargo test --test worker worker_env_strips_pat_disables_autocorrect_and_blocks_explicit_pushurl -- --nocapture` and keep the transcript. Expected: passes proving PAT stripping, `help.autocorrect=0`, explicit `pushurl` rewrite to `factory-no-push://`, and longest-match `pushInsteadOf` dominance via `Worker::spawn`.
 
 **Acceptance:** after the checkpoint, the FR-3 row has transcript evidence in this slice's **Progress**.
+
+**Code-review fixes (2026-11-26).**
+- `push_off_env_for_repo` skipped empty pushurls and pushurls that overlap fetch URLs so `insteadOf` does not rewrite remotes the worker still needs to read; worker integration test now uses fixture git isolation and asserts `remote-factory-no-push` on stderr.
+- `git_config_values` splits keys on tab as well as space; blast-radius docs corrected for harness `remote.*.url` GIT_CONFIG_COUNT expectations.

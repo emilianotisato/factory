@@ -89,3 +89,7 @@ Add `collect_reuse_preflight_warnings_path_order_and_log_title_file` proving all
 - **FR-4**: run `cargo test --test collect_and_provider collect_reuse_preflight_warnings_path_order_and_log_title_file -- --nocapture` and keep the transcript. Expected: passes proving reviewer-stamped `reusable_for`, `proceed` wording + `SKILL.md` exact-once check, preflight config warnings, PATH-order `detect_installed_in` + `0o001` `X_OK` check, and `docs log add --title-file`.
 
 **Acceptance:** after the checkpoint, the FR-4 row has transcript evidence in this slice's **Progress**.
+
+**Code-review fixes (2026-11-26).**
+- PATH-order test now places Codex before Claude on PATH so reverting PATH-order detection fails; `--title-file` log assertion requires exact JSON `title` field (no substring fallback).
+- `skills/polish/SKILL.md` proceed wording matches unset-config reality; bundle lock refreshed.

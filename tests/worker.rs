@@ -459,7 +459,7 @@ fn worker_env_strips_pat_disables_autocorrect_and_blocks_explicit_pushurl() {
         .collect();
 
     let worker_git = |args: &[&str]| {
-        Command::new(&real_git)
+        fx.command(&real_git)
             .current_dir(cwd)
             .env_remove("GIT_CONFIG_COUNT")
             .envs(env.iter().map(|(k, v)| (k, v)))
@@ -487,6 +487,7 @@ fn worker_env_strips_pat_disables_autocorrect_and_blocks_explicit_pushurl() {
     let push = worker_git(&["push", "-q", "origin", "HEAD:refs/heads/main"]);
     let err = String::from_utf8_lossy(&push.stderr);
     assert!(!push.status.success(), "push succeeded: {err}");
+    assert!(err.contains("remote-factory-no-push"), "push stderr: {err}");
     let upstream_push = passed(
         worker_git(&["remote", "get-url", "--push", "upstream"]),
         "upstream push",

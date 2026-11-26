@@ -107,7 +107,7 @@ fn git_config_values(repo: &Path, pattern: &str) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     let mut values = Vec::new();
     for line in String::from_utf8_lossy(&out.stdout).lines() {
-        let Some((_, v)) = line.split_once(' ') else {
+        let Some((_, v)) = line.split_once([' ', '\t']) else {
             continue;
         };
         let v = v.trim();
@@ -122,15 +122,25 @@ pub fn push_off_env_for_repo(repo: &Path, inherited: Option<&str>) -> Vec<(Strin
     let n: usize = inherited.and_then(|c| c.parse().ok()).unwrap_or(0);
     let mut env = push_off_env(inherited);
     let mut idx = n + PUSH_OFF_PREFIXES.len() + 1;
-    for url in git_config_values(repo, r"^remote\..*\.url$") {
+    let fetch_urls = git_config_values(repo, r"^remote\..*\.url$");
+    for url in fetch_urls.iter() {
         env.push((
             format!("GIT_CONFIG_KEY_{idx}"),
             format!("url.{PUSH_OFF_BASE}.pushInsteadOf"),
         ));
-        env.push((format!("GIT_CONFIG_VALUE_{idx}"), url));
+        env.push((format!("GIT_CONFIG_VALUE_{idx}"), url.clone()));
         idx += 1;
     }
     for pushurl in git_config_values(repo, r"^remote\..*\.pushurl$") {
+        if pushurl.is_empty() {
+            continue;
+        }
+        if fetch_urls
+            .iter()
+            .any(|url| url.starts_with(&pushurl) || pushurl.starts_with(url))
+        {
+            continue;
+        }
         env.push((
             format!("GIT_CONFIG_KEY_{idx}"),
             format!("url.{PUSH_OFF_BASE}.insteadOf"),

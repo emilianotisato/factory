@@ -895,7 +895,7 @@ pub fn run_pass(
     run_pass_resolved(&cfg.into(), cwd, dir, n, prompt, cancel)
 }
 
-const OPENCODE_REVIEW_CFG: &str = r#"{"permission":{"edit":"deny","bash":"deny","webfetch":"deny"},"agent":{"plan":{"permission":{"edit":"deny","bash":"deny","webfetch":"deny"}}}}"#;
+const OPENCODE_REVIEW_CFG: &str = r#"{"permission":{"edit":"deny","bash":"deny","webfetch":"deny","task":"deny"},"agent":{"plan":{"permission":{"edit":"deny","bash":"deny","webfetch":"deny","task":"deny"}}}}"#;
 
 /// One adversarial reviewer pass, built for a live run or a dry-run printout.
 #[derive(Debug)]

@@ -447,11 +447,23 @@ fn worker_flags(
         if provider.is_some() || model.is_some() || effort.is_some() {
             return Err(msg("--clear takes no --provider, --model or --effort"));
         }
-        return Ok(vec![
+        let env_provider = std::env::var(config::WORKER_PROVIDER_ENV)
+            .ok()
+            .and_then(|v| v.trim().parse::<Provider>().ok());
+        let mut edits = vec![
             unset(table, "provider"),
             unset(table, "model"),
             unset(table, "effort"),
-        ]);
+        ];
+        if role.is_none() {
+            let new_provider = env_provider.unwrap_or(Provider::Claude);
+            edits.extend(config::stale_role_clears(
+                loaded,
+                env_provider,
+                new_provider,
+            ));
+        }
+        return Ok(edits);
     }
     if provider.is_none() && model.is_none() && effort.is_none() {
         return Err(msg("give --provider, --model, --effort or --clear"));

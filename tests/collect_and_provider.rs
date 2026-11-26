@@ -131,7 +131,7 @@ fn collect_reuse_preflight_warnings_path_order_and_log_title_file() {
     let late = dirs.path().join("late");
     fs::create_dir_all(&early).unwrap();
     fs::create_dir_all(&late).unwrap();
-    for (dir, name) in [(&early, "claude"), (&late, "codex")] {
+    for (dir, name) in [(&early, "codex"), (&late, "claude")] {
         let p = dir.join(name);
         fs::write(&p, "#!/bin/sh\nexit 0\n").unwrap();
         fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
@@ -139,7 +139,7 @@ fn collect_reuse_preflight_warnings_path_order_and_log_title_file() {
     let path_env = std::env::join_paths([&early, &late]).unwrap();
     let found = provider::detect_installed_in(&path_env);
     assert!(found.len() >= 2, "{found:?}");
-    assert_eq!(found[0].provider, Provider::Claude);
+    assert_eq!(found[0].provider, Provider::Codex);
     assert!(found.iter().any(|d| d.provider == Provider::Codex));
 
     if unsafe { libc::geteuid() } != 0 {
@@ -183,10 +183,7 @@ fn collect_reuse_preflight_warnings_path_order_and_log_title_file() {
     );
     let lines = fx.read(&format!("{FEATURE_DIR}/log.jsonl"));
     let last = lines.lines().next_back().expect("log line");
-    assert!(
-        last.contains(r#""title":"fix `git push` shim""#) || last.contains(r"fix `git push` shim"),
-        "{last}"
-    );
+    assert!(last.contains(r#""title":"fix `git push` shim""#), "{last}");
 
     let bad = fx
         .command(BIN)

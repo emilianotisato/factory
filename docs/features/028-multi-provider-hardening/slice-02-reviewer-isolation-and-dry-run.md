@@ -94,3 +94,6 @@ cp-2/FR-4/transcript.txt
 - **FR-2**: run `cargo test --test review review_second_isolates_all_five_providers_and_supports_dry_run -- --nocapture` and keep the transcript. Expected: passes proving all-5-provider env scrubbing (probe + pass), Claude `--setting-sources user --strict-mcp-config`, `--` prompt guard + `-`-led `--prompt`, OpenCode `OPENCODE_CONFIG_CONTENT`, and file-free `--dry-run`.
 
 **Acceptance:** after the checkpoint, the FR-2 row has transcript evidence in this slice's **Progress**.
+
+**Code-review fixes (2026-11-26).**
+- OpenCode reviewer `OPENCODE_CONFIG_CONTENT` now denies `task` at top level and under `agent.plan` so subagent delegation cannot regain write tools; isolation test asserts `task: deny`.
