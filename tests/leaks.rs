@@ -212,6 +212,77 @@ fn a_seeded_branch_lists_each_leak_under_its_rule_and_skips_the_rest() {
 }
 
 #[test]
+fn leaks_base_uses_base_allowlist_and_notes_branch_edits() {
+    let fx = Fixture::new("leaks-base-allow");
+    let project = fs::read_to_string(fx.path().join("docs/project.toml")).unwrap();
+
+    write(&fx, "src/branch_only.rs", "pub fn quiet() {}\n");
+    commit(&fx, "main: before branch");
+
+    fx.git(&["checkout", "-q", "-b", "feat/allow-branch"]);
+    write(&fx, "src/new_leak.rs", "// FR-77: only on the branch\n");
+    write(
+        &fx,
+        "docs/project.toml",
+        &format!(
+            "{project}\n[leaks]\nallow = [{{ path = \"src/new_leak.rs\", scope = \"all\" }}]\n"
+        ),
+    );
+    commit(&fx, "branch adds leak and allow");
+
+    let (code, out) = leaks(&fx, &["--base", "main"]);
+    assert_eq!(code, Some(1), "{out}");
+    let note = "note: [leaks] allow changed on this branch; scanned with main's allowlist";
+    let share = out.find("comment share:").expect("comment share line");
+    assert!(out[..share].contains(note), "{out}");
+    assert!(
+        section(&out, "id-comment").contains("  src/new_leak.rs:1  // FR-77"),
+        "{out}"
+    );
+
+    let (code, out) = leaks(&fx, &["--all"]);
+    assert_eq!(code, Some(0), "{out}");
+    assert!(!out.contains(note), "{out}");
+    assert!(!out.contains("FR-77"), "{out}");
+    assert!(out.ends_with("clean\n"), "{out}");
+
+    fx.git(&["checkout", "-q", "main"]);
+    write(
+        &fx,
+        "docs/project.toml",
+        &format!(
+            "{project}\n[leaks]\nallow = [{{ path = \"src/on_main.rs\", scope = \"all\" }}]\n"
+        ),
+    );
+    write(&fx, "src/on_main.rs", "pub fn on_main() {}\n");
+    commit(&fx, "main: allow on main");
+    fx.git(&["checkout", "-q", "-b", "feat/on-main-allow"]);
+    write(
+        &fx,
+        "src/on_main.rs",
+        "pub fn on_main() {}\n// FR-88: allowed on main\n",
+    );
+    commit(&fx, "branch touches allowed file");
+
+    let (code, out) = leaks(&fx, &["--base", "main"]);
+    assert_eq!(code, Some(0), "{out}");
+    assert!(!out.contains("note: [leaks] allow changed"), "{out}");
+    assert!(out.ends_with("clean\n"), "{out}");
+
+    fx.git(&["checkout", "-q", "main"]);
+    fx.git(&["rm", "docs/project.toml"]);
+    commit(&fx, "main: drop project.toml");
+    fx.git(&["checkout", "-q", "-b", "feat/no-project"]);
+    write(&fx, "src/after_drop.rs", "pub fn after_drop() {}\n");
+    commit(&fx, "branch after drop");
+
+    let (code, out) = leaks(&fx, &["--base", "main"]);
+    assert_eq!(code, Some(0), "{out}");
+    assert!(!out.contains("factory leaks: did not run"), "{out}");
+    assert!(out.ends_with("clean\n"), "{out}");
+}
+
+#[test]
 fn doctor_and_preflight_print_the_leaks_line_and_never_block_on_it() {
     let fx = Fixture::new("leaks-doctor");
     let doctor =
