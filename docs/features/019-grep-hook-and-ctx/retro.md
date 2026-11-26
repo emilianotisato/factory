@@ -42,3 +42,31 @@ Written by `/deliver` in the closeout commit, from the agent's side of the run.
 ## Score
 
 4/5 — Second opinion found real ship-stoppers after green checkpoints; polish could fix them in one pass, but UX/review tiers mostly duplicated hook work except the opus pass.
+
+## Numbers
+
+<!-- factory:numbers -->
+| role | workers | own | subagents | weighted | minutes | turns |
+|---|---:|---:|---:|---:|---:|---:|
+| build | 3 | 2018337 | — | 2018337 | 21 | — |
+| checkpoint | 2 | 415991 | — | 415991 | 4 | — |
+| polish | 1 | 587951 | — | 587951 | 10 | — |
+| total | 6 | 3022280 | — | 3022280 | 34 | — |
+
+Knobs: build cursor:composer-2.5 user/default · fix cursor:composer-2.5 user/default · checkpoint cursor:composer-2.5 user/default · polish cursor:composer-2.5 user/default · budget 30000000 default · lanes 4 · factory 0.16.0 · cursor 2026.11.22-e9042b2
+
+Hypothesis: none
+
+quality: gate_red 0 · worker_gate_red 0 · fix_commits 0 · ci_red_rounds 0 · ci_reruns 0 · findings high=1 medium=2 low=5 fixed=5 parked=4 · decisions 1 decide 0 blocks 1
+
+Pack (build): slice 11142 · prd_sections 9651 · log 234 · outline 11245 · lookup 1115 · contract 3685 · autonomy 10282 · inner_loop 86 · total 47439 · start_context —
+
+Compared with:
+
+| run | feature | weighted | slices | per slice | lines changed | per line | comment share | id hits |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 019-20261126-eafc (this run) | 019 | 3022280 | 3 | 1007427 | 1673 | 1807 | 0.1% | 0 |
+| 022-20261126-a09f | 022 | 2872907 | 3 | 957636 | 2330 | 1233 | 0.3% | 0 |
+| 027-20261125-904f | 027 | 7178094 | 4 | 1794524 | 5173 | 1388 | 2.9% | 0 |
+| 026-20261125-a6be | 026 | 4801352 | 4 | 1200338 | 5075 | 946 | 2.8% | 0 |
+<!-- /factory:numbers -->
