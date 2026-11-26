@@ -59,7 +59,7 @@ An agent alone under pressure reaches for every one of these. All are forbidden.
 
 - lower a floor or a threshold, or add an ignore, exclusion, baseline or allowlist entry to a gate tool
 - `--no-verify`, or any other way around a hook
-- skip, delete or weaken a test this run did not write
+- skip, delete or weaken a test this run did not write — unless the PRD's frontmatter `authorized_tests` list (snapshotted at run start) names it
 - edit a CI workflow
 - record a checkpoint, or a Prove row, without an artifact that exists on disk
 - force-push, push to the default branch, merge, close the PR, delete a branch. In a `factory` run a worker runs no `git push` and no `gh` at all: the driver pushes and talks to GitHub, and the hook refuses both

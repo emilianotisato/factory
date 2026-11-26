@@ -1,0 +1,522 @@
+//! Pre-existing test diffs against a run-start snapshot of authorized paths from the PRD.
+use std::collections::HashSet;
+use std::path::Path;
+
+use regex::Regex;
+use std::sync::LazyLock;
+
+use crate::Result;
+use crate::answers;
+use crate::docs::frontmatter::{self, Value};
+use crate::error::io;
+use crate::run::Run;
+use crate::scheduler;
+
+pub const BLOCK_PREFIX: &str = "unauthorized test change:";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Violation {
+    pub path: String,
+    pub test_name: Option<String>,
+    pub deleted: bool,
+}
+
+pub fn validate_entry(raw: &str) -> std::result::Result<(), String> {
+    let item = raw.trim();
+    if item.is_empty() {
+        return Err("must not be empty".into());
+    }
+    if item.starts_with('/') {
+        return Err("must not be absolute".into());
+    }
+    if item.split('/').any(|p| p == "..") {
+        return Err("must not traverse with `..`".into());
+    }
+    if item.contains('*') || item.contains('?') || item.contains('[') {
+        return Err("must not contain glob characters".into());
+    }
+    if let Some((path, name)) = item.split_once("::")
+        && (path.trim().is_empty() || name.trim().is_empty())
+    {
+        return Err("`::` must separate a non-empty path and test name".into());
+    }
+    Ok(())
+}
+
+pub fn is_test_path(path: &str) -> bool {
+    if path.starts_with("tests/")
+        || path.starts_with("test/")
+        || path.starts_with("__tests__/")
+        || path.starts_with("spec/")
+        || path.contains("/tests/")
+        || path.contains("/__tests__/")
+    {
+        return true;
+    }
+    let Some((stem, ext)) = path.rsplit_once('.') else {
+        return false;
+    };
+    if ext.is_empty() {
+        return false;
+    }
+    let file = stem.rsplit('/').next().unwrap_or(stem);
+    file.ends_with("_test")
+        || file.ends_with(".test")
+        || file.ends_with(".spec")
+        || file.ends_with("Test")
+        || file.ends_with("Tests")
+}
+
+pub fn prd_authorized_tests(prd_path: &Path) -> Result<Vec<String>> {
+    let text =
+        std::fs::read_to_string(prd_path).map_err(io(format!("read {}", prd_path.display())))?;
+    let fm = frontmatter::parse(&text);
+    Ok(list_of_strings(fm.get("authorized_tests")))
+}
+
+fn list_of_strings(v: Option<&Value>) -> Vec<String> {
+    let Some(Value::List(items)) = v else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect()
+}
+
+pub fn check(repo: &Path, base_ref: &str, authorized: &[String]) -> Result<Vec<Violation>> {
+    let range = format!("{base_ref}...HEAD");
+    let diff = scheduler::git_ok(
+        repo,
+        &[
+            "-c",
+            "core.quotepath=off",
+            "diff",
+            "-U0",
+            "--diff-filter=MD",
+            "--no-renames",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            &range,
+        ],
+    )?;
+    Ok(parse_diff(repo, base_ref, authorized, &diff))
+}
+
+fn parse_diff(repo: &Path, base_ref: &str, authorized: &[String], diff: &str) -> Vec<Violation> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for chunk in split_diff_files(diff) {
+        let Some(path) = path_from_chunk(&chunk) else {
+            continue;
+        };
+        if !is_test_path(&path) {
+            continue;
+        }
+        if chunk.contains("deleted file mode") || chunk.contains("+++ /dev/null") {
+            if authorized.iter().any(|a| a == &path) {
+                continue;
+            }
+            push_violation(
+                &mut out,
+                &mut seen,
+                Violation {
+                    path: path.clone(),
+                    test_name: None,
+                    deleted: true,
+                },
+            );
+            continue;
+        }
+        for hunk in hunks_in_chunk(&chunk) {
+            if hunk.removed == 0 {
+                continue;
+            }
+            if authorized.iter().any(|a| a == &path) {
+                continue;
+            }
+            let enclosing = enclosing_test_name(repo, base_ref, &path, hunk.old_start, &hunk.ctx);
+            if let Some(name) = &enclosing {
+                let keyed = format!("{path}::{name}");
+                if authorized.iter().any(|a| a == &keyed) {
+                    continue;
+                }
+            }
+            push_violation(
+                &mut out,
+                &mut seen,
+                Violation {
+                    path: path.clone(),
+                    test_name: enclosing,
+                    deleted: false,
+                },
+            );
+        }
+    }
+    out
+}
+
+fn push_violation(
+    out: &mut Vec<Violation>,
+    seen: &mut HashSet<(String, Option<String>, bool)>,
+    v: Violation,
+) {
+    let key = (v.path.clone(), v.test_name.clone(), v.deleted);
+    if seen.insert(key) {
+        out.push(v);
+    }
+}
+
+struct Hunk {
+    old_start: usize,
+    removed: usize,
+    ctx: String,
+}
+
+fn split_diff_files(diff: &str) -> Vec<String> {
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+    for line in diff.lines() {
+        if line.starts_with("diff --git ") && !current.is_empty() {
+            chunks.push(std::mem::take(&mut current));
+        }
+        current.push_str(line);
+        current.push('\n');
+    }
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+    chunks
+}
+
+fn path_from_chunk(chunk: &str) -> Option<String> {
+    let mut path = None;
+    for line in chunk.lines() {
+        if let Some(rest) = line.strip_prefix("+++ b/")
+            && rest != "/dev/null"
+        {
+            return Some(rest.to_string());
+        }
+        if let Some(rest) = line.strip_prefix("--- a/") {
+            path = Some(rest.to_string());
+        }
+    }
+    path
+}
+
+static HUNK_HEAD: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$").unwrap());
+
+fn hunks_in_chunk(chunk: &str) -> Vec<Hunk> {
+    let mut out = Vec::new();
+    let mut in_hunk = false;
+    let mut old_start = 0usize;
+    let mut removed = 0usize;
+    let mut ctx = String::new();
+    for line in chunk.lines() {
+        if let Some(cap) = HUNK_HEAD.captures(line) {
+            if in_hunk {
+                out.push(Hunk {
+                    old_start,
+                    removed,
+                    ctx: ctx.trim().to_string(),
+                });
+            }
+            old_start = cap[1].parse().unwrap_or(1);
+            removed = 0;
+            ctx = cap
+                .get(5)
+                .map(|m| m.as_str().to_string())
+                .unwrap_or_default();
+            in_hunk = true;
+            continue;
+        }
+        if !in_hunk {
+            continue;
+        }
+        if line.starts_with("--- ") || line.starts_with("+++ ") {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix('-')
+            && !rest.starts_with('-')
+        {
+            removed += 1;
+        }
+    }
+    if in_hunk {
+        out.push(Hunk {
+            old_start,
+            removed,
+            ctx: ctx.trim().to_string(),
+        });
+    }
+    out
+}
+
+static RUST_FN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:^|\s)(?:pub\s+)?(?:async\s+)?fn\s+(\w+)").unwrap());
+static JS_FN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:^|\s)(?:function|func)\s+(\w+)").unwrap());
+static PY_DEF: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|\s)def\s+(\w+)").unwrap());
+static TEST_IT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?:^|\s)(?:test|it)\(\s*["']([^"']+)["']"#).unwrap());
+
+fn enclosing_test_name(
+    repo: &Path,
+    base_ref: &str,
+    path: &str,
+    old_start: usize,
+    ctx: &str,
+) -> Option<String> {
+    if let Some(name) = name_in_line(ctx) {
+        return Some(name);
+    }
+    let spec = format!("{base_ref}:{path}");
+    let text = scheduler::git_ok(repo, &["show", &spec]).ok()?;
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.is_empty() {
+        return None;
+    }
+    let start = old_start.saturating_sub(1);
+    for i in (0..=start).rev() {
+        if let Some(name) = name_in_line(lines[i]) {
+            return Some(name);
+        }
+    }
+    None
+}
+
+fn name_in_line(line: &str) -> Option<String> {
+    for re in [&*RUST_FN, &*JS_FN, &*PY_DEF, &*TEST_IT] {
+        if let Some(cap) = re.captures(line) {
+            return Some(cap[1].to_string());
+        }
+    }
+    None
+}
+
+pub fn format_block_body(violations: &[Violation]) -> String {
+    let mut body = String::from("**Paths:**\n");
+    for v in violations {
+        if let Some(name) = &v.test_name {
+            body.push_str(&format!("- `{}::{}`\n", v.path, name));
+        } else {
+            body.push_str(&format!("- `{}`\n", v.path));
+        }
+    }
+    body.push_str(
+        "\n**Options:**\n\
+         1. `allow` — authorize these paths for the rest of this run\n\
+         2. revert the unlisted test edits and answer to retry\n",
+    );
+    body
+}
+
+pub fn violated_paths_from_body(body: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for line in body.lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix("- `") else {
+            continue;
+        };
+        let Some(end) = rest.find('`') else {
+            continue;
+        };
+        let token = &rest[..end];
+        let path = token.split_once("::").map(|(p, _)| p).unwrap_or(token);
+        if seen.insert(path.to_string()) {
+            out.push(path.to_string());
+        }
+    }
+    out
+}
+
+pub fn sync_allow_answers(run: &mut Run, feature_dir: &Path) -> Result<()> {
+    let entries = answers::entries(feature_dir)?;
+    let mut paths = Vec::new();
+    for entry in entries {
+        if !entry.title.starts_with(BLOCK_PREFIX) || !entry.resolved {
+            continue;
+        }
+        let allowed = entry
+            .answers
+            .iter()
+            .any(|(_, text)| text.trim().eq_ignore_ascii_case("allow"));
+        if !allowed {
+            continue;
+        }
+        paths.extend(violated_paths_from_body(&entry.body));
+    }
+    if paths.is_empty() {
+        return Ok(());
+    }
+    run.add_authorized_tests(&paths)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::process::Command;
+
+    fn git(repo: &Path, args: &[&str]) {
+        assert!(
+            Command::new("git")
+                .args(args)
+                .current_dir(repo)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .status()
+                .unwrap()
+                .success(),
+            "git {:?}",
+            args
+        );
+    }
+
+    fn repo_with_base_test() -> (tempfile::TempDir, String) {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        git(root, &["init", "-q", "-b", "main"]);
+        git(root, &["config", "user.name", "T"]);
+        git(root, &["config", "user.email", "t@example.invalid"]);
+        fs::create_dir_all(root.join("tests")).unwrap();
+        fs::write(
+            root.join("tests/existing_test.rs"),
+            "#[test]\nfn sample_test() {\n    assert_eq!(1, 1);\n}\n",
+        )
+        .unwrap();
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-q", "-m", "base"]);
+        let base = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        let base = String::from_utf8_lossy(&base.stdout).trim().to_string();
+        (d, base)
+    }
+
+    #[test]
+    fn is_test_path_matches_expected_patterns() {
+        for ok in [
+            "tests/foo.rs",
+            "test/foo.rs",
+            "__tests__/foo.js",
+            "spec/a.rs",
+            "pkg/tests/foo.rs",
+            "pkg/__tests__/foo.js",
+            "foo_test.rs",
+            "foo.test.js",
+            "foo.spec.ts",
+            "WidgetTest.java",
+            "WidgetsTests.java",
+        ] {
+            assert!(is_test_path(ok), "{ok}");
+        }
+        for bad in ["src/config.rs", "src/lib.rs", "README.md", "gate.sh"] {
+            assert!(!is_test_path(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn additive_and_new_test_files_do_not_violate() {
+        let (d, base) = repo_with_base_test();
+        let root = d.path();
+        fs::write(root.join("tests/new_test.rs"), "#[test]\nfn fresh() {}\n").unwrap();
+        fs::write(
+            root.join("tests/existing_test.rs"),
+            "#[test]\nfn sample_test() {\n    assert_eq!(1, 1);\n}\n#[test]\nfn extra() {}\n",
+        )
+        .unwrap();
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-q", "-m", "add"]);
+        assert!(check(root, &base, &[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn removed_lines_violate_unless_authorized() {
+        let (d, base) = repo_with_base_test();
+        let root = d.path();
+        fs::write(
+            root.join("tests/existing_test.rs"),
+            "#[test]\nfn sample_test() {}\n",
+        )
+        .unwrap();
+        git(root, &["add", "tests/existing_test.rs"]);
+        git(root, &["commit", "-q", "-m", "weaken"]);
+        let v = check(root, &base, &[]).unwrap();
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].path, "tests/existing_test.rs");
+        assert_eq!(v[0].test_name.as_deref(), Some("sample_test"));
+        assert!(!v[0].deleted);
+        assert!(
+            check(root, &base, &["tests/existing_test.rs".into()])
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            check(root, &base, &["tests/existing_test.rs::other_test".into()])
+                .unwrap()
+                .len()
+                == 1
+        );
+        assert!(
+            check(root, &base, &["tests/existing_test.rs::sample_test".into()])
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn deleted_test_file_violates_unless_whole_path_authorized() {
+        let (d, base) = repo_with_base_test();
+        let root = d.path();
+        fs::remove_file(root.join("tests/existing_test.rs")).unwrap();
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-q", "-m", "delete"]);
+        let v = check(root, &base, &[]).unwrap();
+        assert_eq!(v.len(), 1);
+        assert!(v[0].deleted);
+        assert!(
+            check(root, &base, &["tests/existing_test.rs::sample_test".into()])
+                .unwrap()
+                .len()
+                == 1
+        );
+        assert!(
+            check(root, &base, &["tests/existing_test.rs".into()])
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn format_and_parse_block_body_round_trip_paths() {
+        let v = vec![Violation {
+            path: "tests/existing_test.rs".into(),
+            test_name: Some("sample_test".into()),
+            deleted: false,
+        }];
+        let body = format_block_body(&v);
+        assert_eq!(
+            violated_paths_from_body(&body),
+            vec!["tests/existing_test.rs".to_string()]
+        );
+    }
+
+    #[test]
+    fn validate_entry_rejects_bad_tokens() {
+        for bad in ["", "../x", "/abs", "tests/*.rs", "::only", "path::"] {
+            assert!(validate_entry(bad).is_err(), "{bad}");
+        }
+        assert!(validate_entry("tests/a.rs").is_ok());
+        assert!(validate_entry("tests/b.rs::fn_name").is_ok());
+    }
+}

@@ -445,6 +445,32 @@ fn prd_keys(f: &Feature, prd: &str, r: &mut Report) {
     if let Some(Value::List(_)) = fm.get("summary") {
         invalid(r, prd, "summary", "is a list, not text".into());
     }
+    if let Some(v) = fm.get("authorized_tests") {
+        match v {
+            Value::List(items) => {
+                for item in items {
+                    let Some(raw) = item.as_str() else {
+                        invalid(
+                            r,
+                            prd,
+                            "authorized_tests",
+                            "list entries must be strings".into(),
+                        );
+                        continue;
+                    };
+                    if let Err(why) = crate::testguard::validate_entry(raw) {
+                        invalid(r, prd, "authorized_tests", format!("\"{raw}\" {why}"));
+                    }
+                }
+            }
+            _ => invalid(
+                r,
+                prd,
+                "authorized_tests",
+                "must be a list of test paths".into(),
+            ),
+        }
+    }
 }
 
 fn invalid(r: &mut Report, prd: &str, key: &str, why: String) {
@@ -1280,6 +1306,39 @@ mod tests {
         assert_eq!(codes(root), ["E-STATUS-INCONSISTENT"]);
         state::set(&dir, &[("status", "ready")]).unwrap();
         assert_eq!(codes(root), ["W-STATUS-BEHIND"]);
+    }
+
+    fn set_prd_line(root: &Path, line: &str) {
+        let p = feat(root).join("prd.md");
+        let mut t = fs::read_to_string(&p).unwrap();
+        let end = t.find("\n---\n").expect("frontmatter close");
+        t.insert_str(end, &format!("\n{line}"));
+        fs::write(&p, t).unwrap();
+    }
+
+    #[test]
+    fn authorized_tests_frontmatter_rules() {
+        let d = tree();
+        let root = d.path();
+        set_prd_line(
+            root,
+            "authorized_tests: [\"tests/a.rs\", \"tests/b.rs::fn_name\"]",
+        );
+        assert!(run(root).is_clean(), "{:?}", run(root).lines());
+        for line in [
+            "authorized_tests: \"x\"",
+            "authorized_tests: [\"../x\"]",
+            "authorized_tests: [\"/abs/test.rs\"]",
+            "authorized_tests: [\"tests/*.rs\"]",
+            "authorized_tests: [\"\"]",
+        ] {
+            set_prd_line(root, line);
+            assert!(
+                run(root).codes().contains(&"E-FM-INVALID"),
+                "expected invalid for {line}: {:?}",
+                run(root).lines()
+            );
+        }
     }
 
     #[test]

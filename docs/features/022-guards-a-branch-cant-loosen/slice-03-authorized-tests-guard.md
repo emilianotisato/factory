@@ -3,7 +3,7 @@
 **Source**: [`prd.md`](prd.md) → §7 FR-5, §9 QA plan. **Depends on**: 01 (uses `commit::resolve_base_ref` and modifies `src/closeout.rs` and `assets/autonomy.md` after slice 01). Independent of slice 02 (zero shared files).
 **Created**: 2026-11-26
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**: `testguard`, `RunState.authorized_tests`, checkpoint/closeout blocks + `allow` persistence, polish `prd.md` drop, `assets/autonomy.md`. Tests: `authorized_tests_frontmatter_rules`, `testguard::tests::*`, `authorized_tests_snapshot_blocks_unlisted_test_edits_and_persists_allow_for_run`. Inner loop: 1 run, 0 red, ~2 min. Deliberate reds: `authorized_tests_frontmatter_rules` when `prd_keys` validation removed; `deleted_test_file_violates…` when delete diff path parsing broken; integration when `sync_allow_answers` skipped on allow.
 
 **Slice**: Adds optional flow-array `authorized_tests` validation to `docs check`, snapshots `authorized_tests` from `prd.md` into `RunState` at run start (on both immediate-start and ask-parked paths), refuses polish edits that alter `prd.md`'s `authorized_tests` frontmatter, and enforces a `-U0` diff guard (`src/testguard.rs`) on pre-existing test files at checkpoint and closeout — opening a `BLOCK-n` whose `"allow"` answer persists the approved paths onto `RunState.authorized_tests` for the rest of the run.
 

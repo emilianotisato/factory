@@ -668,12 +668,25 @@ fn land_worker(
             if matches!(who, Closer::Polish) {
                 stand_ins(run, board, &lane_dir, out)?;
             }
+            let mut protected = who.protected(board);
+            if matches!(who, Closer::Polish) {
+                let prd_rel = format!("{}/prd.md", board.dir);
+                let lane_prd = lane_dir.join(&prd_rel);
+                if lane_prd.is_file() {
+                    let lane_at = crate::testguard::prd_authorized_tests(&lane_prd)?;
+                    let repo_prd = repo.join(&prd_rel);
+                    let repo_at = crate::testguard::prd_authorized_tests(&repo_prd)?;
+                    if lane_at != repo_at {
+                        protected.push(prd_rel);
+                    }
+                }
+            }
             let committed = match &base {
                 Some(base) => land::commit_lane(
                     &lane_dir,
                     base,
                     &board_files,
-                    &who.protected(board),
+                    &protected,
                     &who.message(board),
                     &name,
                 )?,
@@ -986,6 +999,28 @@ fn ship(
     let feature = run.state().feature.clone();
     let repo = run.state().repo.clone();
     let feature_dir = repo.join(&board.dir);
+    crate::testguard::sync_allow_answers(run, &feature_dir)?;
+    let base = default_branch(run, docs);
+    let base_ref = commit::resolve_base_ref(&repo, Some(&base))?;
+    let violations = crate::testguard::check(&repo, &base_ref, &run.state().authorized_tests)?;
+    if !violations.is_empty() {
+        let summary = violations
+            .iter()
+            .map(|v| v.path.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let title =
+            answers::block_title(&format!("{} {}", crate::testguard::BLOCK_PREFIX, summary));
+        let body = crate::testguard::format_block_body(&violations);
+        return Ok(Some(block(
+            run,
+            &feature_dir,
+            "polish",
+            &title,
+            &body,
+            out,
+        )?));
+    }
     if let Some(o) = branch_guard(run, docs, &feature_dir, "polish", "ship", out)? {
         return Ok(Some(o));
     }
