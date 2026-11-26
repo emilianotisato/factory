@@ -583,7 +583,7 @@ pub fn list_open(data_dir: &Path, repo: &Path) -> Result<Vec<RunState>> {
 fn list_all(data_dir: &Path, repo: &Path) -> Result<Vec<RunState>> {
     Ok(list_runs(data_dir)?
         .into_iter()
-        .filter(|s| s.repo == repo)
+        .filter(|s| crate::lanes::same_repo(&s.repo, repo))
         .collect())
 }
 

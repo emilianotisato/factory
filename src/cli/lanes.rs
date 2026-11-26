@@ -44,10 +44,38 @@ fn count(main: &Path) -> Result<u32> {
     Ok(project::load(main)?.map_or(1, |p| p.lanes))
 }
 
-pub fn up(data: &Path, main: &Path, out: &mut dyn Write) -> Result<i32> {
+pub(crate) fn refuse_if_open(
+    data: &Path,
+    main: &Path,
+    verb: &str,
+    out: &mut dyn Write,
+) -> Result<bool> {
+    let open = run::list_open(data, main)?;
+    if open.is_empty() {
+        return Ok(false);
+    }
+    say(
+        out,
+        &format!("  ✗ {verb} refused: this repo has an unfinished run, which holds its lanes"),
+    )?;
+    for s in &open {
+        say(
+            out,
+            &format!("    run {}  feature {}  {}", s.id, s.feature, s.phase),
+        )?;
+    }
+    Ok(true)
+}
+
+fn up_lanes(data: &Path, main: &Path, reset_to_head: bool, out: &mut dyn Write) -> Result<i32> {
     let Some(seed) = project::seed(main)? else {
         say(out, &format!("  ✗ {}", lanes::NO_SEED))?;
         return Ok(1);
+    };
+    let head = if reset_to_head {
+        Some(lanes::head_rev(main)?)
+    } else {
+        None
     };
     let mut failed = false;
     for n in 1..=count(main)? {
@@ -59,6 +87,13 @@ pub fn up(data: &Path, main: &Path, out: &mut dyn Write) -> Result<i32> {
                 continue;
             }
         };
+        if let Some(head) = &head
+            && let Err(e) = lanes::reset(&report.dir, head)
+        {
+            say(out, &format!("lane-{n}  ✗ {e}"))?;
+            failed = true;
+            continue;
+        }
         // The lane file is read from the main tree: the lane's checkout may predate an edit to it.
         let (exit, detail) = match lanes::load(main, n).and_then(|l| l.run_setup(&report.dir)) {
             Ok(None) => ("-".to_string(), String::new()),
@@ -81,8 +116,18 @@ pub fn up(data: &Path, main: &Path, out: &mut dyn Write) -> Result<i32> {
     Ok(i32::from(failed))
 }
 
+pub fn up(data: &Path, main: &Path, out: &mut dyn Write) -> Result<i32> {
+    if refuse_if_open(data, main, "up", out)? {
+        return Ok(1);
+    }
+    up_lanes(data, main, false, out)
+}
+
 pub fn prove(data: &Path, main: &Path, out: &mut dyn Write) -> Result<i32> {
-    let code = up(data, main, out)?;
+    if refuse_if_open(data, main, "prove", out)? {
+        return Ok(1);
+    }
+    let code = up_lanes(data, main, true, out)?;
     if code != 0 {
         return Ok(code);
     }
@@ -153,18 +198,7 @@ pub fn prove(data: &Path, main: &Path, out: &mut dyn Write) -> Result<i32> {
 const TAIL: usize = 20;
 
 pub fn prune(data: &Path, main: &Path, all: bool, out: &mut dyn Write) -> Result<i32> {
-    let open = run::list_open(data, main)?;
-    if !open.is_empty() {
-        say(
-            out,
-            "  ✗ prune refused: this repo has an unfinished run, which holds its lanes",
-        )?;
-        for s in &open {
-            say(
-                out,
-                &format!("    run {}  feature {}  {}", s.id, s.feature, s.phase),
-            )?;
-        }
+    if refuse_if_open(data, main, "prune", out)? {
         return Ok(1);
     }
     let keep = if all { 0 } else { count(main)? };

@@ -136,6 +136,13 @@ impl Lane {
 }
 
 /// Via the common dir: `--show-toplevel` from a lane would answer the lane itself.
+pub fn same_repo(a: &Path, b: &Path) -> bool {
+    fn key(p: &Path) -> Option<PathBuf> {
+        main_tree(p).ok().or_else(|| p.canonicalize().ok())
+    }
+    matches!((key(a), key(b)), (Some(x), Some(y)) if x == y)
+}
+
 pub fn main_tree(from: &Path) -> Result<PathBuf> {
     let common = git(
         from,
@@ -222,9 +229,10 @@ pub fn ensure(data: &Path, main: &Path, n: u32, seed: &[String]) -> Result<Repor
         let force = if registered { "-f" } else { "--quiet" };
         git(main, &["worktree", "add", force, "--detach", &at, "HEAD"])?;
     }
+    sweep_seed_temps(&parent, n)?;
     let seeds = seed
         .iter()
-        .map(|p| Ok((p.clone(), seed_one(main, &lane, p)?)))
+        .map(|p| Ok((p.clone(), seed_one(main, &lane, n, p)?)))
         .collect::<Result<Vec<_>>>()?;
     Ok(Report {
         n,
@@ -246,7 +254,22 @@ fn worktrees(main: &Path) -> Result<Vec<PathBuf>> {
         .collect())
 }
 
-fn seed_one(main: &Path, lane: &Path, rel: &str) -> Result<Seeded> {
+fn sweep_seed_temps(parent: &Path, n: u32) -> Result<()> {
+    let prefix = format!(".seed-tmp-lane-{n}-");
+    let Ok(entries) = fs::read_dir(parent) else {
+        return Ok(());
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with(&prefix) && name.ends_with(".tmp") {
+            remove(&entry.path())?;
+        }
+    }
+    Ok(())
+}
+
+fn seed_one(main: &Path, lane: &Path, n: u32, rel: &str) -> Result<Seeded> {
     let inside = Path::new(rel)
         .components()
         .all(|c| matches!(c, Component::Normal(_) | Component::CurDir));
@@ -265,22 +288,40 @@ fn seed_one(main: &Path, lane: &Path, rel: &str) -> Result<Seeded> {
     if from.symlink_metadata().is_err() {
         return Ok(Seeded::Skipped);
     }
+    let lane_parent = lane.parent().expect("a lane dir has a parent");
     let to = lane.join(relative);
     if to.symlink_metadata().is_ok() {
         return Ok(Seeded::Kept);
     }
+    let tmp = lane_parent.join(format!(".seed-tmp-lane-{n}-{}.tmp", std::process::id()));
+    remove(&tmp)?;
     if let Some(parent) = to.parent() {
         fs::create_dir_all(parent).map_err(io(format!("mkdir {}", parent.display())))?;
     }
-    if cp(CLONE, &from, &to) {
+    if cp(CLONE, &from, &tmp) {
+        if fs::rename(&tmp, &to).is_err() {
+            remove(&tmp)?;
+            return Err(Error::Msg(format!(
+                "seed `{rel}`: rename {} to {}",
+                tmp.display(),
+                to.display()
+            )));
+        }
         return Ok(Seeded::Clone);
     }
-    // A partial clone left behind would read as `kept` next time.
-    remove(&to)?;
-    if cp(COPY, &from, &to) {
+    remove(&tmp)?;
+    if cp(COPY, &from, &tmp) {
+        if fs::rename(&tmp, &to).is_err() {
+            remove(&tmp)?;
+            return Err(Error::Msg(format!(
+                "seed `{rel}`: rename {} to {}",
+                tmp.display(),
+                to.display()
+            )));
+        }
         return Ok(Seeded::Copy);
     }
-    remove(&to)?;
+    remove(&tmp)?;
     Err(Error::Msg(format!(
         "seed `{rel}`: could not copy {} to {}",
         from.display(),
@@ -316,6 +357,10 @@ fn remove(p: &Path) -> Result<()> {
         fs::remove_file(p)
     }
     .map_err(io(format!("remove {}", p.display())))
+}
+
+pub fn head_rev(main: &Path) -> Result<String> {
+    Ok(git(main, &["rev-parse", "HEAD"])?.trim().to_string())
 }
 
 /// `clean -fd`, never `-x`: ignored seeded state stays.
@@ -620,6 +665,55 @@ mod tests {
             fs::read(fresh.dir.join("big/nested/two.bin")).unwrap(),
             b"two"
         );
+    }
+
+    fn seed_temps(dir: &Path) -> Vec<PathBuf> {
+        fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with(".seed-tmp-"))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn seed_copy_uses_atomic_temp_sibling_and_cleans_up_on_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data = tmp.path().join("data");
+        let main = repo(tmp.path(), "app");
+        fs::create_dir_all(main.join("big")).unwrap();
+        fs::write(main.join("big/one.bin"), "one").unwrap();
+        let parent = data.join("lanes").join(key(&main));
+        fs::create_dir_all(&parent).unwrap();
+        fs::write(parent.join(".seed-tmp-lane-1-99999.tmp"), "stale").unwrap();
+
+        let report = ensure(&data, &main, 1, &["big".to_string()]).unwrap();
+        let lane_parent = report.dir.parent().unwrap();
+        assert!(!parent.join(".seed-tmp-lane-1-99999.tmp").exists());
+        assert!(seed_temps(&report.dir).is_empty());
+        assert!(seed_temps(lane_parent).is_empty());
+        assert_eq!(fs::read(report.dir.join("big/one.bin")).unwrap(), b"one");
+
+        let fail_data = tmp.path().join("fail-data");
+        let fail_main = repo(tmp.path(), "fail-app");
+        fs::create_dir_all(fail_main.join("blocked")).unwrap();
+        fs::write(fail_main.join("blocked/leaf.txt"), "leaf").unwrap();
+        let fail_lane = ensure(&fail_data, &fail_main, 1, &[]).unwrap().dir;
+        fs::write(fail_lane.join("blocked"), "not-a-dir").unwrap();
+        let err = ensure(&fail_data, &fail_main, 1, &["blocked/leaf.txt".to_string()]).unwrap_err();
+        assert!(err.to_string().contains("blocked"), "{err}");
+        assert!(!fail_lane.join("blocked/leaf.txt").exists());
+        let fail_parent = fail_lane.parent().unwrap();
+        assert!(seed_temps(&fail_lane).is_empty());
+        assert!(seed_temps(fail_parent).is_empty());
+        let again =
+            ensure(&fail_data, &fail_main, 1, &["blocked/leaf.txt".to_string()]).unwrap_err();
+        assert!(again.to_string().contains("blocked"), "{again}");
+        assert!(!fail_lane.join("blocked/leaf.txt").exists());
     }
 
     #[test]

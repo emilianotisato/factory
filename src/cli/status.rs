@@ -176,7 +176,7 @@ fn recent_runs(data_dir: &Path) -> Result<Vec<RunState>> {
 }
 
 fn same_repo(repo: &Path, top: &Path) -> bool {
-    repo.canonicalize().is_ok_and(|r| r == top)
+    crate::lanes::same_repo(repo, top)
 }
 
 fn run_json(run: &Run) -> Result<RunJson> {

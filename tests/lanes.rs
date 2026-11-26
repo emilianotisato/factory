@@ -7,7 +7,7 @@ use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
 use factory::db::Db;
-use factory::run::pid_alive;
+use factory::run::{Phase, Run, pid_alive};
 use harness::Fixture;
 use serde_json::{Value, json};
 
@@ -1676,4 +1676,197 @@ fn lanes_prune_refuses_while_a_run_is_unfinished_and_removes_nothing() {
         assert_eq!(lane_worktrees(&fx).len(), 1);
         assert!(lanes[0].0.is_dir());
     }
+}
+
+fn factory_in(fx: &Fixture, cwd: &Path, args: &[&str]) -> Output {
+    fx.command(BIN)
+        .current_dir(cwd)
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+fn status_here_json(fx: &Fixture, cwd: &Path) -> Value {
+    let out = factory_in(fx, cwd, &["status", "--here", "--json"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    serde_json::from_str(stdout(&out).trim()).unwrap()
+}
+
+fn set_run_pid(dir: &Path, pid: u32) {
+    let path = dir.join("state.json");
+    let mut s: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    s["pid"] = json!(pid);
+    fs::write(&path, s.to_string()).unwrap();
+}
+
+#[test]
+fn lanes_up_and_prove_refuse_open_run_and_prove_resets_to_head() {
+    let fx = Fixture::with_index("lanes-up-refuse-open", &[("lanes", "1")]);
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let id = run_id(&only_run_dir(&fx));
+
+    for (args, verb) in [
+        (&["lanes", "up"][..], "up"),
+        (&["lanes", "up", "--prove"][..], "prove"),
+    ] {
+        let out = factory(&fx, args);
+        let text = stdout(&out);
+        assert_eq!(out.status.code(), Some(1), "{text}");
+        assert!(
+            text.contains(&format!("{verb} refused: this repo has an unfinished run")),
+            "{text}"
+        );
+        assert!(text.contains(&id), "{text}");
+        assert!(!text.contains("  inner  "), "{text}");
+    }
+
+    let out = factory(&fx, &["stop", &id]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    wait_until(&fx, &only_run_dir(&fx), "run stop", 30, || {
+        state(&only_run_dir(&fx))["phase"] == "finished"
+    });
+
+    let root = fx.path();
+    fs::create_dir_all(root.join("scenario")).unwrap();
+    fs::write(root.join("scenario/seed-marker"), "seeded\n").unwrap();
+    let lanes = root.join("docs/reference/lanes");
+    fs::create_dir_all(&lanes).unwrap();
+    fs::write(
+        lanes.join("lane-1.md"),
+        "---\nlane: 1\nenv: []\nsetup: echo prove-setup-ok > prove-setup-survivor.txt\n---\n",
+    )
+    .unwrap();
+    fx.git(&["add", "-A"]);
+    fx.git(&["commit", "-q", "-m", "chore: prove reset fixture"]);
+    fx.set_seed(&["scenario"]);
+
+    let out = factory(&fx, &["lanes", "up"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let lane = lane_path(&fx, 1);
+    fx.git(&["commit", "-q", "--allow-empty", "-m", "older"]);
+    let older = git_at(&fx, root, &["rev-parse", "HEAD"]).trim().to_string();
+    git_at(&fx, &lane, &["checkout", "-q", "--detach", &older]);
+    fs::write(lane.join("stray.txt"), "gone\n").unwrap();
+    let head = git_at(&fx, root, &["rev-parse", "HEAD"]).trim().to_string();
+
+    set_docs_key(
+        &fx,
+        "inner",
+        "\"test -f prove-setup-survivor.txt && test ! -e stray.txt\"",
+    );
+    let out = factory(&fx, &["lanes", "up", "--prove"]);
+    let text = stdout(&out);
+    assert_eq!(out.status.code(), Some(0), "{text}");
+    assert_eq!(
+        git_at(&fx, &lane, &["rev-parse", "HEAD"]).trim(),
+        head.as_str()
+    );
+    assert!(!lane.join("stray.txt").exists());
+    assert!(lane.join("prove-setup-survivor.txt").is_file());
+    assert!(lane.join("scenario/seed-marker").is_file());
+}
+
+#[test]
+fn linked_worktree_shares_main_tree_across_status_lanes_and_run() {
+    let fx = Fixture::with_index("lanes-linked-main", &[("lanes", "1")]);
+    let root = fx.path();
+    let base = data_dir(&fx).parent().unwrap().to_path_buf();
+    let linked = base.join("linked");
+
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let dir = only_run_dir(&fx);
+    let id = run_id(&dir);
+    wait_until(&fx, &dir, "park", 30, || {
+        state(&dir)["phase"] == "waiting-owner"
+    });
+
+    git_at(
+        &fx,
+        root,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            linked.to_str().unwrap(),
+            "HEAD",
+        ],
+    );
+    let v = status_here_json(&fx, &linked);
+    let ids: Vec<_> = v["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap())
+        .collect();
+    assert!(ids.iter().any(|i| *i == id), "{ids:?}");
+
+    for args in [&["lanes", "up"][..], &["lanes", "prune"][..]] {
+        let out = factory_in(&fx, &linked, args);
+        let text = stdout(&out);
+        assert_eq!(out.status.code(), Some(1), "{text}");
+        assert!(
+            text.contains("refused: this repo has an unfinished run"),
+            "{text}"
+        );
+    }
+
+    let out = factory(&fx, &["stop", &id]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    wait_until(&fx, &dir, "stop", 30, || state(&dir)["phase"] == "finished");
+
+    let linked_feat = base.join("linked-feat");
+    git_at(
+        &fx,
+        root,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "feat/fixture",
+            linked_feat.to_str().unwrap(),
+            "HEAD",
+        ],
+    );
+    assert_eq!(
+        git_at(&fx, root, &["symbolic-ref", "--short", "HEAD"]).trim(),
+        "main"
+    );
+
+    fx.write_plan(&[done()]);
+    let mut run = Run::create(
+        &data_dir(&fx),
+        &linked_feat,
+        harness::FEATURE,
+        Some("feat/fixture".into()),
+        1,
+    )
+    .unwrap();
+    run.set_phase(Phase::Paused).unwrap();
+    let rid = run.id().as_str().to_string();
+    set_run_pid(run.dir(), dead_pid());
+    drop(run);
+
+    let found = Run::find_resumable(&data_dir(&fx), root, harness::FEATURE)
+        .unwrap()
+        .expect("resumable from main tree");
+    assert_eq!(found.id().as_str(), rid);
+
+    let v = status_here_json(&fx, root);
+    let here: Vec<_> = v["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap())
+        .collect();
+    assert!(here.iter().any(|i| *i == rid), "{here:?}");
+
+    let out = factory(&fx, &["run", harness::FEATURE]);
+    let text = stdout(&out);
+    assert_eq!(out.status.code(), Some(0), "{text}");
+    assert!(text.contains(&format!("run {rid} resumed")), "{text}");
+    assert!(!text.contains("HEAD is on main"), "{text}");
 }
