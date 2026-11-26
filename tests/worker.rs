@@ -5,6 +5,7 @@ use std::fs::{self, File};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
@@ -97,6 +98,12 @@ fn a_worker_gets_no_github_and_no_session_but_keeps_the_account() {
 
     let calls = fx.calls();
     assert!(calls.len() >= 4, "three slices and a checkpoint: {calls:?}");
+    let origin_url = passed(
+        git_in(&fx, fx.path(), &[], &["remote", "get-url", "origin"]),
+        "origin",
+    )
+    .trim()
+    .to_string();
     for call in &calls {
         let keys: Vec<&str> = call["env_keys"]
             .as_array()
@@ -131,12 +138,19 @@ fn a_worker_gets_no_github_and_no_session_but_keeps_the_account() {
         assert_eq!(fs::read_dir(&gh).unwrap().count(), 0);
         // Nothing inherited, so the push-off entries start at 0.
         let git = &call["git_config"];
-        assert_eq!(git["GIT_CONFIG_COUNT"], "5", "{git}");
+        assert_eq!(git["GIT_CONFIG_COUNT"], "7", "{git}");
         assert_eq!(
             git["GIT_CONFIG_KEY_0"],
             "url.factory-no-push://.pushInsteadOf"
         );
         assert_eq!(git["GIT_CONFIG_VALUE_0"], "git@");
+        assert_eq!(git["GIT_CONFIG_KEY_5"], "help.autocorrect");
+        assert_eq!(git["GIT_CONFIG_VALUE_5"], "0");
+        assert_eq!(
+            git["GIT_CONFIG_KEY_6"],
+            "url.factory-no-push://.pushInsteadOf"
+        );
+        assert_eq!(git["GIT_CONFIG_VALUE_6"], origin_url);
 
         let argv = call["argv"].as_array().unwrap();
         let pack = Path::new(flag(argv, "--append-system-prompt-file"));
@@ -179,6 +193,12 @@ fn git_in(
 fn a_worker_pushes_nowhere_through_the_git_push_off_env() {
     let fx = Fixture::with_index("worker-push-off", &[("checkpoint_every", "10")]);
     fx.write_plan(&[json!({"outcome": "done"})]);
+    let origin_url = passed(
+        git_in(&fx, fx.path(), &[], &["remote", "get-url", "origin"]),
+        "origin",
+    )
+    .trim()
+    .to_string();
     let out = fx
         .command(BIN)
         .args(["run", "001", "--foreground"])
@@ -200,7 +220,7 @@ fn a_worker_pushes_nowhere_through_the_git_push_off_env() {
     assert!(calls.len() >= 4, "three slices and a checkpoint: {calls:?}");
     let key = "url.factory-no-push://.pushInsteadOf";
     let want = json!({
-        "GIT_CONFIG_COUNT": "6",
+        "GIT_CONFIG_COUNT": "8",
         "GIT_CONFIG_KEY_0": "factory.owner",
         "GIT_CONFIG_VALUE_0": "kept",
         "GIT_CONFIG_KEY_1": key,
@@ -213,6 +233,10 @@ fn a_worker_pushes_nowhere_through_the_git_push_off_env() {
         "GIT_CONFIG_VALUE_4": "http://",
         "GIT_CONFIG_KEY_5": key,
         "GIT_CONFIG_VALUE_5": "git://",
+        "GIT_CONFIG_KEY_6": "help.autocorrect",
+        "GIT_CONFIG_VALUE_6": "0",
+        "GIT_CONFIG_KEY_7": key,
+        "GIT_CONFIG_VALUE_7": origin_url,
     });
     for call in &calls {
         assert_eq!(call["git_config"], want, "call {}", call["n"]);
@@ -324,6 +348,153 @@ fn a_worker_pushes_nowhere_through_the_git_push_off_env() {
         ));
         assert_eq!(push_url, url);
     }
+}
+
+#[test]
+fn worker_env_strips_pat_disables_autocorrect_and_blocks_explicit_pushurl() {
+    let fx = Fixture::with_index("worker-push-hardening", &[("checkpoint_every", "10")]);
+    fx.write_plan(&[json!({"outcome": "done"})]);
+    let base = fx.path().parent().unwrap();
+    let bare = base.join("worker-push-hardening-bare.git");
+    passed(
+        fx.command("git")
+            .args(["init", "-q", "--bare", "-b", "main"])
+            .arg(&bare)
+            .output()
+            .unwrap(),
+        "init bare",
+    );
+    passed(
+        git_in(
+            &fx,
+            fx.path(),
+            &[],
+            &[
+                "remote",
+                "set-url",
+                "--push",
+                "origin",
+                bare.to_str().unwrap(),
+            ],
+        ),
+        "origin pushurl",
+    );
+    passed(
+        git_in(
+            &fx,
+            fx.path(),
+            &[],
+            &[
+                "remote",
+                "add",
+                "upstream",
+                "https://github.com/org/repo.git",
+            ],
+        ),
+        "upstream",
+    );
+    passed(
+        git_in(
+            &fx,
+            fx.path(),
+            &[],
+            &[
+                "config",
+                "url.git@github.com:.pushInsteadOf",
+                "https://github.com/",
+            ],
+        ),
+        "user pushInsteadOf",
+    );
+
+    let out = fx
+        .command(BIN)
+        .args(["run", "001", "--foreground"])
+        .env("GITHUB_PERSONAL_ACCESS_TOKEN", "ghp_secret")
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let calls = fx.calls();
+    assert!(calls.len() >= 4, "{calls:?}");
+    let call = &calls[0];
+    let env_keys: Vec<&str> = call["env_keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|k| k.as_str().unwrap())
+        .collect();
+    assert!(
+        !env_keys.contains(&"GITHUB_PERSONAL_ACCESS_TOKEN"),
+        "PAT reached the worker"
+    );
+
+    let cwd = Path::new(call["cwd"].as_str().unwrap());
+    let path = call["path"].as_str().unwrap();
+    let path_without_shim = path.split_once(':').unwrap().1;
+    let real_git = {
+        let resolved = Command::new("sh")
+            .args(["-c", "command -v git"])
+            .env("PATH", path_without_shim)
+            .output()
+            .unwrap();
+        assert!(resolved.status.success(), "could not resolve git on PATH");
+        String::from_utf8(resolved.stdout)
+            .unwrap()
+            .trim()
+            .to_string()
+    };
+
+    let env: Vec<(String, String)> = call["git_config"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string()))
+        .collect();
+
+    let worker_git = |args: &[&str]| {
+        Command::new(&real_git)
+            .current_dir(cwd)
+            .env_remove("GIT_CONFIG_COUNT")
+            .envs(env.iter().map(|(k, v)| (k, v)))
+            .args(args)
+            .output()
+            .unwrap()
+    };
+
+    assert_eq!(
+        passed(
+            worker_git(&["config", "--get", "help.autocorrect"]),
+            "help.autocorrect"
+        )
+        .trim(),
+        "0"
+    );
+    let origin_push = passed(
+        worker_git(&["remote", "get-url", "--push", "origin"]),
+        "origin push",
+    );
+    assert!(
+        origin_push.starts_with("factory-no-push://"),
+        "{origin_push}"
+    );
+    let push = worker_git(&["push", "-q", "origin", "HEAD:refs/heads/main"]);
+    let err = String::from_utf8_lossy(&push.stderr);
+    assert!(!push.status.success(), "push succeeded: {err}");
+    let upstream_push = passed(
+        worker_git(&["remote", "get-url", "--push", "upstream"]),
+        "upstream push",
+    );
+    assert!(
+        upstream_push.starts_with("factory-no-push://"),
+        "{upstream_push}"
+    );
 }
 
 #[test]
