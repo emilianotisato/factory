@@ -204,9 +204,22 @@ fn mentions(text: &str) -> bool {
     ["gh", "push"].iter().any(|w| {
         let w = w.as_bytes();
         (0..b.len()).any(|i| {
-            b[i..].starts_with(w)
-                && (i == 0 || !word(b[i - 1]))
-                && b.get(i + w.len()).is_none_or(|c| !word(*c))
+            if !b[i..].starts_with(w) {
+                return false;
+            }
+            if i > 0 && word(b[i - 1]) {
+                return false;
+            }
+            if b.get(i + w.len()).is_some_and(|c| word(*c)) {
+                return false;
+            }
+            if w == b"push" {
+                let pre = &b[..i];
+                if pre.ends_with(b".") || pre.ends_with(b"->") || pre.ends_with(b"::") {
+                    return false;
+                }
+            }
+            true
         })
     })
 }
@@ -525,7 +538,7 @@ fn interpreter(program: &str, args: &[&str], stdin: &[String]) -> Reach {
         "deno" => {
             return match args {
                 ["eval", rest @ ..] if rest.iter().all(|a| a.starts_with('-')) => Reach::Unsure,
-                ["eval", rest @ ..] => inline_script(rest),
+                ["eval", rest @ ..] => inline_script(program, rest),
                 _ => Reach::Fine,
             };
         }
@@ -545,7 +558,7 @@ fn interpreter(program: &str, args: &[&str], stdin: &[String]) -> Reach {
                     return Reach::Unsure;
                 }
                 if long == f || long.strip_prefix(f).is_some_and(|v| v.starts_with('=')) {
-                    return inline_script(&args[i..]);
+                    return inline_script(program, &args[i..]);
                 }
             }
             continue;
@@ -558,24 +571,24 @@ fn interpreter(program: &str, args: &[&str], stdin: &[String]) -> Reach {
             if at + 1 == cluster.len() && i + 1 == args.len() {
                 return Reach::Unsure;
             }
-            return inline_script(&args[i..]);
+            return inline_script(program, &args[i..]);
         }
     }
     if stdin.is_empty() {
         return Reach::Unsure;
     }
-    let read: Vec<Reach> = stdin.iter().map(|doc| script(doc)).collect();
+    let read: Vec<Reach> = stdin.iter().map(|doc| script(program, doc)).collect();
     [Reach::Forbidden, Reach::Unsure]
         .into_iter()
         .find(|r| read.contains(r))
         .unwrap_or(Reach::Fine)
 }
 
-fn inline_script(words: &[&str]) -> Reach {
+fn inline_script(program: &str, words: &[&str]) -> Reach {
     if words.iter().any(|w| opaque(w)) {
         return Reach::Unsure;
     }
-    script(&words.join(" "))
+    script(program, &words.join(" "))
 }
 
 /// `$S`, `${S}` or `$(…)`: the shell hands the interpreter text the hook never sees.
@@ -587,16 +600,20 @@ fn opaque(word: &str) -> bool {
 }
 
 /// A process call that names neither gh nor push is unsure: an argument, a variable or stdin may hand it one.
-fn script(text: &str) -> Reach {
-    match (process_call(text), mentions(text)) {
+fn script(program: &str, text: &str) -> Reach {
+    match (process_call(program, text), mentions(text)) {
         (true, true) => Reach::Forbidden,
         (true, false) => Reach::Unsure,
         _ => Reach::Fine,
     }
 }
 
-fn process_call(text: &str) -> bool {
-    const CALLS: [&str; 17] = [
+fn is_word(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+fn process_call(program: &str, text: &str) -> bool {
+    const CALLS: [&str; 22] = [
         "subprocess",
         "os.system",
         "os.popen",
@@ -611,15 +628,40 @@ fn process_call(text: &str) -> bool {
         "shell_exec",
         "passthru",
         "proc_open",
-        "`",
-        "%x",
-        "qx",
+        "__import__",
+        "Deno.Command",
+        "Bun.spawn",
+        "io.popen",
+        "do shell script",
+        "pcntl_exec",
+        "posix_spawn",
+        "posix_spawnp",
     ];
-    CALLS.iter().any(|c| text.contains(c))
-        || ["system(", "exec(", "spawn(", "popen("].iter().any(|c| {
-            text.match_indices(c)
-                .any(|(i, _)| !text[..i].ends_with('.'))
-        })
+    let calls_match = CALLS.iter().any(|c| text.contains(c))
+        || (matches!(program, "ruby" | "perl" | "php") && text.contains('`'))
+        || (program == "ruby" && text.contains("%x"))
+        || (program == "perl" && text.contains("qx"));
+    let paren_calls = ["system(", "exec(", "spawn(", "popen("].iter().any(|c| {
+        text.match_indices(c)
+            .any(|(i, _)| i == 0 || !is_word(text.as_bytes()[i - 1]))
+    });
+    let parenless = matches!(program, "ruby" | "perl" | "tclsh" | "wish")
+        && ["system", "exec", "spawn"].iter().any(|kw| {
+            let kw = kw.as_bytes();
+            (0..text.len()).any(|i| {
+                if !text.as_bytes()[i..].starts_with(kw) {
+                    return false;
+                }
+                let before_ok = i == 0 || !is_word(text.as_bytes()[i - 1]);
+                let after = i + kw.len();
+                before_ok
+                    && text
+                        .as_bytes()
+                        .get(after)
+                        .is_some_and(|c| *c == b' ' || *c == b'\t')
+            })
+        });
+    calls_match || paren_calls || parenless
 }
 
 struct Search<'a> {
@@ -1437,6 +1479,13 @@ mod tests {
         assert!(mentions("git-push"));
         assert!(mentions("'gh'"));
         assert!(mentions("$GH api"));
+        assert!(mentions("git push"));
+        assert!(mentions("\"push\""));
+        assert!(mentions("'push'"));
+        assert!(mentions("$PUSH"));
         assert!(!mentions("github pushd push_x ghost GH_TOKEN"));
+        assert!(!mentions("out.push(line)"));
+        assert!(!mentions("$c->push(1)"));
+        assert!(!mentions("Vec::push"));
     }
 }

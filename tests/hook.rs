@@ -2,6 +2,7 @@
 use std::path::Path;
 
 use factory::cli::hook::{NEVER_HINT, guard, hook_with};
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 fn decide(cmd: &str) -> Option<(String, String)> {
@@ -237,6 +238,88 @@ fn the_rest_gets_no_decision() {
     ] {
         assert!(!guard(cmd), "guard denies: {cmd}");
         assert_eq!(decide(cmd), None, "{cmd}");
+    }
+}
+
+#[test]
+fn guard_allows_push_method_calls_and_denies_widened_process_calls() {
+    for cmd in [
+        concat!(
+            "python3 - <<'PY'\n",
+            "from pathlib import Path\n",
+            "p = Path('notes.md')\n",
+            "body = \"# title\\nUse `cargo test` and avoid `git push` in docs\\n\"\n",
+            "for line in body.splitlines():\n",
+            "    out.push(line)\n",
+            "PY"
+        ),
+        r#"node -e "const a = []; a.push(1); console.log(`${a}`)""#,
+        concat!(
+            "python3 - <<'PY'\n",
+            "entry = '''\\n## note\\nbacktick `push` in prose\\n'''\n",
+            "open('entry.md','w').write(entry)\n",
+            "PY"
+        ),
+        "php -r '$c->push(1);'",
+    ] {
+        assert!(!guard(cmd), "guard denies: {cmd}");
+        assert_eq!(decide(cmd), None, "{cmd}");
+    }
+    assert_denied(&[
+        r#"ruby -e 'system "gh pr list"'"#,
+        r#"perl -e 'exec "git", "push"'"#,
+        r#"python3 -c '__import__("os").system("gh pr list")'"#,
+        r#"bun -e 'Bun.spawn(["git","push"])'"#,
+        r#"lua -e 'io.popen("git push")'"#,
+        r#"ruby -e 'Kernel.system("gh")'"#,
+        r#"deno eval 'new Deno.Command("gh",{args:["pr","view"]}).outputSync()'"#,
+        r#"osascript -e 'do shell script "git push"'"#,
+        "tclsh <<'EOF'\nexec git push\nEOF",
+        r#"php -r 'pcntl_exec("/usr/bin/gh",["pr","list"]);'"#,
+        r#"python3 -c 'import os; os.posix_spawn("/usr/bin/gh", ["gh", "pr", "list"], {})'"#,
+    ]);
+}
+
+#[derive(Deserialize)]
+struct DeniedCorpus {
+    denied: Vec<String>,
+    allowed_on_purpose: Vec<AllowedOnPurpose>,
+}
+
+#[derive(Deserialize)]
+struct AllowedOnPurpose {
+    cmd: String,
+    #[allow(dead_code)]
+    why: String,
+}
+
+#[test]
+fn hook_guard_replays_the_denied_corpus_and_allowed_exceptions() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixture/hook/denied.json");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let corpus: DeniedCorpus = serde_json::from_str(&text).unwrap();
+    assert!(
+        corpus.denied.len() >= 115,
+        "denied.len() = {}",
+        corpus.denied.len()
+    );
+    assert!(!corpus.allowed_on_purpose.is_empty());
+    let allowed_cmds: std::collections::HashSet<_> = corpus
+        .allowed_on_purpose
+        .iter()
+        .map(|a| a.cmd.as_str())
+        .collect();
+    for d in &corpus.denied {
+        assert!(!allowed_cmds.contains(d.as_str()), "overlap: {d:?}");
+    }
+    assert_denied(&corpus.denied.iter().map(String::as_str).collect::<Vec<_>>());
+    for entry in &corpus.allowed_on_purpose {
+        assert!(
+            !guard(&entry.cmd),
+            "guard denies allowed_on_purpose: {}",
+            entry.cmd
+        );
+        assert_eq!(decide(&entry.cmd), None, "{}", entry.cmd);
     }
 }
 
