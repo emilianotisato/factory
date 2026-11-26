@@ -106,6 +106,7 @@ pub fn run_on(root: &Path, board: Option<&Path>) -> Report {
         prd_max_kb: 120.0,
         slice_max_kb: 30.0,
         gate_failure: Vec::new(),
+        gate_memory_max: None,
     });
     let docs = root.join("docs");
     let board_features = board.map(|b| b.join("docs/features"));
@@ -230,7 +231,24 @@ fn read_project(root: &Path, r: &mut Report) -> Option<Option<Project>> {
             use toml::Value as T;
             let ok = match k.as_str() {
                 "framework" | "lanes" | "checkpoint_every" => matches!(v, T::Integer(_)),
-                "gate" | "inner" => matches!(v, T::String(_)),
+                "gate" | "inner" | "gate_memory_max" => match k.as_str() {
+                    "gate_memory_max" => match v {
+                        T::String(s) => match crate::memcap::normalize_limit(s) {
+                            Ok(_) => true,
+                            Err(e) => {
+                                r.err(
+                                    "E-PROJECT-INVALID",
+                                    format!(
+                                        "docs/project.toml [docs] gate_memory_max = {v:?}: {e}"
+                                    ),
+                                );
+                                false
+                            }
+                        },
+                        _ => false,
+                    },
+                    _ => matches!(v, T::String(_)),
+                },
                 "gate_parallel" => {
                     matches!(v, T::Boolean(_))
                         || matches!(v, T::String(s) if s == "true" || s == "false")
@@ -288,7 +306,7 @@ fn read_project(root: &Path, r: &mut Report) -> Option<Option<Project>> {
 
 fn kind_of(key: &str) -> &'static str {
     match key {
-        "gate" | "inner" => "string",
+        "gate" | "inner" | "gate_memory_max" => "string",
         "gate_parallel" => "boolean",
         "prd_max_kb" | "slice_max_kb" => "number",
         "gate_failure" => "list of regex strings",

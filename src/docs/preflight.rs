@@ -89,6 +89,13 @@ pub fn run(root: &Path, reference: &str) -> Result<(Preflight, i32)> {
     let mut ok: Vec<String> = Vec::new();
 
     let p = project::load(root).ok().flatten();
+    if let Some(proj) = &p
+        && crate::memcap::resolve_limit(proj.gate_memory_max.as_deref()).is_some()
+        && !crate::memcap::systemd_run_available()
+    {
+        judge
+            .push("gate memory cap unavailable (no systemd-run --user); gates run uncapped".into());
+    }
     match &p {
         Some(p) if p.framework == 3 => {
             let report = check::run(root);

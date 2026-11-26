@@ -2,6 +2,7 @@
 mod harness;
 
 use std::fs::{self, File};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
@@ -2663,4 +2664,199 @@ fn a_resumed_checkpoint_counts_the_reds_its_dead_driver_saw() {
         "{log}"
     );
     assert_eq!(count(&kinds(&dir), "checkpoint_blocked"), 1);
+}
+
+fn write_systemd_stub(fx: &Fixture) -> PathBuf {
+    let log = fx.path().join("scenario/systemd-run.log");
+    fs::create_dir_all(fx.path().join("scenario")).unwrap();
+    let stub = fx.path().join("scenario/systemd-run-stub.sh");
+    fs::write(
+        &stub,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"{}\"\ncase \" $* \" in\n  *\" -- true\") exit 0 ;;\nesac\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = \"--\" ]; then shift; exec \"$@\"; fi\n  shift\ndone\nexit 1\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+    stub
+}
+
+fn factory_with_memcap(fx: &Fixture, stub: &Path, args: &[&str]) -> Output {
+    fx.command(BIN)
+        .env_remove("FACTORY_GATE_MEMCAP")
+        .env("FACTORY_SYSTEMD_RUN", stub)
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn gate_and_setup_wrap_with_systemd_run_memcap_and_report_oom() {
+    let fx = Fixture::new("cp-memcap-oom");
+    let stub = write_systemd_stub(&fx);
+    let stub_log = fx.path().join("scenario/systemd-run.log");
+
+    let oom_gate = fx.path().join("oom-gate.sh");
+    fs::write(
+        &oom_gate,
+        "#!/bin/sh\nset -u\nhere=$(cd \"$(dirname \"$0\")\" && pwd)\nif common=$(git -C \"$here\" rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then\n  scenario=\"$(dirname \"$common\")/scenario\"\nelse\n  scenario=\"$here/scenario\"\nfi\noutcome=green\nif [ -s \"$scenario/gate\" ]; then\n  outcome=$(head -n 1 \"$scenario/gate\")\n  tail -n +2 \"$scenario/gate\" > \"$scenario/gate.tmp\" && mv \"$scenario/gate.tmp\" \"$scenario/gate\"\nfi\nif [ \"$outcome\" = \"red\" ]; then\n  echo \"error: test failed\"\n  exit 137\nfi\nexit 0\n",
+    )
+    .unwrap();
+    fs::set_permissions(&oom_gate, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let toml = fs::read_to_string(fx.path().join("docs/project.toml")).unwrap();
+    let toml = toml
+        .replace("gate = \"./gate.sh\"", "gate = \"./oom-gate.sh\"")
+        .replace("\n[lanes]", "\ngate_memory_max = \"4G\"\n\n[lanes]");
+    fs::write(fx.path().join("docs/project.toml"), toml).unwrap();
+    let lanes = fx.path().join("docs/reference/lanes");
+    fs::create_dir_all(&lanes).unwrap();
+    fs::write(
+        lanes.join("lane-1.md"),
+        "---\nlane: 1\nenv: []\nsetup: echo capped-setup\n---\n\nLane 1.\n",
+    )
+    .unwrap();
+    fx.git(&["add", "-A"]);
+    fx.git(&[
+        "commit",
+        "-q",
+        "-m",
+        "chore: memcap test gate and lane setup",
+    ]);
+
+    unsafe {
+        std::env::set_var("FACTORY_SYSTEMD_RUN", &stub);
+        std::env::remove_var("FACTORY_GATE_MEMCAP");
+    }
+    let lane = factory::lanes::load(fx.path(), 1).unwrap();
+    let data = PathBuf::from(&fx.env()["FACTORY_DATA_DIR"]);
+    let lane_dir = factory::lanes::ensure(&data, fx.path(), 1, &[])
+        .unwrap()
+        .dir;
+    lane.run_setup_capped(&lane_dir, Some("4G")).unwrap();
+    unsafe {
+        std::env::remove_var("FACTORY_SYSTEMD_RUN");
+    }
+
+    let args = fs::read_to_string(&stub_log).unwrap();
+    assert!(args.contains("--user"), "{args}");
+    assert!(args.contains("--scope"), "{args}");
+    assert!(args.contains("--quiet"), "{args}");
+    assert!(args.contains("MemoryMax=4G"), "{args}");
+    assert!(args.contains("MemorySwapMax=0"), "{args}");
+    assert!(args.contains("OOMPolicy=kill"), "{args}");
+    assert!(args.contains("sh"), "{args}");
+    assert!(args.contains("capped-setup"), "{args}");
+
+    let fail_stub = fx.path().join("scenario/systemd-fail.sh");
+    fs::write(&fail_stub, "#!/bin/sh\nexit 1\n").unwrap();
+    fs::set_permissions(&fail_stub, fs::Permissions::from_mode(0o755)).unwrap();
+    let pre = fx
+        .command(BIN)
+        .env_remove("FACTORY_GATE_MEMCAP")
+        .env("FACTORY_SYSTEMD_RUN", &fail_stub)
+        .args(["docs", "preflight", "001", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        pre.status.success(),
+        "{}",
+        String::from_utf8_lossy(&pre.stderr)
+    );
+    let v: Value = serde_json::from_slice(&pre.stdout).unwrap();
+    assert!(
+        v["judge"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|l| l.as_str().unwrap().contains("gate memory cap unavailable")),
+        "{v}"
+    );
+
+    fx.script_gate(&["red", "red", "red"]);
+    fx.chain();
+    fx.write_plan(&[
+        done(),
+        done(),
+        step("checkpoint"),
+        done(),
+        step("checkpoint"),
+    ]);
+    let out = factory_with_memcap(&fx, &stub, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let dir = only_run_dir(&fx);
+    wait_phase(&fx, &dir, "waiting-owner", 90);
+
+    let gate_log = fs::read_to_string(dir.join("gates/1-1.log")).unwrap_or_default();
+    assert!(
+        gate_log.contains("factory: gate hit its memory cap (4G)"),
+        "{gate_log}"
+    );
+    let blocks = fx.log_of("block");
+    assert_eq!(blocks.len(), 1, "{blocks:?}");
+    assert!(
+        blocks[0]["title"]
+            .as_str()
+            .unwrap()
+            .contains("gate hit its memory cap (4G)"),
+        "{:?}",
+        blocks[0]
+    );
+}
+
+#[test]
+fn killed_driver_reaps_leftover_gate_process_on_resume() {
+    let fx = Fixture::new("cp-gate-reap");
+    let hang = fx.path().join("hang-gate.sh");
+    fs::write(
+        &hang,
+        "#!/bin/sh\nset -u\nhere=$(cd \"$(dirname \"$0\")\" && pwd)\nif common=$(git -C \"$here\" rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then\n  scenario=\"$(dirname \"$common\")/scenario\"\nelse\n  scenario=\"$here/scenario\"\nfi\nmarker=\"$scenario/gate-marker\"\nchild=\"$scenario/gate-child.pid\"\nif [ ! -f \"$marker\" ]; then\n  touch \"$marker\"\n  sleep 60 &\n  echo $! > \"$child\"\n  wait\nelse\n  exit 0\nfi\n",
+    )
+    .unwrap();
+    fs::set_permissions(&hang, fs::Permissions::from_mode(0o755)).unwrap();
+    let toml = fs::read_to_string(fx.path().join("docs/project.toml")).unwrap();
+    fs::write(
+        fx.path().join("docs/project.toml"),
+        toml.replace("gate = \"./gate.sh\"", "gate = \"./hang-gate.sh\""),
+    )
+    .unwrap();
+    fx.git(&["add", "-A"]);
+    fx.git(&["commit", "-q", "-m", "chore: hang gate for reap test"]);
+
+    fx.chain();
+    fx.write_plan(&[
+        done(),
+        done(),
+        step("checkpoint"),
+        done(),
+        step("checkpoint"),
+    ]);
+    let dir = start(&fx);
+    let driver = state(&dir)["pid"].as_u64().unwrap() as u32;
+    let child_file = fx.path().join("scenario/gate-child.pid");
+    wait_until(&fx, &dir, "active_gate", 30, || {
+        state(&dir).get("active_gate").is_some() && child_file.is_file()
+    });
+    let gate_pid = state(&dir)["active_gate"]["pid"].as_u64().unwrap() as u32;
+    let child_pid = fs::read_to_string(&child_file)
+        .unwrap()
+        .trim()
+        .parse::<u32>()
+        .unwrap();
+    assert!(factory::run::alive(gate_pid, None));
+    assert!(factory::run::alive(child_pid, None));
+
+    assert_eq!(unsafe { libc::kill(driver as i32, libc::SIGKILL) }, 0);
+    wait_until(&fx, &dir, "driver dead", 5, || !pid_alive(driver));
+    assert!(factory::run::alive(gate_pid, None));
+    assert!(factory::run::alive(child_pid, None));
+
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    wait_phase(&fx, &dir, "finished", 90);
+
+    assert!(!factory::run::alive(gate_pid, None));
+    assert!(!factory::run::alive(child_pid, None));
+    assert!(state(&dir).get("active_gate").is_none());
 }

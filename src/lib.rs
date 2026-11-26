@@ -22,6 +22,7 @@ pub mod lanes;
 pub mod leaks;
 pub mod live;
 pub mod measure;
+pub mod memcap;
 pub mod metrics;
 pub mod mods;
 pub mod pack;

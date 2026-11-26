@@ -106,7 +106,14 @@ fn up_lanes(data: &Path, main: &Path, reset_to_head: bool, out: &mut dyn Write) 
             continue;
         }
         // The lane file is read from the main tree: the lane's checkout may predate an edit to it.
-        let (exit, detail) = match lanes::load(main, n).and_then(|l| l.run_setup(&report.dir)) {
+        let configured = project::load(main)
+            .ok()
+            .flatten()
+            .and_then(|p| p.gate_memory_max);
+        let cap = crate::memcap::resolve_limit(configured.as_deref());
+        let (exit, detail) = match lanes::load(main, n)
+            .and_then(|l| l.run_setup_capped(&report.dir, cap.as_deref()))
+        {
             Ok(None) => ("-".to_string(), String::new()),
             Ok(Some(o)) if o.status.success() => ("0".to_string(), String::new()),
             Ok(Some(o)) => {

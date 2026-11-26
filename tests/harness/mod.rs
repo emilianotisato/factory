@@ -631,6 +631,7 @@ fn build_env(
         ("GIT_CONFIG_NOSYSTEM".to_string(), "1".to_string()),
         // Where the stub writes a session's subagent transcripts and the driver reads them.
         ("CLAUDE_CONFIG_DIR".to_string(), s(&base.join("claude"))),
+        ("FACTORY_GATE_MEMCAP".to_string(), "off".to_string()),
     ])
 }
 

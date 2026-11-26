@@ -3,7 +3,7 @@
 **Source**: [`prd.md`](prd.md) → §3 FR-1, §4 FR-2, §12 QA plan. **Depends on**: 02 (edits `src/docs/project.rs`, `src/docs/check.rs`, `src/lanes.rs`, `src/run.rs` after slice 02).
 **Created**: 2026-11-26
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**: `src/memcap.rs` + `gate_memory_max` validation; wired into `gate_once`, `setup_capped`, preflight; `ActiveGate` + `reap_active_gate` on resume/stop; `FACTORY_GATE_MEMCAP=off` in harness. Inner loop: 2 runs, 1 red (~clippy len_zero), ~3 min green. Deliberate reds: `gate_and_setup_wrap` without `oom_cap` → BLOCK title lost cap text; `killed_driver_reaps` with noop reap → sleep child survived.
 
 **Slice**: Adds `src/memcap.rs` (`systemd-run --user --scope` wrapping with strict limit normalization, `OOMPolicy=kill`, live availability + memory-controller delegation checks, and OOM detection), wires it into `checkpoint::gate_once`, `Lane::setup_capped` / `run_setup_capped`, and `preflight::run` (with `FACTORY_GATE_MEMCAP=off` in `tests/harness/mod.rs`), and records `ActiveGate` (pid/pgid/scope) in `RunState` with safe `process_group(0)` + signal forwarding and process-group/scope reaping on resume and dead-driver stop. Leaves `land_lane` unification and polish/CI-fix respawn lane retention to slice 04.
 

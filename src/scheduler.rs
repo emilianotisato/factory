@@ -48,6 +48,7 @@ enum Orphans {
 }
 
 pub fn drive(run: &mut Run, docs: &Docs, cfg: &Config, out: &mut dyn Write) -> Result<Phase> {
+    let _ = crate::checkpoint::reap_active_gate(run, out)?;
     let mut table: Table = HashMap::new();
     match drive_inner(run, docs, cfg, &mut table, out) {
         Ok(phase) => Ok(phase),
@@ -798,7 +799,12 @@ pub(crate) fn prepare_lane(
     let lane_dir = open_lane(run, lane, fresh)?;
     if !run.state().lanes_set_up.contains(&lane) {
         if let Some(cmd) = &lane_def.setup {
-            lane_def.setup(&lane_dir)?;
+            let configured = crate::docs::project::load(&run.state().repo)
+                .ok()
+                .flatten()
+                .and_then(|p| p.gate_memory_max);
+            let cap = crate::memcap::resolve_limit(configured.as_deref());
+            lane_def.setup_capped(&lane_dir, cap.as_deref())?;
             say(out, &format!("lane {lane} setup ran: {cmd}"))?;
         }
         run.mark_lane_set_up(lane)?;

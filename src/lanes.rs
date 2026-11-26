@@ -98,7 +98,11 @@ impl Lane {
     }
 
     pub fn setup(&self, dir: &Path) -> Result<bool> {
-        let Some(out) = self.run_setup(dir)? else {
+        self.setup_capped(dir, None)
+    }
+
+    pub fn setup_capped(&self, dir: &Path, limit: Option<&str>) -> Result<bool> {
+        let Some(out) = self.run_setup_capped(dir, limit)? else {
             return Ok(false);
         };
         if !out.status.success() {
@@ -115,12 +119,15 @@ impl Lane {
     }
 
     pub fn run_setup(&self, dir: &Path) -> Result<Option<Output>> {
+        self.run_setup_capped(dir, None)
+    }
+
+    pub fn run_setup_capped(&self, dir: &Path, limit: Option<&str>) -> Result<Option<Output>> {
         let Some(cmd) = &self.setup else {
             return Ok(None);
         };
-        Command::new("sh")
-            .arg("-c")
-            .arg(cmd)
+        let (mut command, _) = crate::memcap::shell_command(cmd, limit, None);
+        command
             .current_dir(dir)
             .envs(self.env())
             .output()

@@ -7,7 +7,7 @@ use crate::error::io;
 use crate::scheduler::write_atomic;
 use crate::{Error, Result};
 
-pub const KEYS: [&str; 9] = [
+pub const KEYS: [&str; 10] = [
     "framework",
     "gate",
     "inner",
@@ -17,6 +17,7 @@ pub const KEYS: [&str; 9] = [
     "prd_max_kb",
     "slice_max_kb",
     "gate_failure",
+    "gate_memory_max",
 ];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -32,6 +33,7 @@ pub struct Project {
     pub slice_max_kb: f64,
     /// Regexes for the lines a red gate failed on, tried before the built-in set.
     pub gate_failure: Vec<String>,
+    pub gate_memory_max: Option<String>,
 }
 
 impl Project {
@@ -94,6 +96,7 @@ pub fn load(root: &Path) -> Result<Option<Project>> {
                 .collect(),
             _ => Vec::new(),
         },
+        gate_memory_max: string("gate_memory_max"),
     }))
 }
 
