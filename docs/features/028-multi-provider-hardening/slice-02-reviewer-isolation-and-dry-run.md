@@ -5,6 +5,11 @@
 
 **Progress**: `scrub_reviewer_env`, `build_pass_command`/`PassCommand`, `factory review second --dry-run`, `allow_hyphen_values` on `--prompt`; tests `review_second_isolates_all_five_providers_and_supports_dry_run` + updated authorized run. Inner loop: 3 runs, 1 red, ~2 min — Codex argv order and OpenCode `-f`/`--` test expectation. Deliberate red: stripped Claude `--setting-sources` from `args` → isolation test failed on dry-run output; restored → green.
 
+cp-2/FR-1/transcript.txt
+cp-2/FR-2/transcript.txt
+cp-2/FR-3/transcript.txt
+cp-2/FR-4/transcript.txt
+
 **Slice**: Isolates all five adversarial reviewer providers (and their probes) from GitHub tokens, Claude session vars, branch hooks/MCPs (Claude `--setting-sources user --strict-mcp-config`), OpenCode branch config overrides (`OPENCODE_CONFIG_CONTENT` denying top-level + `agent.plan` `edit`/`bash`/`webfetch`), and `-`-leading prompt flag injection (`--` before prompt + clap `allow_hyphen_values = true`), and adds file-free `factory review second --dry-run` sharing one `build_pass_command` builder with `run_pass_resolved`.
 
 ## Current code / environment
