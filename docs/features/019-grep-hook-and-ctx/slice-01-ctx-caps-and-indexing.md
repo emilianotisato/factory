@@ -3,7 +3,7 @@
 **Source**: [`prd.md`](prd.md) → §4 FR-2 (`ctx` print caps), §5 FR-3, §9 QA plan. **Depends on**: — (touches only `src/ctx/*` and `tests/ctx.rs`).
 **Created**: 2026-11-26
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**: `MAX_LINE_CHARS`/`MAX_DEFS`, Go `const_spec`, PHP `const_element`, `--kind constant`, Pest `test`/`it` outline extraction; inner loop green. cp-1: `cp-1/FR-3/transcript.txt`
 
 **Slice**: Adds UTF-8-safe 200-char text-field truncation (`MAX_LINE_CHARS`) and a 20-definition cap (`MAX_DEFS`) in `src/ctx/print.rs`, indexes Go `const_spec` and PHP class constants (`const_element`) with `--kind constant` support, and extracts PHP Pest `test()`/`it()` calls into `ctx outline` via a safe Rust AST walk. Leaves the 8 KB hook denial cap and grep hook changes to slice 02, and Bash guard/corpus/skill changes to slice 03.
 
