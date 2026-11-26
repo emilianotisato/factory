@@ -43,3 +43,31 @@ Nothing in this project’s gate tiers clearly cost more than they caught on thi
 ## Score
 
 4/5 — the guards shipped real hardening, but polish had to patch a serious allow-sync hole and a CI-fix bypass the slice tests would not have caught without cross-vendor review.
+
+## Numbers
+
+<!-- factory:numbers -->
+| role | workers | own | subagents | weighted | minutes | turns |
+|---|---:|---:|---:|---:|---:|---:|
+| build | 3 | 2279026 | — | 2279026 | 23 | — |
+| checkpoint | 1 | 136078 | — | 136078 | 1 | — |
+| polish | 1 | 457803 | — | 457803 | 9 | — |
+| total | 5 | 2872907 | — | 2872907 | 33 | — |
+
+Knobs: build cursor:composer-2.5 user/default · fix cursor:composer-2.5 user/default · checkpoint cursor:composer-2.5 user/default · polish cursor:composer-2.5 user/default · budget 30000000 default · lanes 4 · factory 0.16.0 · cursor 2026.11.22-e9042b2
+
+Hypothesis: none
+
+quality: gate_red 0 · worker_gate_red 0 · fix_commits 0 · ci_red_rounds 0 · ci_reruns 0 · findings high=2 medium=4 low=1 fixed=7 parked=2 · decisions 0 decide 0 blocks 0
+
+Pack (build): slice 13366 · prd_sections 8306 · log 53 · outline 12399 · lookup 1115 · contract 3685 · autonomy 9988 · inner_loop 86 · total 48998 · start_context —
+
+Compared with:
+
+| run | feature | weighted | slices | per slice | lines changed | per line | comment share | id hits |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 022-20261126-a09f (this run) | 022 | 2872907 | 3 | 957636 | 2330 | 1233 | 0.3% | 0 |
+| 027-20261125-904f | 027 | 7178094 | 4 | 1794524 | 5173 | 1388 | 2.9% | 0 |
+| 026-20261125-a6be | 026 | 4801352 | 4 | 1200338 | 5075 | 946 | 2.8% | 0 |
+| 025-20261125-021f | 025 | 2708704 | 4 | 677176 | 1798 | 1507 | 2.4% | 0 |
+<!-- /factory:numbers -->
