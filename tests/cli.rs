@@ -78,6 +78,7 @@ fn hook_denies_repo_greps_and_whole_reads_of_held_files() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = tmp.path().join("repo");
     std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::write(repo.join("src/one.php"), "<?php\nfunction foo() {}\n").unwrap();
     let slice = "docs/features/001-x/slice-01-a.md";
     let prd = "docs/features/001-x/prd.md";
     let pack = tmp.path().join("slice-01-1.md");
@@ -99,13 +100,12 @@ fn hook_denies_repo_greps_and_whole_reads_of_held_files() {
     // The hint names this binary by its absolute path: a worker may have no `factory` on PATH.
     let (code, d, why, _) = hook(&bash("grep -rn foo src").to_string(), &pack);
     assert_eq!((code, d.as_str()), (Some(0), "deny"));
-    assert_eq!(
-        why,
-        format!(
-            "use: {} ctx refs <word> (or ctx def <symbol>; --vendor for vendor code): a bare name goes to ctx, grep anything else",
-            factory::paths::shell_word(BIN)
-        )
+    let hint = format!(
+        "use: {} ctx refs <word> (or ctx def <symbol>; --vendor for vendor code): a bare name goes to ctx; for string literals grep with quotes (e.g. grep '\"Word\"')",
+        factory::paths::shell_word(BIN)
     );
+    assert!(why.starts_with(&hint), "{why}");
+    assert!(why.contains("src/one.php"), "{why}");
     assert!(std::path::Path::new(BIN).is_absolute());
     assert_eq!(
         hook(&bash("grep -n foo src/one.php").to_string(), &pack),
@@ -182,6 +182,165 @@ fn hook_denies_gh_and_git_push_and_fails_closed() {
     let (code, d, why, err) = hook(cut, &pack);
     assert_eq!((code, d.as_str(), why.as_str()), (Some(0), "deny", never));
     assert!(err.contains("it names gh or push: denied"), "{err}");
+}
+
+fn hook_bash(
+    cmd: &str,
+    repo: &std::path::Path,
+    cwd: &std::path::Path,
+) -> factory::cli::hook::Verdict {
+    factory::cli::hook::decide(
+        &json!({"tool_name": "Bash", "tool_input": {"command": cmd}}),
+        &factory::cli::hook::Held::default(),
+        repo,
+        cwd,
+    )
+}
+
+#[test]
+fn grep_hook_denies_only_standalone_unfiltered_code_searches_with_ctx_hits() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(root.join("app")).unwrap();
+    std::fs::create_dir_all(root.join("docs")).unwrap();
+    std::fs::create_dir_all(root.join("storage/logs")).unwrap();
+    std::fs::write(root.join("src/lib.rs"), "pub fn alpha() -> u8 { 1 }\n").unwrap();
+    std::fs::write(root.join("app/main.rs"), "fn main() { alpha(); }\n").unwrap();
+    std::fs::write(root.join("docs/readme.md"), "# checkpoint_every\n").unwrap();
+    std::fs::write(
+        root.join("src/strlit.rs"),
+        "fn main() { let _ = \"DirRecep\"; }\n",
+    )
+    .unwrap();
+    let r = root.to_str().unwrap();
+    let hint = factory::cli::hook::grep_hint();
+    let denied = |cmd: &str| {
+        let v = hook_bash(cmd, root, root);
+        let factory::cli::hook::Verdict::Deny(why) = v else {
+            panic!("deny expected for {cmd:?}: {v:?}");
+        };
+        assert!(why.starts_with(&hint), "{why}");
+        why
+    };
+    for cmd in [
+        "grep -rn alpha src",
+        "grep -rn alpha src;",
+        "grep -rn alpha src\n",
+        "grep -r alpha *",
+        "grep -rn alpha src app",
+        &format!("cd {r} && rg alpha src"),
+    ] {
+        denied(cmd);
+    }
+    for cmd in [
+        "rg alpha src | head -20",
+        &format!("cd {r} && grep -rn alpha src && echo done"),
+        "grep -rn --include=*.php alpha src",
+        "rg -t rs alpha src",
+        "rg -g '*.rs' alpha src",
+        "rg alpha storage",
+        "grep -rn alpha storage/logs",
+        "grep -rn checkpoint_every docs",
+        "grep -rn DirRecep src",
+    ] {
+        assert_eq!(
+            hook_bash(cmd, root, root),
+            factory::cli::hook::Verdict::Allow,
+            "{cmd}"
+        );
+    }
+}
+
+#[test]
+fn ctx_output_caps_line_width_def_count_and_hook_denial_size() {
+    use factory::cli::hook::MAX_DENY_BYTES;
+    use factory::ctx::def;
+    use factory::ctx::print::{self, MAX_LINE_CHARS};
+    use factory::ctx::refs::{self, Caps};
+    use factory::ctx::walk::WalkOpts;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let pad = "x".repeat(5000);
+    std::fs::write(
+        root.join("src/min.js"),
+        format!("function longref() {{ {pad} }}\n"),
+    )
+    .unwrap();
+    let opts = WalkOpts { vendor: false };
+    let caps = Caps {
+        max: refs::MAX,
+        per_file: refs::PER_FILE,
+        tests: false,
+    };
+    let r = refs::find(root, root, "longref", caps, &opts).unwrap();
+    let refs_out = print::refs("longref", &r);
+    let ref_line = refs_out
+        .lines()
+        .find(|l| l.contains("min.js"))
+        .expect("refs line");
+    let text = ref_line.split("  ref  ").nth(1).unwrap_or("");
+    assert!(text.chars().count() <= MAX_LINE_CHARS);
+    assert!(text.ends_with('…'));
+
+    let d = def::find(root, root, "longref", None, &opts).unwrap();
+    assert!(!d.hits.is_empty());
+    let defs_out = print::defs("longref", &d, false);
+    let def_line = defs_out
+        .lines()
+        .find(|l| l.contains("min.js") && l.contains("kind"))
+        .or_else(|| defs_out.lines().find(|l| l.contains("min.js")))
+        .expect("def line");
+    let text = def_line
+        .rsplit_once("  ")
+        .map(|(_, t)| t)
+        .unwrap_or(def_line);
+    assert!(text.chars().count() <= MAX_LINE_CHARS);
+    assert!(text.ends_with('…'));
+
+    for i in 0..35 {
+        std::fs::write(
+            root.join(format!("src/dup{i}.rs")),
+            format!("pub fn repeatSym() {{ let v = {i}; }}\n"),
+        )
+        .unwrap();
+    }
+    let many = def::find(root, root, "repeatSym", None, &opts).unwrap();
+    let many_out = print::defs("repeatSym", &many, false);
+    assert!(many_out.contains("15 more definitions: narrow with --kind or --in"));
+    assert!(many_out.contains("35 definitions"));
+
+    let longdir = "d".repeat(96);
+    let hitdir = root.join(format!("src/{longdir}"));
+    std::fs::create_dir_all(&hitdir).unwrap();
+    let zpad = "z".repeat(400);
+    for i in 0..12 {
+        std::fs::write(
+            hitdir.join(format!("hit{i}.rs")),
+            format!(
+                "pub fn hit{i}() {{\n    flood({i});\n    let _ = \"{zpad}\";\n    let _ = \"{zpad}\";\n}}\n"
+            ),
+        )
+        .unwrap();
+    }
+    let jpad = "w".repeat(4800);
+    let defdir = root.join(format!("src/{longdir}/defs"));
+    std::fs::create_dir_all(&defdir).unwrap();
+    for i in 0..40 {
+        std::fs::write(
+            defdir.join(format!("flood{i}.js")),
+            format!("function flood() {{ {jpad} }}\n"),
+        )
+        .unwrap();
+    }
+    let v = hook_bash("grep -rn flood src", root, root);
+    let factory::cli::hook::Verdict::Deny(why) = v else {
+        panic!("expected deny");
+    };
+    assert!(why.len() <= MAX_DENY_BYTES);
+    assert!(why.contains("(truncated; run ctx with --in or --max to narrow)"));
 }
 
 #[test]
