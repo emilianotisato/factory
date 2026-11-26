@@ -4,6 +4,8 @@
 **Created**: 2026-11-26
 
 **Progress**: `parse_allowlist` + `allowlist_at_ref`; `--base` scans with base allowlist and `allowlist_note` above `comment share:`; `ids!()` / `SEMVER` per FR-4; tests `leaks_base_uses_base_allowlist_and_notes_branch_edits` and `leaks_catches_hyphenless_unambiguous_plan_ids_without_ambiguous_false_positives`. Inner loop: 2 runs, 1 red (clippy `ci::Output.code`), ~3.5 min green. Deliberate reds: base stub used worktree allow → exit 0 not 1; old `ids!()` → missed `"fr123-7"`. Fixture allow entries use `scope = "all"` so comment hits suppress on `--all`.
+- cp-1/FR-2/transcript.txt
+- cp-1/FR-4/transcript.txt
 
 **Slice**: Makes `factory leaks --base <ref>` read `[leaks] allow` from `<base_ref>:docs/project.toml` with a one-line notice when the branch modified `[leaks] allow`, and extends `ids!()` in `src/leaks.rs` so strings and comments containing hyphen-less unambiguous plan IDs (`fr123-7`, `prd025`, `oq12`, `block101`) are caught while ambiguous short prefixes (`cp1252`, `dec2026`, `ad1`, `open2`, `ask1`) and semver (`block1.2.3`) stay quiet.
 
