@@ -1,4 +1,6 @@
 //! A lane is both what a worker gets (env, setup) and where it runs: a detached worktree under the data dir.
+use std::collections::HashSet;
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output};
@@ -401,6 +403,208 @@ pub fn remove_lane(main: &Path, lane: &Path) -> Result<()> {
 
 pub fn prune(main: &Path) -> Result<()> {
     git(main, &["worktree", "prune"]).map(|_| ())
+}
+
+pub fn dir_size(path: &Path) -> u64 {
+    let mut total = 0u64;
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(p) = stack.pop() {
+        let meta = match fs::symlink_metadata(&p) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        if meta.is_dir() {
+            if let Ok(rd) = fs::read_dir(&p) {
+                for e in rd.flatten() {
+                    stack.push(e.path());
+                }
+            }
+        } else if meta.is_file() {
+            total += meta.len();
+        }
+    }
+    total
+}
+
+fn canonical_existing(path: &Path) -> Option<PathBuf> {
+    if !path.exists() {
+        return None;
+    }
+    path.canonicalize().ok()
+}
+
+fn push_canonical(out: &mut HashSet<PathBuf>, path: &Path) {
+    if let Some(c) = canonical_existing(path) {
+        out.insert(c);
+    }
+}
+
+pub fn declared_cargo_targets(main: &Path, data: &Path) -> Result<HashSet<PathBuf>> {
+    let lanes_ref = main.join(DIR);
+    let mut out = HashSet::new();
+    let entries = match fs::read_dir(&lanes_ref) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+        Err(e) => return Err(io(format!("read {}", lanes_ref.display()))(e)),
+    };
+    for e in entries.flatten() {
+        let name = e.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let Some(digits) = name
+            .strip_prefix("lane-")
+            .and_then(|s| s.strip_suffix(".md"))
+        else {
+            continue;
+        };
+        let Ok(n) = digits.parse::<u32>() else {
+            continue;
+        };
+        let lane = load(main, n)?;
+        let Some(raw) = lane
+            .env
+            .iter()
+            .find_map(|(k, v)| (k == "CARGO_TARGET_DIR").then_some(v))
+        else {
+            continue;
+        };
+        let p = PathBuf::from(raw);
+        if p.is_absolute() {
+            push_canonical(&mut out, &p);
+            continue;
+        }
+        let lane_dir = dir(data, main, n);
+        push_canonical(&mut out, &lane_dir.join(&p));
+        push_canonical(&mut out, &main.join(&p));
+    }
+    Ok(out)
+}
+
+pub fn cache_dirs(main: &Path, lane_dir: &Path, n: u32) -> Result<Vec<(PathBuf, bool)>> {
+    let lane = load(main, n)?;
+    let mut raw: Vec<(PathBuf, bool)> = Vec::new();
+    if let Some(target) = lane
+        .env
+        .iter()
+        .find_map(|(k, v)| (k == "CARGO_TARGET_DIR").then(|| PathBuf::from(v)))
+    {
+        let p = if target.is_absolute() {
+            target
+        } else {
+            lane_dir.join(target)
+        };
+        raw.push((p, true));
+    }
+    raw.push((lane_dir.join("target"), true));
+    for rel in ["node_modules/.cache", ".next/cache", "vendor/.cache"] {
+        raw.push((lane_dir.join(rel), false));
+    }
+    let mut items: Vec<(PathBuf, bool)> = raw
+        .into_iter()
+        .filter_map(|(p, is_cargo)| canonical_existing(&p).map(|c| (c, is_cargo)))
+        .collect();
+    items.sort_by_key(|(p, _)| (p.components().count(), p.as_os_str().len()));
+    let mut kept: Vec<(PathBuf, bool)> = Vec::new();
+    for (path, is_cargo) in items {
+        if kept.iter().any(|(k, _)| path.starts_with(k)) {
+            continue;
+        }
+        kept.push((path, is_cargo));
+    }
+    Ok(kept)
+}
+
+pub fn stale_main_lane_targets(main: &Path, data: &Path) -> Result<Vec<PathBuf>> {
+    let target = main.join("target");
+    let live = declared_cargo_targets(main, data)?;
+    let entries = match fs::read_dir(&target) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(io(format!("read {}", target.display()))(e)),
+    };
+    let mut out = Vec::new();
+    for e in entries.flatten() {
+        let p = e.path();
+        if !p.is_dir() {
+            continue;
+        }
+        let name = e.file_name();
+        let name = name.to_string_lossy();
+        let Some(rest) = name.strip_prefix("lane-") else {
+            continue;
+        };
+        if rest.is_empty() || !rest.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        let Some(can) = canonical_existing(&p) else {
+            continue;
+        };
+        if live.contains(&can) {
+            continue;
+        }
+        out.push(p);
+    }
+    out.sort();
+    Ok(out)
+}
+
+fn cargo_target_env(lane_dir: &Path, dir: &Path) -> OsString {
+    match dir.strip_prefix(lane_dir) {
+        Ok(p) => p.as_os_str().to_os_string(),
+        Err(_) => dir.as_os_str().to_os_string(),
+    }
+}
+
+fn find_cargo_sweep() -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        let p = dir.join("cargo-sweep");
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    None
+}
+
+pub fn trim_cache_dir(
+    lane_dir: &Path,
+    dir: &Path,
+    is_cargo: bool,
+    days: u32,
+    force_remove: bool,
+) -> Result<u64> {
+    if !dir.exists() {
+        return Ok(0);
+    }
+    let before = dir_size(dir);
+    if is_cargo && !force_remove {
+        let sweep = std::env::var("FACTORY_CARGO_SWEEP").ok();
+        let skip = sweep.as_deref().is_some_and(|s| s == "off");
+        let run = if skip {
+            None
+        } else if let Some(ref p) = sweep.filter(|s| !s.is_empty()) {
+            Some(PathBuf::from(p))
+        } else {
+            find_cargo_sweep()
+        };
+        if let Some(exe) = run {
+            let ok = Command::new(&exe)
+                .args(["sweep", "--time", &days.to_string()])
+                .current_dir(lane_dir)
+                .env("CARGO_TARGET_DIR", cargo_target_env(lane_dir, dir))
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if ok {
+                let after = dir_size(dir);
+                return Ok(before.saturating_sub(after));
+            }
+        }
+    }
+    fs::remove_dir_all(dir).map_err(io(format!("remove {}", dir.display())))?;
+    Ok(before)
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<String> {

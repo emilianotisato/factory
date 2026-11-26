@@ -1870,3 +1870,127 @@ fn linked_worktree_shares_main_tree_across_status_lanes_and_run() {
     assert!(text.contains(&format!("run {rid} resumed")), "{text}");
     assert!(!text.contains("HEAD is on main"), "{text}");
 }
+
+fn write_bytes(path: &Path, n: usize) {
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, vec![b'x'; n]).unwrap();
+}
+
+#[test]
+fn lanes_clean_reports_trims_and_enforces_clean_above_gb_at_run_start() {
+    let fx = Fixture::with_index("lanes-clean-cache", &[("lanes", "2")]);
+    let root = fx.path();
+    let lanes_dir = root.join("docs/reference/lanes");
+    fs::create_dir_all(&lanes_dir).unwrap();
+    fs::write(
+        lanes_dir.join("lane-1.md"),
+        "---\nlane: 1\nenv: [CARGO_TARGET_DIR=target/lane-1]\n---\n",
+    )
+    .unwrap();
+    fs::write(lanes_dir.join("lane-2.md"), "---\nlane: 2\nenv: []\n---\n").unwrap();
+    fx.git(&["add", "-A"]);
+    fx.git(&["commit", "-q", "-m", "chore: lane clean fixture"]);
+    let ig = root.join(".gitignore");
+    let mut ignore = fs::read_to_string(&ig).unwrap();
+    if !ignore.contains("/target/") {
+        ignore.push_str("/target/\n");
+        fs::write(&ig, &ignore).unwrap();
+        fx.git(&["add", ".gitignore"]);
+        fx.git(&["commit", "-q", "-m", "chore: ignore target"]);
+    }
+
+    let out = factory(&fx, &["lanes", "up"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let lane1 = lane_path(&fx, 1);
+    let lane2 = lane_path(&fx, 2);
+
+    write_bytes(&lane1.join("target/lane-1/nested.bin"), 4000);
+    write_bytes(&lane1.join("target/outer.bin"), 2000);
+    write_bytes(&root.join("target/lane-9/stale.bin"), 6000);
+    write_bytes(&root.join("target/lane-1/live.bin"), 100);
+    assert!(root.join("target/lane-1").is_dir());
+    assert!(root.join("target/lane-9").is_dir());
+
+    let out = factory(&fx, &["lanes", "clean", "--dry"]);
+    let dry = stdout(&out);
+    assert_eq!(out.status.code(), Some(0), "{dry}");
+    assert!(dry.contains("lane-1  build cache"));
+    assert!(dry.contains("main  stale target/lane-9"));
+    assert!(
+        !dry.lines()
+            .any(|l| l.contains("stale") && l.contains("lane-1"))
+    );
+    assert!(root.join("target/lane-9").is_dir());
+    assert!(lane1.join("target/outer.bin").is_file());
+
+    let sweep_log = fx.stub_dir().join("sweep.log");
+    let sweep = fx.stub_dir().join("cargo-sweep-stub.sh");
+    fs::write(
+        &sweep,
+        format!(
+            "#!/bin/sh\necho \"$@\" \"CARGO_TARGET_DIR=$CARGO_TARGET_DIR\" >> {}\nexit 0\n",
+            sweep_log.display()
+        ),
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&sweep, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let out = fx
+        .command(BIN)
+        .env("FACTORY_CARGO_SWEEP", &sweep)
+        .args(["lanes", "clean"])
+        .output()
+        .unwrap();
+    let clean = stdout(&out);
+    assert_eq!(out.status.code(), Some(0), "{clean}");
+    assert!(!root.join("target/lane-9").exists());
+    assert!(root.join("target/lane-1/live.bin").is_file());
+    let log = fs::read_to_string(&sweep_log).unwrap();
+    assert!(log.contains("sweep --time 7"), "{log}");
+    assert!(log.contains("CARGO_TARGET_DIR="), "{log}");
+
+    let out = factory(&fx, &["run", "001"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let out = factory(&fx, &["lanes", "clean"]);
+    let blocked = stdout(&out);
+    assert_eq!(out.status.code(), Some(1), "{blocked}");
+    assert!(blocked.contains("clean refused"));
+    let out = factory(&fx, &["lanes", "clean", "--dry"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+
+    let dir = only_run_dir(&fx);
+    let rid = run_id(&dir);
+    let out = factory(&fx, &["stop", &rid]);
+    assert_eq!(out.status.code(), Some(0));
+    wait_until(&fx, &dir, "run stop", 30, || {
+        state(&dir)["phase"] == "finished"
+    });
+
+    write_bytes(&lane1.join("target/huge.bin"), 50_000);
+    write_bytes(&lane2.join("target/tiny.bin"), 100);
+    let proj = root.join("docs/project.toml");
+    let mut toml = fs::read_to_string(&proj).unwrap();
+    if !toml.contains("clean_above_gb") {
+        toml = toml.replacen("[lanes]\n", "[lanes]\nclean_above_gb = 0.00001\n", 1);
+        fs::write(&proj, toml).unwrap();
+        fx.git(&["add", "docs/project.toml"]);
+        fx.git(&["commit", "-q", "-m", "chore: clean_above_gb knob"]);
+    }
+    fx.write_plan(&[done()]);
+    let out = fx
+        .command(BIN)
+        .env("FACTORY_CARGO_SWEEP", "off")
+        .args(["run", "001", "--foreground"])
+        .output()
+        .unwrap();
+    let run_text = stdout(&out);
+    assert_eq!(out.status.code(), Some(0), "{run_text}");
+    assert!(
+        run_text.contains("lane-1  trimmed build cache"),
+        "{run_text}"
+    );
+    assert!(!lane1.join("target/huge.bin").exists());
+    assert!(lane2.join("target/tiny.bin").is_file());
+}

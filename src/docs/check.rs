@@ -265,6 +265,24 @@ fn read_project(root: &Path, r: &mut Report) -> Option<Option<Project>> {
             }
         }
     }
+    if let Some(toml::Value::Table(lanes)) = table.get("lanes") {
+        use toml::Value as T;
+        if let Some(v) = lanes.get("clean_above_gb") {
+            let ok = match v {
+                T::Integer(i) => *i as f64 > 0.0,
+                T::Float(f) => *f > 0.0 && f.is_finite(),
+                _ => false,
+            };
+            if !ok {
+                r.err(
+                    "E-PROJECT-INVALID",
+                    format!(
+                        "docs/project.toml [lanes] clean_above_gb = {v} must be a positive number"
+                    ),
+                );
+            }
+        }
+    }
     Some(project::load(root).ok().flatten())
 }
 
@@ -1045,6 +1063,21 @@ mod tests {
                 append(root, "docs/project.toml", "lanes = \"two\"\n")
             }),
         ];
+        for (bad, label) in [
+            ("clean_above_gb = 0\n", "zero"),
+            ("clean_above_gb = -1\n", "negative"),
+            ("clean_above_gb = \"15G\"\n", "string"),
+            ("clean_above_gb = true\n", "bool"),
+        ] {
+            let d = tree();
+            append(d.path(), "docs/project.toml", &format!("[lanes]\n{bad}"));
+            assert_eq!(
+                codes(d.path()),
+                ["E-PROJECT-INVALID"],
+                "{label}: {:?}",
+                run(d.path()).lines()
+            );
+        }
         for (code, f) in cases {
             let d = tree();
             f(d.path());

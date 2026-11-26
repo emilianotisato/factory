@@ -120,6 +120,32 @@ pub fn seed(root: &Path) -> Result<Option<Vec<String>>> {
     ))
 }
 
+pub fn clean_above_gb(root: &Path) -> Result<Option<f64>> {
+    let p = path(root);
+    let text = match fs::read_to_string(&p) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(io(format!("read {}", p.display()))(e)),
+    };
+    let table: toml::Table = text.parse().map_err(|source| Error::Toml {
+        what: format!("read {}", p.display()),
+        source,
+    })?;
+    let Some(v) = table.get("lanes").and_then(|l| l.get("clean_above_gb")) else {
+        return Ok(None);
+    };
+    let gb = match v {
+        toml::Value::Integer(i) => *i as f64,
+        toml::Value::Float(f) => *f,
+        _ => return Ok(None),
+    };
+    if gb > 0.0 && gb.is_finite() {
+        Ok(Some(gb))
+    } else {
+        Ok(None)
+    }
+}
+
 pub fn is_v3(root: &Path) -> bool {
     matches!(load(root), Ok(Some(p)) if p.framework == 3)
 }
@@ -244,6 +270,24 @@ mod tests {
         assert_eq!(seed(d.path()).unwrap(), Some(vec!["target".to_string()]));
         let none = tempfile::tempdir().unwrap();
         assert_eq!(seed(none.path()).unwrap(), None, "no file");
+    }
+
+    #[test]
+    fn lanes_clean_above_gb_accepts_positive_numbers_and_ignores_the_rest() {
+        let d = repo("[docs]\nframework = 3\n[lanes]\nclean_above_gb = 15\n");
+        assert_eq!(clean_above_gb(d.path()).unwrap(), Some(15.0));
+        let d = repo("[docs]\nframework = 3\n[lanes]\nclean_above_gb = 0.5\n");
+        assert_eq!(clean_above_gb(d.path()).unwrap(), Some(0.5));
+        let d = repo("[docs]\nframework = 3\n[lanes]\nclean_above_gb = 0\n");
+        assert_eq!(clean_above_gb(d.path()).unwrap(), None);
+        let d = repo("[docs]\nframework = 3\n[lanes]\nclean_above_gb = -1\n");
+        assert_eq!(clean_above_gb(d.path()).unwrap(), None);
+        let d = repo("[docs]\nframework = 3\n[lanes]\nclean_above_gb = \"15G\"\n");
+        assert_eq!(clean_above_gb(d.path()).unwrap(), None);
+        let d = repo("[docs]\nframework = 3\n[lanes]\nclean_above_gb = true\n");
+        assert_eq!(clean_above_gb(d.path()).unwrap(), None);
+        let d = repo("[docs]\nframework = 3\n");
+        assert_eq!(clean_above_gb(d.path()).unwrap(), None);
     }
 
     const SHARED: &str = "# shared by the driver and the docs tool\n[docs]\nframework = 3\ngate = \"./gate.sh\"\n\n[run]\nbudget = 5   # cheap\n";
