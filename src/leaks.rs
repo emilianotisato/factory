@@ -817,6 +817,22 @@ fn git_code(repo: &Path, args: &[&str]) -> Result<i32> {
     Ok(ci::git(repo, args)?.code)
 }
 
+fn branch_allowlist_changed(repo: &Path, base_ref: &str) -> Option<String> {
+    let mb = git(repo, &["merge-base", base_ref, "HEAD"]).ok()?;
+    let mb = mb.trim();
+    if mb.is_empty() {
+        return None;
+    }
+    let at_fork = allowlist_at_ref(repo, mb).ok()?;
+    let at_head = allowlist_at_ref(repo, "HEAD").ok()?;
+    if at_fork == at_head {
+        return None;
+    }
+    Some(format!(
+        "note: [leaks] allow changed on this branch; scanned with {base_ref}'s allowlist"
+    ))
+}
+
 /// Lines and paths the input adds outside `docs/`, run through the rules and the repo's allowlist.
 pub fn scan(repo: &Path, input: Input) -> Result<Report> {
     let (allow, allowlist_note) = match input {
@@ -828,12 +844,7 @@ pub fn scan(repo: &Path, input: Input) -> Result<Report> {
         Input::Base(base) => {
             let base_ref = crate::commit::resolve_base_ref(repo, Some(base))?;
             let allow = allowlist_at_ref(repo, &base_ref)?;
-            let allowlist_note = match allowlist(repo) {
-                Ok(worktree) if worktree == allow => None,
-                Ok(_) | Err(_) => Some(format!(
-                    "note: [leaks] allow changed on this branch; scanned with {base_ref}'s allowlist"
-                )),
-            };
+            let allowlist_note = branch_allowlist_changed(repo, &base_ref);
             (allow, allowlist_note)
         }
         Input::All => (allowlist(repo)?, None),

@@ -82,6 +82,12 @@ fn authorized_tests_snapshot_blocks_unlisted_test_edits_and_persists_allow_for_r
         "allow",
     )
     .unwrap();
+    run.emit(factory::events::EventKind::BlockAnswered {
+        id: block_id.clone(),
+        slice: None,
+        text: "allow".into(),
+    })
+    .unwrap();
     testguard::sync_allow_answers(&mut run, &feature_dir).unwrap();
     let state: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(run.dir().join("state.json")).unwrap()).unwrap();

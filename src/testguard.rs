@@ -9,6 +9,7 @@ use crate::Result;
 use crate::answers;
 use crate::docs::frontmatter::{self, Value};
 use crate::error::io;
+use crate::events::EventKind;
 use crate::run::Run;
 use crate::scheduler;
 
@@ -94,7 +95,7 @@ pub fn check(repo: &Path, base_ref: &str, authorized: &[String]) -> Result<Vec<V
             "core.quotepath=off",
             "diff",
             "-U0",
-            "--diff-filter=MD",
+            "--diff-filter=MDT",
             "--no-renames",
             "--no-color",
             "--no-ext-diff",
@@ -199,13 +200,17 @@ fn path_from_chunk(chunk: &str) -> Option<String> {
         if let Some(rest) = line.strip_prefix("+++ b/")
             && rest != "/dev/null"
         {
-            return Some(rest.to_string());
+            return Some(trim_diff_path(rest));
         }
         if let Some(rest) = line.strip_prefix("--- a/") {
-            path = Some(rest.to_string());
+            path = Some(trim_diff_path(rest));
         }
     }
     path
+}
+
+fn trim_diff_path(path: &str) -> String {
+    path.trim_end_matches('\t').to_string()
 }
 
 static HUNK_HEAD: LazyLock<Regex> =
@@ -241,9 +246,7 @@ fn hunks_in_chunk(chunk: &str) -> Vec<Hunk> {
         if line.starts_with("--- ") || line.starts_with("+++ ") {
             continue;
         }
-        if let Some(rest) = line.strip_prefix('-')
-            && !rest.starts_with('-')
-        {
+        if line.starts_with('-') && !line.starts_with("---") {
             removed += 1;
         }
     }
@@ -275,19 +278,32 @@ fn enclosing_test_name(
     if let Some(name) = name_in_line(ctx) {
         return Some(name);
     }
-    let spec = format!("{base_ref}:{path}");
+    let tree_ref = merge_base_for_diff(repo, base_ref).unwrap_or_else(|| base_ref.to_string());
+    let spec = format!("{tree_ref}:{path}");
     let text = scheduler::git_ok(repo, &["show", &spec]).ok()?;
     let lines: Vec<&str> = text.lines().collect();
     if lines.is_empty() {
         return None;
     }
-    let start = old_start.saturating_sub(1);
+    let start = old_start
+        .saturating_sub(1)
+        .min(lines.len().saturating_sub(1));
     for i in (0..=start).rev() {
         if let Some(name) = name_in_line(lines[i]) {
             return Some(name);
         }
     }
     None
+}
+
+fn merge_base_for_diff(repo: &Path, base_ref: &str) -> Option<String> {
+    let out = scheduler::git_ok(repo, &["merge-base", base_ref, "HEAD"]).ok()?;
+    let sha = out.trim();
+    if sha.is_empty() {
+        None
+    } else {
+        Some(sha.to_string())
+    }
 }
 
 fn name_in_line(line: &str) -> Option<String> {
@@ -337,17 +353,28 @@ pub fn violated_paths_from_body(body: &str) -> Vec<String> {
 }
 
 pub fn sync_allow_answers(run: &mut Run, feature_dir: &Path) -> Result<()> {
+    let allowed_ids: HashSet<String> = run
+        .events()?
+        .iter()
+        .filter_map(|e| match &e.kind {
+            EventKind::BlockAnswered { id, text, .. }
+                if text.trim().eq_ignore_ascii_case("allow") =>
+            {
+                Some(id.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    if allowed_ids.is_empty() {
+        return Ok(());
+    }
     let entries = answers::entries(feature_dir)?;
     let mut paths = Vec::new();
     for entry in entries {
         if !entry.title.starts_with(BLOCK_PREFIX) || !entry.resolved {
             continue;
         }
-        let allowed = entry
-            .answers
-            .iter()
-            .any(|(_, text)| text.trim().eq_ignore_ascii_case("allow"));
-        if !allowed {
+        if !allowed_ids.contains(&entry.id) {
             continue;
         }
         paths.extend(violated_paths_from_body(&entry.body));
@@ -509,6 +536,53 @@ mod tests {
             violated_paths_from_body(&body),
             vec!["tests/existing_test.rs".to_string()]
         );
+    }
+
+    #[test]
+    fn removed_fixture_lines_count_as_removals() {
+        let (d, base) = repo_with_base_test();
+        let root = d.path();
+        fs::write(
+            root.join("tests/existing_test.rs"),
+            "#[test]\nfn sample_test() {\n    let yaml = \"- item: 1\\n- item: 2\\n\";\n    assert!(yaml.contains(\"1\"));\n}\n",
+        )
+        .unwrap();
+        git(root, &["add", "tests/existing_test.rs"]);
+        git(root, &["commit", "-q", "-m", "fixture"]);
+        fs::write(
+            root.join("tests/existing_test.rs"),
+            "#[test]\nfn sample_test() {\n    let yaml = \"- item: 1\\n\";\n    assert!(yaml.contains(\"1\"));\n}\n",
+        )
+        .unwrap();
+        git(root, &["add", "tests/existing_test.rs"]);
+        git(root, &["commit", "-q", "-m", "drop line"]);
+        assert_eq!(check(root, &base, &[]).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn sync_allow_answers_ignores_resolved_blocks_without_block_answered_event() {
+        let (d, _) = repo_with_base_test();
+        let root = d.path();
+        let data = tempfile::tempdir().unwrap();
+        let mut run = crate::run::Run::create(data.path(), root, "001", None, 1).unwrap();
+        let feature_dir = root.join("docs/features/001-x");
+        fs::create_dir_all(&feature_dir).unwrap();
+        let body = format_block_body(&[Violation {
+            path: "tests/existing_test.rs".into(),
+            test_name: None,
+            deleted: false,
+        }]);
+        let title = answers::block_title(&format!("{BLOCK_PREFIX} tests/existing_test.rs"));
+        let block_id =
+            answers::add_block(&feature_dir, None, Some("checkpoint"), &title, &body).unwrap();
+        answers::resolve(
+            &feature_dir,
+            &answers::find(&feature_dir, &block_id).unwrap().unwrap(),
+            "allow",
+        )
+        .unwrap();
+        sync_allow_answers(&mut run, &feature_dir).unwrap();
+        assert!(run.state().authorized_tests.is_empty());
     }
 
     #[test]

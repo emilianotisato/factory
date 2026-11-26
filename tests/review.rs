@@ -1510,6 +1510,8 @@ fn base_ref_resolver_handles_origin_only_default_branch_across_leaks_review_retr
             Command::new("git")
                 .args(args)
                 .current_dir(cwd)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
                 .status()
                 .unwrap()
                 .success(),

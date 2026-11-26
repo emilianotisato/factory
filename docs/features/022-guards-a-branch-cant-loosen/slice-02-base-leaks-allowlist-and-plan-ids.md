@@ -66,3 +66,5 @@
 - FR-4: `run leaks_catches_hyphenless_unambiguous_plan_ids_without_ambiguous_false_positives` (evidence: test transcript)
 
 **Acceptance:** after the checkpoint, both tests run under `cargo test` with full gate green and transcripts recorded in Progress.
+
+**Code-review fixes (2026-11-26).** The branch-edit notice now compares `[leaks] allow` at merge-base versus `HEAD` instead of worktree versus base tip, so main moving the allowlist after fork does not false-trigger the notice.

@@ -101,3 +101,8 @@
 - FR-5: `run authorized_tests_snapshot_blocks_unlisted_test_edits_and_persists_allow_for_run` (evidence: test transcript)
 
 **Acceptance:** after the checkpoint, the test runs under `cargo test` with full gate green and transcript recorded in Progress.
+
+**Code-review fixes (2026-11-26).**
+- `sync_allow_answers` only honored resolved log blocks that also had a matching `BlockAnswered` event with `allow` in this run, closing forged `log.jsonl` answers and historical bleed across runs.
+- CI-fix landing now runs the same testguard gate as checkpoint/ship via `testguard_after_land`.
+- Hunk removed-line counting treats any `-` line inside a hunk as a removal (fixture lines starting with `--`), includes type-change deletes (`--diff-filter=MDT`), reads test names from merge-base file content, trims git path tabs, and adds regression tests for the sync and counting rules.

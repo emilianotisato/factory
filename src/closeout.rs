@@ -987,6 +987,32 @@ fn fallback_body(board: &Status, feature: &str) -> String {
     )
 }
 
+fn testguard_after_land(
+    run: &mut Run,
+    docs: &Docs,
+    board: &Status,
+    repo: &Path,
+    phase: &str,
+    out: &mut dyn Write,
+) -> Result<Option<Outcome>> {
+    let feature_dir = repo.join(&board.dir);
+    crate::testguard::sync_allow_answers(run, &feature_dir)?;
+    let base = default_branch(run, docs);
+    let base_ref = commit::resolve_base_ref(repo, Some(&base))?;
+    let violations = crate::testguard::check(repo, &base_ref, &run.state().authorized_tests)?;
+    if violations.is_empty() {
+        return Ok(None);
+    }
+    let summary = violations
+        .iter()
+        .map(|v| v.path.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let title = answers::block_title(&format!("{} {}", crate::testguard::BLOCK_PREFIX, summary));
+    let body = crate::testguard::format_block_body(&violations);
+    Ok(Some(block(run, &feature_dir, phase, &title, &body, out)?))
+}
+
 // ── ship ────────────────────────────────────────────────────────────────────
 
 fn ship(
@@ -999,27 +1025,8 @@ fn ship(
     let feature = run.state().feature.clone();
     let repo = run.state().repo.clone();
     let feature_dir = repo.join(&board.dir);
-    crate::testguard::sync_allow_answers(run, &feature_dir)?;
-    let base = default_branch(run, docs);
-    let base_ref = commit::resolve_base_ref(&repo, Some(&base))?;
-    let violations = crate::testguard::check(&repo, &base_ref, &run.state().authorized_tests)?;
-    if !violations.is_empty() {
-        let summary = violations
-            .iter()
-            .map(|v| v.path.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
-        let title =
-            answers::block_title(&format!("{} {}", crate::testguard::BLOCK_PREFIX, summary));
-        let body = crate::testguard::format_block_body(&violations);
-        return Ok(Some(block(
-            run,
-            &feature_dir,
-            "polish",
-            &title,
-            &body,
-            out,
-        )?));
+    if let Some(o) = testguard_after_land(run, docs, board, &repo, "polish", out)? {
+        return Ok(Some(o));
     }
     if let Some(o) = branch_guard(run, docs, &feature_dir, "polish", "ship", out)? {
         return Ok(Some(o));
@@ -2189,6 +2196,16 @@ fn fix_round(
                     WorkerOutcome::Blocked,
                 )?;
             }
+            return Ok(Some(o));
+        }
+        if let Some(o) = testguard_after_land(run, docs, board, &repo, "ci", out)? {
+            settle(
+                run,
+                row_id,
+                &session_id,
+                &exit.summary,
+                WorkerOutcome::Blocked,
+            )?;
             return Ok(Some(o));
         }
         settle(run, row_id, &session_id, &exit.summary, WorkerOutcome::Done)?;
