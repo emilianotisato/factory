@@ -3,7 +3,7 @@
 **Source**: [`prd.md`](prd.md) → §6 FR-4, §7 FR-5, §9 QA plan. **Depends on**: 02 (edits `src/cli/hook.rs` after slice 02).
 **Created**: 2026-11-26
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**: cp-2/FR-1/transcript.txt · cp-2/FR-2/transcript.txt · cp-2/FR-3/transcript.txt · cp-2/FR-4/transcript.txt · cp-2/FR-5/transcript.txt
 
 **Slice**: Fixes Bash `guard` false denials on `.push`/`->push`/`::push` method calls and non-backtick-exec interpreters (`python3`, `node`, `bun`, `deno`, etc.), widens `process_call` for missed Ruby/Perl/Lua/Bun/Deno/osascript/tclsh/PHP/Python process-spawning spellings, adds the `tests/fixture/hook/denied.json` regression corpus replayed in `tests/hook.rs`, adds the guard-loosening acceptance sentences to `skills/{prd,slice}/SKILL.md`, and bumps crate/plugin/bundle version from `0.16.0` to `0.17.0`.
 
