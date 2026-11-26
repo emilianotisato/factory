@@ -184,7 +184,13 @@ No row needs a human, so no `qa-guide.md` is generated.
 
 ## 10. Slices
 
-_(Not sliced yet. Run `/slice`.)_
+Three vertical slices on one feature branch (`feat/guards-a-branch-cant-loosen`), one PR, one commit per slice, Prove rows driven at checkpoints (`checkpoint_every = 2`). No QA row needs a human, so no `qa-guide.md` is generated.
+
+- **Slice 01 — Base-ref resolver and `docs/project.toml` guard** (`FR-1`, `FR-3`, spine): protects `docs/project.toml` from every worker (including `Closer::Polish`), clarifies `assets/autonomy.md:67`, adds `commit::resolve_base_ref` and `origin/{main,master}` fallback in `preflight::default_branch`, and wires `resolve_base_ref` across `leaks`, `review`, `collect`, `retro`, `pack`, `checkpoint`, and `closeout`.
+- **Slice 02 — Base-ref leaks allowlist and hyphen-less plan IDs** (`FR-2`, `FR-4`, depends on `01`): reads `[leaks] allow` from `<base_ref>:docs/project.toml` on `Input::Base` with the one-line branch-edit notice, and updates `ids!()` / `SEMVER` in `src/leaks.rs`. Writes only `src/leaks.rs` and `tests/leaks.rs`.
+- **Slice 03 — Authorized test snapshot and diff guard** (`FR-5`, depends on `01`): validates flow-array `authorized_tests` in `docs check`, snapshots it into `RunState` on both `Run::create` paths, blocks polish from altering `prd.md`'s `authorized_tests`, and enforces `src/testguard.rs` at checkpoint and closeout with `"allow"` persistence onto `RunState.authorized_tests`. Shares zero files with slice 02, so slices 02 and 03 build in parallel after slice 01 lands.
+
+Checkpoints land after two done slices (`01` + the first of `02`/`03`) and once more after all three slices are done.
 
 ## 11. Non-goals
 
