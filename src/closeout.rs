@@ -554,10 +554,10 @@ impl Closer<'_> {
         commit::message(board, "fix", &self.text())
     }
 
-    /// Polish may write `prd.md` (its Status prose); `docs/index.md` stays the ship's.
+    /// Polish may write `prd.md` (its Status prose); `docs/index.md` and `docs/project.toml` stay the ship's.
     fn protected(&self, board: &Status) -> Vec<String> {
         match self {
-            Closer::Polish => vec!["docs/index.md".to_string()],
+            Closer::Polish => vec!["docs/index.md".to_string(), "docs/project.toml".to_string()],
             Closer::CiFix { .. } => commit::protected_files(board).to_vec(),
         }
     }
@@ -2531,6 +2531,23 @@ mod tests {
                 path: path.into(),
             },
         }
+    }
+
+    #[test]
+    fn polish_keeps_project_toml_and_index_protected_not_prd() {
+        let board = Status {
+            number: 22,
+            dir: "docs/features/022-x".to_string(),
+            ..Default::default()
+        };
+        let p = Closer::Polish.protected(&board);
+        assert_eq!(
+            p,
+            vec!["docs/index.md".to_string(), "docs/project.toml".to_string(),]
+        );
+        let all = commit::protected_files(&board);
+        assert!(all.contains(&"docs/project.toml".to_string()));
+        assert!(!p.contains(&format!("{}/prd.md", board.dir)));
     }
 
     #[test]

@@ -1515,7 +1515,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let scanned = crate::leaks::scan(tmp.path(), crate::leaks::Input::Base("main"));
         let body = leaks_section("main", scanned);
-        assert!(body.starts_with("not run: git "), "{body}");
+        assert!(body.starts_with("not run:"), "{body}");
         assert_eq!(body.lines().count(), 1, "{body}");
     }
 

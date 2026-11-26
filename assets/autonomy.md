@@ -64,7 +64,7 @@ An agent alone under pressure reaches for every one of these. All are forbidden.
 - record a checkpoint, or a Prove row, without an artifact that exists on disk
 - force-push, push to the default branch, merge, close the PR, delete a branch. In a `factory` run a worker runs no `git push` and no `gh` at all: the driver pushes and talks to GitHub, and the hook refuses both
 
-**Two narrow exceptions, each with an `AD` marked `Review: fyi`:** an inline suppression where the real fix is impossible (a third-party type, a generated file), naming why; and extending gate configuration to *cover* new code the feature adds, such as a new source path. Extending, never loosening. When that extension makes CI need a toolchain it lacks, adding the setup step to the workflow is part of the same extension, with the `AD` marked `decide`. Never remove, skip or weaken a CI step.
+**Two narrow exceptions, each with an `AD` marked `Review: fyi`:** an inline suppression where the real fix is impossible (a third-party type, a generated file), naming why; and extending gate configuration to *cover* new code the feature adds, such as a new source path. Extending tool config (e.g. `phpstan.neon`, `tsconfig.json`) is allowed, while `docs/project.toml` itself stays protected from all workers — propose any `docs/project.toml` edit in the PR body or block. Extending, never loosening. When that extension makes CI need a toolchain it lacks, adding the setup step to the workflow is part of the same extension, with the `AD` marked `decide`. Never remove, skip or weaken a CI step.
 
 ## The plan stays in docs/
 Code is read for years by people and agents who never saw the PRD. Write it so it

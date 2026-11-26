@@ -3,7 +3,7 @@
 **Source**: [`prd.md`](prd.md) → §3 FR-1, §5 FR-3, §9 QA plan. **Depends on**: — (spine: introduces `commit::resolve_base_ref` and lands `src/commit.rs` / `src/closeout.rs` / `assets/autonomy.md` base changes that slices 02 and 03 build on).
 **Created**: 2026-11-26
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**: FR-1 — `protected_files`/`Closer::Polish::protected`/`assets/autonomy.md`; FR-3 — `commit::resolve_base_ref`, `preflight::default_branch` origin fallback, wired through leaks/review/retro/pack. Tests: `project_toml_is_dropped_from_slice_and_polish_lane_commits`, `base_ref_resolver_handles_origin_only_default_branch_across_leaks_review_retro_and_pack`, unit tests in `commit`/`preflight`/`closeout`. Inner loop: 2 runs, 0 red in loop, ~2 min wall (one red: review integration `src/` mkdir); deliberate reds — `project_toml`: missing `docs/project.toml` in `protected_files` → `contains` assert; `base_ref`: leaks without resolver → `bad revision 'main...HEAD'`. Checkpoint: `checkpoint.rs` leaks_section test relaxed to any `not run:` prefix when resolve fails before git diff.
 
 **Slice**: Protects `docs/project.toml` from every unattended worker (including polish) and adds one shared `commit::resolve_base_ref` wired into every git diff/log/show caller (`leaks`, `review`, `collect`, `retro`, `pack`, `checkpoint`, `closeout`) plus `origin/{main,master}` fallback in `preflight::default_branch`. Leaves base-ref `[leaks] allow` loading and hyphen-less plan-id rules to slice 02, and run-start `authorized_tests` enforcement to slice 03.
 

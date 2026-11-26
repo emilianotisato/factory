@@ -540,8 +540,10 @@ impl Pack {
         let feature = format!("{:03}", board.number);
         let prd_rel = format!("{}/prd.md", board.dir);
         let repo = docs.root();
+        let base_ref = crate::commit::resolve_base_ref(repo, Some(default_branch))
+            .unwrap_or_else(|_| default_branch.to_string());
         let log = std::process::Command::new("git")
-            .args(["log", "--oneline", &format!("{default_branch}..HEAD")])
+            .args(["log", "--oneline", &format!("{base_ref}..HEAD")])
             .current_dir(repo)
             .output()
             .ok()

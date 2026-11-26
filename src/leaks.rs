@@ -792,7 +792,10 @@ pub fn scan(repo: &Path, input: Input) -> Result<Report> {
                 "base `{base}` starts with `-`, and git would read it as an option"
             )));
         }
-        Input::Base(base) => vec![format!("{base}...HEAD")],
+        Input::Base(base) => {
+            let base_ref = crate::commit::resolve_base_ref(repo, Some(base))?;
+            vec![format!("{base_ref}...HEAD")]
+        }
         // A SHA-256 repo has another empty tree, so ask git for it.
         Input::All => vec![
             git(repo, &["hash-object", "-t", "tree", "/dev/null"])?

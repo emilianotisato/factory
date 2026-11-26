@@ -36,7 +36,11 @@ pub fn shortstat(text: &str) -> (u64, u64) {
 
 /// Three dots: commits the base gained since the branch left it do not count.
 pub fn changed_lines(repo: &Path, base: &str) -> Result<(u64, u64)> {
-    let out = ci::git(repo, &["diff", "--shortstat", &format!("{base}...HEAD")])?;
+    let base_ref = crate::commit::resolve_base_ref(repo, Some(base))?;
+    let out = ci::git(
+        repo,
+        &["diff", "--shortstat", &format!("{base_ref}...HEAD")],
+    )?;
     if !out.ok() {
         return Err(Error::Msg(format!(
             "git diff --shortstat {base}...HEAD: {}",

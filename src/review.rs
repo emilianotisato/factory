@@ -238,9 +238,19 @@ pub fn parse_numstat(text: &str) -> Vec<(String, u64)> {
         .collect()
 }
 
+fn resolve_range(cwd: &Path, range: Range) -> Result<String> {
+    match range {
+        Range::Base(b) => {
+            let base_ref = crate::commit::resolve_base_ref(cwd, Some(b))?;
+            Ok(format!("{base_ref}...HEAD"))
+        }
+        Range::Since(c) => Ok(format!("{c}..HEAD")),
+    }
+}
+
 /// Paths come back relative to the repo root whatever `cwd` is.
 pub fn numstat(cwd: &Path, range: Range, paths: &[String]) -> Result<Vec<(String, u64)>> {
-    let range = range.spec();
+    let range = resolve_range(cwd, range)?;
     let out = git(
         cwd,
         &[
@@ -378,7 +388,7 @@ fn parse_check_attr(text: &str) -> Vec<(String, &'static str)> {
 
 /// The diff of `files`, named literally, in plain text whatever the user's color or external-diff config.
 pub fn diff(root: &Path, range: Range, files: &[String]) -> Result<String> {
-    let range = range.spec();
+    let range = resolve_range(root, range)?;
     git(
         root,
         &[
