@@ -162,7 +162,13 @@ No row needs a human, so no `qa-guide.md` is generated.
 
 ## 10. Slices
 
-_(Not sliced yet. Run `/slice`.)_
+Three vertical slices on one feature branch (`feat/grep-hook-and-ctx`), one PR, one commit per slice, Prove rows driven at checkpoints (`checkpoint_every = 2`). No QA row needs a human, so no `qa-guide.md` is generated.
+
+- **Slice 01 — `ctx` output caps and Go, PHP and Pest indexing** (`FR-2` ctx print caps, `FR-3`, `deps: —`): adds UTF-8-safe 200-char text truncation and 20-def cap in `src/ctx/print.rs`, indexes Go `const_spec` and PHP class constants (`const_element`) with `--kind constant`, and outlines PHP Pest `test()`/`it()` via a Rust AST walk.
+- **Slice 02 — Standalone filtered grep hook and denial cap** (`FR-1`, `FR-2` hook cap, `deps: 01`): restricts grep denials to standalone unfiltered code searches with `ctx` hits, adds string-literal advice to `grep_hint()`, caps hook denial reasons at 8 KB, updates the 5 `hook.rs` unit tests and `tests/cli.rs::hook_denies_repo_greps_and_whole_reads_of_held_files`, and proves FR-1 and FR-2 end-to-end.
+- **Slice 03 — Bash guard fixes, regression corpus and skill rules** (`FR-4`, `FR-5`, `deps: 02`): scopes backtick/`%x`/`qx` by interpreter, ignores `.push`/`->push`/`::push` in `mentions()`, widens `process_call` (including `pcntl_exec`, `posix_spawn`, `posix_spawnp`), adds `tests/fixture/hook/denied.json` corpus replay, adds guard-loosening rules to `skills/{prd,slice}/SKILL.md`, and bumps version + `skills/bundle.lock` to `0.17.0`.
+
+Checkpoint 1 runs after slices 01 and 02 (proving FR-1, FR-2, FR-3); the final checkpoint runs after slice 03 (proving FR-4, FR-5, and the full gate including `claude plugin validate/test`).
 
 ## 11. Non-goals
 
