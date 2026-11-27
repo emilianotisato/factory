@@ -194,7 +194,15 @@ No row needs a human, so no `qa-guide.md` is generated.
 
 ## 10. Slices
 
-_(Not sliced yet. Run `/slice`.)_
+Five completely independent vertical slices — 1-to-1 with FR-1 through FR-5, with **zero overlapping write files** across all five slices (up to 4 lanes build concurrently):
+
+- **Slice 01 — Testguard additive imports and grep stdout redirects (`FR-1`, deps: —):** exempts purely additive top-level Rust `use` and JS/TS `import` merges in `src/testguard.rs` (keyed by full path + local binding) and distinguishes stdout-to-file redirects in `src/shell.rs` (`src/testguard.rs`, `src/shell.rs`, `tests/guardrails_hardening.rs`).
+- **Slice 02 — Honor `.gitattributes` generated/vendored in `leaks` and `ctx refs` (`FR-2`, deps: —):** shares `review::check_attr` / `check_attr_at --source <base_ref>` across `leaks::scan` (preventing branch self-silencing) and `ctx::refs::find` (`src/review.rs`, `src/leaks.rs`, `src/ctx/refs.rs`, `tests/leaks.rs`, `tests/ctx.rs`).
+- **Slice 03 — Gate hygiene, checkpoint send-back, and skills verification rules (`FR-3`, deps: —):** clears `mods/cockpit` `TS2345` warnings, adds `ExecutableFileBusy` spawn retries in `src/provider.rs`, adds `# Sent back` + collision-free `cp-{n}.sent-back-{k}/` rotation in `src/pack.rs` / `src/checkpoint.rs`, and adds the 3 verification rules to `/prd`, `/slice`, `/polish` + regenerates `skills/bundle.lock` (`mods/cockpit/tests/cockpit.test.tsx`, `src/provider.rs`, `src/pack.rs`, `src/checkpoint.rs`, `skills/{prd,slice,polish}/SKILL.md`, `skills/bundle.lock`, `tests/checkpoint_send_back.rs`).
+- **Slice 04 — Status JSON body/symlink safety and `factory live` fixes (`FR-4`, deps: —):** adds `body`/`phase` to `cockpit::Question` + symlink-safe bounded reads in `board` and `status`, fixes `live/gate.rs` post-fix `waiting` state, `live/mod.rs` post-cap `rev` (16-byte placeholder) + `--since` cap direction, and `live/workers.rs` canonical lane roots (`src/cockpit.rs`, `src/cli/status.rs`, `src/docs/board.rs`, `src/live/mod.rs`, `src/live/gate.rs`, `src/live/workers.rs`, `tests/cockpit.rs`, `tests/status_and_live_hardening.rs`).
+- **Slice 05 — Live redactor hardening and `excerpt`/`gate_failure` fixes (`FR-5`, deps: —):** hardens `src/live/redact.rs` (new secret shapes, `bypass=` fix, functional field exemptions) and fixes `src/excerpt.rs` (`"failed": 0`, colon-SGR `38:2`) and `src/docs/check.rs` / `src/docs/project.rs` empty-matching `gate_failure` rejection (`src/live/redact.rs`, `src/excerpt.rs`, `src/docs/check.rs`, `src/docs/project.rs`, `tests/redact_and_excerpt.rs`).
+
+Checkpoints fall every 2 done slices (`checkpoint_every = 2`) and once at the end. Workflow: one branch (`feat/guardrails-and-live-hardening`), one PR, one commit per slice, Prove rows driven at checkpoints. No QA plan row needs a human, so no `qa-guide.md` is generated.
 
 ## 11. Non-goals
 
