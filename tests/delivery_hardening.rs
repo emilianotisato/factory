@@ -50,7 +50,7 @@ fn lane_env_resolves_target_dir_prefixes_pack_and_warns_on_shell_clobber() {
     assert!(prefixed.contains("cargo fmt && cargo test -q"));
 
     let repo = tmp.path().join("repo");
-    let dir = "docs/features/001-x";
+    let dir = "docs/features/099-fixture";
     fs::create_dir_all(repo.join(dir)).unwrap();
     fs::write(repo.join("gate.sh"), "").unwrap();
     fs::write(
@@ -60,12 +60,12 @@ fn lane_env_resolves_target_dir_prefixes_pack_and_warns_on_shell_clobber() {
     .unwrap();
     fs::write(
         repo.join(dir).join("prd.md"),
-        "# PRD\n\n## 1. FR-1\n\nrule\n",
+        "# Feature\n\n## 1. Rule one\n\nrule\n",
     )
     .unwrap();
     fs::write(
-        repo.join(dir).join("slice-01-a.md"),
-        "# Slice 01\n\n**Source**: §1\n",
+        repo.join(dir).join("slice-alpha.md"),
+        "# Alpha\n\n**Source**: rule one\n",
     )
     .unwrap();
     let docs = Docs::open(&repo).unwrap();
@@ -74,7 +74,7 @@ fn lane_env_resolves_target_dir_prefixes_pack_and_warns_on_shell_clobber() {
         dir: dir.to_string(),
         slices: vec![factory::docs::Slice {
             number: 1,
-            file: "001-x/slice-01-a.md".to_string(),
+            file: "099-fixture/slice-alpha.md".to_string(),
             ..Default::default()
         }],
         ..Default::default()
