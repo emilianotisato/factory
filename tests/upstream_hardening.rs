@@ -4,7 +4,7 @@ mod harness;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Output;
+use std::process::{Command, Output};
 
 use harness::Fixture;
 
@@ -245,4 +245,216 @@ fn upstream_hardening_host_stdin_remotes_variants_allow_and_hash() {
             .count();
         assert_eq!(hits, 1, "{line}: {}", stdout(&o));
     }
+}
+
+fn install_pull_gh_stub(dir: &Path) -> (PathBuf, PathBuf) {
+    let bin = dir.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let argv = dir.join("gh.argv");
+    let stdin = dir.join("gh.stdin");
+    let script = format!(
+        r#"#!/bin/sh
+echo "$*" >> "{}"
+cat >> "{}"
+case "$*" in
+  *"issue list"*)
+    printf '[{{"number":42,"title":"Track me","body":"Body forty-two","url":"https://github.com/emilianotisato/factory/issues/42","labels":[],"createdAt":"2026-11-27T00:00:00Z","author":{{"login":"alice"}}}},{{"number":43,"title":"Fold me","body":"Body forty-three","url":"https://github.com/emilianotisato/factory/issues/43","labels":[],"createdAt":"2026-11-27T00:00:00Z","author":{{"login":"bob"}}}},{{"number":44,"title":"Drop me","body":"Body forty-four","url":"https://github.com/emilianotisato/factory/issues/44","labels":[],"createdAt":"2026-11-27T00:00:00Z","author":{{"login":"carol"}}}}]'
+    ;;
+  *"issue view 42"*)
+    printf '{{"number":42,"title":"Track me","body":"Body forty-two","url":"https://github.com/emilianotisato/factory/issues/42"}}'
+    ;;
+  *"issue view 43"*)
+    printf '{{"number":43,"title":"Fold me","body":"Body forty-three","url":"https://github.com/emilianotisato/factory/issues/43"}}'
+    ;;
+  *"issue view 44"*)
+    printf '{{"number":44,"title":"Drop me","body":"Body forty-four","url":"https://github.com/emilianotisato/factory/issues/44"}}'
+    ;;
+  *) true ;;
+esac
+"#,
+        argv.display(),
+        stdin.display()
+    );
+    let gh = bin.join("gh");
+    fs::write(&gh, script).unwrap();
+    fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
+    (argv, stdin)
+}
+
+fn factory_pull(fx: &Fixture, path: &str, args: &[&str], extra_env: &[(&str, &str)]) -> Output {
+    let mut cmd = Command::new(BIN);
+    cmd.current_dir(fx.path())
+        .args(["upstream", "pull"])
+        .args(args);
+    for (k, v) in fx.env() {
+        if k != "PATH" {
+            cmd.env(k, v);
+        }
+    }
+    cmd.env("PATH", path);
+    let mut board = false;
+    for (k, v) in extra_env {
+        if *k == "FACTORY_BOARD" {
+            board = true;
+        }
+        cmd.env(k, v);
+    }
+    if !board {
+        cmd.env_remove("FACTORY_BOARD");
+    }
+    cmd.output().unwrap()
+}
+
+#[test]
+fn upstream_pull_lists_and_triages_issues_to_idea_fold_and_drop() {
+    let fx = Fixture::new("upstream-pull");
+    let scratch = fx.path().parent().unwrap().join("gh-pull-stub");
+    let (argv_log, stdin_log) = install_pull_gh_stub(&scratch);
+    let gh_path = path_with_gh(&fx, &scratch.join("bin").join("gh"));
+
+    fs::write(&argv_log, "").unwrap();
+    fs::write(&stdin_log, "").unwrap();
+    let list = factory_pull(&fx, &gh_path, &[], &[]);
+    assert_eq!(list.status.code(), Some(0), "{}", stdout(&list));
+    let list_out = stdout(&list);
+    assert!(list_out.contains("#42"));
+    assert!(list_out.contains("github.com/emilianotisato/factory/issues/42"));
+    let argv = fs::read_to_string(&argv_log).unwrap();
+    assert!(argv.contains("github.com/emilianotisato/factory"));
+    assert!(argv.contains("issue list"));
+
+    fs::write(&argv_log, "").unwrap();
+    let json = factory_pull(&fx, &gh_path, &["--json"], &[]);
+    assert_eq!(json.status.code(), Some(0), "{}", stdout(&json));
+    let parsed: serde_json::Value = serde_json::from_str(stdout(&json).trim()).unwrap();
+    assert_eq!(parsed.as_array().unwrap().len(), 3);
+
+    fs::write(&argv_log, "").unwrap();
+    fs::write(&stdin_log, "").unwrap();
+    let idea = factory_pull(&fx, &gh_path, &["--idea", "42"], &[]);
+    assert_eq!(idea.status.code(), Some(0), "{}", stdout(&idea));
+    let ideas_dir = fx.path().join("docs/ideas");
+    let created = fs::read_dir(&ideas_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .find(|n| n.starts_with("20") && n.contains("track-me"))
+        .expect("new idea file");
+    let idea_text = fs::read_to_string(ideas_dir.join(&created)).unwrap();
+    assert!(idea_text.contains("github.com/emilianotisato/factory/issues/42"));
+    let status = fx
+        .command("git")
+        .current_dir(fx.path())
+        .args(["status", "--porcelain"])
+        .output()
+        .unwrap();
+    assert!(status.status.success());
+    assert!(stdout(&status).trim().is_empty(), "{}", stdout(&status));
+    let argv = fs::read_to_string(&argv_log).unwrap();
+    assert!(argv.contains("issue comment 42"));
+    assert!(argv.contains("--body-file"));
+    assert!(argv.contains("-"));
+    assert!(!argv.contains("Tracked as"));
+    let body = fs::read_to_string(&stdin_log).unwrap();
+    assert!(body.contains("Tracked as `docs/ideas/"));
+    assert!(argv.contains("issue close 42"));
+    assert!(argv.contains("completed"));
+
+    let fold_id = "2026-01-01-seed-idea";
+    let fold_rel = format!("docs/ideas/{fold_id}.md");
+    fs::write(
+        fx.path().join(&fold_rel),
+        "---\ntitle: Seed\nstate: open\nadded: 2026-01-01\n---\n\nseed body\n",
+    )
+    .unwrap();
+    fx.git(&["add", &fold_rel]);
+    fx.git(&["commit", "-q", "-m", "chore: seed idea"]);
+    fs::write(&argv_log, "").unwrap();
+    fs::write(&stdin_log, "").unwrap();
+    let fold = factory_pull(&fx, &gh_path, &["--fold", "43", fold_id], &[]);
+    assert_eq!(fold.status.code(), Some(0), "{}", stdout(&fold));
+    let folded = fs::read_to_string(fx.path().join(&fold_rel)).unwrap();
+    assert!(folded.contains("## From #43"));
+    assert!(folded.contains("Fold me"));
+    assert!(folded.contains("Body forty-three"));
+    let status = fx
+        .command("git")
+        .current_dir(fx.path())
+        .args(["status", "--porcelain"])
+        .output()
+        .unwrap();
+    assert!(stdout(&status).trim().is_empty(), "{}", stdout(&status));
+    let argv = fs::read_to_string(&argv_log).unwrap();
+    assert!(body_comment(&argv, &stdin_log, "43", "Folded into"));
+    assert!(argv.contains("issue close 43"));
+
+    fs::write(&argv_log, "").unwrap();
+    fs::write(&stdin_log, "").unwrap();
+    let drop = factory_pull(
+        &fx,
+        &gh_path,
+        &["--drop", "44", "--because", "duplicate"],
+        &[],
+    );
+    assert_eq!(drop.status.code(), Some(0), "{}", stdout(&drop));
+    let argv = fs::read_to_string(&argv_log).unwrap();
+    assert!(body_comment(&argv, &stdin_log, "44", "Dropped: duplicate"));
+    assert!(argv.contains("not planned"));
+    let status = fx
+        .command("git")
+        .current_dir(fx.path())
+        .args(["status", "--porcelain"])
+        .output()
+        .unwrap();
+    assert!(stdout(&status).trim().is_empty(), "{}", stdout(&status));
+
+    fs::write(&argv_log, "").unwrap();
+    let in_run = factory_pull(&fx, &gh_path, &[], &[("FACTORY_BOARD", "016-001")]);
+    assert_eq!(in_run.status.code(), Some(1), "{}", stdout(&in_run));
+    assert!(stdout(&in_run).contains("never runs inside a run"));
+    assert!(fs::read_to_string(&argv_log).unwrap().is_empty());
+
+    let bare = fx.path().parent().unwrap().join("no-ideas-repo");
+    fs::create_dir_all(&bare).unwrap();
+    let git = |args: &[&str]| {
+        let o = fx
+            .command("git")
+            .current_dir(&bare)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "{}", stdout(&o));
+    };
+    git(&["init", "-q"]);
+    git(&[
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "commit",
+        "--allow-empty",
+        "-qm",
+        "init",
+    ]);
+    fs::write(&argv_log, "").unwrap();
+    let no_ideas = fx
+        .command(BIN)
+        .current_dir(&bare)
+        .env("PATH", &gh_path)
+        .env_remove("FACTORY_BOARD")
+        .args(["upstream", "pull", "--idea", "42"])
+        .output()
+        .unwrap();
+    assert_eq!(no_ideas.status.code(), Some(1), "{}", stdout(&no_ideas));
+    assert!(stdout(&no_ideas).contains("docs/ideas"));
+    assert!(fs::read_to_string(&argv_log).unwrap().is_empty());
+}
+
+fn body_comment(argv: &str, stdin_log: &Path, number: &str, needle: &str) -> bool {
+    argv.contains(&format!("issue comment {number}"))
+        && argv.contains("--body-file")
+        && fs::read_to_string(stdin_log)
+            .map(|b| b.contains(needle))
+            .unwrap_or(false)
 }

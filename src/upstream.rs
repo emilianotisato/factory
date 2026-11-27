@@ -2,7 +2,7 @@
 use std::path::Path;
 use std::sync::LazyLock;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::docs::preflight;
 use crate::{Error, Result, ci, metrics, paths};
@@ -168,6 +168,114 @@ pub struct Issue {
     pub number: u64,
     pub title: String,
     pub url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PulledAuthor {
+    pub login: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PulledLabel {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PulledIssue {
+    pub number: u64,
+    pub title: String,
+    #[serde(default)]
+    pub body: String,
+    pub url: String,
+    #[serde(default)]
+    pub labels: Vec<PulledLabel>,
+    #[serde(default, rename = "createdAt")]
+    pub created_at: String,
+    #[serde(default)]
+    pub author: Option<PulledAuthor>,
+}
+
+fn gh_fail(cmd: &str, out: &ci::Output) -> Error {
+    Error::Tool {
+        cmd: cmd.into(),
+        detail: out.text(),
+    }
+}
+
+pub fn list_open(repo: &Path) -> Result<Vec<PulledIssue>> {
+    let cmd = format!("gh issue list --repo {REPO}");
+    let out = ci::gh(
+        repo,
+        &[
+            "issue",
+            "list",
+            "--repo",
+            REPO,
+            "--state",
+            "open",
+            "--limit",
+            "50",
+            "--json",
+            "number,title,body,url,labels,createdAt,author",
+        ],
+    )?;
+    if !out.ok() {
+        return Err(gh_fail(&cmd, &out));
+    }
+    if out.stdout.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    serde_json::from_str(&out.stdout)
+        .map_err(|e| Error::Msg(format!("gh printed no issue list: {e}")))
+}
+
+pub fn view_issue(repo: &Path, number: u64) -> Result<PulledIssue> {
+    let cmd = format!("gh issue view {number} --repo {REPO}");
+    let num = number.to_string();
+    let out = ci::gh(
+        repo,
+        &[
+            "issue",
+            "view",
+            &num,
+            "--repo",
+            REPO,
+            "--json",
+            "number,title,body,url",
+        ],
+    )?;
+    if !out.ok() {
+        return Err(gh_fail(&cmd, &out));
+    }
+    serde_json::from_str(&out.stdout)
+        .map_err(|e| Error::Msg(format!("gh printed no issue view: {e}")))
+}
+
+pub fn comment_issue(repo: &Path, number: u64, body: &str) -> Result<()> {
+    let cmd = format!("gh issue comment {number} --repo {REPO}");
+    let num = number.to_string();
+    let out = ci::gh_stdin(
+        repo,
+        &["issue", "comment", &num, "--repo", REPO, "--body-file", "-"],
+        body.as_bytes(),
+    )?;
+    if !out.ok() {
+        return Err(gh_fail(&cmd, &out));
+    }
+    Ok(())
+}
+
+pub fn close_issue(repo: &Path, number: u64, reason: &str) -> Result<()> {
+    let cmd = format!("gh issue close {number} --repo {REPO}");
+    let num = number.to_string();
+    let out = ci::gh(
+        repo,
+        &["issue", "close", &num, "--repo", REPO, "--reason", reason],
+    )?;
+    if !out.ok() {
+        return Err(gh_fail(&cmd, &out));
+    }
+    Ok(())
 }
 
 /// Up to five open issues on the factory repo matching `title`; `Err` holds the one line saying why the search failed.
@@ -430,5 +538,27 @@ mod tests {
         assert_eq!(d.title, "The title");
         assert_eq!(d.body, "intro\n\nthe body");
         assert!(parse("no heading\n## nor this").is_err());
+    }
+
+    #[test]
+    fn pulled_issue_round_trips_gh_json_field_names() {
+        let minimal: PulledIssue =
+            serde_json::from_str(r#"{"number":1,"title":"t","url":"https://example.com/1"}"#)
+                .unwrap();
+        assert_eq!(minimal.body, "");
+        assert!(minimal.labels.is_empty());
+        assert!(minimal.author.is_none());
+        assert!(minimal.created_at.is_empty());
+        let raw = r#"{"number":2,"title":"T","body":"B","url":"https://example.com/2","labels":[{"name":"bug"}],"createdAt":"2026-11-27T00:00:00Z","author":{"login":"alice"}}"#;
+        let full: PulledIssue = serde_json::from_str(raw).unwrap();
+        assert_eq!(full.created_at, "2026-11-27T00:00:00Z");
+        assert_eq!(
+            full.author.as_ref().map(|a| a.login.as_str()),
+            Some("alice")
+        );
+        let again = serde_json::to_string(&full).unwrap();
+        assert!(again.contains("\"createdAt\""));
+        let round: PulledIssue = serde_json::from_str(&again).unwrap();
+        assert_eq!(round, full);
     }
 }
