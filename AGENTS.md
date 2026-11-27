@@ -3,7 +3,7 @@
 The `factory` CLI, built and dogfooded in this repo. `.claude/skills/` links into `skills/`, so a skill edit here is live at once; releasing it takes a version bump, a tag and `factory skills update`.
 
 - **Tests read fixtures, never this repo's live `docs/`.** A test that counts `docs/ideas` or the index goes red on any docs commit.
-- **After a merge, run `cargo install --path . --locked`** before the next `factory run`. A lane runs the installed binary, so a stale one polishes without the newest verbs.
+- **After a merge, run `factory upgrade`** (or `factory upgrade --edge` for the latest rolling `main` build). Use `cargo install --path . --locked` only when testing unmerged local changes; lanes still run the installed binary.
 
 # Product Docs Convention
 

@@ -3,7 +3,7 @@
 **Source**: [`prd.md`](prd.md) → §3 (FR-1). **Depends on**: — (independent; writes no files touched by Slices 02–04)
 **Created**: 2026-11-27
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**: Receipt version gate + `install_prefix_from_exe` + consumer `upgrade` path/`--edge` in `src/cli/upgrade.rs`; `.github/workflows/edge.yml`; doc guidance in `CLAUDE.md`/`AGENTS.md`/`README.md`; tests in `tests/upgrade.rs` + `tests/release.rs`. Inner loop: 1 run, 0 red (deliberate), ~3 min — caught nothing. Deliberate reds: `install_prefix_strips_cargo_bin` fails if `/bin` strip removed; `a_mismatched_version_receipt_with_source_stays_on_source` fails if version check always true; `the_edge_workflow_builds_and_prunes_rolling_prereleases_on_main` fails if `fetch-depth: 0` removed.
 
 **Slice**: Lets the owner upgrade `factory` as a normal consumer — verifying receipt version against the running binary, allowing `factory upgrade` to install from GitHub Releases even when no receipt exists (when `[source]` is unset), adding `--edge` prerelease opt-in, adding a rolling `.github/workflows/edge.yml` prerelease workflow on `main` pushes, and retiring the `cargo install --path . --locked` post-merge rule from `CLAUDE.md` and `AGENTS.md`. Leaves home-path shapes (Slice 02) and `factory upstream` changes (Slices 03–04) to their own slices.
 

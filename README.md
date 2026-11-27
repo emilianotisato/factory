@@ -77,7 +77,7 @@ or, from a checkout, with Rust:
 cargo install --path .
 ```
 
-`factory upgrade` updates an installed binary to the latest release.
+`factory upgrade` updates an installed binary to the latest tagged release; `factory upgrade --edge` picks up the rolling prerelease built on each `main` push.
 
 ```
 factory --help
@@ -104,4 +104,4 @@ A release is a tag. `.github/workflows/release.yml` (cargo-dist) builds the Linu
 2. Merge to `main`.
 3. `scripts/release.sh` on a clean, current `main`. It tags `v<version>`, pushes the tag and prints the workflow URL. It refuses a wrong branch, a dirty tree, a stale lock or a tag that already exists.
 
-On a machine that runs a `cargo install --path .` build, keep upgrading with `cargo install --path .`. The installer writes the same `~/.cargo/bin/factory` plus a receipt, and `factory upgrade` then takes the source build for a release install.
+Install from the release script (`releases/latest/download/factory-installer.sh`) or `cargo install --path .`, then stay current with `factory upgrade`. Use `factory upgrade --edge` when you want the latest `main` without waiting for a tag. Developers with `[source]` in config keep using `cargo install --path . --locked` for local trees.

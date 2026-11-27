@@ -1,6 +1,9 @@
+use std::ffi::OsStr;
+use std::fs;
 use std::io::Write;
+use std::path::{Path, PathBuf};
 
-use axoupdater::{AxoUpdater, Version};
+use axoupdater::{AxoUpdater, ReleaseSource, ReleaseSourceType, UpdateRequest, Version};
 use clap::Args;
 
 use crate::config::{self, Config};
@@ -14,12 +17,67 @@ pub struct UpgradeArgs {
     /// Print the newer version without installing it
     #[arg(long)]
     pub check: bool,
+    /// Include prereleases (rolling edge builds on main)
+    #[arg(long)]
+    pub edge: bool,
+}
+
+pub fn install_prefix_from_exe(exe: &Path) -> PathBuf {
+    let parent = exe.parent().unwrap_or(Path::new("/"));
+    if parent.file_name() == Some(OsStr::new("bin")) {
+        parent.parent().unwrap_or(parent).to_path_buf()
+    } else {
+        parent.to_path_buf()
+    }
+}
+
+fn receipt_config_dirs() -> Vec<PathBuf> {
+    if std::env::var("AXOUPDATER_CONFIG_WORKING_DIR").is_ok() {
+        return vec![std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))];
+    }
+    if let Ok(path) = std::env::var("AXOUPDATER_CONFIG_PATH") {
+        return vec![PathBuf::from(path)];
+    }
+    let mut dirs = Vec::new();
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        let factory = PathBuf::from(xdg).join("factory");
+        if factory.is_dir() {
+            dirs.push(factory);
+        }
+    }
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        dirs.push(home.join(".config").join("factory"));
+    }
+    dirs
+}
+
+fn receipt_version_on_disk() -> Option<String> {
+    for dir in receipt_config_dirs() {
+        let path = dir.join("factory-receipt.json");
+        if !path.is_file() {
+            continue;
+        }
+        let body = fs::read_to_string(path).ok()?;
+        let json: serde_json::Value = serde_json::from_str(&body).ok()?;
+        return json
+            .get("version")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned);
+    }
+    None
+}
+
+fn receipt_version_matches_running() -> bool {
+    receipt_version_on_disk().as_deref() == Some(env!("CARGO_PKG_VERSION"))
 }
 
 fn updater() -> Option<AxoUpdater> {
     let mut u = AxoUpdater::new_for("factory");
     u.load_receipt().ok()?;
     if !u.check_receipt_is_for_this_executable().unwrap_or(false) {
+        return None;
+    }
+    if !receipt_version_matches_running() {
         return None;
     }
     Some(u)
@@ -55,23 +113,28 @@ fn failed(e: axoupdater::AxoupdateError) -> Error {
     Error::Msg(e.to_string())
 }
 
-pub fn upgrade(args: &UpgradeArgs, out: &mut dyn Write) -> Result<i32> {
-    let Some(mut u) = updater() else {
-        let cfg = config::load(&paths::config_dir())?.config;
-        say(
-            out,
-            &format!("installed from source — {}", source_line(&cfg)),
-        )?;
-        return Ok(0);
-    };
-    // The running binary is the truth, not the version the receipt recorded.
-    let current: Version = env!("CARGO_PKG_VERSION")
-        .parse()
-        .map_err(|e| Error::Msg(format!("version: {e}")))?;
-    u.set_current_version(current.clone()).map_err(failed)?;
+fn configure_consumer_updater(u: &mut AxoUpdater) -> Result<()> {
+    u.set_release_source(ReleaseSource {
+        release_type: ReleaseSourceType::GitHub,
+        owner: "emilianotisato".into(),
+        name: "factory".into(),
+        app_name: "factory".into(),
+    });
+    let install = install_prefix_from_exe(&paths::self_exe().map_err(io("self exe"))?);
+    let install = install
+        .to_str()
+        .ok_or_else(|| Error::Msg("install dir".into()))?;
+    u.set_install_dir(install);
+    Ok(())
+}
 
+fn check_or_run(
+    u: &mut AxoUpdater,
+    current: Version,
+    args: &UpgradeArgs,
+    out: &mut dyn Write,
+) -> Result<()> {
     if args.check {
-        // `query_new_version` has no sync variant; a local runtime keeps every other command synchronous.
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -85,7 +148,7 @@ pub fn upgrade(args: &UpgradeArgs, out: &mut dyn Write) -> Result<i32> {
             Some(v) => say(out, &format!("{current} → {v}"))?,
             None => say(out, "already current")?,
         }
-        return Ok(0);
+        return Ok(());
     }
 
     u.disable_installer_output();
@@ -96,5 +159,67 @@ pub fn upgrade(args: &UpgradeArgs, out: &mut dyn Write) -> Result<i32> {
         }
         None => say(out, "already current")?,
     }
+    Ok(())
+}
+
+pub fn upgrade(args: &UpgradeArgs, out: &mut dyn Write) -> Result<i32> {
+    let cfg = config::load(&paths::config_dir())?.config;
+    let matching = updater();
+
+    if cfg.source.is_some() && matching.is_none() && !args.edge {
+        say(
+            out,
+            &format!("installed from source — {}", source_line(&cfg)),
+        )?;
+        return Ok(0);
+    }
+
+    let current: Version = env!("CARGO_PKG_VERSION")
+        .parse()
+        .map_err(|e| Error::Msg(format!("version: {e}")))?;
+
+    let mut u = match matching {
+        Some(mut u) => {
+            u.set_current_version(current.clone()).map_err(failed)?;
+            u
+        }
+        None => {
+            let mut u = AxoUpdater::new_for("factory");
+            configure_consumer_updater(&mut u)?;
+            u.set_current_version(current.clone()).map_err(failed)?;
+            u
+        }
+    };
+
+    u.configure_version_specifier(if args.edge {
+        UpdateRequest::LatestMaybePrerelease
+    } else {
+        UpdateRequest::Latest
+    });
+    check_or_run(&mut u, current, args, out)?;
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::install_prefix_from_exe;
+    use std::path::Path;
+
+    #[test]
+    fn install_prefix_strips_cargo_bin() {
+        let exe = Path::new("/home/user/.cargo/bin/factory");
+        assert_eq!(install_prefix_from_exe(exe), Path::new("/home/user/.cargo"));
+    }
+
+    #[test]
+    fn install_prefix_strips_usr_local_bin() {
+        let exe = Path::new("/usr/local/bin/factory");
+        assert_eq!(install_prefix_from_exe(exe), Path::new("/usr/local"));
+    }
+
+    #[test]
+    fn install_prefix_keeps_flat_install_dir() {
+        let exe = Path::new("/opt/factory/factory");
+        assert_eq!(install_prefix_from_exe(exe), Path::new("/opt/factory"));
+    }
 }
