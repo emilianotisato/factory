@@ -4,7 +4,7 @@
 pub enum Tok {
     Word(String),
     Op(&'static str),
-    Redirect,
+    Redirect { stdout_to_file: bool },
 }
 
 pub fn tokens(cmd: &str) -> Vec<Tok> {
@@ -95,22 +95,30 @@ pub fn tokens(cmd: &str) -> Vec<Tok> {
                     }
                     Some('>') => {
                         if !redirect(&mut chars) {
-                            out.push(Tok::Redirect);
+                            out.push(Tok::Redirect {
+                                stdout_to_file: true,
+                            });
                         }
                     }
                     _ => out.push(Tok::Op("&")),
                 }
             }
             '>' | '<' => {
-                // `2>`: the digits before the arrow are a file descriptor.
-                if in_word && word.chars().all(|d| d.is_ascii_digit()) {
+                let fd = if in_word && word.chars().all(|d| d.is_ascii_digit()) {
+                    Some(word.clone())
+                } else {
+                    None
+                };
+                if fd.is_some() {
                     word.clear();
                     in_word = false;
                 }
                 flush(&mut out, &mut word, &mut in_word);
-                // `>&1`, `<&0`: the descriptor is the target, already eaten.
+                let is_stdout = c == '>' && matches!(fd.as_deref(), None | Some("1"));
                 if !redirect(&mut chars) {
-                    out.push(Tok::Redirect);
+                    out.push(Tok::Redirect {
+                        stdout_to_file: is_stdout,
+                    });
                 }
             }
             _ => {
@@ -161,6 +169,7 @@ pub fn first_command_standalone(cmd: &str) -> (FirstCommand, bool) {
         let mut words = Vec::new();
         let mut end = None;
         let mut skip_target = false;
+        let mut has_stdout_file_redirect = false;
         while i < toks.len() {
             match &toks[i] {
                 Tok::Op(op) => {
@@ -168,7 +177,12 @@ pub fn first_command_standalone(cmd: &str) -> (FirstCommand, bool) {
                     i += 1;
                     break;
                 }
-                Tok::Redirect => skip_target = true,
+                Tok::Redirect { stdout_to_file } => {
+                    skip_target = true;
+                    if *stdout_to_file {
+                        has_stdout_file_redirect = true;
+                    }
+                }
                 Tok::Word(w) => {
                     if skip_target {
                         skip_target = false;
@@ -187,7 +201,7 @@ pub fn first_command_standalone(cmd: &str) -> (FirstCommand, bool) {
             cds.push(target.cloned());
             continue;
         }
-        let standalone = first_cmd_standalone(end, &toks[i..]);
+        let standalone = !has_stdout_file_redirect && first_cmd_standalone(end, &toks[i..]);
         return ((words, end, cds), standalone);
     }
 }
@@ -728,6 +742,12 @@ mod tests {
         assert!(!standalone("grep -rn foo src && echo ok"));
         assert!(!standalone("cd repo && grep -rn foo src && sed -n 1,20p x"));
         assert!(!standalone("grep -rn foo src; ls"));
+        assert!(!standalone("grep foo src > /tmp/out"));
+        assert!(!standalone("grep foo src 1>> /tmp/out"));
+        assert!(!standalone("grep foo src &> /tmp/out"));
+        assert!(standalone("grep -rn foo src 2>/dev/null"));
+        assert!(standalone("grep foo < /tmp/in"));
+        assert!(standalone("grep foo src >&2"));
     }
 
     #[test]
