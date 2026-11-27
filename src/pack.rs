@@ -146,14 +146,16 @@ pub fn collected(text: &str, file: &Path) -> String {
     let marker = "\n## Second opinion\n";
     let opinion = text.find(marker).map_or("", |i| &text[i + marker.len()..]);
     let mut status: Vec<String> = Vec::new();
-    let mut in_pass = false;
+    let mut in_section = false;
     for line in opinion.lines() {
         if let Some(pass) = line.strip_prefix("### Pass ") {
-            in_pass = true;
+            in_section = true;
             if pass.ends_with(" — counted") || pass.ends_with(" — unreviewed") {
                 status.push(format!("- Pass {pass}"));
             }
-        } else if !in_pass && !line.trim().is_empty() {
+        } else if line.starts_with("### ") {
+            in_section = true;
+        } else if !in_section && !line.trim().is_empty() {
             status.push(line.to_string());
         }
     }
@@ -1551,6 +1553,18 @@ mod tests {
             section.contains("## Leaks\n\nverdict: clean\n\n## Second opinion"),
             "{section}"
         );
+    }
+
+    #[test]
+    fn collected_strips_the_claims_index_and_keeps_pass_status() {
+        let file = Path::new("/runs/r1/collect.md");
+        let text = "<!-- head: abc -->\n\n## Plan\n\nsize\n\n## Leaks\n\nverdict: clean\n\n## Second opinion\n\nexit: 0\nlog: /data/reviews/x\n\n### Claims index\n\n| severity | file:line | pass | claim |\n|---|---|---|---|\n| high | src/c.rs:3 | 2 | high claim pass2 |\n\n### Pass 1 — a (400 lines, 3 s, grok) — counted\n\nprose\n\n### Pass 2 — b (300 lines, 1 s, grok) — counted\n\nmore\n";
+        let section = collected(text, file);
+        assert!(section.contains("exit: 0\nlog: /data/reviews/x\n"));
+        assert!(section.contains("- Pass 1 — a (400 lines, 3 s, grok) — counted"));
+        assert!(section.contains("- Pass 2 — b (300 lines, 1 s, grok) — counted"));
+        assert!(!section.contains("### Claims index"));
+        assert!(!section.contains("high claim pass2"));
     }
 
     #[test]

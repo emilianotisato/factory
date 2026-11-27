@@ -27,6 +27,7 @@ pub const SLICE_STATUSES: [&str; 4] = ["pending", "building", "blocked", "done"]
 pub struct State {
     pub status: String,
     pub reviewed: Option<String>,
+    pub reviewed_head: Option<String>,
     pub shipped: Option<String>,
     pub slices: BTreeMap<u32, SliceState>,
 }
@@ -55,6 +56,7 @@ impl Default for SliceState {
 struct Raw {
     status: String,
     reviewed: Option<String>,
+    reviewed_head: Option<String>,
     shipped: Option<String>,
     #[serde(default)]
     slices: BTreeMap<String, SliceState>,
@@ -88,6 +90,7 @@ pub fn parse(text: &str) -> std::result::Result<State, String> {
     Ok(State {
         status: raw.status,
         reviewed: raw.reviewed,
+        reviewed_head: raw.reviewed_head,
         shipped: raw.shipped,
         slices,
     })
@@ -98,6 +101,9 @@ pub fn render(s: &State) -> String {
     let mut out = format!("status = {}\n", q(&s.status));
     if let Some(d) = &s.reviewed {
         out.push_str(&format!("reviewed = {}\n", q(d)));
+    }
+    if let Some(h) = &s.reviewed_head {
+        out.push_str(&format!("reviewed_head = {}\n", q(h)));
     }
     if let Some(d) = &s.shipped {
         out.push_str(&format!("shipped = {}\n", q(d)));
@@ -174,7 +180,21 @@ fn apply(s: &mut State, files: &[u32], key: &str, value: &str) -> Result<()> {
     };
     match key {
         "status" => s.status = value.to_string(),
-        "reviewed" => s.reviewed = date(value)?,
+        "reviewed" => {
+            s.reviewed = date(value)?;
+            if s.reviewed.is_none() {
+                s.reviewed_head = None;
+            }
+        }
+        "reviewed_head" => {
+            s.reviewed_head = if value.is_empty() {
+                None
+            } else if is_sha(value) {
+                Some(value.to_string())
+            } else {
+                return refuse(format!("{key}={value}: not a commit sha (7-40 hex chars)"));
+            }
+        }
         "shipped" => s.shipped = date(value)?,
         _ => {
             let Some((n, field)) = key.strip_prefix("slices.").and_then(|r| r.split_once('.'))
@@ -221,7 +241,7 @@ fn apply(s: &mut State, files: &[u32], key: &str, value: &str) -> Result<()> {
 
 fn unknown(key: &str) -> String {
     format!(
-        "unknown key `{key}`; known: status, reviewed, shipped, slices.N.status, slices.N.lane, slices.N.depends_on"
+        "unknown key `{key}`; known: status, reviewed, reviewed_head, shipped, slices.N.status, slices.N.lane, slices.N.depends_on"
     )
 }
 
@@ -243,6 +263,10 @@ fn validate(s: &State) -> Result<()> {
         }
     }
     Ok(())
+}
+
+pub fn is_sha(v: &str) -> bool {
+    (7..=40).contains(&v.len()) && v.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 pub fn is_date(v: &str) -> bool {
@@ -341,5 +365,35 @@ mod tests {
         assert_eq!(slice_number("slice-03.md"), None);
         assert_eq!(slice_number("slice-x-c.md"), None);
         assert_eq!(slice_number("prd.md"), None);
+    }
+
+    #[test]
+    fn reviewed_head_round_trips_and_clears_with_reviewed() {
+        let d = feature(&["slice-01-a.md"]);
+        let sha = "abc1234";
+        let s = set(
+            d.path(),
+            &[("reviewed", "2026-11-26"), ("reviewed_head", sha)],
+        )
+        .unwrap();
+        assert_eq!(s.reviewed_head.as_deref(), Some(sha));
+        assert!(text(&d).contains(&format!("reviewed_head = \"{sha}\"")));
+        let s = set(d.path(), &[("reviewed", "")]).unwrap();
+        assert_eq!(s.reviewed, None);
+        assert_eq!(s.reviewed_head, None);
+        assert!(!text(&d).contains("reviewed_head"));
+    }
+
+    #[test]
+    fn reviewed_head_rejects_bad_shas() {
+        let d = feature(&["slice-01-a.md"]);
+        let before = text(&d);
+        for bad in ["short", "ghijklmnop", "12345g"] {
+            let e = set(d.path(), &[("reviewed_head", bad)])
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains("not a commit sha"), "{e}");
+        }
+        assert_eq!(text(&d), before);
     }
 }

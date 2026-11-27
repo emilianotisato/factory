@@ -701,7 +701,9 @@ fn collect_owes_the_fallback_when_every_pass_timed_out() {
     let file = collected(&fx);
     let plan = part(&file, "Plan");
     assert!(
-        plan.contains("\nsecond opinion: fallback owed — unreviewed: no pass of 2 counted\n"),
+        plan.contains(
+            "\nsecond opinion: fallback owed — unreviewed: timeout (no pass of 2 counted)\n"
+        ),
         "{plan}"
     );
     let second = part(&file, "Second opinion");
@@ -1039,7 +1041,7 @@ fn no_feature_keeps_the_prompt_as_today() {
         assert_eq!(
             *prompt,
             format!(
-                "Adversarial code review. {what} against main is in {file}: read it, and read any file in the repository you need for context. Report only defects you can point to at file:line with a failure scenario; no praise, no style. Do not edit anything."
+                "Adversarial code review. {what} against main is in {file}: read it, and read any file in the repository you need for context. Report only defects you can point to at file:line with a failure scenario; no praise, no style. Do not edit anything. End with a `### Summary` markdown table (`| file:line | severity | claim |`, severity `high`, `medium`, or `low`; omit the table if there are no defects)."
             )
         );
     }

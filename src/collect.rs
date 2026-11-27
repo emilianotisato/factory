@@ -6,8 +6,10 @@
 //! `verdict:` and, when the second opinion ran, its `exit:` are lines of their own, and each pass is a
 //! `### Pass n — … — counted` (or `— unreviewed`) heading above its findings. Files no reviewer reads are a
 //! `skipped:` block in the plan, before `size:`.
+use std::collections::HashSet;
 use std::io::Write;
 use std::path::Path;
+use std::process::Command;
 
 use crate::config::ResolvedReview;
 use crate::leaks::{self, Input};
@@ -24,11 +26,237 @@ const FALLBACK_OWED: &str = "fallback owed";
 const DISABLED: &str = "skipped (disabled in config)";
 /// The `second opinion:` state when the owner answered `proceed` for this run only.
 const PROCEED: &str = "skipped (proceed for this run)";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Severity {
+    High,
+    Medium,
+    Low,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Claim {
+    pub pass: usize,
+    pub location: String,
+    pub severity: Severity,
+    pub summary: String,
+}
+
+fn sanitize_cell(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn escape_table_cell(s: &str) -> String {
+    sanitize_cell(s).replace('|', "\\|")
+}
+
+fn parse_severity(s: &str) -> Option<Severity> {
+    match s.trim().to_lowercase().as_str() {
+        "high" => Some(Severity::High),
+        "medium" | "med" => Some(Severity::Medium),
+        "low" => Some(Severity::Low),
+        _ => None,
+    }
+}
+
+fn table_cells(line: &str) -> Option<Vec<String>> {
+    let t = line.trim();
+    if !t.starts_with('|') {
+        return None;
+    }
+    let inner = t.trim_start_matches('|').trim_end_matches('|');
+    let mut cells = Vec::new();
+    let mut current = String::new();
+    let mut chars = inner.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            if chars.peek() == Some(&'|') {
+                chars.next();
+                current.push('|');
+            } else {
+                current.push('\\');
+            }
+        } else if c == '|' {
+            let cell = sanitize_cell(&current);
+            if !cell.is_empty() {
+                cells.push(cell);
+            }
+            current.clear();
+        } else {
+            current.push(c);
+        }
+    }
+    let cell = sanitize_cell(&current);
+    if !cell.is_empty() {
+        cells.push(cell);
+    }
+    if cells.is_empty() {
+        return None;
+    }
+    Some(cells)
+}
+
+fn is_separator_row(cells: &[String]) -> bool {
+    cells.iter().all(|c| {
+        let t = c.trim();
+        t.chars()
+            .all(|ch| ch == '-' || ch == ':' || ch.is_whitespace())
+            && t.contains('-')
+    })
+}
+
+fn is_placeholder_row(cells: &[String]) -> bool {
+    cells.iter().any(|c| {
+        let t = c.trim();
+        t.eq_ignore_ascii_case("none") || t == "—" || t == "-"
+    })
+}
+
+#[derive(Clone, Copy)]
+enum HeaderCol {
+    Location,
+    Severity,
+    Claim,
+}
+
+fn header_col(cell: &str) -> Option<HeaderCol> {
+    match cell.trim().to_lowercase().as_str() {
+        "location" | "file" | "file:line" => Some(HeaderCol::Location),
+        "severity" | "sev" => Some(HeaderCol::Severity),
+        "claim" | "defect" | "summary" | "issue" | "finding" => Some(HeaderCol::Claim),
+        _ => None,
+    }
+}
+
+fn header_map(cells: &[String]) -> Option<(usize, usize, usize)> {
+    if cells.len() != 3 {
+        return None;
+    }
+    let mut loc = None;
+    let mut sev = None;
+    let mut claim = None;
+    for (i, c) in cells.iter().enumerate() {
+        match header_col(c) {
+            Some(HeaderCol::Location) => loc = Some(i),
+            Some(HeaderCol::Severity) => sev = Some(i),
+            Some(HeaderCol::Claim) => claim = Some(i),
+            None => return None,
+        }
+    }
+    Some((loc?, sev?, claim?))
+}
+
+fn extract_table_at(lines: &[&str], start: usize, pass_n: usize) -> Vec<Claim> {
+    let Some(header) = table_cells(lines[start]) else {
+        return Vec::new();
+    };
+    let Some((loc_i, sev_i, claim_i)) = header_map(&header) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for line in &lines[start + 1..] {
+        let cells = match table_cells(line) {
+            Some(c) => c,
+            None => break,
+        };
+        if is_separator_row(&cells) {
+            continue;
+        }
+        if cells.len() != 3 || is_placeholder_row(&cells) {
+            continue;
+        }
+        let Some(severity) = parse_severity(&cells[sev_i]) else {
+            continue;
+        };
+        out.push(Claim {
+            pass: pass_n,
+            location: sanitize_cell(&cells[loc_i]),
+            severity,
+            summary: sanitize_cell(&cells[claim_i]),
+        });
+    }
+    out
+}
+
+fn find_summary_tables(text: &str) -> Vec<usize> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut starts = Vec::new();
+    let mut in_summary = false;
+    for (i, line) in lines.iter().enumerate() {
+        let t = line.trim();
+        if t == "### Summary" || t == "## Summary" {
+            in_summary = true;
+            continue;
+        }
+        if in_summary && (t.starts_with("## ") || t.starts_with("### ")) && t != "### Summary" {
+            in_summary = false;
+        }
+        if !in_summary {
+            continue;
+        }
+        if let Some(cells) = table_cells(line)
+            && header_map(&cells).is_some()
+        {
+            starts.push(i);
+        }
+    }
+    starts
+}
+
+fn find_any_tables(text: &str) -> Vec<usize> {
+    text.lines()
+        .enumerate()
+        .filter_map(|(i, line)| {
+            let cells = table_cells(line)?;
+            header_map(&cells).is_some().then_some(i)
+        })
+        .collect()
+}
+
+/// Pull structured defect rows from a pass body's markdown summary table.
+pub fn extract_claims(pass_n: usize, text: &str) -> Vec<Claim> {
+    let lines: Vec<&str> = text.lines().collect();
+    let start = find_summary_tables(text)
+        .into_iter()
+        .next()
+        .or_else(|| find_any_tables(text).into_iter().next());
+    start.map_or(Vec::new(), |start| extract_table_at(&lines, start, pass_n))
+}
+
+fn render_claims_index(claims: &[Claim]) -> String {
+    let mut out = String::from(
+        "\n### Claims index\n\n| severity | file:line | pass | claim |\n|---|---|---|---|\n",
+    );
+    for c in claims {
+        let sev = match c.severity {
+            Severity::High => "high",
+            Severity::Medium => "medium",
+            Severity::Low => "low",
+        };
+        out.push_str(&format!(
+            "| {sev} | {} | {} | {} |\n",
+            escape_table_cell(&c.location),
+            c.pass,
+            escape_table_cell(&c.summary),
+        ));
+    }
+    out
+}
 /// The leaks `verdict:` when the scan errored.
 const DID_NOT_RUN: &str = "did not run";
 
 fn head_line(head: &str) -> String {
     format!("<!-- head: {head} -->")
+}
+
+/// The commit sha from line 1 `<!-- head: <sha> -->` of a collect file.
+pub fn head_of(text: &str) -> Option<&str> {
+    let line = text.lines().next()?;
+    let sha = line
+        .strip_prefix("<!-- head: ")?
+        .strip_suffix(" -->")?
+        .trim();
+    (!sha.is_empty()).then_some(sha)
 }
 
 fn reviewer_line(cfg: &ResolvedReview) -> String {
@@ -130,8 +358,38 @@ pub fn collect(
     let cfg: ResolvedReview = cfg.into();
     let cfg = &cfg;
     let head = ci::head(root)?;
-    let range = opts.range();
-    let skip = review::skip(root, review::numstat(root, range, &[])?);
+    let (range, file_stats) = if let Some(since_sha) = opts.since {
+        let valid = Command::new("git")
+            .args([
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("{since_sha}^{{commit}}"),
+            ])
+            .current_dir(root)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if valid {
+            let range = Range::Since(since_sha);
+            let base_files: HashSet<String> = review::numstat(root, Range::Base(opts.base), &[])?
+                .into_iter()
+                .map(|(p, _)| p)
+                .collect();
+            let since_files = review::numstat(root, range, &[])?
+                .into_iter()
+                .filter(|(p, _)| base_files.contains(p))
+                .collect();
+            (range, since_files)
+        } else {
+            let range = Range::Base(opts.base);
+            (range, review::numstat(root, range, &[])?)
+        }
+    } else {
+        let range = opts.range();
+        (range, review::numstat(root, range, &[])?)
+    };
+    let skip = review::skip(root, file_stats);
     let files = &skip.kept;
     let lines: u64 = files.iter().map(|(_, n)| n).sum();
     let leaks = leaks_part(root, opts.base);
@@ -303,21 +561,39 @@ fn second_opinion(
         Err(e) => return unreviewed(&e.to_string(), Some(&dir), ""),
     };
     let mut counted = 0;
+    let mut claims = Vec::new();
     let mut sections = String::new();
     for (i, (pass, ran)) in passes.iter().zip(&ran).enumerate() {
         let (text, counts) = review::pass_text(ran, cfg.timeout_secs);
         counted += usize::from(counts);
+        if counts {
+            claims.extend(extract_claims(i + 1, &text));
+        }
         let mark = if counts { "counted" } else { "unreviewed" };
         let header = review::pass_header(i + 1, pass, ran, cfg);
         sections.push_str(&format!("\n### {header} — {mark}\n\n{text}"));
     }
     if counted == 0 {
-        let reason = format!("no pass of {} counted", passes.len());
+        let reason = match review::classify_failure(&ran) {
+            Some(cause) => format!("{cause} (no pass of {} counted)", passes.len()),
+            None => match review::first_failure_detail(&ran) {
+                Some(detail) => format!("no pass of {} counted: {detail}", passes.len()),
+                None => format!("no pass of {} counted", passes.len()),
+            },
+        };
         return unreviewed(&reason, Some(&dir), &sections);
     }
+    claims.sort_by(|a, b| {
+        (a.severity, a.location.as_str(), a.pass).cmp(&(b.severity, b.location.as_str(), b.pass))
+    });
+    let mut opinion = format!("exit: 0\nlog: {}\n", dir.display());
+    if !claims.is_empty() {
+        opinion.push_str(&render_claims_index(&claims));
+    }
+    opinion.push_str(&sections);
     (
         format!("reviewed, {counted} of {} passes counted", passes.len()),
-        format!("exit: 0\nlog: {}\n{sections}", dir.display()),
+        opinion,
     )
 }
 
@@ -329,12 +605,89 @@ mod tests {
         ns.iter().map(|n| (format!("f{n}"), *n)).collect()
     }
 
+    fn cite(file: &str, line: u32) -> String {
+        format!("{file}:{line}")
+    }
+
     #[test]
     fn one_file_under_fifty_lines_is_the_local_review_only() {
         assert!(!needs_second_opinion(&files(&[])));
         assert!(!needs_second_opinion(&files(&[49])));
         assert!(needs_second_opinion(&files(&[50])));
         assert!(needs_second_opinion(&files(&[1, 1])));
+    }
+
+    #[test]
+    fn extract_claims_prefers_the_first_summary_table() {
+        let alpha = cite("a.rs", 1);
+        let zed = cite("z.rs", 9);
+        let ignored = cite("ignored.rs", 1);
+        let body = format!(
+            "### Summary\n\n| file:line | severity | claim |\n|---|---|---|\n| {zed} | low | zed |\n| {alpha} | high | alpha |\n\n| file:line | severity | claim |\n|---|---|---|\n| {ignored} | high | other table |\n"
+        );
+        let claims = extract_claims(2, &body);
+        assert_eq!(claims.len(), 2);
+        assert!(
+            claims
+                .iter()
+                .any(|c| c.location == alpha && c.severity == Severity::High)
+        );
+        assert!(
+            claims
+                .iter()
+                .any(|c| c.location == zed && c.severity == Severity::Low)
+        );
+        assert!(!claims.iter().any(|c| c.location == ignored));
+    }
+
+    #[test]
+    fn extract_claims_keeps_pipe_characters_inside_cells() {
+        let loc = cite("src/a.rs", 1);
+        let body = format!(
+            "### Summary\n\n| file:line | severity | claim |\n|---|---|---|\n| {loc} | high | filter \\|c\\| drops empty |\n"
+        );
+        let claims = extract_claims(1, &body);
+        assert_eq!(claims.len(), 1);
+        assert_eq!(claims[0].summary, "filter |c| drops empty");
+    }
+
+    #[test]
+    fn extract_claims_reads_stub_shaped_pass_body() {
+        let row1 = cite("src/a.rs", 1);
+        let row2 = cite("src/b.rs", 2);
+        let t = format!(
+            "Pass one prose.\n\n### Summary\n\n| file:line | severity | claim |\n|---|---|---|\n| {row1} | low | low claim pass1 |\n| {row2} | medium | medium claim pass1 |\n"
+        );
+        assert_eq!(extract_claims(1, &t).len(), 2);
+    }
+
+    #[test]
+    fn table_cells_respects_escaped_pipes_in_cells() {
+        let row = "| src/a.rs:1 | high | closure \\|p\\| is inverted |";
+        let cells = table_cells(row).expect("row");
+        assert_eq!(cells.len(), 3);
+        assert_eq!(cells[2], "closure |p| is inverted");
+    }
+
+    #[test]
+    fn extract_claims_omits_placeholders_and_unknown_severities() {
+        let bad = cite("a.rs", 1);
+        let good = cite("b.rs", 2);
+        let body = format!(
+            "| file:line | severity | claim |\n|---|---|---|\n| none | none | none |\n| {bad} | bogus | x |\n| {good} | med | medium one |\n"
+        );
+        let claims = extract_claims(1, &body);
+        assert_eq!(claims.len(), 1);
+        assert_eq!(claims[0].severity, Severity::Medium);
+        assert_eq!(claims[0].summary, "medium one");
+    }
+
+    #[test]
+    fn head_of_reads_the_collect_head_comment() {
+        let text = "<!-- head: deadbeef -->\n<!-- reviewer: cursor:grok -->\n";
+        assert_eq!(head_of(text), Some("deadbeef"));
+        assert_eq!(head_of("<!-- head:  -->\n"), None);
+        assert_eq!(head_of(""), None);
     }
 
     #[test]

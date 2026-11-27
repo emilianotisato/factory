@@ -12,7 +12,7 @@ use crate::config::ResolvedReview;
 use crate::error::io;
 use crate::provider::ReviewProvider;
 use crate::review::{self, Pass, Range};
-use crate::{Result, collect, config, paths, settled};
+use crate::{Result, collect, config, paths, retro, settled};
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum ReviewVerb {
@@ -20,6 +20,8 @@ pub enum ReviewVerb {
     Second(SecondArgs),
     /// The plan, the leaks scan and the second opinion of a branch, as one markdown file
     Collect(CollectArgs),
+    /// Print a feature's settled decisions and non-goals block
+    Settled { feature: String },
 }
 
 #[derive(Args, Debug, Clone)]
@@ -74,7 +76,24 @@ pub fn review(verb: &ReviewVerb, out: &mut dyn Write, err: &mut dyn Write) -> Re
     match verb {
         ReviewVerb::Second(a) => second(a, out, err),
         ReviewVerb::Collect(a) => collect_file(a, out, err),
+        ReviewVerb::Settled { feature } => settled_block(feature, out, err),
     }
+}
+
+fn settled_block(feature: &str, out: &mut dyn Write, err: &mut dyn Write) -> Result<i32> {
+    let cwd = std::env::current_dir().map_err(io("read the current directory"))?;
+    let root = paths::repo_root(&cwd)?;
+    let dir = match retro::feature_dir(&root, feature) {
+        Ok(d) => d,
+        Err(e) => {
+            writeln!(err, "{e}").map_err(io("stderr"))?;
+            return Ok(1);
+        }
+    };
+    if let Some(block) = settled::block(&dir) {
+        out.write_all(block.as_bytes()).map_err(io("stdout"))?;
+    }
+    Ok(0)
 }
 
 fn usage(err: &mut dyn Write) -> Result<i32> {

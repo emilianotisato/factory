@@ -4,7 +4,6 @@ use std::io::Write;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -266,7 +265,7 @@ pub fn numstat(cwd: &Path, range: Range, paths: &[String]) -> Result<Vec<(String
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Skip {
     pub kept: Vec<(String, u64)>,
-    /// Each skipped path with why: `tool-written`, `vendored` or `generated`.
+    /// Each skipped path with why: `tool-written`, `feature-doc`, `vendored`, or `generated`.
     pub skipped: Vec<(String, &'static str)>,
     /// Why vendored and generated files went unchecked, when `git check-attr` failed.
     pub unchecked: Option<String>,
@@ -311,16 +310,33 @@ pub fn skip(root: &Path, files: Vec<(String, u64)>) -> Skip {
             Vec::new()
         })
     };
+    let mut candidates = Vec::new();
     for (path, n) in files {
         if tool_written(&path) {
             out.skipped.push((path, "tool-written"));
         } else if let Some((_, why)) = marked.iter().find(|(p, _)| *p == path) {
             out.skipped.push((path, why));
         } else {
-            out.kept.push((path, n));
+            candidates.push((path, n));
         }
     }
+    let has_non_feature_doc = candidates.iter().any(|(p, _)| !feature_doc(p));
+    if has_non_feature_doc {
+        for (path, n) in candidates {
+            if feature_doc(&path) {
+                out.skipped.push((path, "feature-doc"));
+            } else {
+                out.kept.push((path, n));
+            }
+        }
+    } else {
+        out.kept = candidates;
+    }
     out
+}
+
+fn feature_doc(path: &str) -> bool {
+    path.starts_with("docs/features/")
 }
 
 /// `docs/features/<dir>/log.jsonl` or `state.toml`, one directory level deep.
@@ -467,67 +483,6 @@ pub type Cancel<'a> = Option<&'a (dyn Fn() -> bool + Sync)>;
 
 pub const CANCEL_EVERY: Duration = Duration::from_secs(1);
 
-/// Each running reviewer's own process group: a Ctrl-C reaches factory alone, so the handler must kill them.
-const SLOTS: usize = 256;
-static CHILD_GROUPS: [AtomicI32; SLOTS] = [const { AtomicI32::new(0) }; SLOTS];
-
-/// Holds a slot from before the spawn (as -1, which the handler skips) until the child is done.
-struct Watched(&'static AtomicI32);
-
-impl Watched {
-    fn claim() -> Result<Watched> {
-        CHILD_GROUPS
-            .iter()
-            .find(|s| {
-                s.compare_exchange(0, -1, Ordering::SeqCst, Ordering::SeqCst)
-                    .is_ok()
-            })
-            .map(Watched)
-            .ok_or_else(|| Error::Msg(format!("more than {SLOTS} reviewers at once")))
-    }
-}
-
-impl Drop for Watched {
-    fn drop(&mut self) {
-        self.0.store(0, Ordering::SeqCst);
-    }
-}
-
-extern "C" fn forward(sig: libc::c_int) {
-    // SAFETY: atomics and async-signal-safe calls only; the re-raise under SIG_DFL ends factory as the signal would.
-    unsafe {
-        for slot in &CHILD_GROUPS {
-            let group = slot.load(Ordering::SeqCst);
-            if group > 0 {
-                libc::kill(-group, libc::SIGKILL);
-            }
-        }
-        libc::signal(sig, libc::SIG_DFL);
-        libc::raise(sig);
-    }
-}
-
-/// A signal factory started out ignoring (`nohup`) stays ignored.
-fn forward_signals() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
-            // SAFETY: a zeroed `sigaction` is valid; the handler is async-signal-safe.
-            unsafe {
-                let mut old: libc::sigaction = std::mem::zeroed();
-                libc::sigaction(sig, std::ptr::null(), &mut old);
-                if old.sa_sigaction == libc::SIG_IGN {
-                    continue;
-                }
-                let mut sa: libc::sigaction = std::mem::zeroed();
-                sa.sa_sigaction = forward as extern "C" fn(libc::c_int) as libc::sighandler_t;
-                libc::sigemptyset(&mut sa.sa_mask);
-                libc::sigaction(sig, &sa, std::ptr::null_mut());
-            }
-        }
-    });
-}
-
 /// `stdin` feeds the child a file, never a pipe, so a large prompt cannot block it.
 fn run_logged(
     mut cmd: Command,
@@ -547,8 +502,8 @@ fn run_logged(
         .stderr(Stdio::from(file(err)?))
         // Its own group: a wrapper script's children die with it.
         .process_group(0);
-    forward_signals();
-    let watched = Watched::claim()?;
+    crate::signals::install();
+    let watched = crate::signals::Guard::claim()?;
     let started = Instant::now();
     let mut child = cmd.spawn().map_err(|e| {
         Error::Msg(format!(
@@ -556,7 +511,7 @@ fn run_logged(
             cmd.get_program().to_string_lossy()
         ))
     })?;
-    watched.0.store(child.id() as i32, Ordering::SeqCst);
+    watched.set(child.id() as i32);
     let mut asked: Option<Instant> = None;
     loop {
         if let Some(status) = child.try_wait().map_err(io("poll the reviewer"))? {
@@ -662,6 +617,142 @@ pub fn login_hint(cfg: &ResolvedReview) -> String {
     format!("{} {rest}", binary(cfg, p).1)
 }
 
+fn marker_matches(lower: &str, marker: &str) -> bool {
+    if marker.chars().all(|c| c.is_ascii_digit()) {
+        return lower
+            .split(|c: char| !c.is_ascii_digit())
+            .any(|w| w == marker);
+    }
+    if marker == "login" {
+        return lower.contains("please login")
+            || lower.contains("log in")
+            || lower.contains("login required");
+    }
+    lower.contains(marker)
+}
+
+fn classify_error_text(text: &str) -> Option<&'static str> {
+    let lower = text.to_ascii_lowercase();
+    const USAGE: &[&str] = &[
+        "usage limit",
+        "rate limit",
+        "quota",
+        "too many requests",
+        "429",
+        "out of credits",
+        "credit balance",
+    ];
+    const AUTH: &[&str] = &[
+        "authentication required",
+        "not logged in",
+        "unauthorized",
+        "invalid api key",
+        "login",
+        "401",
+        "403",
+    ];
+    const MODEL: &[&str] = &[
+        "model not found",
+        "no such model",
+        "unknown model",
+        "invalid model",
+        "not in --list-models",
+    ];
+    if USAGE.iter().any(|m| marker_matches(&lower, m)) {
+        return Some("usage limit");
+    }
+    if AUTH.iter().any(|m| marker_matches(&lower, m)) {
+        return Some("auth");
+    }
+    if MODEL.iter().any(|m| marker_matches(&lower, m)) {
+        return Some("no such model");
+    }
+    None
+}
+
+const FAILURE_CAUSES: &[&str] = &["usage limit", "auth", "no such model", "timeout", "stopped"];
+
+fn pick_cause(best: Option<&'static str>, next: Option<&'static str>) -> Option<&'static str> {
+    let Some(next) = next else {
+        return best;
+    };
+    let rank = |c: &str| {
+        FAILURE_CAUSES
+            .iter()
+            .position(|&x| x == c)
+            .unwrap_or(usize::MAX)
+    };
+    match best {
+        None => Some(next),
+        Some(b) if rank(next) < rank(b) => Some(next),
+        Some(b) => Some(b),
+    }
+}
+
+fn failed_outcome_cause(o: &Outcome) -> Option<&'static str> {
+    if let Some(c) = o.parsed.error.as_deref().and_then(classify_error_text) {
+        return Some(c);
+    }
+    if let Some(c) = classify_error_text(&o.stderr) {
+        return Some(c);
+    }
+    match o.ended {
+        Ended::Killed => Some("timeout"),
+        Ended::Stopped => Some("stopped"),
+        _ => None,
+    }
+}
+
+/// Highest-priority cause across failed passes: usage limit > auth > no such model > timeout > stopped.
+pub fn classify_failure(ran: &[Ran]) -> Option<&'static str> {
+    let mut best = None;
+    for r in ran {
+        let cause = match &r.outcome {
+            Err(e) => classify_error_text(&e.to_string()),
+            Ok(o) if !body(o, 0).1 => failed_outcome_cause(o),
+            _ => None,
+        };
+        best = pick_cause(best, cause);
+    }
+    best
+}
+
+/// First stderr or error line from a failed pass, trimmed and truncated for an unclassified fallback.
+pub fn first_failure_detail(ran: &[Ran]) -> Option<String> {
+    for r in ran {
+        let raw = match &r.outcome {
+            Err(e) => Some(e.to_string()),
+            Ok(o) if !body(o, 0).1 => o
+                .parsed
+                .error
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .map(str::to_string)
+                .or_else(|| {
+                    o.stderr
+                        .lines()
+                        .map(str::trim)
+                        .find(|l| !l.is_empty())
+                        .map(str::to_string)
+                }),
+            _ => None,
+        };
+        let Some(mut s) = raw
+            .filter(|t| !t.trim().is_empty())
+            .map(|t| t.lines().next().unwrap_or("").trim().to_string())
+            .filter(|t| !t.is_empty())
+        else {
+            continue;
+        };
+        let n: usize = 120;
+        if s.chars().count() > n {
+            s = s.chars().take(n).collect();
+        }
+        return Some(s);
+    }
+    None
+}
+
 /// `cancel` firing ends the probe as unreviewed, so a stop never waits on a hung agent.
 pub fn probe(cfg: &Review, dir: &Path, cancel: Cancel) -> std::result::Result<(), String> {
     probe_resolved(&cfg.into(), dir, cancel)
@@ -720,14 +811,27 @@ pub fn probe_resolved(
     match ended {
         Ended::Stopped => Err("stopped".to_string()),
         Ended::Killed => Err(format!("{what} timed out after {secs} s")),
-        Ended::Exited(code) if code != Some(0) => Err(format!(
-            "{what} exited {}: {first}",
-            code.map_or("on a signal".to_string(), |c| c.to_string())
-        )),
-        _ if p == Provider::Cursor
-            && (text.contains("login") || text.contains("Authentication required")) =>
-        {
-            Err(first)
+        Ended::Exited(code) if code != Some(0) => {
+            if classify_error_text(&text) == Some("usage limit") {
+                Err(format!("usage limit: {first}"))
+            } else {
+                Err(format!(
+                    "{what} exited {}: {first}",
+                    code.map_or("on a signal".to_string(), |c| c.to_string())
+                ))
+            }
+        }
+        _ if p == Provider::Cursor => {
+            let lower = text.to_ascii_lowercase();
+            if lower.contains("hit your usage limit") || lower.contains("usage limit reached") {
+                Err(format!("usage limit: {first}"))
+            } else if text.contains("login") || text.contains("Authentication required") {
+                Err(first)
+            } else if lists && !lists_model(&text, &cfg.model) {
+                Err(format!("model {} not in --list-models", cfg.model))
+            } else {
+                Ok(())
+            }
         }
         _ if lists && !lists_model(&text, &cfg.model) => Err(if p == Provider::Cursor {
             format!("model {} not in --list-models", cfg.model)
@@ -1445,7 +1549,7 @@ fn body(o: &Outcome, timeout_secs: u64) -> (String, bool) {
 /// `what` names the diff, as `The diff of a.rs b.rs`, and `against` its range, as `against main`.
 pub fn diff_prompt(what: &str, against: &str, diff_file: &Path) -> String {
     format!(
-        "Adversarial code review. {what} {against} is in {}: read it, and read any file in the repository you need for context. Report only defects you can point to at file:line with a failure scenario; no praise, no style. Do not edit anything.",
+        "Adversarial code review. {what} {against} is in {}: read it, and read any file in the repository you need for context. Report only defects you can point to at file:line with a failure scenario; no praise, no style. Do not edit anything. End with a `### Summary` markdown table (`| file:line | severity | claim |`, severity `high`, `medium`, or `low`; omit the table if there are no defects).",
         diff_file.display()
     )
 }
@@ -1549,6 +1653,25 @@ mod tests {
         assert_eq!(one_line("dir/é.rs"), "dir/é.rs");
     }
 
+    #[test]
+    fn classify_error_text_ignores_http_codes_embedded_in_traces() {
+        assert_eq!(classify_error_text("at x.js:1429:7"), None);
+        assert_eq!(classify_error_text("req_4031ab"), None);
+        assert_eq!(
+            classify_error_text("You've hit your usage limit"),
+            Some("usage limit")
+        );
+        assert_eq!(
+            classify_error_text("HTTP 429 Too Many Requests"),
+            Some("usage limit")
+        );
+        assert_eq!(
+            classify_error_text("checking login state without auth"),
+            None
+        );
+        assert_eq!(classify_error_text("Authentication required"), Some("auth"));
+    }
+
     const STREAM: &str = include_str!("../tests/stubs/cursor-review.jsonl");
 
     const OPENING: &str = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"I'll read the diff."}]}}"#;
@@ -1638,6 +1761,61 @@ mod tests {
             let got = body(&outcome(ended, &stream, "boom"), 9);
             assert_eq!(got, (want.to_string(), counts), "{ended:?} {stream:?}");
         }
+    }
+
+    #[test]
+    fn feature_docs_drop_when_code_changed_but_docs_only_stays_kept() {
+        let root = std::env::current_dir().unwrap();
+        const LOG: &str = "docs/features/acme/log.jsonl";
+        const PRD: &str = "docs/features/acme/prd.md";
+        const BRIEF: &str = "docs/features/acme/brief.md";
+        let mixed = skip(
+            &root,
+            vec![
+                ("src/a.rs".into(), 10),
+                (PRD.into(), 5),
+                (BRIEF.into(), 3),
+                (LOG.into(), 1),
+            ],
+        );
+        assert_eq!(mixed.kept, vec![("src/a.rs".to_string(), 10)]);
+        assert!(
+            mixed
+                .skipped
+                .iter()
+                .any(|(p, w)| { p == LOG && *w == "tool-written" })
+        );
+        assert!(
+            mixed
+                .skipped
+                .iter()
+                .any(|(p, w)| { p == PRD && *w == "feature-doc" })
+        );
+        assert!(
+            mixed
+                .skipped
+                .iter()
+                .any(|(p, w)| { p == BRIEF && *w == "feature-doc" })
+        );
+
+        let docs_only = skip(
+            &root,
+            vec![(PRD.into(), 5), (BRIEF.into(), 3), (LOG.into(), 1)],
+        );
+        assert_eq!(
+            docs_only
+                .kept
+                .iter()
+                .map(|(p, _)| p.as_str())
+                .collect::<Vec<_>>(),
+            vec![PRD, BRIEF]
+        );
+        assert!(
+            docs_only
+                .skipped
+                .iter()
+                .any(|(p, w)| { p == LOG && *w == "tool-written" })
+        );
     }
 
     #[test]
@@ -1801,6 +1979,47 @@ mod tests {
         for text in ["grok-4.7-high-max", "xgrok-4.7-high", "grok-4.7", ""] {
             assert!(!lists_model(text, "grok-4.7-high"), "{text}");
         }
+        let listing =
+            "Available models\n\nmodel-429-quota - Quota line\ngrok-4.7-high - Grok 4.7 High";
+        assert!(lists_model(listing, "grok-4.7-high"), "{listing}");
+        assert!(lists_model(listing, "model-429-quota"), "{listing}");
+    }
+
+    #[test]
+    fn classify_failure_picks_the_highest_priority_cause() {
+        let failed = |stderr: &str, ended: Ended| Ran {
+            outcome: Ok(outcome(ended, &[], stderr)),
+            elapsed: Duration::ZERO,
+        };
+        assert_eq!(
+            classify_failure(&[failed("", Ended::Killed)]),
+            Some("timeout")
+        );
+        assert_eq!(
+            classify_failure(&[failed("", Ended::Stopped)]),
+            Some("stopped")
+        );
+        assert_eq!(
+            classify_failure(&[
+                failed("model not found", Ended::Exited(Some(1))),
+                failed("", Ended::Killed),
+            ]),
+            Some("no such model")
+        );
+        assert_eq!(
+            classify_failure(&[
+                failed("invalid api key", Ended::Exited(Some(1))),
+                failed("unknown model", Ended::Exited(Some(1))),
+            ]),
+            Some("auth")
+        );
+        assert_eq!(
+            classify_failure(&[
+                failed("You've hit your usage limit", Ended::Exited(Some(1))),
+                failed("Authentication required", Ended::Exited(Some(1))),
+            ]),
+            Some("usage limit")
+        );
     }
 
     fn run_git(dir: &Path, args: &[&str]) -> String {

@@ -30,7 +30,7 @@ Create a working file in your scratchpad directory (`findings.md`). **Everything
 
 **Every reviewer on a one-line bugfix is theatre, and a ritual that always costs an hour gets skipped entirely.** The mechanical part (the plan, the leaks scan and the second opinion) comes from one collected file. The model reviewers come from the table below: pick the set from the diff and its blast radius, say which set you picked and why, then run only those.
 
-**Start from the collected file.** Inside a `factory` run, the pack's `# Collected` section names it and holds its plan, its leaks verdict and each second-opinion pass's status line. With no `# Collected` section, attended, or when it says `collect failed`, run `factory review collect --base <base-branch> --out <scratchpad>/collect.md` **in the background**, since it can outlast a Bash call, and read the file when it exits; the local review can run meanwhile. On a feature's branch add `--feature <NNN>`, so every pass prompt carries what is settled. When the feature's `state.toml` has `reviewed` set, add `--since <commit>` too, the commit from `git log -1 --format=%H -G '^reviewed' -- docs/features/<NNN>-*/state.toml`: a later round then reviews only what changed since the last one. No such commit, or the owner asks for the whole branch → leave `--since` out and the full diff is reviewed. A collect that leaves no file (an error, or a binary without the verb) → say so out loud and take the last resort at the end of this section.
+**Start from the collected file.** Inside a `factory` run, the pack's `# Collected` section names it and holds its plan, its leaks verdict and each second-opinion pass's status line. With no `# Collected` section, attended, or when it says `collect failed`, run `factory review collect --base <base-branch> --out <scratchpad>/collect.md` **in the background**, since it can outlast a Bash call, and read the file when it exits; the local review can run meanwhile. On a feature's branch add `--feature <NNN>`, so every pass prompt carries what is settled. When the feature's `state.toml` has `reviewed` set, add `--since <commit>` too: when `state.toml` sets `reviewed_head`, pass that sha as `--since`; otherwise fall back to the commit from `git log -1 --format=%H -G '^reviewed' -- docs/features/<NNN>-*/state.toml`. A later round then reviews only what changed since the last one. No such commit, or the owner asks for the whole branch → leave `--since` out and the full diff is reviewed. A collect that leaves no file (an error, or a binary without the verb) → say so out loud and take the last resort at the end of this section.
 
 **Read only the plan, the leaks verdict and each pass's status line now.** The findings text under `## Second opinion` waits for step 2, so the local review runs first and unanchored.
 
@@ -76,7 +76,7 @@ Review these files: <the pass's files>
 Range: git diff <base>...HEAD -- <the pass's files>   (<since>..HEAD on a later round)
 Read-only: no git switch, checkout or stash.
 Settled (the feature's ADs, the PRD's Decisions log and Non-goals):
-<the settled block>
+<the settled block — run `factory review settled <NNN>` when you do not already have it>
 A finding that contradicts an entry names it and says why the entry is wrong.
 ```
 
@@ -86,7 +86,7 @@ Either way its findings are claims to verify in step 2, and you say which review
 
 A leaks verdict with hits → read the `## Leaks` part too: each hit sits under its fix line.
 
-**Now read the second opinion's findings**: the `### Pass` sections under the collected file's `## Second opinion`, or the last resort's output.
+**Now read the second opinion's findings**: start dedupe from `### Claims index` when present in `collect.md`, verifying each row against its `### Pass` section and the code; otherwise read the `### Pass` sections under the collected file's `## Second opinion`, or the last resort's output.
 
 **The second opinion does not have the context you do.** It has not read the PRD, does not know what was deliberately decided, and cannot see the reasoning behind a design. Treat its findings as claims to check, not instructions.
 
