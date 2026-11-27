@@ -167,7 +167,16 @@ No `OPEN-n`. Every fork was settled on 2026-11-27:
 
 ## 9. Slices
 
-_(Not sliced yet. Run `/slice`.)_
+Four vertical slices with zero overlapping files between parallel slices:
+
+- **Slice 01 (`slice-01-lane-env-isolation.md`)** — FR-1: `Lane::env_for` (resolving relative `CARGO_TARGET_DIR` to absolute), `pack::env_prefixed` (`export K=V;`) + `# Lane env` across all worker packs, and `$SHELL -lic` clobber detection (`stdin=null`, 3 s timeout) in `factory lanes up --prove`. Independent (`deps: —`).
+- **Slice 02 (`slice-02-docs-check-ctx-def-and-leaks-attr.md`)** — FR-4 (CLI & code-analysis core): `factory docs check [FEATURE]`, shared `linguist-generated`/`linguist-vendored` filtering in `ctx::def` and `ctx::refs`, and `-c core.attributesFile=` isolation in `review::check_attr_src`. Independent (`deps: —`).
+- **Slice 03 (`slice-03-checkpoint-prove-and-skills-bump.md`)** — FR-2 + FR-4 (skill rules, token-free local PR note, `0.20.0` bump): `handed_qa` deferral for incomplete slices, clean-tree full-gate-log citation in `assets/contract-checkpoint.md`, UI Prove rules in `skills/slice/SKILL.md`, token-free squash-merge skip-CI note in `src/closeout.rs` + `skills/deliver/SKILL.md`, and `0.19.0` → `0.20.0` version bump + offline-safe `skills/bundle.lock` relock. Depends on Slice 01 (same files: `src/pack.rs`, `src/closeout.rs`, `tests/delivery_hardening.rs`).
+- **Slice 04 (`slice-04-reviewed-head-and-log-add-clarity.md`)** — FR-3: clear stale `reviewed_head` on `docs set reviewed=<date>`, widen `settled::last_reviewed` fallback to `^reviewed(_head)? =` and `is_sha` to 7..=64 hex chars, resolve `reviewed_head=HEAD` against cwd's repo, report `closeout::ship` `reviewed_head` errors, and clarify `docs log add` main-checkout stderr + slice/polish contracts. Depends on Slices 02 and 03 (same files: `src/cli/docs.rs`, `src/closeout.rs`, `tests/delivery_hardening.rs`).
+
+**Ordering & checkpoints.** Slices 01 and 02 build in parallel first, followed by **Checkpoint 1** (proving FR-1; FR-4 completes in Slice 03 and is proven whole at Checkpoint 2). Slice 03 then lands checkpoint Prove rules, local PR note, and the `0.20.0` bundle relock, followed by Slice 04 (`reviewed_head` + `log add` clarity) and **Checkpoint 2** (proving FR-2, FR-3, and FR-4).
+
+**Workflow.** One feature branch (`feat/delivery-and-lane-hardening`), one PR, one commit per slice, Prove at the checkpoints. No QA-plan row is marked Human, so no `qa-guide.md` is generated.
 
 ## 10. Non-goals
 
