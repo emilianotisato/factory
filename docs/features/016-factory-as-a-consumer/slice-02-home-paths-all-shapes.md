@@ -3,7 +3,7 @@
 **Source**: [`prd.md`](prd.md) → §6 (FR-4). **Depends on**: — (independent; writes only `src/paths.rs` and `tests/home_paths.rs`)
 **Created**: 2026-11-27
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**: Replaced `HOME_PATH`/`ANY_HOME_PATH` with one `HOME_PREFIX` regex plus manual leading/trailing `in_segment` checks in `find_home_path` and `home_paths_to_tilde` (Unix/macOS bare, WSL, Windows, `/root/`, JSON-escaped). Added unit tests in `src/paths.rs` and fixture integration test `tests/home_paths.rs`. Inner loop: 2 runs, 1 red (shared `CARGO_TARGET_DIR` served a stale `factory` test dylib — lane build needs `target/lane-2` per `docs/reference/lanes/lane-2.md`), 190 s green. Deliberate red: stubbed `find_home_path` → `None`; integration test failed `Some(0)` vs `None`.
 
 **Slice**: Extends `paths::find_home_path` and `paths::home_paths_to_tilde` to catch and rewrite every home-path shape — bare Unix/macOS paths with no trailing slash, case-insensitive `/users/<name>`, WSL `/mnt/<drive>/Users/<name>`, Windows `<drive>:\Users\<name>`, the Unix root home prefix (`"/" + "root/"`), and JSON-escaped `\/home\/<name>` — without consuming trailing delimiter bytes, so `W-HOME-PATH`, archive rewrites, and `factory upstream check` catch all of them cleanly. Leaves `skills/harvest/SKILL.md:61` (which requires the version bump) to Slice 03.
 

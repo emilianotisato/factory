@@ -1,0 +1,1 @@
+{"kind":"note","ts":"2026-11-27T17:23:59Z","slice":2,"title":"lane-2 builds must use target/lane-2, not the global devcache target","body":"Shared `CARGO_TARGET_DIR=/mnt/devcache/emiliano/cargo-target` serves stale `factory` lib test binaries; set `CARGO_TARGET_DIR=target/lane-2` from the lane worktree root before `cargo test`.\n"}
