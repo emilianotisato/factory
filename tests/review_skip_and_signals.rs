@@ -13,9 +13,9 @@ use std::time::{Duration, Instant};
 use harness::Fixture;
 
 const BIN: &str = env!("CARGO_BIN_EXE_factory");
-const LOG: &str = "docs/features/001-x/log.jsonl";
-const PRD: &str = "docs/features/001-x/prd.md";
-const SLICE: &str = "docs/features/001-x/slice-01-a.md";
+const LOG: &str = "docs/features/acme/log.jsonl";
+const PRD: &str = "docs/features/acme/prd.md";
+const BRIEF: &str = "docs/features/acme/brief.md";
 
 fn configure(fx: &Fixture, timeout: u64) {
     let cfg = PathBuf::from(&fx.env()["FACTORY_CONFIG_DIR"]);
@@ -87,12 +87,12 @@ fn review_skip_drops_feature_docs_when_code_changed_but_keeps_docs_only_diffs() 
     let mixed = branch_off(
         "collect-feature-doc-mixed",
         20,
-        &[(LOG, 1), (PRD, 10), (SLICE, 10), ("src/a.rs", 400)],
+        &[(LOG, 1), (PRD, 10), (BRIEF, 10), ("src/a.rs", 400)],
     );
     let file = collected(&mixed);
     let plan = part(&file, "Plan");
     assert!(plan.contains(&format!("- {PRD} (feature-doc)")), "{plan}");
-    assert!(plan.contains(&format!("- {SLICE} (feature-doc)")), "{plan}");
+    assert!(plan.contains(&format!("- {BRIEF} (feature-doc)")), "{plan}");
     assert!(plan.contains(&format!("- {LOG} (tool-written)")), "{plan}");
     assert!(
         plan.contains("changed: 1 file, 400 lines against main...HEAD\n- src/a.rs (400 lines)"),
@@ -107,26 +107,20 @@ fn review_skip_drops_feature_docs_when_code_changed_but_keeps_docs_only_diffs() 
     );
     let diff = fs::read_to_string(dir.join("review-1.diff")).unwrap();
     assert!(diff.contains("+++ b/src/a.rs"), "{diff}");
-    for f in [PRD, SLICE, LOG] {
+    for f in [PRD, BRIEF, LOG] {
         assert!(!diff.contains(f), "{f} in {diff}");
     }
 
     let docs_only = branch_off(
         "collect-feature-doc-only",
         20,
-        &[(LOG, 1), (PRD, 10), (SLICE, 10)],
+        &[(LOG, 1), (PRD, 10), (BRIEF, 10)],
     );
     let file = collected(&docs_only);
     let plan = part(&file, "Plan");
     assert!(plan.contains(&format!("- {LOG} (tool-written)")), "{plan}");
-    assert!(
-        plan.contains("- docs/features/001-x/prd.md (10 lines)"),
-        "{plan}"
-    );
-    assert!(
-        plan.contains("- docs/features/001-x/slice-01-a.md (10 lines)"),
-        "{plan}"
-    );
+    assert!(plan.contains(&format!("- {PRD} (10 lines)")), "{plan}");
+    assert!(plan.contains(&format!("- {BRIEF} (10 lines)")), "{plan}");
     let reviews = review_calls(&docs_only);
     assert_eq!(reviews.len(), 1, "{reviews:?}");
     let second = part(&file, "Second opinion");
@@ -137,11 +131,8 @@ fn review_skip_drops_feature_docs_when_code_changed_but_keeps_docs_only_diffs() 
             .unwrap_or_else(|| panic!("no log: {second}")),
     );
     let diff = fs::read_to_string(dir.join("review-1.diff")).unwrap();
-    assert!(diff.contains("+++ b/docs/features/001-x/prd.md"), "{diff}");
-    assert!(
-        diff.contains("+++ b/docs/features/001-x/slice-01-a.md"),
-        "{diff}"
-    );
+    assert!(diff.contains(&format!("+++ b/{PRD}")), "{diff}");
+    assert!(diff.contains(&format!("+++ b/{BRIEF}")), "{diff}");
 }
 
 fn grandchild_gone(pid: i32) -> bool {

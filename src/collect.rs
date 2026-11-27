@@ -586,6 +586,10 @@ mod tests {
         ns.iter().map(|n| (format!("f{n}"), *n)).collect()
     }
 
+    fn cite(file: &str, line: u32) -> String {
+        format!("{file}:{line}")
+    }
+
     #[test]
     fn one_file_under_fifty_lines_is_the_local_review_only() {
         assert!(!needs_second_opinion(&files(&[])));
@@ -596,49 +600,45 @@ mod tests {
 
     #[test]
     fn extract_claims_prefers_the_first_summary_table() {
-        let body = "\
-### Summary
-
-| file:line | severity | claim |
-|---|---|---|
-| z.rs:9 | low | zed |
-| a.rs:1 | high | alpha |
-
-| file:line | severity | claim |
-|---|---|---|
-| ignored.rs:1 | high | other table |
-";
-        let claims = extract_claims(2, body);
+        let alpha = cite("a.rs", 1);
+        let zed = cite("z.rs", 9);
+        let ignored = cite("ignored.rs", 1);
+        let body = format!(
+            "### Summary\n\n| file:line | severity | claim |\n|---|---|---|\n| {zed} | low | zed |\n| {alpha} | high | alpha |\n\n| file:line | severity | claim |\n|---|---|---|\n| {ignored} | high | other table |\n"
+        );
+        let claims = extract_claims(2, &body);
         assert_eq!(claims.len(), 2);
         assert!(
             claims
                 .iter()
-                .any(|c| c.location == "a.rs:1" && c.severity == Severity::High)
+                .any(|c| c.location == alpha && c.severity == Severity::High)
         );
         assert!(
             claims
                 .iter()
-                .any(|c| c.location == "z.rs:9" && c.severity == Severity::Low)
+                .any(|c| c.location == zed && c.severity == Severity::Low)
         );
-        assert!(!claims.iter().any(|c| c.location == "ignored.rs:1"));
+        assert!(!claims.iter().any(|c| c.location == ignored));
     }
 
     #[test]
     fn extract_claims_reads_stub_shaped_pass_body() {
-        let t = "Pass one prose.\n\n### Summary\n\n| file:line | severity | claim |\n|---|---|---|\n| src/a.rs:1 | low | low claim pass1 |\n| src/b.rs:2 | medium | medium claim pass1 |\n";
-        assert_eq!(extract_claims(1, t).len(), 2);
+        let row1 = cite("src/a.rs", 1);
+        let row2 = cite("src/b.rs", 2);
+        let t = format!(
+            "Pass one prose.\n\n### Summary\n\n| file:line | severity | claim |\n|---|---|---|\n| {row1} | low | low claim pass1 |\n| {row2} | medium | medium claim pass1 |\n"
+        );
+        assert_eq!(extract_claims(1, &t).len(), 2);
     }
 
     #[test]
     fn extract_claims_omits_placeholders_and_unknown_severities() {
-        let body = "\
-| file:line | severity | claim |
-|---|---|---|
-| none | none | none |
-| a.rs:1 | bogus | x |
-| b.rs:2 | med | medium one |
-";
-        let claims = extract_claims(1, body);
+        let bad = cite("a.rs", 1);
+        let good = cite("b.rs", 2);
+        let body = format!(
+            "| file:line | severity | claim |\n|---|---|---|\n| none | none | none |\n| {bad} | bogus | x |\n| {good} | med | medium one |\n"
+        );
+        let claims = extract_claims(1, &body);
         assert_eq!(claims.len(), 1);
         assert_eq!(claims[0].severity, Severity::Medium);
         assert_eq!(claims[0].summary, "medium one");

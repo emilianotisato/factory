@@ -1729,13 +1729,16 @@ mod tests {
     #[test]
     fn feature_docs_drop_when_code_changed_but_docs_only_stays_kept() {
         let root = std::env::current_dir().unwrap();
+        const LOG: &str = "docs/features/acme/log.jsonl";
+        const PRD: &str = "docs/features/acme/prd.md";
+        const BRIEF: &str = "docs/features/acme/brief.md";
         let mixed = skip(
             &root,
             vec![
                 ("src/a.rs".into(), 10),
-                ("docs/features/001-x/prd.md".into(), 5),
-                ("docs/features/001-x/slice-01.md".into(), 3),
-                ("docs/features/001-x/log.jsonl".into(), 1),
+                (PRD.into(), 5),
+                (BRIEF.into(), 3),
+                (LOG.into(), 1),
             ],
         );
         assert_eq!(mixed.kept, vec![("src/a.rs".to_string(), 10)]);
@@ -1743,28 +1746,24 @@ mod tests {
             mixed
                 .skipped
                 .iter()
-                .any(|(p, w)| { p == "docs/features/001-x/log.jsonl" && *w == "tool-written" })
+                .any(|(p, w)| { p == LOG && *w == "tool-written" })
         );
         assert!(
             mixed
                 .skipped
                 .iter()
-                .any(|(p, w)| { p == "docs/features/001-x/prd.md" && *w == "feature-doc" })
+                .any(|(p, w)| { p == PRD && *w == "feature-doc" })
         );
         assert!(
             mixed
                 .skipped
                 .iter()
-                .any(|(p, w)| { p == "docs/features/001-x/slice-01.md" && *w == "feature-doc" })
+                .any(|(p, w)| { p == BRIEF && *w == "feature-doc" })
         );
 
         let docs_only = skip(
             &root,
-            vec![
-                ("docs/features/001-x/prd.md".into(), 5),
-                ("docs/features/001-x/slice-01.md".into(), 3),
-                ("docs/features/001-x/log.jsonl".into(), 1),
-            ],
+            vec![(PRD.into(), 5), (BRIEF.into(), 3), (LOG.into(), 1)],
         );
         assert_eq!(
             docs_only
@@ -1772,16 +1771,13 @@ mod tests {
                 .iter()
                 .map(|(p, _)| p.as_str())
                 .collect::<Vec<_>>(),
-            vec![
-                "docs/features/001-x/prd.md",
-                "docs/features/001-x/slice-01.md"
-            ]
+            vec![PRD, BRIEF]
         );
         assert!(
             docs_only
                 .skipped
                 .iter()
-                .any(|(p, w)| { p == "docs/features/001-x/log.jsonl" && *w == "tool-written" })
+                .any(|(p, w)| { p == LOG && *w == "tool-written" })
         );
     }
 

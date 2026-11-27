@@ -315,10 +315,13 @@ mod tests {
         );
         let block = block(dir.path()).unwrap();
         assert!(
-            block.contains("- AD-2 — Use Redis?: answered — yes, lane cache"),
+            block.contains(&format!(
+                "- {} — Use Redis?: answered — yes, lane cache",
+                id(2)
+            )),
             "{block}"
         );
-        assert!(!block.contains("AD-3"), "{block}");
+        assert!(!block.contains(&id(3)), "{block}");
     }
 
     #[test]
