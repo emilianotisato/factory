@@ -21,7 +21,7 @@ Today the owner still dogfoods `factory` through developer shortcuts instead of 
 - **Source installs and broken receipt detection.** `CLAUDE.md:6` and `AGENTS.md:6` mandate `cargo install --path . --locked` after every merge; `dist-workspace.toml:15` sets `install-path = "CARGO_HOME"`, so `axoupdater::check_receipt_is_for_this_executable` (`src/cli/upgrade.rs:22`) confuses a `cargo install` build in `~/.cargo/bin/factory` with an older release install; `factory upgrade` (`src/cli/upgrade.rs:58-66`) refuses to upgrade whenever no receipt exists (even with no `[source]` configured); and there is no rolling `edge` prerelease build on `main` pushes for testing between tagged releases.
 - **`factory upstream post` bypasses GitHub when `[source]` is set, and there is no triage verb for incoming issues.** `cli::upstream::post` (`src/cli/upstream.rs:88-91`) commits straight into `[source]` instead of opening a GitHub issue, and there is no `factory upstream pull` verb to list and triage open issues into `docs/ideas/` and close them with a pointer comment.
 - **`factory upstream` has security and usability gaps now that GitHub issues are the only road.** `upstream::REPO` (`src/upstream.rs:10`) omits `github.com/` (so `GH_HOST` can misroute issues to a client's GitHub Enterprise); `open_issue` (`src/cli/upstream.rs:141-142`) puts the draft body on argv (`--body <text>`, visible in `ps` and subject to the 128 KiB argv cap); `upstream::names` (`src/upstream.rs:53`) reads only `origin` (missing `upstream`/`github` remotes); `holds_word` misses spelling variants (`AcmeApi`, `acme_api`, `acme api`, hyphenated parts) and has no `--allow <word>` override for short/common repo names (`api`, `web`, `app`); and `check` and `post` are not tied by a draft content hash.
-- **Home paths without a trailing slash slip past `W-HOME-PATH`, archive rewrites, and `upstream check`.** `paths::HOME_PATH` (`src/paths.rs:95-103`) requires a trailing `/` (`/(?:home|Users)/[A-Za-z0-9._-]+/`), missing bare `/home/<name>` at end-of-word/end-of-line as well as WSL `/mnt/c/Users/<name>`, Windows `C:\Users\<name>`, `/root/`, case-insensitive `/users/<name>`, and JSON-escaped `\/home\/<name>`.
+- **Home paths without a trailing slash slip past `W-HOME-PATH`, archive rewrites, and `upstream check`.** `paths::HOME_PATH` (`src/paths.rs:95-103`) requires a trailing `/` (`/(?:home|Users)/[A-Za-z0-9._-]+/`), missing bare `/home/<name>` at end-of-word/end-of-line as well as WSL `/mnt/c/Users/<name>`, Windows `C:\Users\<name>`, the Unix root home prefix (`"/" + "root/"`), case-insensitive `/users/<name>`, and JSON-escaped `\/home\/<name>`.
 
 **What this leaves alone.** Cross-repo ideas scanner (`2026-10-12-cross-repo-ideas-scanner-factory-ideas-json-plus-a.md`, explicitly out of scope per 2026-11-05 triage), changing `dist-workspace.toml` `install-path` away from `CARGO_HOME` (would break existing users' `PATH`), and changing `/harvest` inside the `factory` repo itself (filing a factory lesson locally inside the factory checkout stays direct via `factory docs idea add`).
 
@@ -128,7 +128,7 @@ Today the owner still dogfoods `factory` through developer shortcuts instead of 
 
 **Today.** `src/paths.rs:95-129` (`HOME_PATH`, `ANY_HOME_PATH`, `find_home_path`, `home_paths_to_tilde`) matches ONLY `/(?:home|Users)/[A-Za-z0-9._-]+/` (requiring a trailing `/`). As a result:
 - Bare `/home/<name>` followed by space, punctuation, quote, or end-of-line is NOT caught by `W-HOME-PATH` (`src/docs/check.rs:831`), NOT rewritten by `harvest --done` (`src/docs/ship.rs:172`), and NOT caught by `factory upstream check` (`src/upstream.rs:141`).
-- WSL `/mnt/<drive>/Users/<name>`, Windows `<drive>:\Users\<name>`, `/root/`, case-insensitive `/users/<name>`, and JSON-escaped `\/home\/<name>` are also missed.
+- WSL `/mnt/<drive>/Users/<name>`, Windows `<drive>:\Users\<name>`, the Unix root home prefix (`"/" + "root/"`), case-insensitive `/users/<name>`, and JSON-escaped `\/home\/<name>` are also missed.
 
 **Decided 2026-11-27.**
 
@@ -138,10 +138,10 @@ Today the owner still dogfoods `factory` through developer shortcuts instead of 
     1. Unix/macOS (case-insensitive `home`/`users`): `/(?:home|users)/[A-Za-z0-9._-]+/?` (bare `/home/` and `/Users` with no username stay non-hits).
     2. WSL (case-insensitive `users`): `/mnt/[A-Za-z]/users/[A-Za-z0-9._-]+/?`.
     3. Windows (case-insensitive `users`): `[A-Za-z]:\\users\\[A-Za-z0-9._-]+\\?`.
-    4. Root home (trailing slash required so bare `chroot /root` does not over-trigger): `/root/` (leading boundary already excludes `https://example.com/root/`).
+    4. Root home (trailing slash required so bare `chroot /root` does not over-trigger): literal leading slash + `root` + trailing slash (leading boundary already excludes `https://example.com/root/`).
     5. JSON-escaped Unix/macOS (case-insensitive `home`/`users`): `\\/(?:home|users)\\/[A-Za-z0-9._-]+(?:\\/)?`.
   - In `home_paths_to_tilde(text: &str) -> String`:
-    - Trailing `/` → `~/` (e.g. Unix/macOS/WSL `/home/<name>/file` → `~/file`, `/root/file` → `~/file`).
+    - Trailing `/` → `~/` (e.g. Unix/macOS/WSL `/home/<name>/file` → `~/file`, root home + `file` → `~/file`).
     - No trailing separator → `~` (preserving the trailing space/punctuation/EOL untouched!).
     - Trailing `\/` (JSON-escaped) → `~\/` (and no trailing `\/` → `~`).
     - Trailing `\` (Windows) → `~\` (and no trailing `\` → `~`).
@@ -149,7 +149,7 @@ Today the owner still dogfoods `factory` through developer shortcuts instead of 
 
 **Accepted cost.** Matching bare `/home/<name>` without a trailing slash means tracked docs in `docs/` must use placeholders like `/home/<name>` (not concrete usernames), which is intentional so real home paths never slip into archived docs or upstream issues.
 
-**Acceptance.** Unit & integration test `home_paths_catch_and_rewrite_no_trailing_slash_wsl_windows_root_and_json` proves: (1) `find_home_path` catches bare Unix home before space/EOL/quote, adjacent paths separated by a single space, lowercase `/users/<name>/...`, WSL `/mnt/c/Users/<name>/...`, Windows `C:\Users\<name>\...`, `/root/.bashrc`, and JSON-escaped `\/home\/<name>\/...`, while returning `None` for `/home/`, `/Users`, `/tmp/home/<name>/`, `~/home/<name>/`, and `https://example.com/root/a`; (2) `home_paths_to_tilde` rewrites all shapes accurately (including two adjacent bare home paths on one line separated by one space!); (3) `factory docs check` warns `W-HOME-PATH` on a fixture doc containing a bare Unix home path, `factory upstream check` rejects it, and `factory docs check` on this repo itself passes with 0 errors and 0 `W-HOME-PATH` warnings.
+**Acceptance.** Unit & integration test `home_paths_catch_and_rewrite_no_trailing_slash_wsl_windows_root_and_json` proves: (1) `find_home_path` catches bare Unix home before space/EOL/quote, adjacent paths separated by a single space, lowercase `/users/<name>/...`, WSL `/mnt/c/Users/<name>/...`, Windows `C:\Users\<name>\...`, Unix root home (`"/" + "root/.bashrc"`), and JSON-escaped `\/home\/<name>\/...`, while returning `None` for `/home/`, `/Users`, `/tmp/home/<name>/`, `~/home/<name>/`, and `https://example.com/root/a`; (2) `home_paths_to_tilde` rewrites all shapes accurately (including two adjacent bare home paths on one line separated by one space!); (3) `factory docs check` warns `W-HOME-PATH` on a fixture doc containing a bare Unix home path, `factory upstream check` rejects it, and `factory docs check` on this repo itself passes with 0 errors and 0 `W-HOME-PATH` warnings.
 
 ## 7. Decisions log
 
@@ -176,7 +176,16 @@ No `OPEN-n`. Every fork was settled on 2026-11-27:
 
 ## 9. Slices
 
-_(Not sliced yet. Run `/slice`.)_
+Four vertical slices, mapped one-to-one onto FR-1 through FR-4 with zero overlapping files between independent slices:
+
+- **Slice 01 (`slice-01-smart-upgrade-and-edge-workflow.md`)** — FR-1: receipt version check, receipt-less `factory upgrade` with `install_prefix_from_exe` (`/bin` strip), `--edge` prerelease opt-in, `.github/workflows/edge.yml`, and `CLAUDE.md`/`AGENTS.md`/`README.md` updates. Independent (`deps: —`).
+- **Slice 02 (`slice-02-home-paths-all-shapes.md`)** — FR-4: non-consuming boundary matching and rewriting in `src/paths.rs` for bare Unix/macOS, WSL, Windows, root home, case-insensitive, and JSON-escaped home paths, plus integration tests (`tests/home_paths.rs`). Independent (`deps: —`).
+- **Slice 03 (`slice-03-upstream-hardening-and-always-issue.md`)** — FR-2: `ci::gh_stdin` (ignoring `BrokenPipe`), host-qualified `github.com/emilianotisato/factory`, removing `[source]` local shortcut from `upstream post`, scanning all git remotes, name-side spelling variants + `--allow`, `--hash` check/post handshake, `skills/harvest/SKILL.md` updates, and `0.18.0` → `0.19.0` bump across crate/bundle/cockpit. Depends on Slice 02 so FR-4 home-path screening is live when `upstream check` tests run and `skills/harvest/SKILL.md:61` becomes true.
+- **Slice 04 (`slice-04-upstream-pull-triage.md`)** — FR-3: `factory upstream pull` (list, `--json`, `--idea`, `--fold`, `--drop --because`) using `ci::gh_stdin` and committing locally before commenting/closing on GitHub. Depends on Slice 03 (same files: `src/upstream.rs`, `src/cli/upstream.rs`, `tests/upstream_hardening.rs`).
+
+**Ordering & checkpoints.** Slices 01 and 02 build in parallel first, followed by **Checkpoint 1** (proving FR-1 and FR-4 before Slice 03 relies on FR-4). Slice 03 then lands upstream hardening + version bump, followed by Slice 04 (`upstream pull`) and **Checkpoint 2** (proving FR-2 and FR-3).
+
+**Workflow.** One feature branch (`feat/factory-as-a-consumer`), one PR, one commit per slice, Prove at the checkpoints. FR-1's post-merge observation of live `.github/workflows/edge.yml` is tracked in [`qa-guide.md`](qa-guide.md).
 
 ## 10. Non-goals
 
