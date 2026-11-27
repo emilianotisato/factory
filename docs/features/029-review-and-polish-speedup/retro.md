@@ -43,3 +43,31 @@ Written by `/deliver` in the closeout commit, from the agent's side of the run.
 ## Score
 
 4/5 — Feature delivered with strong test surface; polish caught real product gaps in parsing and settled-block shape. Lost a point to checkpoint/evidence friction and attended `reviewed_head` semantics left for a follow-up idea.
+
+## Numbers
+
+<!-- factory:numbers -->
+| role | workers | own | subagents | weighted | minutes | turns |
+|---|---:|---:|---:|---:|---:|---:|
+| build | 4 | 3326945 | — | 3326945 | 80 | — |
+| checkpoint | 3 | 784695 | — | 784695 | 11 | — |
+| polish | 1 | 342894 | — | 342894 | 5 | — |
+| total | 8 | 4454535 | — | 4454535 | 96 | — |
+
+Knobs: build cursor:composer-2.5 user/default · fix cursor:composer-2.5 user/default · checkpoint cursor:composer-2.5 user/default · polish cursor:composer-2.5 user/default · budget 30000000 default · lanes 4 · factory 0.18.0 · cursor 2026.11.22-e9042b2
+
+Hypothesis: none
+
+quality: gate_red 0 · worker_gate_red 0 · fix_commits 0 · ci_red_rounds 0 · ci_reruns 0 · findings high=1 medium=3 low=3 fixed=5 parked=2 · decisions 0 decide 0 blocks 1
+
+Pack (build): slice 10639 · prd_sections 9109 · log 1017 · outline 10727 · lookup 1115 · contract 3685 · autonomy 10282 · inner_loop 86 · total 46661 · start_context —
+
+Compared with:
+
+| run | feature | weighted | slices | per slice | lines changed | per line | comment share | id hits |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 029-20261127-4c0a (this run) | 029 | 4454535 | 4 | 1113634 | 2815 | 1582 | 1.0% | 2 |
+| 028-20261126-93f3 | 028 | 4190434 | 4 | 1047609 | 2374 | 1765 | 0.8% | 0 |
+| 022-20261126-a09f | 022 | 2872907 | 3 | 957636 | 2330 | 1233 | 0.3% | 0 |
+| 020-20261126-3c05 | 020 | 3192721 | 4 | 798180 | 3476 | 919 | 0.4% | 0 |
+<!-- /factory:numbers -->
