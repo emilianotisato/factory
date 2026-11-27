@@ -44,3 +44,32 @@ Written by `/deliver` in the closeout commit, from the agent's side of the run.
 ## Score
 
 4/5 — strong checkpoint catch and second opinion, but review duplicated work and two integration tests still weak on end-to-end stale-evidence and cap/rev evidence.
+
+## Numbers
+
+<!-- factory:numbers -->
+| role | workers | own | subagents | weighted | minutes | turns |
+|---|---:|---:|---:|---:|---:|---:|
+| build | 5 | 7963690 | — | 7963690 | 92 | — |
+| fix | 1 | 42915 | — | 42915 | 3 | — |
+| checkpoint | 1 | 350987 | — | 350987 | 4 | — |
+| polish | 1 | 908717 | — | 908717 | 10 | — |
+| total | 8 | 9266309 | — | 9266309 | 109 | — |
+
+Knobs: build cursor:composer-2.5 user/default · fix cursor:composer-2.5 user/default · checkpoint cursor:composer-2.5 user/default · polish cursor:composer-2.5 user/default · budget 30000000 default · lanes 4 · factory 0.18.0 · cursor 2026.11.22-e9042b2
+
+Hypothesis: none
+
+quality: gate_red 1 · worker_gate_red 0 · fix_commits 1 · ci_red_rounds 0 · ci_reruns 0 · findings high=0 medium=12 low=18 fixed=14 parked=2 · decisions 0 decide 0 blocks 0
+
+Pack (build): slice 9801 · prd_sections 4660 · log 53 · outline 10477 · lookup 1115 · contract 3685 · autonomy 10282 · inner_loop 86 · total 40159 · start_context —
+
+Compared with:
+
+| run | feature | weighted | slices | per slice | lines changed | per line | comment share | id hits |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 030-20261127-4dbf (this run) | 030 | 9266309 | 5 | 1853262 | 3582 | 2587 | 0.5% | 0 |
+| 029-20261127-4c0a | 029 | 4454535 | 4 | 1113634 | 2815 | 1582 | 1.0% | 2 |
+| 028-20261126-93f3 | 028 | 4190434 | 4 | 1047609 | 2374 | 1765 | 0.8% | 0 |
+| 022-20261126-a09f | 022 | 2872907 | 3 | 957636 | 2330 | 1233 | 0.3% | 0 |
+<!-- /factory:numbers -->
