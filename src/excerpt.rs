@@ -40,6 +40,8 @@ static GENERIC: LazyLock<Vec<Regex>> = LazyLock::new(|| {
 });
 static FAILED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bfailed\b").unwrap());
 static ZERO_FAILED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b0 failed\b").unwrap());
+static ZERO_JSON_FAILED: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#""failed"\s*:\s*0\b"#).unwrap());
 static EXIT: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"returned with error code|make(\[\d+\])?: \*\*\*.*Error").unwrap()
 });
@@ -143,7 +145,9 @@ pub fn excerpt(bytes: &[u8], project: &[Regex]) -> Vec<Line> {
 }
 
 fn generic(line: &str) -> bool {
-    GENERIC.iter().any(|r| r.is_match(line)) || FAILED.is_match(&ZERO_FAILED.replace_all(line, ""))
+    let stripped = ZERO_FAILED.replace_all(line, "");
+    let stripped = ZERO_JSON_FAILED.replace_all(&stripped, "");
+    GENERIC.iter().any(|r| r.is_match(line)) || FAILED.is_match(&stripped)
 }
 
 /// One line per `failures[]` entry of the JSON objects on `line`, or `None` when it carries none.
@@ -205,17 +209,18 @@ fn has_red(line: &str) -> bool {
             end += 1;
         }
         if end < b.len() && b[end] == b'm' {
-            let params: Vec<&str> = line[start..end].split([';', ':']).collect();
+            let items: Vec<&str> = line[start..end].split(';').collect();
             let mut k = 0;
-            while k < params.len() {
-                match params[k] {
+            while k < items.len() {
+                let item = items[k];
+                if item.starts_with("38:") || item.starts_with("48:") {
+                    k += 1;
+                    continue;
+                }
+                match item {
                     "31" | "91" => return true,
                     "38" | "48" => {
-                        k += if params.get(k + 1) == Some(&"5") {
-                            3
-                        } else {
-                            5
-                        }
+                        k += if items.get(k + 1) == Some(&"5") { 3 } else { 5 };
                     }
                     _ => k += 1,
                 }
@@ -452,5 +457,19 @@ mod tests {
         assert!(has_red("\x1b[1;91mx"));
         assert!(!has_red("\x1b[38;5;31mx"));
         assert!(!has_red("\x1b[32mx"));
+    }
+
+    #[test]
+    fn generic_ignores_json_failed_zero_and_colon_sgr_green() {
+        assert!(!generic(r#"{"result":"passed","failed":0}"#));
+        assert!(generic(r#"{"result":"failed","failed":2}"#));
+        assert!(!has_red("\x1b[38:2::0:0:31mgreenish\x1b[0m"));
+        assert!(!has_red("\x1b[38:2:0:0:0:31mgreenish\x1b[0m"));
+        assert!(has_red("\x1b[31merr\x1b[0m"));
+        assert!(has_red("\x1b[38;2;0;0;31;31merr\x1b[0m"));
+        assert_eq!(excerpt(br#"{"result":"passed","failed":0}"#, &[]), []);
+        assert_eq!(excerpt(b"\x1b[38:2::0:0:31mgreenish\x1b[0m", &[]), []);
+        assert!(!excerpt(b"\x1b[31merr\x1b[0m", &[]).is_empty());
+        assert!(!excerpt(b"\x1b[38;2;0;0;31;31merr\x1b[0m", &[]).is_empty());
     }
 }

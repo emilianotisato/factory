@@ -31,9 +31,35 @@ static RULES: LazyLock<Vec<(Regex, String)>> = LazyLock::new(|| {
             format!("${{1}}{m}\""),
         ),
         (
-            r#"(?i)\b(\w*(?:key|secret|token|password|pass))=(?:"[^"]*"|'[^']*'|[^\s"'&,;]+)"#,
+            r#"(?i)\b((?:[A-Za-z0-9]+_)*(?:key|secret|token|password|pass))=(?:"[^"]*"|'[^']*'|[^\s"'&,;]+)"#,
             format!("${{1}}={m}"),
         ),
+        (
+            r"(?i)([a-z][a-z0-9+.-]*://[^/\s:@]+:)[^@\s/]+(@)",
+            format!("${{1}}{m}${{2}}"),
+        ),
+        (
+            r"(?i)\b(authorization\s*:\s*(?:basic|token)\s+)\S+",
+            format!("${{1}}{m}"),
+        ),
+        (
+            r"(?i)\b(private-token\s*:\s*)\S+",
+            format!("${{1}}{m}"),
+        ),
+        (
+            r"(?i)\b((?:set-)?cookie\s*:\s*)[^\r\n;]+",
+            format!("${{1}}{m}"),
+        ),
+        (
+            r"(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)",
+            m.to_string(),
+        ),
+        (r"\bsk-proj-[A-Za-z0-9_-]+", format!("sk-proj-{m}")),
+        (r"\bglpat-[A-Za-z0-9_-]+", format!("glpat-{m}")),
+        (r"\bnpm_[A-Za-z0-9]+", format!("npm_{m}")),
+        (r"\bAIza[0-9A-Za-z_-]{20,}", format!("AIza{m}")),
+        (r"\bsk_(?:live|test)_[0-9A-Za-z]+", format!("sk_{m}")),
+        (r"\bxapp-[0-9A-Za-z-]+", format!("xapp-{m}")),
         (r"/[0-9A-Za-z]{41,}", format!("/{m}")),
     ]
     .into_iter()
@@ -41,34 +67,76 @@ static RULES: LazyLock<Vec<(Regex, String)>> = LazyLock::new(|| {
     .collect()
 });
 
+#[derive(Clone, Copy, Default)]
+struct WalkCtx {
+    evidence: bool,
+    checkpoints: bool,
+    files: bool,
+    attention: bool,
+}
+
+impl WalkCtx {
+    fn child(self, key: &str) -> Self {
+        let mut c = self;
+        match key {
+            "evidence" => {
+                c.evidence = true;
+                c.checkpoints = false;
+                c.files = false;
+            }
+            "checkpoints" if self.evidence => c.checkpoints = true,
+            "files" if self.evidence && self.checkpoints => c.files = true,
+            "attention" => c.attention = true,
+            _ => {}
+        }
+        c
+    }
+}
+
 /// Runs over the whole snapshot, before `rev` and the cap. The top-level `repo` keeps its stored path.
 pub fn all(v: &mut Value) {
     let home = paths::home();
     match v {
         Value::Object(o) => {
             for (k, x) in o.iter_mut() {
-                walk(x, &home, k != "repo");
+                walk(x, &home, k != "repo", WalkCtx::default().child(k), false);
             }
         }
-        v => walk(v, &home, true),
+        v => walk(v, &home, true, WalkCtx::default(), false),
     }
 }
 
-fn walk(v: &mut Value, home: &Path, tilde: bool) {
+fn walk(v: &mut Value, home: &Path, tilde: bool, ctx: WalkCtx, skip_tokens: bool) {
     match v {
         Value::String(s) => {
-            if let Cow::Owned(t) = string(s, home, tilde) {
+            if let Cow::Owned(t) = string(s, home, tilde, skip_tokens) {
                 *s = t;
             }
         }
-        Value::Array(a) => a.iter_mut().for_each(|x| walk(x, home, tilde)),
-        Value::Object(o) => o.values_mut().for_each(|x| walk(x, home, tilde)),
+        Value::Array(a) => {
+            for x in a.iter_mut() {
+                walk(x, home, tilde, ctx, false);
+            }
+        }
+        Value::Object(o) => {
+            for (k, x) in o.iter_mut() {
+                let child = ctx.child(k);
+                let skip = skip_tokens
+                    || (child.evidence && child.checkpoints && child.files && k == "path")
+                    || (child.attention && k == "answer");
+                walk(x, home, tilde, child, skip);
+            }
+        }
         _ => {}
     }
 }
 
-fn string<'a>(s: &'a str, home: &Path, tilde: bool) -> Cow<'a, str> {
-    let mut out = tokens(s);
+fn string<'a>(s: &'a str, home: &Path, tilde: bool, skip_tokens: bool) -> Cow<'a, str> {
+    let mut out = if skip_tokens {
+        Cow::Borrowed(s)
+    } else {
+        tokens(s)
+    };
     if tilde {
         let t = bare_home(&paths::home_to_tilde(&out, home), home);
         if t != out {
@@ -191,6 +259,7 @@ mod tests {
             "api_key",
             "Client_Secret",
             "token",
+            "my_secret",
         ] {
             assert_eq!(
                 r(&format!("run {name}=hunter2 now")),
@@ -206,6 +275,37 @@ mod tests {
             format!("https://x/cb?token={MARKER}&page=2")
         );
         assert_eq!(r("PATH=/usr/bin COLOR=1"), "PATH=/usr/bin COLOR=1");
+        assert_eq!(r("bypass=0"), "bypass=0");
+        assert_eq!(r("compass=north"), "compass=north");
+    }
+
+    #[test]
+    fn high_signal_url_auth_cookie_pem_and_vendor_prefixes() {
+        assert_eq!(
+            r("postgres://app:s3cr3t@db"),
+            format!("postgres://app:{MARKER}@db")
+        );
+        assert_eq!(
+            r("Authorization: Basic dXNlcjpwYXNz"),
+            format!("Authorization: Basic {MARKER}")
+        );
+        assert_eq!(
+            r("PRIVATE-TOKEN: glpat-123456"),
+            format!("PRIVATE-TOKEN: {MARKER}")
+        );
+        assert_eq!(r("Cookie: session=abc"), format!("Cookie: {MARKER}"));
+        let pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIE\n-----END RSA PRIVATE KEY-----";
+        assert_eq!(r(pem), MARKER);
+        for secret in [
+            "sk-proj-abc123",
+            "glpat-abcdef",
+            "npm_AbCdEf123",
+            "AIzaSyD123456789012345678901",
+            "sk_live_abc123",
+            "xapp-1-abc-def",
+        ] {
+            assert!(r(secret).contains(MARKER), "expected redaction of {secret}");
+        }
     }
 
     #[test]
@@ -257,7 +357,7 @@ mod tests {
         });
         if let Value::Object(o) = &mut v {
             for (k, x) in o.iter_mut() {
-                walk(x, home, k != "repo");
+                walk(x, home, k != "repo", WalkCtx::default(), false);
             }
         }
         assert_eq!(
@@ -267,6 +367,35 @@ mod tests {
                 "gate": {"tail": ["~/code/app/src failed", "/tmp/srv/me/x", "cd ~: denied", "/srv/meg"]},
                 "workers": [{"repo": "~/a"}],
             })
+        );
+    }
+
+    #[test]
+    fn evidence_path_and_attention_answer_skip_token_patterns() {
+        let seg = "a".repeat(45);
+        let path = format!("/tmp/{seg}/file.rs");
+        let mut v = json!({
+            "evidence": {
+                "checkpoints": [{
+                    "files": [{ "path": path }]
+                }]
+            },
+            "attention": [{
+                "answer": format!("/bin/run --path /{seg}")
+            }]
+        });
+        all(&mut v);
+        let kept_path = v["evidence"]["checkpoints"][0]["files"][0]["path"]
+            .as_str()
+            .unwrap();
+        assert!(
+            kept_path.contains(&seg),
+            "path must not be mangled by token rules: {kept_path}"
+        );
+        let kept_answer = v["attention"][0]["answer"].as_str().unwrap();
+        assert!(
+            kept_answer.contains(&seg),
+            "answer must stay runnable: {kept_answer}"
         );
     }
 }

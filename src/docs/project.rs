@@ -42,6 +42,7 @@ impl Project {
         self.gate_failure
             .iter()
             .filter_map(|p| regex::Regex::new(p).ok())
+            .filter(|re| !re.is_match(""))
             .collect()
     }
 }
@@ -259,6 +260,15 @@ mod tests {
         let pats = p.failure_patterns();
         assert_eq!(pats.len(), 1);
         assert!(pats[0].is_match("FAIL: x"));
+    }
+
+    #[test]
+    fn gate_failure_skips_patterns_that_match_the_empty_string() {
+        let d = repo("[docs]\nframework = 3\ngate_failure = [\"REJECTED\", \"^\", \"\"]\n");
+        let p = load(d.path()).unwrap().unwrap();
+        let pats = p.failure_patterns();
+        assert_eq!(pats.len(), 1);
+        assert!(pats[0].is_match("REJECTED x"));
     }
 
     #[test]
