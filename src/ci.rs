@@ -1,7 +1,8 @@
 //! Every `gh` call runs in the repo root: the test stub reads its scenario from the cwd.
 use std::collections::{BTreeSet, HashSet};
+use std::io::{ErrorKind, Write};
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Deserializer};
 
@@ -78,6 +79,35 @@ fn exec(repo: &Path, prog: &str, args: &[&str]) -> Result<Output> {
 
 pub fn gh(repo: &Path, args: &[&str]) -> Result<Output> {
     exec(repo, "gh", args)
+}
+
+fn exec_stdin(repo: &Path, prog: &str, args: &[&str], stdin_bytes: &[u8]) -> Result<Output> {
+    let mut child = Command::new(prog)
+        .args(args)
+        .current_dir(repo)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(io(format!("start {prog} {}", args.join(" "))))?;
+    if let Some(mut stdin) = child.stdin.take()
+        && let Err(e) = stdin.write_all(stdin_bytes)
+        && e.kind() != ErrorKind::BrokenPipe
+    {
+        return Err(io(format!("write stdin for {prog}"))(e));
+    }
+    let out = child
+        .wait_with_output()
+        .map_err(io(format!("wait on {prog} {}", args.join(" "))))?;
+    Ok(Output {
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        code: out.status.code().unwrap_or(-1),
+    })
+}
+
+pub fn gh_stdin(repo: &Path, args: &[&str], stdin_bytes: &[u8]) -> Result<Output> {
+    exec_stdin(repo, "gh", args, stdin_bytes)
 }
 
 pub fn git(repo: &Path, args: &[&str]) -> Result<Output> {
@@ -663,6 +693,16 @@ mod tests {
         assert_eq!(pr_number("https://github.com/o/r/pull/12"), "12");
         assert_eq!(pr_number("https://example.invalid/pr/1/"), "1");
         assert_eq!(pr_number("https://x/pr/abc"), "https://x/pr/abc");
+    }
+
+    #[test]
+    fn gh_stdin_ignores_broken_pipe_on_an_early_exit() {
+        use std::path::Path;
+        let payload = vec![b'x'; 256 * 1024];
+        let out = exec_stdin(Path::new("/"), "true", &[], &payload).unwrap();
+        assert!(out.ok());
+        let out = exec_stdin(Path::new("/"), "false", &[], &payload).unwrap();
+        assert!(!out.ok());
     }
 
     #[test]

@@ -5,8 +5,6 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use factory::cli::upgrade::INSTALLER;
-
 const BIN: &str = env!("CARGO_BIN_EXE_factory");
 const V: &str = env!("CARGO_PKG_VERSION");
 const LATEST: &str = "/api/v3/repos/emilianotisato/factory/releases/latest";
@@ -76,6 +74,101 @@ fn bin_dir() -> PathBuf {
         .to_path_buf()
 }
 
+fn write_receipt_with_version(env: &Env, install_prefix: &Path, version: &str) {
+    let receipt = serde_json::json!({
+        "install_prefix": install_prefix,
+        "binaries": ["factory"],
+        "source": {
+            "release_type": "github",
+            "owner": "emilianotisato",
+            "name": "factory",
+            "app_name": "factory",
+        },
+        "version": version,
+        "provider": { "source": "cargo-dist", "version": "0.32.0" },
+    });
+    fs::write(
+        env.dir.path().join("receipt/factory-receipt.json"),
+        receipt.to_string(),
+    )
+    .unwrap();
+}
+
+const RELEASES_LIST: &str = "/api/v3/repos/emilianotisato/factory/releases";
+
+fn releases_server_with_prerelease(stable_tag: &str, edge_tag: &str) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let url_base = base.clone();
+    let stable_tag = stable_tag.to_owned();
+    let edge_tag = edge_tag.to_owned();
+    let body = serde_json::json!([
+        {
+            "tag_name": &edge_tag,
+            "name": &edge_tag,
+            "url": format!("{base}/edge-release"),
+            "prerelease": true,
+            "assets": [{
+                "name": "factory-installer.sh",
+                "url": format!("{base}/edge-asset"),
+                "browser_download_url": format!("{base}/factory-installer-edge.sh"),
+            }],
+        },
+        {
+            "tag_name": &stable_tag,
+            "name": &stable_tag,
+            "url": format!("{base}/stable-release"),
+            "prerelease": false,
+            "assets": [{
+                "name": "factory-installer.sh",
+                "url": format!("{base}/stable-asset"),
+                "browser_download_url": format!("{base}/factory-installer.sh"),
+            }],
+        },
+    ])
+    .to_string();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut req = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => req.extend_from_slice(&buf[..n]),
+                }
+            }
+            let line = String::from_utf8_lossy(&req);
+            let path = line.split_whitespace().nth(1).unwrap_or("");
+            let (status, body_out): (&str, String) = if path.starts_with(LATEST) {
+                (
+                    "200 OK",
+                    serde_json::json!({
+                        "tag_name": stable_tag,
+                        "prerelease": false,
+                        "assets": [{
+                            "name": "factory-installer.sh",
+                            "url": format!("{url_base}/latest-asset"),
+                            "browser_download_url": format!("{url_base}/factory-installer.sh"),
+                        }],
+                    })
+                    .to_string(),
+                )
+            } else if path.starts_with(RELEASES_LIST) {
+                ("200 OK", body.clone())
+            } else {
+                ("404 Not Found", "{}".into())
+            };
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body_out}",
+                body_out.len()
+            );
+        }
+    });
+    base
+}
+
 fn release_server(tag: &str) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
@@ -134,14 +227,9 @@ fn no_receipt_prints_the_source_line_from_config() {
 #[test]
 fn no_receipt_and_no_source_prints_the_installer() {
     let env = Env::new();
-    for args in [&[][..], &["--check"][..]] {
-        let out = env.upgrade(args, None);
-        assert_eq!(out.status.code(), Some(0), "{args:?}");
-        assert_eq!(
-            stdout(&out),
-            format!("installed from source — {INSTALLER}\n")
-        );
-    }
+    let out = env.upgrade(&["--check"], Some(&release_server("v999.0.0")));
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(stdout(&out), format!("{V} → 999.0.0\n"));
 }
 
 #[test]
@@ -150,10 +238,7 @@ fn a_receipt_for_another_prefix_is_from_source() {
     env.receipt(Path::new("/nonexistent"));
     let out = env.upgrade(&["--check"], Some(&release_server("v999.0.0")));
     assert_eq!(out.status.code(), Some(0));
-    assert_eq!(
-        stdout(&out),
-        format!("installed from source — {INSTALLER}\n")
-    );
+    assert_eq!(stdout(&out), format!("{V} → 999.0.0\n"));
 }
 
 #[test]
@@ -184,4 +269,37 @@ fn check_on_the_latest_release_is_already_current() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(stdout(&out), "already current\n");
+}
+
+#[test]
+fn a_mismatched_version_receipt_with_source_stays_on_source() {
+    let env = Env::new();
+    env.config("[source]\npath = \"/src/factory\"\n");
+    write_receipt_with_version(&env, &bin_dir(), "0.0.0-old");
+    let out = env.upgrade(&["--check"], Some(&release_server("v999.0.0")));
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        stdout(&out),
+        "installed from source — cargo install --path /src/factory\n"
+    );
+}
+
+#[test]
+fn no_receipt_check_is_already_current_on_matching_release() {
+    let env = Env::new();
+    let out = env.upgrade(&["--check"], Some(&release_server(&format!("v{V}"))));
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(stdout(&out), "already current\n");
+}
+
+#[test]
+fn check_edge_sees_prerelease_while_plain_check_ignores_it() {
+    let env = Env::new();
+    let server = releases_server_with_prerelease(&format!("v{V}"), "v999.0.0-edge.42");
+    let plain = env.upgrade(&["--check"], Some(&server));
+    assert_eq!(plain.status.code(), Some(0));
+    assert_eq!(stdout(&plain), "already current\n");
+    let edge = env.upgrade(&["--check", "--edge"], Some(&server));
+    assert_eq!(edge.status.code(), Some(0));
+    assert_eq!(stdout(&edge), format!("{V} → 999.0.0-edge.42\n"));
 }

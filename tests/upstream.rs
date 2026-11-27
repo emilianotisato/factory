@@ -25,6 +25,32 @@ fn draft(fx: &Fixture, text: &str) -> PathBuf {
     p
 }
 
+fn upstream_with_args(fx: &Fixture, verb: &str, draft: &PathBuf, extra: &[&str]) -> Output {
+    fx.command(BIN)
+        .env_remove("FACTORY_BOARD")
+        .envs([
+            ("GIT_AUTHOR_NAME", "t"),
+            ("GIT_AUTHOR_EMAIL", "t@t"),
+            ("GIT_COMMITTER_NAME", "t"),
+            ("GIT_COMMITTER_EMAIL", "t@t"),
+        ])
+        .args(["upstream", verb])
+        .arg(draft)
+        .args(extra)
+        .output()
+        .unwrap()
+}
+
+fn draft_hash(fx: &Fixture, draft: &PathBuf) -> String {
+    let o = upstream(fx, "check", draft);
+    assert_eq!(o.status.code(), Some(0), "{}", stdout(&o));
+    stdout(&o)
+        .lines()
+        .find_map(|l| l.strip_prefix("hash: "))
+        .expect("hash line")
+        .to_string()
+}
+
 fn upstream(fx: &Fixture, verb: &str, draft: &PathBuf) -> Output {
     fx.command(BIN)
         .env_remove("FACTORY_BOARD")
@@ -122,7 +148,7 @@ fn a_failed_issue_search_is_one_line_and_not_a_hit() {
     let o = upstream(&fx, "check", &d);
     assert_eq!(o.status.code(), Some(0), "{}", stdout(&o));
     assert!(
-        stdout(&o).contains("issue search on emilianotisato/factory failed"),
+        stdout(&o).contains("issue search on github.com/emilianotisato/factory failed"),
         "{}",
         stdout(&o)
     );
@@ -132,7 +158,8 @@ fn a_failed_issue_search_is_one_line_and_not_a_hit() {
 fn post_without_a_source_checkout_opens_an_issue() {
     let fx = Fixture::new("upstream-issue");
     let d = draft(&fx, CLEAN);
-    let o = upstream(&fx, "post", &d);
+    let hash = draft_hash(&fx, &d);
+    let o = upstream_with_args(&fx, "post", &d, &["--hash", &hash]);
     assert_eq!(o.status.code(), Some(0), "{}", stdout(&o));
     let created: Vec<String> = fx
         .gh_log()
@@ -142,9 +169,14 @@ fn post_without_a_source_checkout_opens_an_issue() {
     assert_eq!(created.len(), 1, "{:?}", fx.gh_log());
     assert!(
         created[0].contains(
-            r#"issue create --repo emilianotisato/factory --title "The gate forgets its cache""#
+            r#"issue create --repo github.com/emilianotisato/factory --title "The gate forgets its cache""#
         ),
         "{created:?}"
+    );
+    assert!(created[0].contains("--body-file -"));
+    assert!(
+        !created[0].contains("A second run after a clean build"),
+        "body must not be on argv: {created:?}"
     );
 }
 
@@ -154,20 +186,16 @@ fn post_with_a_source_checkout_commits_one_idea_and_opens_no_issue() {
     let src = source_repo(&fx);
     let before = git_in(&fx, &src, &["rev-parse", "HEAD"]);
     let d = draft(&fx, CLEAN);
-    let o = upstream(&fx, "post", &d);
+    let hash = draft_hash(&fx, &d);
+    let o = upstream_with_args(&fx, "post", &d, &["--hash", &hash]);
     assert_eq!(o.status.code(), Some(0), "{}", stdout(&o));
-    let added = git_in(&fx, &src, &["diff", "--name-only", before.trim(), "HEAD"]);
-    let added: Vec<&str> = added.lines().collect();
-    assert_eq!(added.len(), 1, "{added:?}");
-    assert!(
-        added[0].starts_with("docs/ideas/") && added[0].ends_with("-the-gate-forgets-its-cache.md"),
-        "{added:?}"
+    assert_eq!(
+        git_in(&fx, &src, &["rev-parse", "HEAD"]).trim(),
+        before.trim(),
+        "source checkout must not get a commit"
     );
-    let idea = fs::read_to_string(src.join(added[0])).unwrap();
-    assert!(idea.contains("origin: \"factory upstream\""), "{idea}");
-    assert!(idea.contains("A second run after a clean build"), "{idea}");
     assert_eq!(git_in(&fx, &src, &["status", "--porcelain"]), "");
-    assert_eq!(calls(&fx, "issue create"), 0, "{:?}", fx.gh_log());
+    assert_eq!(calls(&fx, "issue create"), 1, "{:?}", fx.gh_log());
 }
 
 #[test]

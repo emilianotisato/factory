@@ -92,36 +92,110 @@ fn in_segment(b: u8) -> bool {
     b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'~')
 }
 
-static HOME_PATH: LazyLock<regex::bytes::Regex> = LazyLock::new(|| {
-    regex::bytes::Regex::new(r"(?:^|(?-u:[^A-Za-z0-9._~-]))(/(?:home|Users)/[A-Za-z0-9._-]+/)")
-        .expect("home path pattern compiles")
+static HOME_PREFIX: LazyLock<regex::bytes::Regex> = LazyLock::new(|| {
+    regex::bytes::Regex::new(
+        r"(?:/(?:home|Users)/[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*/?|(?i)/users/[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*/?|(?i)/mnt/[A-Za-z]/users/[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*/?|(?i)[A-Za-z]:\\users\\[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*\\?|/root/|\\/(?:home|users)\\/[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*(?:\\/)?)",
+    )
+    .expect("home path pattern compiles")
 });
 
-static ANY_HOME_PATH: LazyLock<regex::bytes::Regex> = LazyLock::new(|| {
-    regex::bytes::Regex::new(r"/(?:home|Users)/[A-Za-z0-9._-]+/")
-        .expect("home path pattern compiles")
-});
+/// REST path segments that look like `/users/<word>` but are not home directories.
+const USERS_ROUTE_SEGMENTS: &[&str] = &[
+    "create", "delete", "destroy", "edit", "index", "login", "logout", "me", "new", "password",
+    "register", "search", "show", "signin", "signup", "update",
+];
 
-/// Byte offset of the first `/home/<name>/` or `/Users/<name>/` that starts a path in `text`.
+fn first_path_segment(matched: &[u8]) -> Option<&[u8]> {
+    let rest = matched
+        .strip_prefix(b"/home/")
+        .or_else(|| matched.strip_prefix(b"/Home/"))
+        .or_else(|| matched.strip_prefix(b"/HOME/"))
+        .or_else(|| matched.strip_prefix(b"/Users/"))
+        .or_else(|| matched.strip_prefix(b"/users/"))
+        .or_else(|| matched.strip_prefix(b"/USERS/"))?;
+    let end = rest
+        .iter()
+        .position(|&b| b == b'/' || b == b'\\')
+        .unwrap_or(rest.len());
+    if end == 0 {
+        return None;
+    }
+    Some(&rest[..end])
+}
+
+fn segment_is_route_word(seg: &[u8]) -> bool {
+    let Ok(word) = std::str::from_utf8(seg) else {
+        return false;
+    };
+    USERS_ROUTE_SEGMENTS
+        .iter()
+        .any(|&w| w.eq_ignore_ascii_case(word))
+}
+
+fn leading_ok(text: &[u8], start: usize, binary: bool) -> bool {
+    binary || start == 0 || !in_segment(text[start - 1])
+}
+
+fn trailing_ok(text: &[u8], m: &regex::bytes::Match<'_>) -> bool {
+    let matched = &text[m.start()..m.end()];
+    if matched.ends_with(b"/") || matched.ends_with(b"\\") {
+        return true;
+    }
+    if m.end() == text.len() {
+        return true;
+    }
+    let next = text[m.end()];
+    if next == b'.' && (m.end() + 1 == text.len() || !in_segment(text[m.end() + 1])) {
+        return true;
+    }
+    !in_segment(next)
+}
+
+fn valid_home_match(text: &[u8], m: &regex::bytes::Match<'_>) -> bool {
+    if !leading_ok(text, m.start(), text.contains(&0)) || !trailing_ok(text, m) {
+        return false;
+    }
+    let matched = &text[m.start()..m.end()];
+    if matched.ends_with(b".") && !matched.ends_with(b"/.") && !matched.ends_with(b"\\.") {
+        return false;
+    }
+    if let Some(seg) = first_path_segment(matched)
+        && segment_is_route_word(seg)
+    {
+        return false;
+    }
+    true
+}
+
+/// Byte offset of the first home-path prefix that starts a path in `text`.
 /// In binary (a NUL byte), a length byte such as `E` can sit right before a path, so any hit counts.
 pub fn find_home_path(text: &[u8]) -> Option<usize> {
-    if text.contains(&0) {
-        return ANY_HOME_PATH.find(text).map(|m| m.start());
-    }
-    HOME_PATH
-        .captures(text)
-        .and_then(|c| c.get(1))
+    HOME_PREFIX
+        .find_iter(text)
+        .find(|m| valid_home_match(text, m))
         .map(|m| m.start())
 }
 
-/// `text` with every `/home/<name>/` and `/Users/<name>/` that starts a path written as `~/`, whoever's home it is.
+/// `text` with every home-path prefix that starts a path written as `~`, whoever's home it is.
 pub fn home_paths_to_tilde(text: &str) -> String {
+    let bytes = text.as_bytes();
     let mut out = String::with_capacity(text.len());
     let mut last = 0;
-    for c in HOME_PATH.captures_iter(text.as_bytes()) {
-        let m = c.get(1).expect("the pattern has one group");
+    for m in HOME_PREFIX.find_iter(bytes) {
+        if !valid_home_match(bytes, &m) {
+            continue;
+        }
         out.push_str(&text[last..m.start()]);
-        out.push_str("~/");
+        let matched = &bytes[m.start()..m.end()];
+        if matched.ends_with(b"\\/") {
+            out.push_str("~\\/");
+        } else if matched.ends_with(b"/") {
+            out.push_str("~/");
+        } else if matched.ends_with(b"\\") {
+            out.push_str("~\\");
+        } else {
+            out.push('~');
+        }
         last = m.end();
     }
     out.push_str(&text[last..]);
@@ -200,13 +274,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn rest_user_routes_and_sentence_periods_are_not_home_paths() {
+        assert_eq!(find_home_path(b"GET /users/create"), None);
+        assert_eq!(find_home_path(b"/users/me/edit"), None);
+        assert_eq!(home_paths_to_tilde("cwd was /home/jdoe."), "cwd was ~.");
+    }
+
+    #[test]
     fn a_home_path_is_found_only_where_a_path_starts() {
         assert_eq!(find_home_path(b"/home/x/a"), Some(0));
         assert_eq!(find_home_path(b"see /Users/ana.b/notes"), Some(4));
         assert_eq!(find_home_path(b"(`/home/x/`)"), Some(2));
         assert_eq!(find_home_path(b"line\n/home/x-1/"), Some(5));
         assert_eq!(find_home_path(b"/tmp/home/x/ and ~/home/y/"), None);
-        assert_eq!(find_home_path(b"/home/x and /home/ and /Users"), None);
+        assert_eq!(find_home_path(b"/home/x and /home/ and /Users"), Some(0));
+        assert_eq!(find_home_path(b"only /home/ and /Users"), None);
         assert_eq!(find_home_path(b"/tmp/home/x/ then /home/y/"), Some(18));
         assert_eq!(find_home_path(b"caf\xe9/home/x/a"), Some(4));
     }
@@ -250,5 +332,39 @@ mod tests {
             home_to_tilde("/home/x/a /tmp/b", Path::new("/")),
             "/home/x/a /tmp/b"
         );
+    }
+
+    #[test]
+    fn every_home_path_shape_matches_with_non_consuming_boundaries() {
+        assert_eq!(find_home_path(b"/home/x "), Some(0));
+        assert_eq!(find_home_path(b"see /users/ana "), Some(4));
+        assert_eq!(find_home_path(b"cd /home/a /home/b"), Some(3));
+        assert_eq!(find_home_path(b"/mnt/c/Users/jdoe/"), Some(0));
+        assert_eq!(find_home_path(br"C:\Users\jdoe\"), Some(0));
+        assert_eq!(find_home_path(b"/root/.bashrc"), Some(0));
+        assert_eq!(find_home_path(br#"path: "\/home\/x\/file""#), Some(7));
+        assert_eq!(find_home_path(b"/home/x"), Some(0));
+        assert_eq!(find_home_path(b"https://example.com/root/a"), None);
+        assert_eq!(find_home_path(b"chroot /root"), None);
+        assert_eq!(find_home_path(b"/tmp/home/x/"), None);
+        assert_eq!(find_home_path(b"~/home/x/"), None);
+    }
+
+    #[test]
+    fn adjacent_bare_home_paths_rewrite_without_consuming_the_space() {
+        assert_eq!(home_paths_to_tilde("cd /home/a /home/b"), "cd ~ ~");
+        assert_eq!(home_paths_to_tilde("/users/x /users/y"), "~ ~");
+        assert_eq!(home_paths_to_tilde(r#"\/home\/a \/home\/b"#), "~ ~");
+    }
+
+    #[test]
+    fn each_home_path_shape_rewrites_to_tilde() {
+        assert_eq!(home_paths_to_tilde("/home/x/a"), "~/a");
+        assert_eq!(home_paths_to_tilde("/users/x "), "~ ");
+        assert_eq!(home_paths_to_tilde("/mnt/c/users/x/d"), "~/d");
+        assert_eq!(home_paths_to_tilde(r"C:\users\x\d"), r"~\d");
+        assert_eq!(home_paths_to_tilde("/root/a"), "~/a");
+        assert_eq!(home_paths_to_tilde(r#"\/home\/x\/y"#), r#"~\/y"#);
+        assert_eq!(home_paths_to_tilde(r#"\/home\/x"#), "~");
     }
 }

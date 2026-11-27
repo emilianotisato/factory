@@ -70,3 +70,30 @@ fn the_readme_offers_the_installer_before_cargo_install() {
         .expect("the cargo install line");
     assert!(installer < cargo);
 }
+
+#[test]
+fn the_edge_workflow_builds_and_prunes_rolling_prereleases_on_main() {
+    let yml = read(".github/workflows/edge.yml");
+    assert!(yml.contains("branches:") && yml.contains("main"));
+    assert!(yml.contains("paths-ignore") && yml.contains("docs/**"));
+    assert!(yml.contains("fetch-depth: 0"));
+    assert!(yml.contains("refs/tags/v"));
+    assert!(yml.contains("Cargo.toml") && yml.contains("Cargo.lock"));
+    assert!(yml.contains("dist build"));
+    assert!(yml.contains("gh release create") && yml.contains("--prerelease"));
+    assert!(yml.contains("-edge.") && yml.contains("gh release delete"));
+    assert!(!yml.contains("sed -i "));
+    assert!(!yml.contains("pc-windows"));
+}
+
+#[test]
+fn docs_steer_upgrades_not_post_merge_cargo_install() {
+    for file in ["CLAUDE.md", "AGENTS.md"] {
+        let text = read(file);
+        assert!(text.contains("factory upgrade --edge"));
+        assert!(!text.contains("After a merge, run `cargo install --path . --locked`"));
+    }
+    let readme = read("README.md");
+    assert!(readme.contains("factory upgrade --edge"));
+    assert!(!readme.contains("takes the source build for a release install"));
+}
