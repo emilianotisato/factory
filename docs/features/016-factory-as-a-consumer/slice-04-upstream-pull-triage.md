@@ -3,7 +3,7 @@
 **Source**: [`prd.md`](prd.md) → §5 (FR-3). **Depends on**: Slice 03 (same files: `src/upstream.rs`, `src/cli/upstream.rs`, `tests/upstream_hardening.rs`, and reuses `ci::gh_stdin` and host-qualified `upstream::REPO`)
 **Created**: 2026-11-27
 
-**Progress**: `PulledIssue` + `list_open`/`view_issue`/`comment_issue`/`close_issue`; `UpstreamVerb::Pull` with list/`--json`/`--idea`/`--fold`/`--drop`; `upstream_pull_lists_and_triages_issues_to_idea_fold_and_drop`. Inner loop: 2 runs, 1 red, ~2 min — clippy `from_ref` for commit pathspecs. Deliberate red: dropped `createdAt` rename → unit test failed on `created_at` empty; dropped `#{}` list prefix → integration test failed on `#42` missing.
+**Progress**: `PulledIssue` + `list_open`/`view_issue`/`comment_issue`/`close_issue`; `UpstreamVerb::Pull` with list/`--json`/`--idea`/`--fold`/`--drop`; `upstream_pull_lists_and_triages_issues_to_idea_fold_and_drop`. Inner loop: 2 runs, 1 red, ~2 min — clippy `from_ref` for commit pathspecs. Deliberate red: dropped `createdAt` rename → unit test failed on `created_at` empty; dropped `#{}` list prefix → integration test failed on `#42` missing. cp-2/FR-3/upstream-pull.txt · cp-2/FR-4/home_paths.txt · cp-2/FR-4/docs-check.txt
 
 **Slice**: Adds `factory upstream pull` to list open upstream issues from `github.com/emilianotisato/factory` (human-readable or `--json`) and triage any issue into `docs/ideas/` via `--idea <n>`, `--fold <n> <idea_id>`, or `--drop <n> --because <reason>`, always committing local changes before posting the stdin-piped comment and closing the issue on GitHub.
 
