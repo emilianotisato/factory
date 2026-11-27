@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::process::Output;
 
 use factory::paths::{find_home_path, home_paths_to_tilde};
-use harness::{FEATURE_DIR, Fixture};
+use harness::Fixture;
 
 const BIN: &str = env!("CARGO_BIN_EXE_factory");
 
@@ -51,11 +51,16 @@ fn home_paths_catch_and_rewrite_no_trailing_slash_wsl_windows_root_and_json() {
     assert_eq!(home_paths_to_tilde(r#"\/home\/x \/home\/y"#), "~ ~");
 
     let fx = Fixture::new("home-paths-shapes");
-    let slice = format!("{FEATURE_DIR}/slice-01-a.md");
-    let mut body = fs::read_to_string(fx.path().join(&slice)).unwrap();
+    let slice_file = fx.slice_path(1);
+    let slice = slice_file
+        .strip_prefix(fx.path())
+        .unwrap()
+        .to_str()
+        .unwrap();
+    let mut body = fs::read_to_string(&slice_file).unwrap();
     body.push_str("\nrun from /home/x here\n");
     let line = body.lines().count();
-    fs::write(fx.path().join(&slice), &body).unwrap();
+    fs::write(&slice_file, &body).unwrap();
     fx.git(&["add", "-A"]);
     fx.git(&["commit", "-qm", "doc with bare home"]);
     let check = fx.docs_output(&["check"]);

@@ -1,4 +1,4 @@
-status = "ready"
+status = "in-progress"
 
 [slices.1]
 status = "done"
