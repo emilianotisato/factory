@@ -62,7 +62,10 @@ enum Verb {
         set: Option<String>,
     },
     /// Validate the board; exits 1 on any error
-    Check,
+    Check {
+        #[arg(value_name = "FEATURE")]
+        feature: Option<String>,
+    },
     /// Which framework version the repo is on, and what `check` would say
     Doctor,
     /// The feature's append-only log.jsonl
@@ -294,8 +297,11 @@ fn native(root: &Path, args: &[String], out: &mut dyn Write, err: &mut dyn Write
     };
     match cli.verb {
         Verb::Retro { feature, set } => retro(root, &feature, set.as_deref(), out, err),
-        Verb::Check => {
-            let report = check::run_on(root, board_tree(root).as_deref());
+        Verb::Check { feature } => {
+            let report = match feature.as_deref() {
+                Some(f) => check::run_feature_on(root, board_tree(root).as_deref(), f)?,
+                None => check::run_on(root, board_tree(root).as_deref()),
+            };
             if report.is_clean() {
                 print(out, "docs check: clean")?;
             } else {
@@ -382,7 +388,7 @@ fn dispatch(root: &Path, verb: Verb, out: &mut dyn Write, err: &mut dyn Write) -
         Verb::Status { feature, json } => status(root, feature.as_deref(), json, out),
         Verb::Set { feature, pairs } => set(root, &feature, &pairs, out),
         Verb::Retro { .. }
-        | Verb::Check
+        | Verb::Check { .. }
         | Verb::Doctor
         | Verb::Gate { .. }
         | Verb::Preflight { .. } => {

@@ -370,16 +370,19 @@ fn check_attr_src(
         return Ok(Vec::new());
     }
     let cmd = match source {
-        None => "git check-attr -z --stdin linguist-vendored linguist-generated".to_string(),
-        Some(rev) => {
-            format!("git check-attr --source {rev} -z --stdin linguist-vendored linguist-generated")
+        None => {
+            "git -c core.attributesFile= check-attr -z --stdin linguist-vendored linguist-generated"
+                .to_string()
         }
+        Some(rev) => format!(
+            "git -c core.attributesFile= check-attr --source {rev} -z --stdin linguist-vendored linguist-generated"
+        ),
     };
     let fail = |detail: String| Error::Tool {
         cmd: cmd.clone(),
         detail,
     };
-    let mut args = vec!["check-attr"];
+    let mut args = vec!["-c", "core.attributesFile=", "check-attr"];
     if let Some(rev) = source {
         args.extend(["--source", rev]);
     }
