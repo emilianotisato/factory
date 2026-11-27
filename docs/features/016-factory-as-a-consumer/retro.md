@@ -44,3 +44,31 @@ Written by `/deliver` in the closeout commit, from the agent's side of the run.
 ## Score
 
 3/5 — strong slice proof and review depth, but the highest-severity finding (edge macOS publish) could not land in-repo under unattended rules and needs owner action before merge confidence is complete.
+
+## Numbers
+
+<!-- factory:numbers -->
+| role | workers | own | subagents | weighted | minutes | turns |
+|---|---:|---:|---:|---:|---:|---:|
+| build | 4 | 2400553 | — | 2400553 | 30 | — |
+| checkpoint | 2 | 449555 | — | 449555 | 3 | — |
+| polish | 1 | 548966 | — | 548966 | 7 | — |
+| total | 7 | 3399075 | — | 3399075 | 39 | — |
+
+Knobs: build cursor:composer-2.5 user/default · fix cursor:composer-2.5 user/default · checkpoint cursor:composer-2.5 user/default · polish cursor:composer-2.5 user/default · budget 30000000 default · lanes 4 · factory 0.18.0 · cursor 2026.11.22-e9042b2
+
+Hypothesis: none
+
+quality: gate_red 0 · worker_gate_red 0 · fix_commits 0 · ci_red_rounds 0 · ci_reruns 0 · findings high=1 medium=7 low=11 fixed=6 parked=4 · decisions 1 decide 1 blocks 1
+
+Pack (build): slice 13056 · prd_sections 5221 · log 606 · outline 7575 · lookup 1115 · contract 3685 · autonomy 10282 · inner_loop 86 · total 41625 · start_context —
+
+Compared with:
+
+| run | feature | weighted | slices | per slice | lines changed | per line | comment share | id hits |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 016-20261127-dca0 (this run) | 016 | 3399075 | 4 | 849769 | 2670 | 1273 | 0.4% | 0 |
+| 030-20261127-4dbf | 030 | 9266309 | 5 | 1853262 | 3582 | 2587 | 0.5% | 0 |
+| 029-20261127-4c0a | 029 | 4454535 | 4 | 1113634 | 2815 | 1582 | 1.0% | 2 |
+| 028-20261126-93f3 | 028 | 4190434 | 4 | 1047609 | 2374 | 1765 | 0.8% | 0 |
+<!-- /factory:numbers -->
