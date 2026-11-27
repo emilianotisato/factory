@@ -3,7 +3,7 @@
 **Source**: [`prd.md`](prd.md) → §5 (FR-3b `state.toml` & `settled::last_reviewed`) and §6 (FR-4a/4b). **Depends on**: — _(independent of Slice 01 — touches completely disjoint files; lands before Slice 04)_
 **Created**: 2026-11-26
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**: `reviewed_head` in `state.toml` (clears with `reviewed=""`); `settled::last_reviewed` prefers it (`^reviewed =` git fallback); answered asks in `settled::decisions`; `factory review settled <NNN>`; `tests/settled_and_state.rs`. Inner loop: 2 runs, 1 red (stale `factory` bin in `out/` until `cargo build --bins` — review `no_feature_keeps_the_prompt_as_today` flaked once in parallel), ~4 min. Deliberate reds: `answered_asks_appear` failed without `Kind::Ask` filter; `reviewed_head_controls` failed when head lookup stubbed (got git commit sha instead).
 
 **Slice**: Adds optional `reviewed_head` to `state.toml` (cleared automatically when `reviewed` is cleared) and prefers it in `settled::last_reviewed` (with strict `^reviewed =` legacy fallback); includes answered `Kind::Ask` entries in `settled::decisions`; and exposes `factory review settled <NNN>` to print a feature's settled block directly on stdout.
 

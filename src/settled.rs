@@ -31,11 +31,15 @@ pub fn block(dir: &Path) -> Option<String> {
 /// is set: clearing it asks for the whole branch again.
 pub fn last_reviewed(checkout: &Path, feature: &str) -> Option<String> {
     let dir = retro::feature_dir(checkout, feature).ok()?;
-    state::read(&dir).ok()??.reviewed?;
+    let st = state::read(&dir).ok()??;
+    st.reviewed.as_ref()?;
+    if let Some(head) = st.reviewed_head.as_ref().filter(|h| !h.is_empty()) {
+        return Some(head.clone());
+    }
     let file = dir.join(state::FILE);
     let file = file.strip_prefix(checkout).unwrap_or(&file);
     let out = Command::new("git")
-        .args(["log", "-1", "--format=%H", "-G", "^reviewed", "--"])
+        .args(["log", "-1", "--format=%H", "-G", "^reviewed =", "--"])
         .arg(file)
         .current_dir(checkout)
         .stdin(Stdio::null())
@@ -59,35 +63,55 @@ fn decisions(dir: &Path) -> Vec<(String, String)> {
     entries
         .iter()
         .enumerate()
-        .filter(|(_, e)| e.kind == log::Kind::Decision)
+        .filter(|(_, e)| e.kind == log::Kind::Decision || e.kind == log::Kind::Ask)
         .filter_map(|(i, e)| {
             let id = e.id.clone()?;
             if overturned.get(&id).is_some_and(|&by| by > i) {
                 return None;
             }
-            let owner = entries.iter().rev().find(|r| {
-                r.kind == log::Kind::Review
-                    && r.reference.as_deref() == Some(id.as_str())
-                    && r.verdict == Some(log::Verdict::Changed)
-            });
-            let chose = match owner {
-                Some(r) => Some(match r.body.trim() {
-                    "" => "changed by the owner".to_string(),
-                    b => format!("changed by the owner — {b}"),
-                }),
-                None => e
-                    .body
-                    .lines()
-                    .find_map(|l| l.trim().strip_prefix("**Chose:**"))
-                    .map(str::trim)
-                    .filter(|c| !c.is_empty())
-                    .map(str::to_string),
-            };
-            let line = match chose {
-                Some(c) => format!("- {id} — {}: {c}", e.title.trim()),
-                None => format!("- {id} — {}", e.title.trim()),
-            };
-            Some((id, line))
+            match e.kind {
+                log::Kind::Decision => {
+                    let owner = entries.iter().rev().find(|r| {
+                        r.kind == log::Kind::Review
+                            && r.reference.as_deref() == Some(id.as_str())
+                            && r.verdict == Some(log::Verdict::Changed)
+                    });
+                    let chose = match owner {
+                        Some(r) => Some(match r.body.trim() {
+                            "" => "changed by the owner".to_string(),
+                            b => format!("changed by the owner — {b}"),
+                        }),
+                        None => e
+                            .body
+                            .lines()
+                            .find_map(|l| l.trim().strip_prefix("**Chose:**"))
+                            .map(str::trim)
+                            .filter(|c| !c.is_empty())
+                            .map(str::to_string),
+                    };
+                    let line = match chose {
+                        Some(c) => format!("- {id} — {}: {c}", e.title.trim()),
+                        None => format!("- {id} — {}", e.title.trim()),
+                    };
+                    Some((id, line))
+                }
+                log::Kind::Ask => {
+                    let r = entries.iter().rev().find(|r| {
+                        r.kind == log::Kind::Answer && r.reference.as_deref() == Some(id.as_str())
+                    })?;
+                    let line = if r.body.trim().is_empty() {
+                        format!("- {id} — {}: answered", e.title.trim())
+                    } else {
+                        format!(
+                            "- {id} — {}: answered — {}",
+                            e.title.trim(),
+                            r.body.trim().replace('\n', " ")
+                        )
+                    };
+                    Some((id, line))
+                }
+                _ => None,
+            }
         })
         .collect()
 }
@@ -197,6 +221,18 @@ mod tests {
         serde_json::to_string(&e).unwrap()
     }
 
+    fn ask(id: &str, title: &str) -> String {
+        let mut e = Entry::new(Kind::Ask, title, "");
+        e.id = Some(id.to_string());
+        serde_json::to_string(&e).unwrap()
+    }
+
+    fn answer(reference: &str, body: &str) -> String {
+        let mut e = Entry::new(Kind::Answer, "", body);
+        e.reference = Some(reference.to_string());
+        serde_json::to_string(&e).unwrap()
+    }
+
     fn feature(log: &[String], prd: Option<&str>) -> tempfile::TempDir {
         let tmp = tempfile::tempdir().unwrap();
         if !log.is_empty() {
@@ -264,6 +300,25 @@ mod tests {
             "{block}"
         );
         assert!(!block.contains("three retries"), "{block}");
+    }
+
+    #[test]
+    fn answered_asks_appear_and_unanswered_asks_are_omitted() {
+        let dir = feature(
+            &[
+                decision(&id(1), "Ship retries", "**Chose:** five"),
+                ask(&id(2), "Use Redis?"),
+                answer(&id(2), "yes, lane cache"),
+                ask(&id(3), "Open question"),
+            ],
+            None,
+        );
+        let block = block(dir.path()).unwrap();
+        assert!(
+            block.contains("- AD-2 — Use Redis?: answered — yes, lane cache"),
+            "{block}"
+        );
+        assert!(!block.contains("AD-3"), "{block}");
     }
 
     #[test]

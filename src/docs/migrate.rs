@@ -1201,6 +1201,7 @@ fn prd_md(
     let st = State {
         status,
         reviewed,
+        reviewed_head: None,
         shipped: None,
         slices: BTreeMap::new(),
     };
