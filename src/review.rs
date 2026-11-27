@@ -348,20 +348,44 @@ fn tool_written(path: &str) -> bool {
 }
 
 /// The paths among `paths` whose `linguist-vendored` or `linguist-generated` is set, read from the checkout.
-fn check_attr(root: &Path, paths: &[&str]) -> Result<Vec<(String, &'static str)>> {
-    let cmd = "git check-attr -z --stdin linguist-vendored linguist-generated".to_string();
+pub fn check_attr(root: &Path, paths: &[&str]) -> Result<Vec<(String, &'static str)>> {
+    check_attr_src(root, None, paths)
+}
+
+/// Like [`check_attr`], but reads attributes from a tree-ish instead of the working tree.
+pub fn check_attr_at(
+    root: &Path,
+    source: &str,
+    paths: &[&str],
+) -> Result<Vec<(String, &'static str)>> {
+    check_attr_src(root, Some(source), paths)
+}
+
+fn check_attr_src(
+    root: &Path,
+    source: Option<&str>,
+    paths: &[&str],
+) -> Result<Vec<(String, &'static str)>> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    let cmd = match source {
+        None => "git check-attr -z --stdin linguist-vendored linguist-generated".to_string(),
+        Some(rev) => {
+            format!("git check-attr --source {rev} -z --stdin linguist-vendored linguist-generated")
+        }
+    };
     let fail = |detail: String| Error::Tool {
         cmd: cmd.clone(),
         detail,
     };
+    let mut args = vec!["check-attr"];
+    if let Some(rev) = source {
+        args.extend(["--source", rev]);
+    }
+    args.extend(["-z", "--stdin", "linguist-vendored", "linguist-generated"]);
     let mut child = Command::new("git")
-        .args([
-            "check-attr",
-            "-z",
-            "--stdin",
-            "linguist-vendored",
-            "linguist-generated",
-        ])
+        .args(&args)
         .current_dir(root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -377,9 +401,14 @@ fn check_attr(root: &Path, paths: &[&str]) -> Result<Vec<(String, &'static str)>
         .map_err(|e| fail(format!("could not read git: {e}")))?;
     let written = writer.join().expect("the stdin writer does not panic");
     if !out.status.success() {
-        return Err(fail(
-            String::from_utf8_lossy(&out.stderr).trim().to_string(),
-        ));
+        let detail = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        if source.is_some()
+            && (detail.contains("unknown option `source`")
+                || detail.contains("unrecognized option: --source"))
+        {
+            return check_attr_src(root, None, paths);
+        }
+        return Err(fail(detail));
     }
     written.map_err(|e| fail(format!("could not write to git: {e}")))?;
     Ok(parse_check_attr(&String::from_utf8_lossy(&out.stdout)))
@@ -1831,6 +1860,28 @@ mod tests {
         ] {
             assert_eq!(tool_written(path), want, "{path}");
         }
+    }
+
+    #[test]
+    fn check_attr_at_reads_gitattributes_from_the_given_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
+        run_git(dir, &["init", "-q"]);
+        run_git(dir, &["config", "user.email", "t@t"]);
+        run_git(dir, &["config", "user.name", "t"]);
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(dir.join("src/a.js"), "x").unwrap();
+        run_git(dir, &["add", "src/a.js"]);
+        run_git(dir, &["commit", "-m", "base"]);
+        let base = run_git(dir, &["rev-parse", "HEAD"]).trim().to_string();
+        fs::write(dir.join(".gitattributes"), "src/a.js linguist-generated\n").unwrap();
+        run_git(dir, &["add", ".gitattributes"]);
+        run_git(dir, &["commit", "-m", "attrs"]);
+        assert!(check_attr_at(dir, &base, &["src/a.js"]).unwrap().is_empty());
+        assert_eq!(
+            check_attr(dir, &["src/a.js"]).unwrap(),
+            [("src/a.js".to_string(), "generated")]
+        );
     }
 
     #[test]

@@ -1,5 +1,5 @@
 //! Pre-existing test diffs against a run-start snapshot of authorized paths from the PRD.
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::Path;
 
 use regex::Regex;
@@ -147,6 +147,9 @@ fn parse_diff(repo: &Path, base_ref: &str, authorized: &[String], diff: &str) ->
                     continue;
                 }
             }
+            if enclosing.is_none() && is_additive_top_level_import(&path, &hunk) {
+                continue;
+            }
             push_violation(
                 &mut out,
                 &mut seen,
@@ -176,6 +179,291 @@ struct Hunk {
     old_start: usize,
     removed: usize,
     ctx: String,
+    removed_lines: Vec<String>,
+    added_lines: Vec<String>,
+}
+
+type RustImport = (String, String, String);
+type JsImport = (bool, String, String, String);
+
+fn is_additive_top_level_import(path: &str, hunk: &Hunk) -> bool {
+    let ext = path.rsplit('.').next().unwrap_or("");
+    match ext {
+        "rs" => {
+            let mut items = BTreeSet::new();
+            for line in &hunk.removed_lines {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let Some(parsed) = rust_use_items(line) else {
+                    return false;
+                };
+                items.extend(parsed);
+            }
+            if items.is_empty() {
+                return false;
+            }
+            for line in &hunk.added_lines {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                if rust_use_items(line).is_none() {
+                    return false;
+                }
+            }
+            let added = rust_use_from_lines(&hunk.added_lines);
+            items.is_subset(&added)
+        }
+        "ts" | "tsx" | "js" | "jsx" | "mjs" => {
+            let mut items = BTreeSet::new();
+            for line in &hunk.removed_lines {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let Some(parsed) = js_import_items(line) else {
+                    return false;
+                };
+                items.extend(parsed);
+            }
+            if items.is_empty() {
+                return false;
+            }
+            let added = js_import_from_lines(&hunk.added_lines);
+            if !hunk
+                .added_lines
+                .iter()
+                .all(|line| line.trim().is_empty() || js_import_items(line).is_some())
+            {
+                return false;
+            }
+            items.is_subset(&added)
+        }
+        _ => false,
+    }
+}
+
+fn rust_use_from_lines(lines: &[String]) -> BTreeSet<RustImport> {
+    let mut out = BTreeSet::new();
+    for line in lines {
+        if let Some(items) = rust_use_items(line) {
+            out.extend(items);
+        }
+    }
+    out
+}
+
+fn js_import_from_lines(lines: &[String]) -> BTreeSet<JsImport> {
+    let mut out = BTreeSet::new();
+    for line in lines {
+        if let Some(items) = js_import_items(line) {
+            out.extend(items);
+        }
+    }
+    out
+}
+
+fn rust_use_items(line: &str) -> Option<Vec<RustImport>> {
+    let line = line.trim();
+    let (vis, rest) = strip_rust_use_vis(line)?;
+    let rest = rest.strip_prefix("use")?.trim_start();
+    let rest = rest.strip_suffix(';')?.trim();
+    if rest.is_empty() {
+        return None;
+    }
+    let items = expand_rust_use(vis, rest);
+    if items.is_empty() { None } else { Some(items) }
+}
+
+fn strip_rust_use_vis(line: &str) -> Option<(&str, &str)> {
+    let line = line.trim();
+    if line.starts_with("pub(") {
+        let close = line.find(')')?;
+        let vis = &line[..=close];
+        Some((vis, line[close + 1..].trim_start()))
+    } else if line.starts_with("pub ") {
+        Some(("pub", line[3..].trim_start()))
+    } else {
+        Some(("", line))
+    }
+}
+
+fn expand_rust_use(vis: &str, rest: &str) -> Vec<RustImport> {
+    let vis = vis.to_string();
+    if let Some((prefix, brace)) = rest.split_once("::{") {
+        let prefix = prefix.trim();
+        let Some(inner) = brace.strip_suffix('}') else {
+            return Vec::new();
+        };
+        expand_rust_brace(&vis, prefix, inner.trim())
+    } else if let Some((full, local)) = rust_single_item(rest) {
+        vec![(vis, full, local)]
+    } else {
+        Vec::new()
+    }
+}
+
+fn expand_rust_brace(vis: &str, prefix: &str, inner: &str) -> Vec<RustImport> {
+    let mut out = Vec::new();
+    let parent = prefix.trim();
+    for part in split_brace_items(inner) {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        if part == "self" {
+            let local = parent.rsplit("::").next().unwrap_or(parent).to_string();
+            out.push((vis.to_string(), parent.to_string(), local));
+        } else if part.contains('{') {
+            let Some((sub, brace)) = part.split_once("::{") else {
+                continue;
+            };
+            let sub_prefix = if parent.is_empty() {
+                sub.trim().to_string()
+            } else {
+                format!("{}::{}", parent, sub.trim())
+            };
+            let inner = brace.strip_suffix('}').unwrap_or(brace);
+            out.extend(expand_rust_brace(vis, &sub_prefix, inner));
+        } else if let Some((tail, local)) = rust_brace_part(part, parent) {
+            out.push((vis.to_string(), tail, local));
+        }
+    }
+    out
+}
+
+fn split_brace_items(inner: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (i, c) in inner.char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                out.push(inner[start..i].to_string());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(inner[start..].to_string());
+    out
+}
+
+fn rust_brace_part(part: &str, parent: &str) -> Option<(String, String)> {
+    let part = part.trim();
+    let (path, local) = if let Some((p, alias)) = part.split_once(" as ") {
+        (p.trim(), alias.trim().to_string())
+    } else {
+        (part, part.to_string())
+    };
+    let full = if parent.is_empty() {
+        path.to_string()
+    } else {
+        format!("{}::{}", parent, path)
+    };
+    Some((full, local))
+}
+
+fn rust_single_item(rest: &str) -> Option<(String, String)> {
+    let rest = rest.trim();
+    if rest.ends_with("::*") {
+        let p = rest.strip_suffix("::*")?;
+        return Some((format!("{}::*", p), "*".to_string()));
+    }
+    let (path, local) = if let Some((p, alias)) = rest.rsplit_once(" as ") {
+        (p.trim(), alias.trim().to_string())
+    } else {
+        let local = rest.rsplit("::").next()?.to_string();
+        (rest, local)
+    };
+    Some((path.to_string(), local))
+}
+
+fn js_import_items(line: &str) -> Option<Vec<JsImport>> {
+    let line = line.trim();
+    let is_type = line.starts_with("import type ");
+    let rest = if is_type {
+        line.strip_prefix("import type ")?
+    } else if line.starts_with("import ") {
+        line.strip_prefix("import ")?
+    } else {
+        return None;
+    };
+    let rest = rest.trim().strip_suffix(';')?.trim();
+    let (clause, spec) = rest.rsplit_once(" from ")?;
+    let spec = js_module_spec(spec)?;
+    parse_js_clause(is_type, &spec, clause.trim())
+}
+
+fn js_module_spec(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    if raw.len() >= 2
+        && ((raw.starts_with('\'') && raw.ends_with('\''))
+            || (raw.starts_with('"') && raw.ends_with('"')))
+    {
+        Some(raw[1..raw.len() - 1].to_string())
+    } else {
+        None
+    }
+}
+
+fn parse_js_clause(is_type: bool, spec: &str, clause: &str) -> Option<Vec<JsImport>> {
+    let mut out = Vec::new();
+    if clause.starts_with('*') {
+        let rest = clause.strip_prefix('*')?.trim();
+        let local = rest.strip_prefix("as")?.trim();
+        out.push((
+            is_type,
+            spec.to_string(),
+            "*".to_string(),
+            local.to_string(),
+        ));
+        return Some(out);
+    }
+    let (default, named) = if clause.starts_with('{') {
+        (None, Some(clause))
+    } else if let Some((d, n)) = clause.split_once(',') {
+        let n = n.trim();
+        if n.starts_with('{') {
+            (Some(d.trim()), Some(n))
+        } else {
+            return None;
+        }
+    } else {
+        (Some(clause), None)
+    };
+    if let Some(d) = default
+        && !d.is_empty()
+    {
+        out.push((
+            is_type,
+            spec.to_string(),
+            "default".to_string(),
+            d.to_string(),
+        ));
+    }
+    if let Some(n) = named {
+        let inner = n.trim().strip_prefix('{')?.strip_suffix('}')?;
+        for part in split_brace_items(inner) {
+            let part = part.trim();
+            if part.is_empty() {
+                continue;
+            }
+            let (imported, local) = if let Some((i, alias)) = part.split_once(" as ") {
+                (i.trim(), alias.trim().to_string())
+            } else {
+                (part, part.to_string())
+            };
+            out.push((
+                is_type,
+                spec.to_string(),
+                imported.to_string(),
+                local.to_string(),
+            ));
+        }
+    }
+    if out.is_empty() { None } else { Some(out) }
 }
 
 fn split_diff_files(diff: &str) -> Vec<String> {
@@ -222,6 +510,8 @@ fn hunks_in_chunk(chunk: &str) -> Vec<Hunk> {
     let mut old_start = 0usize;
     let mut removed = 0usize;
     let mut ctx = String::new();
+    let mut removed_lines = Vec::new();
+    let mut added_lines = Vec::new();
     for line in chunk.lines() {
         if let Some(cap) = HUNK_HEAD.captures(line) {
             if in_hunk {
@@ -229,6 +519,8 @@ fn hunks_in_chunk(chunk: &str) -> Vec<Hunk> {
                     old_start,
                     removed,
                     ctx: ctx.trim().to_string(),
+                    removed_lines: std::mem::take(&mut removed_lines),
+                    added_lines: std::mem::take(&mut added_lines),
                 });
             }
             old_start = cap[1].parse().unwrap_or(1);
@@ -248,6 +540,9 @@ fn hunks_in_chunk(chunk: &str) -> Vec<Hunk> {
         }
         if line.starts_with('-') && !line.starts_with("---") {
             removed += 1;
+            removed_lines.push(line[1..].to_string());
+        } else if line.starts_with('+') && !line.starts_with("+++") {
+            added_lines.push(line[1..].to_string());
         }
     }
     if in_hunk {
@@ -255,6 +550,8 @@ fn hunks_in_chunk(chunk: &str) -> Vec<Hunk> {
             old_start,
             removed,
             ctx: ctx.trim().to_string(),
+            removed_lines,
+            added_lines,
         });
     }
     out
@@ -583,6 +880,101 @@ mod tests {
         .unwrap();
         sync_allow_answers(&mut run, &feature_dir).unwrap();
         assert!(run.state().authorized_tests.is_empty());
+    }
+
+    #[test]
+    fn subset_use_removal_violates() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        git(root, &["init", "-q", "-b", "main"]);
+        git(root, &["config", "user.name", "T"]);
+        git(root, &["config", "user.email", "t@example.invalid"]);
+        fs::create_dir_all(root.join("tests")).unwrap();
+        fs::write(
+            root.join("tests/sample.rs"),
+            "use foo::{a, b};\n\n#[test]\nfn existing_test() {\n    assert!(true);\n}\n",
+        )
+        .unwrap();
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-q", "-m", "both"]);
+        let mid = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        let mid = String::from_utf8_lossy(&mid.stdout).trim().to_string();
+        fs::write(
+            root.join("tests/sample.rs"),
+            "use foo::a;\n\n#[test]\nfn existing_test() {\n    assert!(true);\n}\n",
+        )
+        .unwrap();
+        git(root, &["add", "tests/sample.rs"]);
+        git(root, &["commit", "-q", "-m", "remove"]);
+        assert!(
+            !check(root, &mid, &[]).unwrap().is_empty(),
+            "{:?}",
+            check(root, &mid, &[]).unwrap()
+        );
+    }
+
+    #[test]
+    fn js_import_brace_merge_does_not_violate() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        git(root, &["init", "-q", "-b", "main"]);
+        git(root, &["config", "user.name", "T"]);
+        git(root, &["config", "user.email", "t@example.invalid"]);
+        fs::create_dir_all(root.join("tests")).unwrap();
+        fs::write(
+            root.join("tests/sample.test.ts"),
+            "import { a } from 'x';\n\ntest('x', () => {});\n",
+        )
+        .unwrap();
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-q", "-m", "base"]);
+        let base = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        let base = String::from_utf8_lossy(&base.stdout).trim().to_string();
+        fs::write(
+            root.join("tests/sample.test.ts"),
+            "import { a, b } from 'x';\n\ntest('x', () => {});\n",
+        )
+        .unwrap();
+        git(root, &["add", "tests/sample.test.ts"]);
+        git(root, &["commit", "-q", "-m", "merge"]);
+        assert!(
+            check(root, &base, &[]).unwrap().is_empty(),
+            "{:?}",
+            check(root, &base, &[]).unwrap()
+        );
+    }
+
+    #[test]
+    fn top_level_use_merge_does_not_violate() {
+        let (d, base) = repo_with_base_test();
+        let root = d.path();
+        fs::write(
+            root.join("tests/existing_test.rs"),
+            "use foo::a;\n\n#[test]\nfn sample_test() {\n    assert_eq!(1, 1);\n}\n",
+        )
+        .unwrap();
+        git(root, &["add", "tests/existing_test.rs"]);
+        git(root, &["commit", "-q", "-m", "imports"]);
+        fs::write(
+            root.join("tests/existing_test.rs"),
+            "use foo::{a, b};\n\n#[test]\nfn sample_test() {\n    assert_eq!(1, 1);\n}\n",
+        )
+        .unwrap();
+        git(root, &["add", "tests/existing_test.rs"]);
+        git(root, &["commit", "-q", "-m", "merge"]);
+        assert!(
+            check(root, &base, &[]).unwrap().is_empty(),
+            "{:?}",
+            check(root, &base, &[]).unwrap()
+        );
     }
 
     #[test]

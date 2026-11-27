@@ -257,16 +257,23 @@ fn read_project(root: &Path, r: &mut Report) -> Option<Option<Project>> {
                 "gate_failure" => match v {
                     T::Array(items) => {
                         for item in items {
-                            if let T::String(p) = item
-                                && let Err(e) = regex::Regex::new(p)
-                            {
-                                r.err(
-                                    "E-PROJECT-INVALID",
-                                    format!(
-                                        "docs/project.toml [docs] gate_failure {item} does not compile: {}",
-                                        e.to_string().replace('\n', " ")
+                            if let T::String(p) = item {
+                                match regex::Regex::new(p) {
+                                    Err(e) => r.err(
+                                        "E-PROJECT-INVALID",
+                                        format!(
+                                            "docs/project.toml [docs] gate_failure {item} does not compile: {}",
+                                            e.to_string().replace('\n', " ")
+                                        ),
                                     ),
-                                );
+                                    Ok(re) if re.is_match("") => r.err(
+                                        "E-PROJECT-INVALID",
+                                        format!(
+                                            "docs/project.toml [docs] gate_failure {item} matches the empty string"
+                                        ),
+                                    ),
+                                    Ok(_) => {}
+                                }
                             }
                         }
                         items.iter().all(|i| matches!(i, T::String(_)))
@@ -1392,6 +1399,28 @@ mod tests {
                 run(root).codes().contains(&"E-FM-INVALID"),
                 "expected invalid for {line}: {:?}",
                 run(root).lines()
+            );
+        }
+    }
+
+    #[test]
+    fn gate_failure_matching_empty_string_is_invalid() {
+        for pattern in ["^", ""] {
+            let d = tree();
+            append(
+                d.path(),
+                "docs/project.toml",
+                &format!("gate_failure = [{pattern:?}]\n"),
+            );
+            let r = run(d.path());
+            assert!(
+                r.errors.iter().any(|(c, m)| {
+                    c == "E-PROJECT-INVALID"
+                        && m.contains("gate_failure")
+                        && m.contains("matches the empty string")
+                }),
+                "{pattern}: {:?}",
+                r.lines()
             );
         }
     }

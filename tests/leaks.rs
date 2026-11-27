@@ -316,3 +316,47 @@ fn doctor_and_preflight_print_the_leaks_line_and_never_block_on_it() {
     assert!(out.contains(&format!("  ? leaks {line}\n")), "{out}");
     assert_eq!(code, clean_code, "{out}");
 }
+
+#[test]
+fn leaks_honors_base_gitattributes_and_blocks_branch_self_silencing() {
+    let fx = Fixture::new("leaks-gitattributes");
+    write(
+        &fx,
+        ".gitattributes",
+        "public/build/** linguist-generated\n",
+    );
+    write(&fx, "src/keep.rs", "pub fn keep() {}\n");
+    commit(&fx, "main: gitattributes");
+
+    fx.git(&["checkout", "-q", "-b", "feat/build"]);
+    write(
+        &fx,
+        "public/build/app.js",
+        "export const t = \"PRD-999\";\n",
+    );
+    commit(&fx, "generated only");
+    let (code, out) = leaks(&fx, &["--base", "main"]);
+    assert_eq!(code, Some(0), "{out}");
+    assert!(out.contains("skipped:\n"), "{out}");
+    assert!(out.contains("  public/build/app.js (generated)\n"), "{out}");
+    assert!(out.ends_with("clean\n"), "{out}");
+
+    write(&fx, "src/app.js", "export const t = \"PRD-999\";\n");
+    commit(&fx, "real hit too");
+    let (code, out) = leaks(&fx, &["--base", "main"]);
+    assert_eq!(code, Some(1), "{out}");
+    assert!(section(&out, "id-string").contains("  src/app.js"), "{out}");
+    assert!(out.contains("  public/build/app.js (generated)\n"), "{out}");
+    assert!(out.ends_with("1 fix hit\n"), "{out}");
+
+    let attrs = fs::read_to_string(fx.path().join(".gitattributes")).unwrap();
+    write(
+        &fx,
+        ".gitattributes",
+        &format!("{attrs}src/** linguist-generated\n"),
+    );
+    commit(&fx, "branch silencing attempt");
+    let (code, out) = leaks(&fx, &["--base", "main"]);
+    assert_eq!(code, Some(1), "{out}");
+    assert!(section(&out, "id-string").contains("  src/app.js"), "{out}");
+}

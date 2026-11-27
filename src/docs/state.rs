@@ -68,10 +68,11 @@ pub fn path(dir: &Path) -> PathBuf {
 
 pub fn read(dir: &Path) -> Result<Option<State>> {
     let p = path(dir);
-    let text = match fs::read_to_string(&p) {
-        Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(io(format!("read {}", p.display()))(e)),
+    if fs::symlink_metadata(&p).is_err() {
+        return Ok(None);
+    }
+    let Some(text) = super::board::read_regular_capped(&p, 256 * 1024) else {
+        return Ok(None);
     };
     parse(&text)
         .map(Some)

@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use crate::ctx::{def, outline, print, walk};
 use crate::docs::{Docs, Status, log};
 use crate::error::io;
+use crate::scheduler::pad_list;
 use crate::{Error, Result};
 
 pub const CONTRACT: &str = include_str!("../assets/contract-slice.md");
@@ -100,6 +101,37 @@ pub struct QaRow {
 pub struct Part {
     pub section: String,
     pub chars: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SentBack {
+    pub attempt: u32,
+    pub missing_slices: Vec<u32>,
+    pub unproven_rows: Vec<String>,
+    pub prior_record: Option<u32>,
+}
+
+fn sent_back_section(sb: &SentBack, n: u32) -> String {
+    let mut body = String::from("# Sent back\n\n");
+    if let Some(k) = sb.prior_record {
+        body.push_str(&format!("Prior record: `CP-{k}`.\n\n"));
+    }
+    if !sb.missing_slices.is_empty() {
+        body.push_str(&format!(
+            "Missing slices: {}.\n\n",
+            pad_list(&sb.missing_slices)
+        ));
+    }
+    if !sb.unproven_rows.is_empty() {
+        body.push_str(&format!(
+            "Previously unproven rows: {}.\n\n",
+            sb.unproven_rows.join(", ")
+        ));
+    }
+    body.push_str(&format!(
+        "Prior evidence in `cp-{n}/` was moved aside because the lane was reset; re-drive and save fresh evidence for EVERY row of checkpoint {n}."
+    ));
+    body
 }
 
 /// The joining blank line counts toward the section before it, so the parts sum to the text after the header.
@@ -434,6 +466,7 @@ impl Pack {
         leaks: &str,
         packs_dir: &Path,
         spawn: u32,
+        sent_back: Option<&SentBack>,
     ) -> Result<Pack> {
         let feature = format!("{:03}", board.number);
         let prd_rel = format!("{}/prd.md", board.dir);
@@ -484,31 +517,36 @@ impl Pack {
         files.push(prd_rel.clone());
         let (qa_text, rows) = handed_qa(repo, board, covers, &prd_text)?;
 
+        let mut sections = vec![
+            format!(
+                "# Gate transcript\n\n<!-- checkpoint {n}, {}: {} -->\n\n```\n{}\n```",
+                if cached { "cached green" } else { "green" },
+                gate_log.display(),
+                tail(&log_text, TAIL_LINES).trim_end()
+            ),
+            format!("# Leaks\n\n{}", leaks.trim_end()),
+            format!("# Covered slices\n\n{}", slices.trim_end()),
+            format!(
+                "# QA rows\n\n<!-- {prd_rel}: § QA plan -->\n\n{}{}",
+                if board.all_done {
+                    "Every slice is done, so this checkpoint is handed every row in the QA table, \
+                     not only the rows its covered slices name.\n\n"
+                } else {
+                    ""
+                },
+                qa_text.trim_end()
+            ),
+        ];
+        if let Some(sb) = sent_back {
+            sections.push(sent_back_section(sb, n));
+        }
+        sections.push(log_section(docs, board)?);
+        sections.push(format!("# Contract\n\n{}", contract.trim_end()));
+        sections.push(format!("# Autonomy\n\n{}", autonomy()));
+
         let (text, parts) = assemble(
             format!("<!-- factory-pack files: {} -->\n\n", files.join(",")),
-            vec![
-                format!(
-                    "# Gate transcript\n\n<!-- checkpoint {n}, {}: {} -->\n\n```\n{}\n```",
-                    if cached { "cached green" } else { "green" },
-                    gate_log.display(),
-                    tail(&log_text, TAIL_LINES).trim_end()
-                ),
-                format!("# Leaks\n\n{}", leaks.trim_end()),
-                format!("# Covered slices\n\n{}", slices.trim_end()),
-                format!(
-                    "# QA rows\n\n<!-- {prd_rel}: § QA plan -->\n\n{}{}",
-                    if board.all_done {
-                        "Every slice is done, so this checkpoint is handed every row in the QA table, \
-                         not only the rows its covered slices name.\n\n"
-                    } else {
-                        ""
-                    },
-                    qa_text.trim_end()
-                ),
-                log_section(docs, board)?,
-                format!("# Contract\n\n{}", contract.trim_end()),
-                format!("# Autonomy\n\n{}", autonomy()),
-            ],
+            sections,
         );
 
         fs::create_dir_all(packs_dir).map_err(io(format!("mkdir {}", packs_dir.display())))?;
@@ -1244,6 +1282,7 @@ mod tests {
             "clean\n",
             &repo.join("packs"),
             1,
+            None,
         )
         .unwrap();
         let text = section_text(&cp, "qa_rows");
@@ -1308,11 +1347,70 @@ mod tests {
             "clean\n",
             &packs,
             1,
+            None,
         )
         .unwrap();
         let text = fs::read_to_string(&cp.path).unwrap();
         assert!(text.contains("--slice 04 --covers 1,2,4 --title"), "{text}");
         assert!(text.contains("**Covers:** slices 01, 02, 04"), "{text}");
+    }
+
+    #[test]
+    fn sent_back_section_names_missing_slices_and_every_row() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        let dir = "docs/features/001-x";
+        fs::create_dir_all(repo.join(dir)).unwrap();
+        fs::write(repo.join("docs/project.toml"), "[docs]\nframework = 3\n").unwrap();
+        fs::write(repo.join(dir).join("prd.md"), "# PRD\n").unwrap();
+        let docs = Docs::open(repo).unwrap();
+        let board = Status {
+            number: 1,
+            dir: dir.to_string(),
+            ..Default::default()
+        };
+        let log = repo.join("gate.log");
+        fs::write(&log, "ok\n").unwrap();
+        let sb = SentBack {
+            attempt: 2,
+            missing_slices: vec![2],
+            unproven_rows: vec!["FR-1".into()],
+            prior_record: Some(1),
+        };
+        let cp = Pack::for_checkpoint(
+            &docs,
+            &board,
+            1,
+            &[1, 2],
+            &log,
+            false,
+            "clean\n",
+            &repo.join("packs"),
+            2,
+            Some(&sb),
+        )
+        .unwrap();
+        let text = fs::read_to_string(&cp.path).unwrap();
+        assert!(text.contains("# Sent back"), "{text}");
+        assert!(text.contains("Missing slices: 02"), "{text}");
+        assert!(text.contains("Previously unproven rows: FR-1"), "{text}");
+        assert!(
+            text.contains("re-drive and save fresh evidence for EVERY row of checkpoint 1"),
+            "{text}"
+        );
+        assert_eq!(
+            sections_of(&cp),
+            [
+                "gate_transcript",
+                "leaks",
+                "covered_slices",
+                "qa_rows",
+                "sent_back",
+                "log",
+                "contract",
+                "autonomy"
+            ]
+        );
     }
 
     #[test]
@@ -1481,8 +1579,19 @@ mod tests {
             sections_of(&fix),
             ["gate_failure", "log", "contract", "autonomy", "inner_loop"]
         );
-        let cp = Pack::for_checkpoint(&docs, &board, 1, &[1], &log, false, "clean\n", &packs, 1)
-            .unwrap();
+        let cp = Pack::for_checkpoint(
+            &docs,
+            &board,
+            1,
+            &[1],
+            &log,
+            false,
+            "clean\n",
+            &packs,
+            1,
+            None,
+        )
+        .unwrap();
         assert_eq!(
             sections_of(&cp),
             [
@@ -1708,8 +1817,19 @@ mod tests {
                 None,
             )
             .unwrap(),
-            Pack::for_checkpoint(&docs, &board, 1, &[1], &log, false, "clean\n", &packs, 1)
-                .unwrap(),
+            Pack::for_checkpoint(
+                &docs,
+                &board,
+                1,
+                &[1],
+                &log,
+                false,
+                "clean\n",
+                &packs,
+                1,
+                None,
+            )
+            .unwrap(),
             Pack::for_polish(
                 &docs,
                 &board,

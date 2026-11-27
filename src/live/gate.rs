@@ -12,6 +12,7 @@ use crate::clock;
 use crate::docs::project;
 use crate::events::{Event, EventKind};
 use crate::excerpt::{self, Line};
+use crate::run::Phase;
 
 /// The most of a log one read takes, from its end.
 pub const READ_MAX: u64 = 1024 * 1024;
@@ -184,19 +185,42 @@ pub fn ci(ctx: &Ctx) -> Value {
     if ctx.events.is_empty() && round.is_none() {
         return Value::Null;
     }
-    let state = ctx
+    let closeout = !ctx.state.phase.is_over() && ctx.state.phase == Phase::Closeout;
+    let (state, pending_wait) = ctx
         .events
         .iter()
         .rev()
         .find_map(|e| match e.kind {
-            EventKind::CiGreen { .. } => Some("green"),
-            EventKind::CiRed { .. } => Some("red"),
-            EventKind::CiWaiting { .. } => Some("waiting"),
-            EventKind::CiNoChecks { .. } => Some("noChecks"),
-            EventKind::CiLocal { .. } => Some("local"),
+            EventKind::PrOpened { .. }
+            | EventKind::CiFixCommitted { .. }
+            | EventKind::CiRerun { .. }
+                if closeout =>
+            {
+                Some(("waiting", true))
+            }
+            EventKind::CiGreen { .. } => Some(("green", false)),
+            EventKind::CiRed { .. } => Some(("red", false)),
+            EventKind::CiWaiting { .. } => Some(("waiting", false)),
+            EventKind::CiNoChecks { .. } => Some(("noChecks", false)),
+            EventKind::CiLocal { .. } => Some(("local", false)),
             _ => None,
         })
-        .unwrap_or("none");
+        .unwrap_or(("none", false));
+    if pending_wait {
+        let head = ctx.events.iter().rev().find_map(|e| match &e.kind {
+            EventKind::CiGreen { head }
+            | EventKind::CiRed { head, .. }
+            | EventKind::CiLocal { head } => Some(head.clone()),
+            _ => None,
+        });
+        return json!({
+            "state": "waiting",
+            "round": round,
+            "head": head,
+            "checks": [],
+            "excerpt": Value::Null,
+        });
+    }
     let head = ctx.events.iter().rev().find_map(|e| match &e.kind {
         EventKind::CiGreen { head }
         | EventKind::CiRed { head, .. }
@@ -258,5 +282,73 @@ mod tests {
         fs::write(d.path().join("real.log"), "FAIL x\n").unwrap();
         std::os::unix::fs::symlink(d.path().join("real.log"), d.path().join("link.log")).unwrap();
         assert!(read_log(&d.path().join("link.log")).is_none());
+    }
+
+    #[test]
+    fn ci_fix_after_red_in_closeout_is_waiting_without_stale_excerpt() {
+        use crate::events::{Event, EventKind};
+        use crate::live::Ctx;
+        use crate::run::{Phase, RunState};
+
+        let d = tempfile::tempdir().unwrap();
+        fs::create_dir_all(d.path().join("ci")).unwrap();
+        fs::write(d.path().join("ci/1.log"), "FAIL stale\n").unwrap();
+        let events = vec![
+            Event {
+                seq: 1,
+                ts: "t".into(),
+                kind: EventKind::CiRed {
+                    check: "test".into(),
+                    round: 0,
+                    head: "abc".into(),
+                },
+            },
+            Event {
+                seq: 2,
+                ts: "t".into(),
+                kind: EventKind::CiFixCommitted {
+                    round: 1,
+                    sha: "def".into(),
+                    files: vec![],
+                },
+            },
+        ];
+        let ctx = Ctx {
+            run_dir: d.path().to_path_buf(),
+            state: RunState {
+                id: serde_json::from_str(r#""001-20261107-aaaa""#).unwrap(),
+                repo: d.path().to_path_buf(),
+                feature: "001".into(),
+                branch: Some("feat".into()),
+                phase: Phase::Closeout,
+                pid: 0,
+                started_at: "t".into(),
+                updated_at: "t".into(),
+                budget_weighted_tokens: 1,
+                stop_requested: false,
+                stopped: false,
+                paused_until: None,
+                paused_guessed: false,
+                pr_url: Some("https://example.invalid/pr/1".into()),
+                workers: vec![],
+                lanes_set_up: vec![],
+                lane_bases: Default::default(),
+                pid_start: None,
+                worker_starts: Default::default(),
+                ci_mode: None,
+                review_override: None,
+                worker_config: None,
+                authorized_tests: vec![],
+                active_gate: None,
+            },
+            events,
+            skipped: vec![],
+            feature_dir: None,
+            now: 0,
+        };
+        let c = ci(&ctx);
+        assert_eq!(c["state"], "waiting");
+        assert_eq!(c["checks"], json!([]));
+        assert_eq!(c["excerpt"], Value::Null);
     }
 }

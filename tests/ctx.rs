@@ -868,3 +868,50 @@ test('{long_title}', function () {{}});
     assert!(long_line.chars().count() <= 220);
     assert!(long_line.ends_with('…') || long_line.contains('…'));
 }
+
+#[path = "harness/mod.rs"]
+mod harness;
+
+use harness::Fixture;
+
+#[test]
+fn ctx_refs_honors_gitattributes_generated_unless_vendor_flag_set() {
+    let fx = Fixture::new("ctx-gitattributes");
+    let root = fx.path();
+    let write = |rel: &str, text: &str| {
+        let p = root.join(rel);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, text).unwrap();
+    };
+    let commit = |msg: &str| {
+        fx.git(&["add", "-A"]);
+        fx.git(&["commit", "-q", "-m", msg]);
+    };
+    write(".gitattributes", "public/build/** linguist-generated\n");
+    write("src/live.js", "export const uniqueBundleSym = 1;\n");
+    write("public/build/app.js", "export const uniqueBundleSym = 2;\n");
+    commit("main");
+
+    let refs = |args: &[&str]| {
+        let out = fx
+            .command(BIN)
+            .arg("ctx")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .unwrap();
+        (
+            out.status.code().unwrap_or(-1),
+            String::from_utf8(out.stdout).unwrap(),
+        )
+    };
+
+    let (code, out) = refs(&["refs", "uniqueBundleSym"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(!out.contains("public/build/app.js"), "{out}");
+    assert!(out.contains("src/live.js"), "{out}");
+
+    let (code, out) = refs(&["refs", "--vendor", "uniqueBundleSym"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("public/build/app.js"), "{out}");
+}

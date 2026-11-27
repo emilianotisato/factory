@@ -19,6 +19,9 @@ const ANSWER: &str = "Pick the Recommended option";
 const PR_URL: &str = "https://example.invalid/pr/1";
 const BLOCK_LINE: &str =
     "BLOCK-1 slice 01: Which storage backs the fixture? (answer: factory answer BLOCK-1 \"...\")";
+const BLOCK_BODY: &str = "**Happened:** the stub worker on slice 01 reached a fork the slice does not settle.\n\
+**Options:** 1. the Recommended option; 2. the other one.\n\
+**Recommended:** 1 — it is the one the fixture expects.";
 
 fn factory(fx: &Fixture, args: &[&str]) -> Output {
     factory_in(fx, fx.path(), args)
@@ -289,6 +292,12 @@ fn status_json_carries_the_board_and_what_the_owner_owes() {
     wait_until(&fx, &dir, "the run to park", 60, || {
         state(&dir)["phase"] == "waiting-owner"
     });
+    wait_until(&fx, &dir, "block body in log", 30, || {
+        let st = state(&dir);
+        let log =
+            PathBuf::from(st["repo"].as_str().unwrap()).join("docs/features/001-fixture/log.jsonl");
+        fs::read_to_string(&log).is_ok_and(|t| t.contains("**Happened:**"))
+    });
 
     let plain = stdout(&factory(&fx, &["status", &id]));
     let v = status_json(&fx, fx.path(), &["status", &id, "--json"]);
@@ -327,6 +336,7 @@ fn status_json_carries_the_board_and_what_the_owner_owes() {
             "n": 1,
             "text": QUESTION,
             "answer": ["factory", "answer", "--feature", "001", "BLOCK-1"],
+            "body": BLOCK_BODY,
         }]),
         "{run}"
     );

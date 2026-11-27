@@ -1,4 +1,5 @@
 //! Test files are left out by default: they are the noisiest callers.
+use std::collections::HashSet;
 use std::path::Path;
 
 use super::def::{dedent, escape, indent, words};
@@ -46,9 +47,34 @@ struct InFile {
     first: Vec<Ref>,
 }
 
+fn repo_relative(file: &Path, repo_root: &Path) -> Option<String> {
+    let root = repo_root.canonicalize().ok()?;
+    let file = file.canonicalize().ok()?;
+    file.strip_prefix(&root)
+        .ok()
+        .map(|r| r.to_string_lossy().replace('\\', "/"))
+}
+
 pub fn find(base: &Path, root: &Path, name: &str, caps: Caps, opts: &WalkOpts) -> Result<Found> {
     let m = matcher(&whole_word(&escape(name)))?;
-    let walked = walk::walk(root, opts);
+    let mut walked = walk::walk(root, opts);
+    if !opts.vendor
+        && !walked.files.is_empty()
+        && let Ok(repo_root) = crate::paths::repo_root(root)
+    {
+        let rels: Vec<String> = walked
+            .files
+            .iter()
+            .filter_map(|(path, _)| repo_relative(path, &repo_root))
+            .collect();
+        let rel_refs: Vec<&str> = rels.iter().map(String::as_str).collect();
+        if let Ok(marked) = crate::review::check_attr(&repo_root, &rel_refs) {
+            let skip: HashSet<&str> = marked.iter().map(|(p, _)| p.as_str()).collect();
+            walked.files.retain(|(path, _)| {
+                repo_relative(path, &repo_root).is_none_or(|rel| !skip.contains(rel.as_str()))
+            });
+        }
+    }
     let (per_file, binary) = walk::scan(&walked.files, |path, lang, bytes| {
         let numbers = matching_lines(&m, bytes);
         if numbers.is_empty() {

@@ -218,6 +218,10 @@ pub struct Question {
     pub n: Option<u32>,
     pub text: String,
     pub answer: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
 }
 
 /// `answer` is the argv to run from the run's repo, every flag before the id so the text can follow it.
@@ -256,6 +260,10 @@ pub fn question(e: &Event, feature: &str, run: &str) -> Option<Question> {
     if number.is_empty() || !number.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
+    let phase = match &e.kind {
+        EventKind::CloseoutBlocked { phase, .. } => Some(phase.clone()),
+        _ => None,
+    };
     Some(Question {
         id: id.clone(),
         at,
@@ -264,6 +272,8 @@ pub fn question(e: &Event, feature: &str, run: &str) -> Option<Question> {
         answer: ["factory", "answer", flag, value, id]
             .map(str::to_string)
             .to_vec(),
+        phase,
+        body: None,
     })
 }
 
