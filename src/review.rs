@@ -1400,7 +1400,7 @@ fn body(o: &Outcome, timeout_secs: u64) -> (String, bool) {
 /// `what` names the diff, as `The diff of a.rs b.rs`, and `against` its range, as `against main`.
 pub fn diff_prompt(what: &str, against: &str, diff_file: &Path) -> String {
     format!(
-        "Adversarial code review. {what} {against} is in {}: read it, and read any file in the repository you need for context. Report only defects you can point to at file:line with a failure scenario; no praise, no style. Do not edit anything.",
+        "Adversarial code review. {what} {against} is in {}: read it, and read any file in the repository you need for context. Report only defects you can point to at file:line with a failure scenario; no praise, no style. Do not edit anything. End with a `### Summary` markdown table (`| file:line | severity | claim |`, severity `high`, `medium`, or `low`; omit the table if there are no defects).",
         diff_file.display()
     )
 }
