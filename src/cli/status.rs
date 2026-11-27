@@ -6,7 +6,7 @@ use clap::Args;
 use serde::Serialize;
 
 use crate::cockpit::{self, Question as QuestionJson, tokens};
-use crate::docs::{Docs, Status, frontmatter};
+use crate::docs::{Docs, Status, board, frontmatter};
 use crate::error::{io, json};
 use crate::events::{self, Event, EventKind};
 use crate::run::{Phase, Run, RunState};
@@ -197,6 +197,10 @@ fn run_json(run: &Run) -> Result<RunJson> {
         v.sort_by_key(|x| x.n);
         v
     });
+    let question_dir = Docs::open(&s.repo)
+        .ok()
+        .and_then(|d| d.dir(&s.feature).ok())
+        .or_else(|| folder.as_ref().map(|(_, dir)| dir.clone()));
     let now = clock::unix_now();
     Ok(RunJson {
         id: s.id.to_string(),
@@ -204,7 +208,7 @@ fn run_json(run: &Run) -> Result<RunJson> {
         phase: s.phase.as_str(),
         line: line_of(s, &events),
         owner: cockpit::owner(s, &events),
-        questions: questions(s, &events),
+        questions: questions(s, &events, question_dir.as_deref()),
         board: board(run)?.into_iter().take(10).collect(),
         repo: s.repo.display().to_string(),
         branch: s.branch.clone(),
@@ -232,10 +236,37 @@ fn run_json(run: &Run) -> Result<RunJson> {
     })
 }
 
-fn questions(s: &RunState, events: &[Event]) -> Vec<QuestionJson> {
+fn questions(s: &RunState, events: &[Event], feature_dir: Option<&Path>) -> Vec<QuestionJson> {
+    use std::collections::HashMap;
+    use std::fs;
+
+    use crate::docs::log;
+
+    let block_bodies: HashMap<String, String> = feature_dir
+        .filter(|dir| fs::symlink_metadata(log::path(dir)).is_ok_and(|m| m.file_type().is_file()))
+        .and_then(|dir| log::entries(dir).ok())
+        .map(|(entries, _)| {
+            entries
+                .into_iter()
+                .filter(|e| e.kind == log::Kind::Block)
+                .filter_map(|e| {
+                    let id = e.id?;
+                    let body = e.body.trim();
+                    (!body.is_empty()).then(|| (id, body.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     cockpit::questions(s, events)
         .into_iter()
-        .filter_map(|e| cockpit::question(e, &s.feature, s.id.as_str()))
+        .filter_map(|e| {
+            let mut q = cockpit::question(e, &s.feature, s.id.as_str())?;
+            if let Some(body) = block_bodies.get(&q.id) {
+                q.body = Some(body.clone());
+            }
+            Some(q)
+        })
         .collect()
 }
 
@@ -247,7 +278,7 @@ pub(crate) fn feature_folder(
 ) -> Option<(String, PathBuf)> {
     if let Some(b) = docs {
         let dir = repo.join(&b.dir);
-        if dir.is_dir() {
+        if std::fs::symlink_metadata(&dir).is_ok_and(|m| m.file_type().is_dir()) {
             return Some((b.slug.clone(), dir));
         }
     }
@@ -256,7 +287,7 @@ pub(crate) fn feature_folder(
         let found: Vec<(String, PathBuf)> = std::fs::read_dir(repo.join(sub))
             .ok()?
             .filter_map(|e| e.ok())
-            .filter(|e| e.path().is_dir())
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
             .filter_map(|e| {
                 let name = e.file_name().to_string_lossy().into_owned();
                 let slug = name.strip_prefix(&prefix)?.to_string();
@@ -270,7 +301,7 @@ pub(crate) fn feature_folder(
 }
 
 fn prd_title(dir: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(dir.join("prd.md")).ok()?;
+    let text = board::read_regular_capped(&dir.join("prd.md"), 256 * 1024)?;
     frontmatter::parse(&text).str("title").map(str::to_string)
 }
 
@@ -922,13 +953,25 @@ mod tests {
             answer: ["factory", "answer", flag, value, id]
                 .map(str::to_string)
                 .to_vec(),
+            phase: None,
+            body: None,
         };
         let feature = |id, at, n, text| q(id, at, n, text, "--feature", "007");
         assert_eq!(
-            questions(&state("waiting-owner"), &events),
+            questions(&state("waiting-owner"), &events, None),
             [
                 feature("BLOCK-3", "merge", None, "AD-1 twice; AD-2 twice"),
-                feature("BLOCK-4", "closeout", None, "No PR body"),
+                QuestionJson {
+                    id: "BLOCK-4".into(),
+                    at: "closeout",
+                    n: None,
+                    text: "No PR body".into(),
+                    answer: ["factory", "answer", "--feature", "007", "BLOCK-4",]
+                        .map(str::to_string)
+                        .to_vec(),
+                    phase: Some("pr".into()),
+                    body: None,
+                },
                 q(
                     "ASK-1",
                     "preflight",
@@ -942,14 +985,14 @@ mod tests {
             "the re-opened block moves to its latest opening and the answered one is gone"
         );
         assert_eq!(
-            questions(&state("building"), &events[..2]),
+            questions(&state("building"), &events[..2], None),
             [
                 feature("BLOCK-1", "slice", Some(2), "Which store?\nA or B"),
                 feature("BLOCK-2", "checkpoint", Some(1), "Gate red"),
             ],
             "the text is whole"
         );
-        assert_eq!(questions(&state("finished"), &events), []);
+        assert_eq!(questions(&state("finished"), &events, None), []);
         let crafted = ["--run=X-1", "BLOCK-", "BLOCK-1x", "ASK-1"].map(|id| {
             ev(
                 1,
@@ -962,12 +1005,12 @@ mod tests {
         });
         for e in &crafted {
             assert_eq!(
-                questions(&state("building"), std::slice::from_ref(e)),
+                questions(&state("building"), std::slice::from_ref(e), None),
                 [],
                 "an id the answer command cannot take as one never reaches its argv: {e:?}"
             );
         }
-        let json = serde_json::to_value(questions(&state("building"), &events[..1])).unwrap();
+        let json = serde_json::to_value(questions(&state("building"), &events[..1], None)).unwrap();
         assert_eq!(
             json,
             serde_json::json!([{

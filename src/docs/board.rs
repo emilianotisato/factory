@@ -1,6 +1,6 @@
 //! Computed from the folders, `project.toml` and each `state.toml`, never from `docs/index.md`.
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -165,6 +165,19 @@ pub fn board_dir(board: Option<&Path>, dir: &Path) -> PathBuf {
         .unwrap_or_else(|| dir.to_path_buf())
 }
 
+/// A regular file only: no symlink, FIFO, socket, or device; at most `max_bytes` of UTF-8.
+pub(crate) fn read_regular_capped(path: &Path, max_bytes: u64) -> Option<String> {
+    let meta = fs::symlink_metadata(path).ok()?;
+    if !meta.file_type().is_file() {
+        return None;
+    }
+    let file = fs::File::open(path).ok()?;
+    let mut limited = file.take(max_bytes);
+    let mut buf = Vec::new();
+    limited.read_to_end(&mut buf).ok()?;
+    String::from_utf8(buf).ok()
+}
+
 /// As `scan_folder`, reading each `state.toml` through `board_dir`.
 pub fn scan_folder_on(base: &Path, kind: Kind, board: Option<&Path>) -> Result<Vec<Feature>> {
     let Ok(rd) = fs::read_dir(base) else {
@@ -183,10 +196,8 @@ pub fn scan_folder_on(base: &Path, kind: Kind, board: Option<&Path>) -> Result<V
             continue;
         };
         let dir = base.join(&name);
-        let prd = match fs::read_to_string(dir.join("prd.md")) {
-            Ok(text) => Some((frontmatter::parse(&text), text)),
-            Err(_) => None,
-        };
+        let prd = read_regular_capped(&dir.join("prd.md"), 256 * 1024)
+            .map(|text| (frontmatter::parse(&text), text));
         let state = state::read(&board_dir(board, &dir)).map_err(|e| e.to_string());
         out.push(Feature {
             kind,

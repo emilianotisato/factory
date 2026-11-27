@@ -79,14 +79,24 @@ pub struct Paths {
     pub roots: Vec<std::path::PathBuf>,
 }
 
+fn push_root(roots: &mut Vec<std::path::PathBuf>, r: std::path::PathBuf) {
+    roots.push(r.clone());
+    if let Ok(c) = std::fs::canonicalize(&r)
+        && c != r
+    {
+        roots.push(c);
+    }
+}
+
 impl Paths {
     fn of(ctx: &Ctx, w: &WorkerRef) -> Paths {
         let mut roots = Vec::new();
         if let (Some(lane), Some(data_dir)) = (w.lane, ctx.run_dir.parent().and_then(Path::parent))
         {
-            roots.push(lanes::dir(data_dir, &ctx.state.repo, lane));
+            let r = lanes::dir(data_dir, &ctx.state.repo, lane);
+            push_root(&mut roots, r);
         }
-        roots.push(ctx.state.repo.clone());
+        push_root(&mut roots, ctx.state.repo.clone());
         Paths { roots }
     }
 
@@ -498,6 +508,28 @@ mod tests {
     fn the_budget_drops_the_line_it_cuts() {
         assert_eq!(lines_back(b"aaaa\nbb\ncc\n", 7), ["cc", "bb"]);
         assert_eq!(lines_back(b"aaaa\nbb\ncc\n", 5), ["cc"]);
+    }
+
+    #[test]
+    fn canonical_roots_match_symlinked_lane_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real-repo");
+        std::fs::create_dir_all(real.join("src")).unwrap();
+        let link = dir.path().join("repo-link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let lane = dir.path().join("lanes/lane-1");
+        std::fs::create_dir_all(&lane).unwrap();
+        let mut roots = Vec::new();
+        push_root(&mut roots, lane.clone());
+        push_root(&mut roots, link.clone());
+        let file = real.join("src/foo.rs");
+        std::fs::write(&file, "//\n").unwrap();
+        let paths = Paths { roots };
+        let canon = std::fs::canonicalize(&file).unwrap();
+        assert_eq!(
+            paths.relative(&canon.to_string_lossy()),
+            Some("src/foo.rs".into())
+        );
     }
 
     #[test]

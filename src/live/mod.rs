@@ -98,7 +98,7 @@ pub fn snapshot(ctx: &Ctx, opts: &Opts) -> Value {
         "repo": s.repo.display().to_string(),
         "branch": s.branch,
         "seq": ctx.events.last().map_or(0, |e| e.seq),
-        "rev": "",
+        "rev": "0000000000000000",
         "at": clock::rfc3339(ctx.now),
         "now": now::now(ctx),
         "attention": now::attention(ctx),
@@ -111,8 +111,8 @@ pub fn snapshot(ctx: &Ctx, opts: &Opts) -> Value {
         "truncated": [],
     });
     redact::all(&mut v);
+    cap(&mut v, opts.since.is_some());
     v["rev"] = Value::String(rev(&v));
-    cap(&mut v);
     v
 }
 
@@ -155,14 +155,14 @@ pub fn rev(v: &Value) -> String {
 }
 
 /// Drops evidence files from the oldest, then timeline events from the oldest, until the line fits.
-fn cap(v: &mut Value) {
+fn cap(v: &mut Value, drop_newest_timeline: bool) {
     let mut cut: Vec<&str> = Vec::new();
     let mut len = render(v).len();
     while len > CAP {
         let over = len - CAP;
         let section = if cut_evidence(v, over) {
             "evidence"
-        } else if cut_timeline(v, over) {
+        } else if cut_timeline(v, over, drop_newest_timeline) {
             "timeline"
         } else {
             break;
@@ -191,10 +191,19 @@ fn cut_evidence(v: &mut Value, over: usize) -> bool {
     freed > 0
 }
 
-fn cut_timeline(v: &mut Value, over: usize) -> bool {
+fn cut_timeline(v: &mut Value, over: usize, drop_newest: bool) -> bool {
     let Some(items) = v["timeline"].as_array_mut() else {
         return false;
     };
+    if drop_newest {
+        let before = items.len();
+        let mut freed = 0;
+        while freed < over && !items.is_empty() {
+            let item = items.pop().unwrap();
+            freed += item.to_string().len() + 1;
+        }
+        return items.len() < before;
+    }
     let mut freed = 0;
     let mut drop = 0;
     while freed < over && drop < items.len() {
@@ -285,7 +294,7 @@ mod tests {
         v["timeline"] = (1..=700)
             .map(|seq| json!({"seq": seq, "label": "t".repeat(1000)}))
             .collect();
-        cap(&mut v);
+        cap(&mut v, false);
         assert!(render(&v).len() <= CAP);
         assert_eq!(v["truncated"], json!(["evidence", "timeline"]));
         assert_eq!(v["evidence"]["checkpoints"], json!([]));
@@ -301,9 +310,21 @@ mod tests {
                 {"n": 1, "files": (300..600).map(file).collect::<Vec<_>>()},
             ]
         });
-        cap(&mut v);
+        cap(&mut v, false);
         assert_eq!(v["truncated"], json!(["evidence"]));
         let cps = v["evidence"]["checkpoints"].as_array().unwrap();
         assert_eq!(cps[0]["files"][0]["path"], "f0", "the newest file stays");
+    }
+
+    #[test]
+    fn since_cap_drops_newest_timeline_events_first() {
+        let mut v = bare();
+        v["timeline"] = (1..=50)
+            .map(|seq| json!({"seq": seq, "label": format!("t{seq}")}))
+            .collect();
+        let over = v["timeline"][40].to_string().len() + 1;
+        cut_timeline(&mut v, over, true);
+        assert_eq!(v["timeline"].as_array().unwrap().last().unwrap()["seq"], 49);
+        assert_eq!(v["timeline"][0]["seq"], 1);
     }
 }
