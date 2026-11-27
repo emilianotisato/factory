@@ -701,7 +701,9 @@ fn collect_owes_the_fallback_when_every_pass_timed_out() {
     let file = collected(&fx);
     let plan = part(&file, "Plan");
     assert!(
-        plan.contains("\nsecond opinion: fallback owed — unreviewed: no pass of 2 counted\n"),
+        plan.contains(
+            "\nsecond opinion: fallback owed — unreviewed: timeout (no pass of 2 counted)\n"
+        ),
         "{plan}"
     );
     let second = part(&file, "Second opinion");

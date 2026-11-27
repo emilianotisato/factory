@@ -6,8 +6,10 @@
 //! `verdict:` and, when the second opinion ran, its `exit:` are lines of their own, and each pass is a
 //! `### Pass n — … — counted` (or `— unreviewed`) heading above its findings. Files no reviewer reads are a
 //! `skipped:` block in the plan, before `size:`.
+use std::collections::HashSet;
 use std::io::Write;
 use std::path::Path;
+use std::process::Command;
 
 use crate::config::ResolvedReview;
 use crate::leaks::{self, Input};
@@ -228,6 +230,16 @@ fn head_line(head: &str) -> String {
     format!("<!-- head: {head} -->")
 }
 
+/// The commit sha from line 1 `<!-- head: <sha> -->` of a collect file.
+pub fn head_of(text: &str) -> Option<&str> {
+    let line = text.lines().next()?;
+    let sha = line
+        .strip_prefix("<!-- head: ")?
+        .strip_suffix(" -->")?
+        .trim();
+    (!sha.is_empty()).then_some(sha)
+}
+
 fn reviewer_line(cfg: &ResolvedReview) -> String {
     format!("<!-- reviewer: {} -->", reviewer_tag(cfg))
 }
@@ -327,8 +339,38 @@ pub fn collect(
     let cfg: ResolvedReview = cfg.into();
     let cfg = &cfg;
     let head = ci::head(root)?;
-    let range = opts.range();
-    let skip = review::skip(root, review::numstat(root, range, &[])?);
+    let (range, file_stats) = if let Some(since_sha) = opts.since {
+        let valid = Command::new("git")
+            .args([
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("{since_sha}^{{commit}}"),
+            ])
+            .current_dir(root)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if valid {
+            let range = Range::Since(since_sha);
+            let base_files: HashSet<String> = review::numstat(root, Range::Base(opts.base), &[])?
+                .into_iter()
+                .map(|(p, _)| p)
+                .collect();
+            let since_files = review::numstat(root, range, &[])?
+                .into_iter()
+                .filter(|(p, _)| base_files.contains(p))
+                .collect();
+            (range, since_files)
+        } else {
+            let range = Range::Base(opts.base);
+            (range, review::numstat(root, range, &[])?)
+        }
+    } else {
+        let range = opts.range();
+        (range, review::numstat(root, range, &[])?)
+    };
+    let skip = review::skip(root, file_stats);
     let files = &skip.kept;
     let lines: u64 = files.iter().map(|(_, n)| n).sum();
     let leaks = leaks_part(root, opts.base);
@@ -513,7 +555,13 @@ fn second_opinion(
         sections.push_str(&format!("\n### {header} — {mark}\n\n{text}"));
     }
     if counted == 0 {
-        let reason = format!("no pass of {} counted", passes.len());
+        let reason = match review::classify_failure(&ran) {
+            Some(cause) => format!("{cause} (no pass of {} counted)", passes.len()),
+            None => match review::first_failure_detail(&ran) {
+                Some(detail) => format!("no pass of {} counted: {detail}", passes.len()),
+                None => format!("no pass of {} counted", passes.len()),
+            },
+        };
         return unreviewed(&reason, Some(&dir), &sections);
     }
     claims.sort_by(|a, b| {
@@ -594,6 +642,14 @@ mod tests {
         assert_eq!(claims.len(), 1);
         assert_eq!(claims[0].severity, Severity::Medium);
         assert_eq!(claims[0].summary, "medium one");
+    }
+
+    #[test]
+    fn head_of_reads_the_collect_head_comment() {
+        let text = "<!-- head: deadbeef -->\n<!-- reviewer: cursor:grok -->\n";
+        assert_eq!(head_of(text), Some("deadbeef"));
+        assert_eq!(head_of("<!-- head:  -->\n"), None);
+        assert_eq!(head_of(""), None);
     }
 
     #[test]

@@ -1070,6 +1070,15 @@ fn ship(
     if let Some(o) = branch_guard(run, docs, &feature_dir, "polish", "ship", out)? {
         return Ok(Some(o));
     }
+    if let Ok(text) = fs::read_to_string(run.dir().join(COLLECT_FILE))
+        && let Some(head) = collect::head_of(&text)
+        && crate::docs::state::read(&feature_dir)
+            .ok()
+            .flatten()
+            .is_some_and(|s| s.reviewed.is_some())
+    {
+        let _ = docs.set(&feature, &[("reviewed_head", head)]);
+    }
     let shipped = match docs.ship(&feature)? {
         Ship::Done(stdout) => stdout,
         Ship::Refused(text) => {

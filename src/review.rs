@@ -617,6 +617,124 @@ pub fn login_hint(cfg: &ResolvedReview) -> String {
     format!("{} {rest}", binary(cfg, p).1)
 }
 
+fn classify_error_text(text: &str) -> Option<&'static str> {
+    let lower = text.to_ascii_lowercase();
+    const USAGE: &[&str] = &[
+        "usage limit",
+        "rate limit",
+        "quota",
+        "too many requests",
+        "429",
+        "out of credits",
+        "credit balance",
+    ];
+    const AUTH: &[&str] = &[
+        "authentication required",
+        "not logged in",
+        "unauthorized",
+        "invalid api key",
+        "login",
+        "401",
+        "403",
+    ];
+    const MODEL: &[&str] = &[
+        "model not found",
+        "no such model",
+        "unknown model",
+        "invalid model",
+        "not in --list-models",
+    ];
+    if USAGE.iter().any(|m| lower.contains(m)) {
+        return Some("usage limit");
+    }
+    if AUTH.iter().any(|m| lower.contains(m)) {
+        return Some("auth");
+    }
+    if MODEL.iter().any(|m| lower.contains(m)) {
+        return Some("no such model");
+    }
+    None
+}
+
+const FAILURE_CAUSES: &[&str] = &["usage limit", "auth", "no such model", "timeout", "stopped"];
+
+fn pick_cause(best: Option<&'static str>, next: Option<&'static str>) -> Option<&'static str> {
+    let Some(next) = next else {
+        return best;
+    };
+    let rank = |c: &str| {
+        FAILURE_CAUSES
+            .iter()
+            .position(|&x| x == c)
+            .unwrap_or(usize::MAX)
+    };
+    match best {
+        None => Some(next),
+        Some(b) if rank(next) < rank(b) => Some(next),
+        Some(b) => Some(b),
+    }
+}
+
+fn failed_outcome_cause(o: &Outcome) -> Option<&'static str> {
+    if let Some(c) = o.parsed.error.as_deref().and_then(classify_error_text) {
+        return Some(c);
+    }
+    if let Some(c) = classify_error_text(&o.stderr) {
+        return Some(c);
+    }
+    match o.ended {
+        Ended::Killed => Some("timeout"),
+        Ended::Stopped => Some("stopped"),
+        _ => None,
+    }
+}
+
+/// Highest-priority cause across failed passes: usage limit > auth > no such model > timeout > stopped.
+pub fn classify_failure(ran: &[Ran]) -> Option<&'static str> {
+    let mut best = None;
+    for r in ran {
+        let cause = match &r.outcome {
+            Err(e) => classify_error_text(&e.to_string()),
+            Ok(o) if !body(o, 0).1 => failed_outcome_cause(o),
+            _ => None,
+        };
+        best = pick_cause(best, cause);
+    }
+    best
+}
+
+/// First stderr or error line from a failed pass, trimmed and truncated for an unclassified fallback.
+pub fn first_failure_detail(ran: &[Ran]) -> Option<String> {
+    for r in ran {
+        let raw = match &r.outcome {
+            Err(e) => Some(e.to_string()),
+            Ok(o) if !body(o, 0).1 => o
+                .parsed
+                .error
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .map(str::to_string)
+                .or_else(|| {
+                    o.stderr
+                        .lines()
+                        .map(str::trim)
+                        .find(|l| !l.is_empty())
+                        .map(str::to_string)
+                }),
+            _ => None,
+        };
+        let Some(mut s) = raw.filter(|t| !t.trim().is_empty()) else {
+            continue;
+        };
+        let n: usize = 120;
+        if s.chars().count() > n {
+            s = s.chars().take(n).collect();
+        }
+        return Some(s);
+    }
+    None
+}
+
 /// `cancel` firing ends the probe as unreviewed, so a stop never waits on a hung agent.
 pub fn probe(cfg: &Review, dir: &Path, cancel: Cancel) -> std::result::Result<(), String> {
     probe_resolved(&cfg.into(), dir, cancel)
@@ -675,14 +793,27 @@ pub fn probe_resolved(
     match ended {
         Ended::Stopped => Err("stopped".to_string()),
         Ended::Killed => Err(format!("{what} timed out after {secs} s")),
-        Ended::Exited(code) if code != Some(0) => Err(format!(
-            "{what} exited {}: {first}",
-            code.map_or("on a signal".to_string(), |c| c.to_string())
-        )),
-        _ if p == Provider::Cursor
-            && (text.contains("login") || text.contains("Authentication required")) =>
-        {
-            Err(first)
+        Ended::Exited(code) if code != Some(0) => {
+            if classify_error_text(&text) == Some("usage limit") {
+                Err(format!("usage limit: {first}"))
+            } else {
+                Err(format!(
+                    "{what} exited {}: {first}",
+                    code.map_or("on a signal".to_string(), |c| c.to_string())
+                ))
+            }
+        }
+        _ if p == Provider::Cursor => {
+            let lower = text.to_ascii_lowercase();
+            if lower.contains("hit your usage limit") || lower.contains("usage limit reached") {
+                Err(format!("usage limit: {first}"))
+            } else if text.contains("login") || text.contains("Authentication required") {
+                Err(first)
+            } else if lists && !lists_model(&text, &cfg.model) {
+                Err(format!("model {} not in --list-models", cfg.model))
+            } else {
+                Ok(())
+            }
         }
         _ if lists && !lists_model(&text, &cfg.model) => Err(if p == Provider::Cursor {
             format!("model {} not in --list-models", cfg.model)
@@ -1815,6 +1946,47 @@ mod tests {
         for text in ["grok-4.7-high-max", "xgrok-4.7-high", "grok-4.7", ""] {
             assert!(!lists_model(text, "grok-4.7-high"), "{text}");
         }
+        let listing =
+            "Available models\n\nmodel-429-quota - Quota line\ngrok-4.7-high - Grok 4.7 High";
+        assert!(lists_model(listing, "grok-4.7-high"), "{listing}");
+        assert!(lists_model(listing, "model-429-quota"), "{listing}");
+    }
+
+    #[test]
+    fn classify_failure_picks_the_highest_priority_cause() {
+        let failed = |stderr: &str, ended: Ended| Ran {
+            outcome: Ok(outcome(ended, &[], stderr)),
+            elapsed: Duration::ZERO,
+        };
+        assert_eq!(
+            classify_failure(&[failed("", Ended::Killed)]),
+            Some("timeout")
+        );
+        assert_eq!(
+            classify_failure(&[failed("", Ended::Stopped)]),
+            Some("stopped")
+        );
+        assert_eq!(
+            classify_failure(&[
+                failed("model not found", Ended::Exited(Some(1))),
+                failed("", Ended::Killed),
+            ]),
+            Some("no such model")
+        );
+        assert_eq!(
+            classify_failure(&[
+                failed("invalid api key", Ended::Exited(Some(1))),
+                failed("unknown model", Ended::Exited(Some(1))),
+            ]),
+            Some("auth")
+        );
+        assert_eq!(
+            classify_failure(&[
+                failed("You've hit your usage limit", Ended::Exited(Some(1))),
+                failed("Authentication required", Ended::Exited(Some(1))),
+            ]),
+            Some("usage limit")
+        );
     }
 
     fn run_git(dir: &Path, args: &[&str]) -> String {
