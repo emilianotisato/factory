@@ -3,7 +3,7 @@
 **Source**: [`prd.md`](prd.md) → §3 (FR-1). **Depends on**: — _(independent of Slices 02–05)_
 **Created**: 2026-11-27
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**: checkpoint prove: `cp-1/FR-1/testguard.txt`, `cp-1/FR-1/grep_hook.txt`.
 
 **Slice**: Eliminates two recurring false-positive guard blocks without loosening real protections: exempts purely additive top-level Rust `use` and JS/TS `import` merges in `src/testguard.rs` (keyed by full path + local binding name, strictly outside test bodies), and makes `shell::tokenize` / `first_command_standalone` recognize stdout-to-file redirects (`>`, `>>`, `1>`, `1>>`, `&>`, `&>>`) as non-standalone while keeping `2>/dev/null`, `< file`, and `>&2` denied.
 

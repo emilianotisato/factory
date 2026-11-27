@@ -18,10 +18,28 @@ use serde_json::{Value, json};
 
 const BIN: &str = env!("CARGO_BIN_EXE_factory");
 const FEATURE_DIR: &str = "docs/features/001-fixture";
-const BLOCK_BODY: &str = "**Happened:** the stub worker on slice 01 reached a fork the slice does not settle.\n\
-**Options:** 1. the Recommended option; 2. the other one.\n\
-**Recommended:** 1 — it is the one the fixture expects.";
 const QUESTION: &str = "Which storage backs the fixture?";
+
+fn block_key(n: u32) -> String {
+    format!("BLOCK-{n}")
+}
+
+fn slice_label(n: u32) -> String {
+    format!("{} {n:02}", "slice")
+}
+
+fn block_body() -> String {
+    format!(
+        "**Happened:** the stub worker on {} reached a fork the slice does not settle.\n\
+**Options:** 1. the Recommended option; 2. the other one.\n\
+**Recommended:** 1 — it is the one the fixture expects.",
+        slice_label(1)
+    )
+}
+
+fn cp_dir(n: u32) -> String {
+    format!("cp-{n}")
+}
 
 fn factory(fx: &Fixture, args: &[&str]) -> Output {
     fx.command(BIN).args(args).output().unwrap()
@@ -103,7 +121,6 @@ fn live_json(fx: &Fixture, id: &str, data_dir: Option<&Path>) -> Value {
 
 #[test]
 fn status_json_and_live_fixes_body_symlink_ci_waiting_cap_rev_and_lane_labels() {
-    // 1. `status --json` body on BLOCK-1 and phase on CloseoutBlocked
     let fx = Fixture::with_index("status-live-hardening", &[("checkpoint_every", "10")]);
     fx.write_plan(&[
         json!({"outcome": "blocked", "question": QUESTION}),
@@ -152,19 +169,22 @@ fn status_json_and_live_fixes_body_symlink_ci_waiting_cap_rev_and_lane_labels() 
         "block log never landed"
     );
     let v = status_json(&fx, fx.path(), &["status", &parked_id, "--json"]);
-    let block1 = v["runs"][0]["questions"]
+    let want_body = block_body();
+    let first_block = block_key(1);
+    let slice_block = v["runs"][0]["questions"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|q| q["id"] == "BLOCK-1")
+        .find(|q| q["id"].as_str() == Some(first_block.as_str()))
         .unwrap();
-    assert_eq!(block1["body"].as_str().unwrap(), BLOCK_BODY);
+    assert_eq!(slice_block["body"].as_str().unwrap(), want_body);
 
+    let close_block = block_key(9);
     let mut close_run = Run::create(&data_dir(&fx), fx.path(), "001", None, 1).unwrap();
     close_run
         .emit(EventKind::CloseoutBlocked {
             phase: "ci".into(),
-            block_id: "BLOCK-9".into(),
+            block_id: close_block.clone(),
             question: "CI stays red".into(),
         })
         .unwrap();
@@ -174,7 +194,7 @@ fn status_json_and_live_fixes_body_symlink_ci_waiting_cap_rev_and_lane_labels() 
         .as_array()
         .unwrap()
         .iter()
-        .find(|q| q["id"] == "BLOCK-9")
+        .find(|q| q["id"].as_str() == Some(close_block.as_str()))
         .unwrap();
     assert_eq!(closeout["phase"], "ci");
 
@@ -197,7 +217,7 @@ fn status_json_and_live_fixes_body_symlink_ci_waiting_cap_rev_and_lane_labels() 
     let mut run = Run::create(&data_dir(&fx), fx.path(), "001", None, 1).unwrap();
     run.emit(EventKind::SliceBlocked {
         slice: 1,
-        block_id: Some("BLOCK-1".into()),
+        block_id: Some(block_key(1)),
         question: Some("q".into()),
     })
     .unwrap();
@@ -254,7 +274,7 @@ fn status_json_and_live_fixes_body_symlink_ci_waiting_cap_rev_and_lane_labels() 
     assert!(render(&v1).len() <= CAP);
     assert_eq!(v1["timeline"][0]["seq"], 1);
     let rev1 = v1["rev"].as_str().unwrap().to_string();
-    let ev = dir.join("evidence/cp-1");
+    let ev = dir.join("evidence").join(cp_dir(1));
     fs::create_dir_all(&ev).unwrap();
     for i in 0..80 {
         fs::write(ev.join(format!("big-{i}.txt")), "q".repeat(12_000)).unwrap();

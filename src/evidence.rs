@@ -31,22 +31,28 @@ pub fn rotate_stale_evidence(evidence: &Path, n: u32) -> Result<Option<PathBuf>>
 mod tests {
     use super::*;
 
+    fn sent_back(evidence: &Path, n: u32, k: u32) -> PathBuf {
+        evidence.join(format!("cp-{n}.sent-back-{k}"))
+    }
+
     #[test]
     fn rotate_stale_evidence_uses_the_first_free_sent_back_slot() {
         let tmp = tempfile::tempdir().unwrap();
         let evidence = tmp.path().join("evidence");
-        let cp = evidence.join("cp-1");
-        fs::create_dir_all(cp.join("FR-1")).unwrap();
-        fs::write(cp.join("FR-1/proof.txt"), "x").unwrap();
-        let first = rotate_stale_evidence(&evidence, 1).unwrap().unwrap();
-        assert_eq!(first, evidence.join("cp-1.sent-back-1"));
-        assert!(first.join("FR-1/proof.txt").is_file());
+        let n = 1u32;
+        let cp = evidence.join(format!("cp-{n}"));
+        let row = "proof-row";
+        fs::create_dir_all(cp.join(row)).unwrap();
+        fs::write(cp.join(format!("{row}/proof.txt")), "x").unwrap();
+        let first = rotate_stale_evidence(&evidence, n).unwrap().unwrap();
+        assert_eq!(first, sent_back(&evidence, n, 1));
+        assert!(first.join(format!("{row}/proof.txt")).is_file());
         assert!(!cp.exists());
 
         fs::create_dir_all(&cp).unwrap();
-        let second = rotate_stale_evidence(&evidence, 1).unwrap().unwrap();
-        assert_eq!(second, evidence.join("cp-1.sent-back-2"));
+        let second = rotate_stale_evidence(&evidence, n).unwrap().unwrap();
+        assert_eq!(second, sent_back(&evidence, n, 2));
         assert!(!cp.exists());
-        assert!(evidence.join("cp-1.sent-back-1").is_dir());
+        assert!(sent_back(&evidence, n, 1).is_dir());
     }
 }

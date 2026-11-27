@@ -3,7 +3,7 @@
 **Source**: [`prd.md`](prd.md) → §6 (FR-4). **Depends on**: — _(independent of Slices 01–03 and 05)_
 **Created**: 2026-11-27
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**: checkpoint prove: `cp-1/FR-4/transcript.txt`; leak fix: dynamic block bodies and ids in `tests/status_and_live_hardening.rs`.
 
 **Slice**: Enriches `status --json` open questions with full `body` from `log.jsonl` and `CloseoutBlocked.phase`, guards `prd.md` reads against symlinks/FIFOs/unbounded files in BOTH `board::scan_folder_on` and `status::prd_title`/`feature_folder`, fixes `live::gate::ci` to report `waiting` (clearing stale `red`/excerpt) after `PrOpened`/`CiFixCommitted`/`CiRerun`, fixes `live::snapshot` to hash `rev` *after* `cap` using a 16-byte placeholder and drop newest timeline events when `--since` is set, and canonicalizes lane/repo roots in `live::workers::Paths::of`.
 

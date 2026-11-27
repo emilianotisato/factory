@@ -3,7 +3,7 @@
 **Source**: [`prd.md`](prd.md) → §7 (FR-5). **Depends on**: — _(independent of Slices 01–04)_
 **Created**: 2026-11-27
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**: checkpoint prove: `cp-1/FR-5/transcript.txt`.
 
 **Slice**: Hardens `live/redact.rs` with high-signal secret rules (URL userinfo, auth/cookie headers, PEM private keys, additional vendor token prefixes), fixes `bypass=`/`compass=` over-redaction, exempts functional `evidence[].path` and `attention[].answer` fields from token rewriting, and fixes `excerpt.rs` JSON `"failed": 0` false hits, colon-SGR `38:2:<cs>:r:g:b` false-red detection, and empty-matching `gate_failure` regexes in `docs/check.rs` and `docs/project.rs`.
 

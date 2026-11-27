@@ -3,7 +3,7 @@
 **Source**: [`prd.md`](prd.md) → §4 (FR-2). **Depends on**: — _(independent of Slices 01 and 03–05)_
 **Created**: 2026-11-27
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**: checkpoint prove: `cp-1/FR-2/leaks.txt`, `cp-1/FR-2/ctx.txt`.
 
 **Slice**: Shares `review::check_attr` (plus a new `check_attr_at(root, source, paths)` using `git check-attr --source <tree-ish>`) across `factory leaks` and `factory ctx refs`, so `.gitattributes` `linguist-generated` and `linguist-vendored` marks are honored once in all three verbs — with `leaks --base` reading attributes strictly from `<base_ref>` so a branch cannot silence its own leaks scan.
 
