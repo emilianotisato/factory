@@ -1,4 +1,5 @@
 //! One table of rules run over the lines and paths a diff adds: plan ids, history and cites that belong in the docs, not the code.
+use std::collections::{BTreeSet, HashSet};
 use std::fs;
 use std::path::Path;
 use std::sync::LazyLock;
@@ -544,6 +545,7 @@ pub struct Report {
     pub comment_lines: u64,
     pub added_lines: u64,
     pub allowlist_note: Option<String>,
+    pub skipped: Vec<(String, &'static str)>,
 }
 
 fn rule(id: &str) -> &'static Rule {
@@ -596,6 +598,12 @@ impl Report {
         if let Some(note) = &self.allowlist_note {
             out.push_str(note);
             out.push('\n');
+        }
+        if !self.skipped.is_empty() {
+            out.push_str("skipped:\n");
+            for (path, reason) in &self.skipped {
+                out.push_str(&format!("  {path} ({reason})\n"));
+            }
         }
         out.push_str(&format!(
             "comment share: {:.1}% ({} of {} added lines)\n",
@@ -835,7 +843,7 @@ fn branch_allowlist_changed(repo: &Path, base_ref: &str) -> Option<String> {
 
 /// Lines and paths the input adds outside `docs/`, run through the rules and the repo's allowlist.
 pub fn scan(repo: &Path, input: Input) -> Result<Report> {
-    let (allow, allowlist_note) = match input {
+    let (allow, allowlist_note, attr_source, range) = match input {
         Input::Base(base) if base.starts_with('-') => {
             return Err(Error::Msg(format!(
                 "base `{base}` starts with `-`, and git would read it as an option"
@@ -845,22 +853,19 @@ pub fn scan(repo: &Path, input: Input) -> Result<Report> {
             let base_ref = crate::commit::resolve_base_ref(repo, Some(base))?;
             let allow = allowlist_at_ref(repo, &base_ref)?;
             let allowlist_note = branch_allowlist_changed(repo, &base_ref);
-            (allow, allowlist_note)
-        }
-        Input::All => (allowlist(repo)?, None),
-    };
-    let range: Vec<String> = match input {
-        Input::Base(base) => {
-            let base_ref = crate::commit::resolve_base_ref(repo, Some(base))?;
-            vec![format!("{base_ref}...HEAD")]
+            let range = vec![format!("{base_ref}...HEAD")];
+            (allow, allowlist_note, base_ref, range)
         }
         // A SHA-256 repo has another empty tree, so ask git for it.
-        Input::All => vec![
-            git(repo, &["hash-object", "-t", "tree", "/dev/null"])?
-                .trim()
-                .to_string(),
-            "HEAD".to_string(),
-        ],
+        Input::All => {
+            let range = vec![
+                git(repo, &["hash-object", "-t", "tree", "/dev/null"])?
+                    .trim()
+                    .to_string(),
+                "HEAD".to_string(),
+            ];
+            (allowlist(repo)?, None, "HEAD".to_string(), range)
+        }
     };
     let range: Vec<&str> = range.iter().map(String::as_str).collect();
     let pathspec = ["--", ".", ":(exclude)docs"];
@@ -888,10 +893,30 @@ pub fn scan(repo: &Path, input: Input) -> Result<Report> {
         .chain(range.iter().copied())
         .chain(pathspec)
         .collect();
-    let lines = parse_diff(&git(repo, &diff)?);
-    let paths = parse_name_status(&git(repo, &names)?);
+    let mut lines = parse_diff(&git(repo, &diff)?);
+    let mut paths = parse_name_status(&git(repo, &names)?);
+    let mut distinct = BTreeSet::<String>::new();
+    for a in &lines {
+        distinct.insert(a.path.clone());
+    }
+    for p in &paths {
+        distinct.insert(p.clone());
+    }
+    let distinct: Vec<String> = distinct.into_iter().collect();
+    let marked = if distinct.is_empty() {
+        Vec::new()
+    } else {
+        let refs: Vec<&str> = distinct.iter().map(String::as_str).collect();
+        crate::review::check_attr_at(repo, &attr_source, &refs)?
+    };
+    let skip: HashSet<&str> = marked.iter().map(|(p, _)| p.as_str()).collect();
+    if !skip.is_empty() {
+        lines.retain(|a| !skip.contains(a.path.as_str()));
+        paths.retain(|p| !skip.contains(p.as_str()));
+    }
     let mut report = check(&allow, &lines, &paths);
     report.allowlist_note = allowlist_note;
+    report.skipped = marked;
     Ok(report)
 }
 
