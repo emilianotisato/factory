@@ -5,8 +5,48 @@ use std::path::{Path, PathBuf};
 use crate::ctx::{def, outline, print, walk};
 use crate::docs::{Docs, Status, log};
 use crate::error::io;
+use crate::lanes;
+use crate::paths;
 use crate::scheduler::pad_list;
 use crate::{Error, Result};
+
+fn custom_lane_env(env: &[(String, String)]) -> impl Iterator<Item = &(String, String)> {
+    env.iter().filter(|(k, _)| k.as_str() != lanes::ENV_LANE)
+}
+
+fn lane_export_assignments(env: &[(String, String)]) -> Option<String> {
+    let v: Vec<_> = custom_lane_env(env).collect();
+    if v.is_empty() {
+        return None;
+    }
+    Some(
+        v.iter()
+            .map(|(k, val)| format!("{k}={}", paths::shell_word(val)))
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
+}
+
+pub fn env_prefixed(env: &[(String, String)], cmd: &str) -> String {
+    match lane_export_assignments(env) {
+        Some(a) => format!("export {a}; {cmd}"),
+        None => cmd.to_string(),
+    }
+}
+
+fn lane_env_section(env: &[(String, String)]) -> Option<String> {
+    let assignments = lane_export_assignments(env)?;
+    Some(format!(
+        "# Lane env\n\nexport {assignments}\n\n\
+         Keep these exports active when running build/test commands in interactive shells."
+    ))
+}
+
+fn push_lane_env(sections: &mut Vec<String>, lane_env: &[(String, String)]) {
+    if let Some(s) = lane_env_section(lane_env) {
+        sections.push(s);
+    }
+}
 
 pub const CONTRACT: &str = include_str!("../assets/contract-slice.md");
 pub const CONTRACT_FIX: &str = include_str!("../assets/contract-fix.md");
@@ -226,6 +266,18 @@ impl Pack {
         spawn: u32,
         block: Option<&BlockSection>,
     ) -> Result<Pack> {
+        Self::for_slice_with_env(docs, board, slice, packs_dir, spawn, block, &[])
+    }
+
+    pub fn for_slice_with_env(
+        docs: &Docs,
+        board: &Status,
+        slice: u32,
+        packs_dir: &Path,
+        spawn: u32,
+        block: Option<&BlockSection>,
+        lane_env: &[(String, String)],
+    ) -> Result<Pack> {
         let entry = board
             .slices
             .iter()
@@ -299,7 +351,11 @@ impl Pack {
         sections.push(format!("# Lookup\n\n{}", lookup()));
         sections.push(format!("# Contract\n\n{}", contract.trim_end()));
         sections.push(format!("# Autonomy\n\n{}", builder_autonomy()));
-        sections.push(format!("# Inner loop\n\n{}", inner.trim()));
+        push_lane_env(&mut sections, lane_env);
+        sections.push(format!(
+            "# Inner loop\n\n{}",
+            env_prefixed(lane_env, inner.trim())
+        ));
         let (text, parts) = assemble(
             format!("<!-- factory-pack files: {} -->\n\n", files.join(",")),
             sections,
@@ -332,6 +388,20 @@ impl Pack {
         packs_dir: &Path,
         spawn: u32,
     ) -> Result<Pack> {
+        Self::for_fix_env(docs, board, n, attempt, gate_log, packs_dir, spawn, &[])
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn for_fix_env(
+        docs: &Docs,
+        board: &Status,
+        n: u32,
+        attempt: u32,
+        gate_log: &Path,
+        packs_dir: &Path,
+        spawn: u32,
+        lane_env: &[(String, String)],
+    ) -> Result<Pack> {
         let feature = format!("{:03}", board.number);
         let gate = docs.gate()?;
         let inner = docs.gate_inner()?;
@@ -340,23 +410,22 @@ impl Pack {
             .replace("{NNN}", &feature)
             .replace("{n}", &n.to_string());
 
-        let (text, parts) = assemble(
-            "<!-- factory-pack files: -->\n\n".to_string(),
-            vec![
-                format!(
-                    "# Gate failure\n\n<!-- checkpoint {n}, gate attempt {attempt}: {} -->\n\n\
+        let mut body = vec![
+            format!(
+                "# Gate failure\n\n<!-- checkpoint {n}, gate attempt {attempt}: {} -->\n\n\
                      Gate command: `{}`\nInner command: `{}`\n\n```\n{}\n```",
-                    gate_log.display(),
-                    gate.trim(),
-                    inner.trim(),
-                    tail(&log_text, TAIL_LINES).trim_end()
-                ),
-                log_section(docs, board)?,
-                format!("# Contract\n\n{}", contract.trim_end()),
-                format!("# Autonomy\n\n{}", autonomy()),
-                format!("# Inner loop\n\n{}", inner.trim()),
-            ],
-        );
+                gate_log.display(),
+                gate.trim(),
+                inner.trim(),
+                tail(&log_text, TAIL_LINES).trim_end()
+            ),
+            log_section(docs, board)?,
+            format!("# Contract\n\n{}", contract.trim_end()),
+            format!("# Autonomy\n\n{}", autonomy()),
+        ];
+        push_lane_env(&mut body, lane_env);
+        body.push(format!("# Inner loop\n\n{}", inner.trim()));
+        let (text, parts) = assemble("<!-- factory-pack files: -->\n\n".to_string(), body);
 
         fs::create_dir_all(packs_dir).map_err(io(format!("mkdir {}", packs_dir.display())))?;
         let path = packs_dir.join(format!("fix-{n}-{spawn}.md"));
@@ -384,6 +453,31 @@ impl Pack {
         packs_dir: &Path,
         spawn: u32,
         block: Option<&BlockSection>,
+    ) -> Result<Pack> {
+        Self::for_merge_env(
+            docs,
+            board,
+            slice,
+            conflicted,
+            sha,
+            packs_dir,
+            spawn,
+            block,
+            &[],
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn for_merge_env(
+        docs: &Docs,
+        board: &Status,
+        slice: u32,
+        conflicted: &[String],
+        sha: &str,
+        packs_dir: &Path,
+        spawn: u32,
+        block: Option<&BlockSection>,
+        lane_env: &[(String, String)],
     ) -> Result<Pack> {
         let entry = board
             .slices
@@ -434,7 +528,11 @@ impl Pack {
         sections.push(log_section(docs, board)?);
         sections.push(format!("# Contract\n\n{}", contract.trim_end()));
         sections.push(format!("# Autonomy\n\n{}", autonomy()));
-        sections.push(format!("# Inner loop\n\n{}", inner.trim()));
+        push_lane_env(&mut sections, lane_env);
+        sections.push(format!(
+            "# Inner loop\n\n{}",
+            env_prefixed(lane_env, inner.trim())
+        ));
         let (text, parts) = assemble(
             format!("<!-- factory-pack files: {} -->\n\n", files.join(",")),
             sections,
@@ -467,6 +565,35 @@ impl Pack {
         packs_dir: &Path,
         spawn: u32,
         sent_back: Option<&SentBack>,
+    ) -> Result<Pack> {
+        Self::for_checkpoint_env(
+            docs,
+            board,
+            n,
+            covers,
+            gate_log,
+            cached,
+            leaks,
+            packs_dir,
+            spawn,
+            sent_back,
+            &[],
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn for_checkpoint_env(
+        docs: &Docs,
+        board: &Status,
+        n: u32,
+        covers: &[u32],
+        gate_log: &Path,
+        cached: bool,
+        leaks: &str,
+        packs_dir: &Path,
+        spawn: u32,
+        sent_back: Option<&SentBack>,
+        lane_env: &[(String, String)],
     ) -> Result<Pack> {
         let feature = format!("{:03}", board.number);
         let prd_rel = format!("{}/prd.md", board.dir);
@@ -542,6 +669,7 @@ impl Pack {
         }
         sections.push(log_section(docs, board)?);
         sections.push(format!("# Contract\n\n{}", contract.trim_end()));
+        push_lane_env(&mut sections, lane_env);
         sections.push(format!("# Autonomy\n\n{}", autonomy()));
 
         let (text, parts) = assemble(
@@ -658,6 +786,31 @@ impl Pack {
         packs_dir: &Path,
         spawn: u32,
     ) -> Result<Pack> {
+        Self::for_ci_fix_env(
+            docs,
+            board,
+            round,
+            attempt,
+            check,
+            log_text,
+            packs_dir,
+            spawn,
+            &[],
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn for_ci_fix_env(
+        docs: &Docs,
+        board: &Status,
+        round: u32,
+        attempt: u32,
+        check: &str,
+        log_text: &str,
+        packs_dir: &Path,
+        spawn: u32,
+        lane_env: &[(String, String)],
+    ) -> Result<Pack> {
         let feature = format!("{:03}", board.number);
         let gate = docs.gate()?;
         let inner = docs.gate_inner()?;
@@ -666,22 +819,24 @@ impl Pack {
             .replace("{round}", &round.to_string())
             .replace("{check}", check);
 
-        let (text, parts) = assemble(
-            "<!-- factory-pack files: -->\n\n".to_string(),
-            vec![
-                format!(
-                    "# CI failure\n\n<!-- round {round}, attempt {attempt}, check: {check} -->\n\n\
+        let mut body = vec![
+            format!(
+                "# CI failure\n\n<!-- round {round}, attempt {attempt}, check: {check} -->\n\n\
                      Failing check: `{check}`\nGate command: `{}`\nInner command: `{}`\n\n```\n{}\n```",
-                    gate.trim(),
-                    inner.trim(),
-                    tail(log_text, TAIL_LINES).trim_end()
-                ),
-                log_section(docs, board)?,
-                format!("# Contract\n\n{}", contract.trim_end()),
-                format!("# Autonomy\n\n{}", autonomy()),
-                format!("# Inner loop\n\n{}", inner.trim()),
-            ],
-        );
+                gate.trim(),
+                inner.trim(),
+                tail(log_text, TAIL_LINES).trim_end()
+            ),
+            log_section(docs, board)?,
+            format!("# Contract\n\n{}", contract.trim_end()),
+            format!("# Autonomy\n\n{}", autonomy()),
+        ];
+        push_lane_env(&mut body, lane_env);
+        body.push(format!(
+            "# Inner loop\n\n{}",
+            env_prefixed(lane_env, inner.trim())
+        ));
+        let (text, parts) = assemble("<!-- factory-pack files: -->\n\n".to_string(), body);
 
         fs::create_dir_all(packs_dir).map_err(io(format!("mkdir {}", packs_dir.display())))?;
         let path = packs_dir.join(format!("ci-fix-{round}-{spawn}.md"));
@@ -1510,6 +1665,74 @@ mod tests {
         let sum: usize = pack.parts.iter().map(|p| p.chars).sum();
         assert_eq!(sum, body.chars().count(), "{}", pack.path.display());
         pack.parts.iter().map(|p| p.section.as_str()).collect()
+    }
+
+    #[test]
+    fn env_prefixed_export_prefixes_custom_lane_vars_and_skips_factory_lane_only() {
+        let env = vec![
+            (lanes::ENV_LANE.to_string(), "2".to_string()),
+            (
+                "CARGO_TARGET_DIR".to_string(),
+                "/abs/lane-2/target".to_string(),
+            ),
+        ];
+        let cmd = "cargo test -q";
+        let got = env_prefixed(&env, cmd);
+        assert!(got.starts_with("export CARGO_TARGET_DIR=/abs/lane-2/target; "));
+        assert_eq!(
+            got,
+            format!("export CARGO_TARGET_DIR=/abs/lane-2/target; {cmd}")
+        );
+        let lane_only = vec![(lanes::ENV_LANE.to_string(), "1".to_string())];
+        assert_eq!(env_prefixed(&lane_only, cmd), cmd);
+    }
+
+    #[test]
+    fn slice_pack_carries_lane_env_and_prefixed_inner_loop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        let dir = "docs/features/001-x";
+        fs::create_dir_all(repo.join(dir)).unwrap();
+        fs::write(repo.join("gate.sh"), "").unwrap();
+        fs::write(
+            repo.join("docs/project.toml"),
+            "[docs]\nframework = 3\ngate = \"./gate.sh\"\ninner = \"./gate.sh --inner\"\n",
+        )
+        .unwrap();
+        fs::write(
+            repo.join(dir).join("prd.md"),
+            "# PRD\n\n## 1. FR-1\n\nrule\n",
+        )
+        .unwrap();
+        fs::write(
+            repo.join(dir).join("slice-01-a.md"),
+            "# Slice 01\n\n**Source**: §1\n",
+        )
+        .unwrap();
+        let docs = Docs::open(repo).unwrap();
+        let board = Status {
+            number: 1,
+            dir: dir.to_string(),
+            slices: vec![crate::docs::Slice {
+                number: 1,
+                file: "001-x/slice-01-a.md".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let lane_env = vec![
+            (lanes::ENV_LANE.to_string(), "2".to_string()),
+            (
+                "CARGO_TARGET_DIR".to_string(),
+                "/tmp/lane-2/target".to_string(),
+            ),
+        ];
+        let pack =
+            Pack::for_slice_with_env(&docs, &board, 1, &repo.join("packs"), 1, None, &lane_env)
+                .unwrap();
+        let text = fs::read_to_string(&pack.path).unwrap();
+        assert!(text.contains("# Lane env\n\nexport CARGO_TARGET_DIR=/tmp/lane-2/target"));
+        assert!(text.contains("export CARGO_TARGET_DIR=/tmp/lane-2/target; ./gate.sh --inner"));
     }
 
     #[test]

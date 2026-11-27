@@ -272,7 +272,7 @@ fn polish(
             Job::Polish { attempt },
             &pack,
             &resolved,
-            &lane_def.env(),
+            &lane_def.env_for(&lane_dir),
             &lane_dir,
             Some(lane),
         )?;
@@ -2151,13 +2151,16 @@ fn fix_round(
         let attempt = run.state().workers.iter().filter(|w| mine(w)).count() as u32 + 1;
         let spawn = run.state().workers.len() as u32 + 1;
         let packs = scheduler::packs_dir(run.dir());
-        let pack = Pack::for_ci_fix(docs, board, round, attempt, check, log, &packs, spawn)?;
+        let lane = closeout_lane(board);
+        let (lane_dir, lane_def) = scheduler::prepare_lane(run, lane, attempt == 1, out)?;
+        let lane_env = lane_def.env_for(&lane_dir);
+        let pack = Pack::for_ci_fix_env(
+            docs, board, round, attempt, check, log, &packs, spawn, &lane_env,
+        )?;
         let open_before: HashSet<String> = open_blocks(&feature_dir)?
             .into_iter()
             .map(|b| b.id)
             .collect();
-        let lane = closeout_lane(board);
-        let (lane_dir, lane_def) = scheduler::prepare_lane(run, lane, attempt == 1, out)?;
         let who = Closer::CiFix { round, check };
         drop_ref(run, board, &who)?;
         let resolved = worker::effective_worker(run, cfg, "fix");
@@ -2166,7 +2169,7 @@ fn fix_round(
             Job::CiFix { round, attempt },
             &pack,
             &resolved,
-            &lane_def.env(),
+            &lane_env,
             &lane_dir,
             Some(lane),
         )?;

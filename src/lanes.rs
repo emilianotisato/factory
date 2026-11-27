@@ -97,6 +97,21 @@ impl Lane {
         out
     }
 
+    pub fn env_for(&self, lane_dir: &Path) -> Vec<(String, String)> {
+        self.env()
+            .into_iter()
+            .map(|(k, v)| {
+                if k == "CARGO_TARGET_DIR" && !Path::new(&v).is_absolute() {
+                    let resolved = std::path::absolute(lane_dir.join(&v))
+                        .unwrap_or_else(|_| lane_dir.join(&v));
+                    (k, resolved.to_string_lossy().into_owned())
+                } else {
+                    (k, v)
+                }
+            })
+            .collect()
+    }
+
     pub fn setup(&self, dir: &Path) -> Result<bool> {
         self.setup_capped(dir, None)
     }
@@ -655,6 +670,59 @@ fn git(dir: &Path, args: &[&str]) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn env_for_resolves_relative_cargo_target_dir_under_lane_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("target/lane-2")).unwrap();
+        let lane = Lane {
+            n: 2,
+            env: vec![("CARGO_TARGET_DIR".to_string(), "target/lane-2".to_string())],
+            ..Lane::default()
+        };
+        let got = lane.env_for(dir.path());
+        let want = std::path::absolute(dir.path().join("target/lane-2"))
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let cargo = got
+            .iter()
+            .find(|(k, _)| k == "CARGO_TARGET_DIR")
+            .map(|(_, v)| v.clone())
+            .unwrap();
+        assert_eq!(cargo, want);
+        assert_eq!(
+            got.iter()
+                .find(|(k, _)| k == "FACTORY_LANE")
+                .map(|(_, v)| v),
+            Some(&"2".to_string())
+        );
+    }
+
+    #[test]
+    fn env_for_leaves_absolute_cargo_target_and_other_vars_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let abs = "/var/tmp/cargo-target".to_string();
+        let lane = Lane {
+            n: 1,
+            env: vec![
+                ("CARGO_TARGET_DIR".to_string(), abs.clone()),
+                ("PORT".to_string(), "8001".to_string()),
+            ],
+            ..Lane::default()
+        };
+        let got = lane.env_for(dir.path());
+        assert_eq!(
+            got.iter()
+                .find(|(k, _)| k == "CARGO_TARGET_DIR")
+                .map(|(_, v)| v),
+            Some(&abs)
+        );
+        assert_eq!(
+            got.iter().find(|(k, _)| k == "PORT").map(|(_, v)| v),
+            Some(&"8001".to_string())
+        );
+    }
 
     #[test]
     fn a_crlf_lane_file_keeps_its_env_and_setup() {
