@@ -35,9 +35,9 @@ An idea the batch spawned is a lesson too. Routed to the project, it becomes the
 
 1. Write the draft as a markdown file in your scratchpad, outside the repository: a `# ` title line, then the body. Write it **in general terms**: what the skill or verb did, what it should have done, a minimal shape that shows it. No customer, no repo name, no path from this machine, no code that is not the framework's own.
 2. Show the draft to the owner.
-3. `factory upstream check <draft>`. Each hit is one line: rewrite the draft and check again until it is clean. The check is the floor, not the review: the owner reading the draft is the real one.
+3. `factory upstream check <draft>`. Each hit is one line: rewrite the draft and check again until it is clean. A clean check prints `hash: <hash>` — keep that line for step 5. The check is the floor, not the review: the owner reading the draft is the real one.
 4. The check lists open factory issues that match the title. On a real match, offer to comment on that issue by hand instead of filing a repeat.
-5. `factory upstream post <draft>` only on the owner's yes.
+5. `factory upstream post <draft> --hash <hash>` only on the owner's yes, using the hash from step 3.
 
 ## 3. Compact `docs/decisions.md`
 
@@ -58,7 +58,7 @@ The first harvest is also the migration. Check each; do the ones still missing:
 
 - **The convention line** in `CLAUDE.md` and in `AGENTS.md`, inside the factory convention block: "`docs/features` and `docs/archive` are history: the code, `docs/reference` and `docs/decisions.md` win." A new repo gets it from `factory init`; an existing one gets it here.
 - **The archived definition** in `docs/index.md`: an archived folder is moved under `docs/archive/`, holds its records only (`prd.md`, `state.toml`, `log.jsonl`, `retro.md`) and carries the history banner. `/harvest` routes the lessons first; no verb checks that, so the definition does not promise it.
-- **Home paths outside the batch.** `factory docs check` reports each tracked doc holding `/home/<name>/` or `/Users/<name>/` as `W-HOME-PATH`. `--done` rewrites the ones it keeps; rewrite the rest by hand to `~/`, such as an idea's From line or a research note §5 keeps. A file `--done` drops needs none. Neither the check nor `--done` sees a home with no `/` after the name (`find /home/<name> …`): grep the kept files for one.
+- **Home paths outside the batch.** `factory docs check` reports each tracked doc holding `/home/<name>/` or `/Users/<name>/` as `W-HOME-PATH`. `--done` rewrites the ones it keeps; rewrite the rest by hand to `~/`, such as an idea's From line or a research note §5 keeps. A file `--done` drops needs none.
 
 ## 5. Archive
 

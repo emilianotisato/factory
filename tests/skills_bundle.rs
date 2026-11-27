@@ -610,3 +610,17 @@ fn guard_loosening_acceptance_lines_occur_once_in_prd_and_slice_skills() {
         "When a PRD FR loosens a guard, carry its regression-corpus replay into the Prove task.",
     );
 }
+
+#[test]
+fn harvest_upstream_post_names_the_hash_flag() {
+    let text = fs::read_to_string(root().join("skills/harvest/SKILL.md")).unwrap();
+    assert_unique_passage(
+        "harvest/SKILL.md",
+        &text,
+        "factory upstream post <draft> --hash <hash>",
+    );
+    assert!(
+        !text.contains("Neither the check nor `--done` sees a home"),
+        "stale no-trailing-slash caveat must be gone"
+    );
+}

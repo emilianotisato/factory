@@ -5,9 +5,9 @@ use std::sync::LazyLock;
 use serde::Deserialize;
 
 use crate::docs::preflight;
-use crate::{Error, Result, ci, paths};
+use crate::{Error, Result, ci, metrics, paths};
 
-pub const REPO: &str = "emilianotisato/factory";
+pub const REPO: &str = "github.com/emilianotisato/factory";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Draft {
@@ -50,11 +50,15 @@ pub fn names(repo: &Path) -> Vec<String> {
     if let Some(dir) = repo.file_name().and_then(|n| n.to_str()) {
         out.push(dir.to_string());
     }
-    if let Some(url) = preflight::git(repo, &["remote", "get-url", "origin"])
-        && let Some((owner, name)) = owner_and_name(url.trim())
-    {
-        out.push(owner);
-        out.push(name);
+    if let Some(list) = preflight::git(repo, &["remote"]) {
+        for remote in list.lines().map(str::trim).filter(|r| !r.is_empty()) {
+            if let Some(url) = preflight::git(repo, &["remote", "get-url", remote])
+                && let Some((owner, name)) = owner_and_name(url.trim())
+            {
+                out.push(owner);
+                out.push(name);
+            }
+        }
     }
     out.retain(|n| !n.is_empty());
     out.sort();
@@ -148,7 +152,7 @@ pub fn hits(text: &str, names: &[String], homes: &[String]) -> Vec<Hit> {
             add(format!("a home path: {home}"));
         }
         for name in names {
-            if holds_word(line, name) {
+            if name_variants(name).iter().any(|v| holds_word(line, v)) {
                 add(format!("this repo's name: {name}"));
             }
         }
@@ -198,6 +202,42 @@ pub fn search(repo: &Path, title: &str) -> std::result::Result<Vec<Issue>, Strin
         return Ok(Vec::new());
     }
     serde_json::from_str(&out.stdout).map_err(|e| format!("gh printed no issue list: {e}"))
+}
+
+pub fn draft_hash(text: &str) -> String {
+    metrics::sha256_hex(text.as_bytes())[..12].to_string()
+}
+
+fn name_variants(name: &str) -> Vec<String> {
+    let mut out = vec![name.to_string()];
+    if name.contains(['-', '_', ' ']) {
+        let parts: Vec<&str> = name
+            .split(['-', '_', ' '])
+            .filter(|p| !p.is_empty())
+            .collect();
+        if parts.len() >= 2 {
+            out.push(parts.join("-"));
+            out.push(parts.join("_"));
+            out.push(parts.join(" "));
+            out.push(parts.concat());
+            for part in parts {
+                if part.chars().count() >= 4 {
+                    out.push(part.to_string());
+                }
+            }
+        }
+    }
+    let mut seen = Vec::new();
+    let mut deduped = Vec::new();
+    for v in out {
+        let key = v.to_lowercase();
+        if seen.contains(&key) {
+            continue;
+        }
+        seen.push(key);
+        deduped.push(v);
+    }
+    deduped
 }
 
 #[cfg(test)]
@@ -322,6 +362,66 @@ mod tests {
         let found = super::names(&repo);
         assert_eq!(found, ["acme", "client", "widgets"]);
         assert_eq!(hits("Acme ships widgets", &found, &[]).len(), 2);
+    }
+
+    #[test]
+    fn every_configured_remote_names_the_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("widgets");
+        std::fs::create_dir(&repo).unwrap();
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .output()
+                .unwrap()
+                .status
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        git(&[
+            "remote",
+            "add",
+            "upstream",
+            "git@github.com:acme/widgets.git",
+        ]);
+        let found = super::names(&repo);
+        assert!(found.contains(&"acme".to_string()));
+        assert!(found.contains(&"widgets".to_string()));
+        git(&[
+            "remote",
+            "add",
+            "github",
+            "https://github.com/other/spare.git",
+        ]);
+        let found = super::names(&repo);
+        assert!(found.contains(&"other".to_string()));
+        assert!(found.contains(&"spare".to_string()));
+    }
+
+    #[test]
+    fn spelling_variants_hit_once_per_line() {
+        let lines = ["AcmeApi ships", "saw acme_api", "in acme api", "only acme"];
+        for (i, line) in lines.iter().enumerate() {
+            let got = whats(line, &["acme-api"]);
+            assert_eq!(got.len(), 1, "line {i}: {got:?}");
+            assert_eq!(got[0].1, "this repo's name: acme-api");
+        }
+        assert!(whats("tiny api part", &["acme-api"]).is_empty());
+    }
+
+    #[test]
+    fn draft_hash_is_twelve_lowercase_hex() {
+        let h = super::draft_hash("hello");
+        assert_eq!(h.len(), 12);
+        assert!(
+            h.chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase())
+        );
+        assert_eq!(h, super::draft_hash("hello"));
     }
 
     #[test]

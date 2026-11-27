@@ -1,5 +1,5 @@
 //! `check` exits 1 when the draft would leak a home path, this repo's name or an email, 0 otherwise; a failed issue search is one line, not a hit.
-//! `post` exits 1 on a hit, else adds the draft as an idea in the `[source]` checkout and commits it, or opens an issue with `gh`.
+//! `post` exits 1 on a hit, else opens an issue on the factory repo with `gh`.
 //! Both refuse inside a run, where the driver owns every GitHub call.
 use std::fs;
 use std::io::Write;
@@ -7,10 +7,8 @@ use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
 
-use crate::docs::{ideas, scaffold};
-use crate::error::io;
 use crate::upstream::{self, Draft, REPO};
-use crate::{Error, Result, ci, commit, config, paths, worker};
+use crate::{Error, Result, ci, paths, worker};
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum UpstreamVerb {
@@ -18,15 +16,19 @@ pub enum UpstreamVerb {
     Check {
         /// A markdown file: its first `# ` line is the title
         draft: PathBuf,
+        #[arg(long = "allow", value_name = "WORD")]
+        allow: Vec<String>,
     },
     /// Check again, then file the draft as a factory idea or issue
     Post {
         /// A markdown file: its first `# ` line is the title
         draft: PathBuf,
+        #[arg(long = "allow", value_name = "WORD")]
+        allow: Vec<String>,
+        #[arg(long)]
+        hash: Option<String>,
     },
 }
-
-const ORIGIN: &str = "factory upstream";
 
 pub fn upstream(verb: &UpstreamVerb, out: &mut dyn Write, err: &mut dyn Write) -> Result<i32> {
     if std::env::var_os(worker::BOARD_ENV).is_some_and(|v| !v.is_empty()) {
@@ -34,34 +36,46 @@ pub fn upstream(verb: &UpstreamVerb, out: &mut dyn Write, err: &mut dyn Write) -
             err,
             "factory upstream never runs inside a run: the driver is the one that talks to GitHub; run it from your own shell after the run"
         )
-        .map_err(io("write stderr"))?;
+        .map_err(crate::error::io("write stderr"))?;
         return Ok(1);
     }
-    let cwd = std::env::current_dir().map_err(io("read the current directory"))?;
+    let cwd = std::env::current_dir().map_err(crate::error::io("read the current directory"))?;
     let repo = paths::repo_root(&cwd).unwrap_or(cwd);
     match verb {
-        UpstreamVerb::Check { draft } => check(&repo, draft, out),
-        UpstreamVerb::Post { draft } => post(&repo, draft, out),
+        UpstreamVerb::Check { draft, allow } => check(&repo, draft, allow, out),
+        UpstreamVerb::Post { draft, allow, hash } => {
+            post(&repo, draft, allow, hash.as_deref(), out)
+        }
     }
 }
 
 fn say(out: &mut dyn Write, text: &str) -> Result<()> {
-    writeln!(out, "{text}").map_err(io("write stdout"))
+    writeln!(out, "{text}").map_err(crate::error::io("write stdout"))
 }
 
-/// The draft, and whether anything hit, after printing one line per hit.
-fn screen(repo: &Path, file: &Path, out: &mut dyn Write) -> Result<(Draft, bool)> {
-    let text = fs::read_to_string(file).map_err(io(format!("read {}", file.display())))?;
+fn screen(
+    repo: &Path,
+    file: &Path,
+    allow: &[String],
+    out: &mut dyn Write,
+) -> Result<(Draft, String, bool)> {
+    let text =
+        fs::read_to_string(file).map_err(crate::error::io(format!("read {}", file.display())))?;
     let draft = upstream::parse(&text)?;
-    let hits = upstream::hits(&text, &upstream::names(repo), &upstream::homes());
+    let mut repo_names = upstream::names(repo);
+    if !allow.is_empty() {
+        let skip: Vec<String> = allow.iter().map(|a| a.to_lowercase()).collect();
+        repo_names.retain(|n| !skip.contains(&n.to_lowercase()));
+    }
+    let hits = upstream::hits(&text, &repo_names, &upstream::homes());
     for h in &hits {
         say(out, &format!("{}:{}: {}", file.display(), h.line, h.what))?;
     }
-    Ok((draft, !hits.is_empty()))
+    Ok((draft, text, !hits.is_empty()))
 }
 
-fn check(repo: &Path, file: &Path, out: &mut dyn Write) -> Result<i32> {
-    let (draft, hit) = screen(repo, file, out)?;
+fn check(repo: &Path, file: &Path, allow: &[String], out: &mut dyn Write) -> Result<i32> {
+    let (draft, text, hit) = screen(repo, file, allow, out)?;
     match upstream::search(repo, &draft.title) {
         Err(why) => say(out, &format!("issue search on {REPO} failed: {why}"))?,
         Ok(found) if found.is_empty() => say(out, &format!("no open issue on {REPO} matches"))?,
@@ -75,61 +89,43 @@ fn check(repo: &Path, file: &Path, out: &mut dyn Write) -> Result<i32> {
             }
         }
     }
+    if !hit {
+        say(out, &format!("hash: {}", upstream::draft_hash(&text)))?;
+    }
     Ok(i32::from(hit))
 }
 
-fn post(repo: &Path, file: &Path, out: &mut dyn Write) -> Result<i32> {
-    let (draft, hit) = screen(repo, file, out)?;
+fn post(
+    repo: &Path,
+    file: &Path,
+    allow: &[String],
+    hash: Option<&str>,
+    out: &mut dyn Write,
+) -> Result<i32> {
+    let (draft, text, hit) = screen(repo, file, allow, out)?;
     if hit {
         say(out, "not posted: rewrite the lines above in general terms")?;
         return Ok(1);
     }
-    let loaded = config::load(&paths::config_dir())?;
-    match loaded.config.source {
-        Some(src) => add_idea(&src.path, draft, out),
-        None => open_issue(repo, &draft, out),
-    }
-}
-
-fn add_idea(checkout: &Path, draft: Draft, out: &mut dyn Write) -> Result<i32> {
-    let idea = ideas::Idea {
-        title: draft.title,
-        state: "open".into(),
-        added: scaffold::today(),
-        origin: Some(ORIGIN.into()),
-        retrigger: None,
-        priority: None,
-        body: draft.body,
-    };
-    let id = ideas::add(checkout, &idea)?;
-    let rel = format!("{}/{id}.md", ideas::DIR);
-    let file = checkout.join(&rel);
-    let committed = match commit::commit(
-        checkout,
-        std::slice::from_ref(&rel),
-        &format!("docs: add idea {id}"),
-    ) {
-        Ok(c) => c,
-        Err(e) => {
-            let _ = fs::remove_file(&file);
-            return Err(e);
-        }
-    };
-    match committed {
-        Some(_) => say(out, &format!("added {} and committed it", file.display()))?,
-        None => say(
+    let expected = upstream::draft_hash(&text);
+    if hash != Some(expected.as_str()) {
+        say(
             out,
             &format!(
-                "added {}, not committed: git in that checkout ignores it",
+                "not posted: --hash missing or does not match draft — run `factory upstream check {}` and pass --hash {expected}",
                 file.display()
             ),
-        )?,
+        )?;
+        return Ok(1);
     }
-    Ok(0)
+    if !allow.is_empty() {
+        say(out, &format!("allowed: {}", allow.join(", ")))?;
+    }
+    open_issue(repo, &draft, out)
 }
 
 fn open_issue(repo: &Path, draft: &Draft, out: &mut dyn Write) -> Result<i32> {
-    let o = ci::gh(
+    let o = ci::gh_stdin(
         repo,
         &[
             "issue",
@@ -138,9 +134,10 @@ fn open_issue(repo: &Path, draft: &Draft, out: &mut dyn Write) -> Result<i32> {
             REPO,
             "--title",
             &draft.title,
-            "--body",
-            &draft.body,
+            "--body-file",
+            "-",
         ],
+        draft.body.as_bytes(),
     )?;
     if !o.ok() {
         return Err(Error::Tool {
