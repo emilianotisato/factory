@@ -157,7 +157,14 @@ No row needs a human, so no `qa-guide.md` is generated.
 
 ## 9. Slices
 
-_(Not sliced yet. Run `/slice`.)_
+Four vertical slices with zero overlapping write files between concurrent slices:
+
+- **Slice 01 — Skip feature docs in code passes and unify signal forwarding (`FR-1` + `FR-4` signals, deps: —):** drops `docs/features/**` as `feature-doc` in `review::skip` when non-feature-doc files exist (preserving docs-only diffs) and unifies `SIGINT`/`SIGTERM`/`SIGHUP` child-group forwarding across `src/review.rs` and `src/checkpoint.rs` into `src/signals.rs` (`src/signals.rs`, `src/lib.rs`, `src/review.rs`, `src/checkpoint.rs`, `tests/review_skip_and_signals.rs`).
+- **Slice 02 — Answered asks, `factory review settled`, and `state.toml` `reviewed_head` (`FR-3b` state/settled + `FR-4` settled, deps: —):** adds optional `reviewed_head` to `state.toml` (cleared with `reviewed=`) and prefers it in `settled::last_reviewed` with `^reviewed =` fallback, includes answered `Kind::Ask` entries in `settled::decisions`, and adds `factory review settled <NNN>` (`src/docs/state.rs`, `src/settled.rs`, `src/cli/review.rs`, `tests/settled_and_state.rs`). Independent of Slice 01 — builds in parallel.
+- **Slice 03 — Structured claims index and unanchored `pack::collected` (`FR-2`, deps: 01):** extends `review::diff_prompt` with the `### Summary` table instruction (updating authorized `no_feature_keeps_the_prompt_as_today`), extracts and merges pass tables into `### Claims index` at the top of `## Second opinion`, and updates `pack::collected` to stop copying at any `### ` heading (`src/review.rs`, `src/collect.rs`, `src/pack.rs`, `tests/review.rs`, `tests/review_claims_and_since.rs`).
+- **Slice 04 — Unreviewed failure causes, branch-scoped `--since`, and polish skill (`FR-3a`, `FR-3b` collect/closeout, `skills/polish/SKILL.md`, deps: 02, 03):** adds deterministic `review::classify_failure` and safe probe usage-limit detection (updating authorized `collect_owes_the_fallback_when_every_pass_timed_out`), wires `collect::head_of` into `closeout::ship` and branch-intersected `--since` with rebase fallback, and applies all three `skills/polish/SKILL.md` updates + `skills/bundle.lock` regen in one pass (`src/review.rs`, `src/collect.rs`, `src/closeout.rs`, `skills/polish/SKILL.md`, `skills/bundle.lock`, `tests/review.rs`, `tests/review_claims_and_since.rs`).
+
+Checkpoints fall every 2 done slices (`checkpoint_every = 2`: after 01+02, then after 03+04). Workflow: one branch (`feat/review-and-polish-speedup`), one PR, one commit per slice, Prove rows driven at checkpoints. No QA plan row needs a human, so no `qa-guide.md` is generated.
 
 ## 10. Non-goals
 
