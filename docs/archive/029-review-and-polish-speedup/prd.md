@@ -9,6 +9,7 @@ authorized_tests: ["tests/review.rs::collect_owes_the_fallback_when_every_pass_t
 summary: |
   Makes `factory review collect`, `factory review second`, and `/polish` faster and sharper: drops `docs/features/**` planning docs from code review passes while keeping docs-only diffs reviewed; asks each diff pass for a structured `file:line | severity | claim` summary table and merges all passes mechanically into a `### Claims index` at the top of `## Second opinion` (kept out of `# Collected` by `pack::collected`); classifies unreviewed pass failures (`usage limit`, `auth`, `no such model`, `timeout`, `stopped`) on the Plan line; records `reviewed_head` in `state.toml` and intersects `--since` with `<base>...HEAD` (falling back cleanly if rewritten); includes answered asks in the settled block, adds `factory review settled <NNN>`, and unifies `SIGINT`/`SIGTERM`/`SIGHUP` forwarding across `review` and `checkpoint`.
 ---
+> **History.** The code, `docs/reference` and `docs/decisions.md` win over this document.
 
 # PRD-029 — Sharper, cheaper review collect and polish
 

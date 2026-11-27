@@ -9,6 +9,7 @@ authorized_tests: ["tests/review.rs::review_second_runs_all_five_providers_and_n
 summary: |
   Closes the multi-provider footguns and security gaps left after PRD-026/027: clears stale model/effort from provider-less `[workers.<role>]` tables when `[workers] provider` switches and validates every resolved model/effort in preflight (plus fixes wizard default/reload, `role_sources`, and `setup --show` alignment); isolates all five adversarial reviewers (and probes) with env scrubbing, `--` prompt guards, Claude `--setting-sources user --strict-mcp-config`, OpenCode read-only permission env, and `factory review second --dry-run`; closes `dec-2` PATH-shim gaps (`GITHUB_PERSONAL_ACCESS_TOKEN`, `help.autocorrect=0`, full-URL `pushInsteadOf`, and explicit `remote.*.pushurl` `insteadOf` rewrites); fixes stale `collect.md` reuse across mid-run reviewer switches, `proceed` skip wording, preflight config warnings, PATH-order `detect_installed`, `X_OK` checks, and adds `--title-file` on `factory docs log add`.
 ---
+> **History.** The code, `docs/reference` and `docs/decisions.md` win over this document.
 
 # PRD-028 — Multi-provider hardening and security
 

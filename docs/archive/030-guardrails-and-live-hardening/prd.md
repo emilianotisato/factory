@@ -9,6 +9,7 @@ authorized_tests: ["mods/cockpit/tests/cockpit.test.tsx", "tests/cockpit.rs::sta
 summary: |
   Eliminates recurring run-time friction and security/UI edge cases across 11 triaged ideas: loosens `testguard` solely for purely additive top-level Rust `use` and JS/TS `import` merges (keyed by local binding, guarded by a regression corpus); fixes `shell::first_cmd_standalone` so stdout-to-file redirects (`grep … > file`) are allowed while `2>/dev/null` and `< file` stay denied; honors `.gitattributes` `linguist-generated`/`linguist-vendored` in `leaks` (read from `<base>` via `--source`, preventing branch self-silencing) and `ctx refs`; fixes `mods/cockpit` `TS2345` warnings and `discover_models` `ETXTBSY` retry; adds `# Sent back` context and collision-free `cp-{n}.sent-back-{k}/` rotation on checkpoint send-back; adds external-platform/live-CLI/third-party-shim verification rules to `/prd`, `/slice`, `/polish`; enriches `status --json` questions with `body`/`phase` and symlink-safe reads in both `status` and `board`; fixes `factory live` post-fix CI `waiting` state, `--since` cap direction, post-cap `rev` with 16-byte placeholder, and canonical lane labels; hardens `live/redact` and fixes `excerpt`/`gate_failure` edge cases.
 ---
+> **History.** The code, `docs/reference` and `docs/decisions.md` win over this document.
 
 # PRD-030 — Guardrails, hooks, and live/status hardening
 
