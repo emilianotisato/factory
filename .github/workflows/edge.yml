@@ -48,8 +48,8 @@ jobs:
           EDGE_TAG="v${EDGE_VER}"
           echo "edge_ver=${EDGE_VER}" >> "$GITHUB_OUTPUT"
           echo "edge_tag=${EDGE_TAG}" >> "$GITHUB_OUTPUT"
-          sed -i 's/^version = ".*"/version = "'"${EDGE_VER}"'"/' Cargo.toml
-          perl -0pi -e 's/(^name = "factory"$\nversion = )"[^"]+"/${1}"'"${EDGE_VER}"'"/m' Cargo.lock
+          perl -0pi -e 's/^version = "[^"]+"/version = "'"${EDGE_VER}"'"/m' Cargo.toml
+          perl -0pi -e 's/(^name = "factory"\nversion = )"[^"]+"/${1}"'"${EDGE_VER}"'"/m' Cargo.lock
       - name: Install dist
         shell: bash
         run: "curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.32.0/cargo-dist-installer.sh | sh"
@@ -94,8 +94,8 @@ jobs:
         run: |
           set -euo pipefail
           EDGE_VER="${{ needs.plan.outputs.edge-ver }}"
-          sed -i 's/^version = ".*"/version = "'"${EDGE_VER}"'"/' Cargo.toml
-          perl -0pi -e 's/(^name = "factory"$\nversion = )"[^"]+"/${1}"'"${EDGE_VER}"'"/m' Cargo.lock
+          perl -0pi -e 's/^version = "[^"]+"/version = "'"${EDGE_VER}"'"/m' Cargo.toml
+          perl -0pi -e 's/(^name = "factory"\nversion = )"[^"]+"/${1}"'"${EDGE_VER}"'"/m' Cargo.lock
       - name: Install Rust non-interactively if not already installed
         if: ${{ matrix.container }}
         run: |
@@ -150,8 +150,8 @@ jobs:
         run: |
           set -euo pipefail
           EDGE_VER="${{ needs.plan.outputs.edge-ver }}"
-          sed -i 's/^version = ".*"/version = "'"${EDGE_VER}"'"/' Cargo.toml
-          perl -0pi -e 's/(^name = "factory"$\nversion = )"[^"]+"/${1}"'"${EDGE_VER}"'"/m' Cargo.lock
+          perl -0pi -e 's/^version = "[^"]+"/version = "'"${EDGE_VER}"'"/m' Cargo.toml
+          perl -0pi -e 's/(^name = "factory"\nversion = )"[^"]+"/${1}"'"${EDGE_VER}"'"/m' Cargo.lock
       - name: Install cached dist
         uses: actions/download-artifact@v8
         with:

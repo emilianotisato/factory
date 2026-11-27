@@ -82,6 +82,7 @@ fn the_edge_workflow_builds_and_prunes_rolling_prereleases_on_main() {
     assert!(yml.contains("dist build"));
     assert!(yml.contains("gh release create") && yml.contains("--prerelease"));
     assert!(yml.contains("-edge.") && yml.contains("gh release delete"));
+    assert!(!yml.contains("sed -i "));
     assert!(!yml.contains("pc-windows"));
 }
 
