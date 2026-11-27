@@ -69,6 +69,7 @@ Read the code the slice will touch. Every slice file carries a **Current code / 
 - the deliberate non-change, with the PRD section that decided it (*"prd §7 OPEN-7 decided against phase reporting. Do not add phases here."*). Every `Not handled:` non-goal the slice's code path touches is quoted here, so the builder does not rebuild what the owner declined.
 - test files that already assert the behaviour you are about to change
 - the fixture or seed an acceptance will lean on, and whether it holds the case the FR is about. One run's only transcript fixture had no forked subagent, so the fork double count passed every slice and every checkpoint; the fixture that would have caught it was one line to ask for here.
+- verify external CLI flags against the live binary (`--help` or official docs) before specifying them in a task.
 
 This is what lets an agent execute the slice without reading the whole PRD.
 

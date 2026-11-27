@@ -21,7 +21,7 @@ use crate::events::{Event, EventKind};
 use crate::gatecache::{self, Entry, GateCache};
 use crate::land;
 use crate::memcap;
-use crate::pack::{Pack, QaRow};
+use crate::pack::{Pack, QaRow, SentBack};
 use crate::quota::{self, Hold, Limit};
 use crate::run::{ActiveGate, Phase, Run, WorkerOutcome};
 use crate::scheduler::{self, DEATH_CAP, pad_list, say, short};
@@ -234,6 +234,7 @@ pub fn run(
     }
 
     let mut records_seen = 0;
+    let mut sent_back: Option<SentBack> = None;
     loop {
         if let Some(o) = await_quota(run, out)? {
             return Ok(o);
@@ -311,6 +312,7 @@ pub fn run(
             &leaks,
             &packs,
             spawn,
+            sent_back.as_ref(),
         )?;
         let open_before: HashSet<String> = open_checkpoint_blocks(&feature_dir)?
             .into_iter()
@@ -439,6 +441,13 @@ pub fn run(
                         short.join(" and ")
                     ),
                 )?;
+                sent_back = Some(SentBack {
+                    attempt,
+                    missing_slices: missing.clone(),
+                    unproven_rows: unproven.clone(),
+                    prior_record: Some(thin.n),
+                });
+                crate::evidence::rotate_stale_evidence(&evidence, n)?;
                 continue;
             }
             settle(
@@ -1357,6 +1366,8 @@ fn settle(
     metrics::record_exit(run, row_id, summary)?;
     run.set_worker_outcome(session_id, outcome.as_str())
 }
+
+pub use crate::evidence::rotate_stale_evidence;
 
 /// The keys of the handed rows not marked human whose `cp-{n}/<key>/` under `evidence` is missing or empty.
 /// `evidence`, `cp-{n}` and `<key>` must be real directories, not links, and `<key>` must hold an entry that is not a

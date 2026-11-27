@@ -1,7 +1,7 @@
 //! The agent CLIs factory knows: their binaries, models and effort levels.
 use std::ffi::{CString, OsStr};
 use std::fs::File;
-use std::io::{Read as _, Seek as _, SeekFrom};
+use std::io::{ErrorKind, Read as _, Seek as _, SeekFrom};
 use std::os::unix::ffi::OsStrExt;
 #[cfg(any(test, not(unix)))]
 use std::os::unix::fs::PermissionsExt as _;
@@ -291,6 +291,24 @@ pub fn detect_installed() -> Vec<Detected> {
 }
 
 /// The CLI's own listing when it has one and answers within `timeout`; the curated list otherwise.
+fn retry_busy<T>(mut f: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    const MAX: u32 = 5;
+    for attempt in 0..MAX {
+        match f() {
+            Ok(v) => return Ok(v),
+            Err(e) if e.kind() == ErrorKind::ExecutableFileBusy && attempt + 1 < MAX => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!()
+}
+
+fn spawn_retry_busy(cmd: &mut Command) -> std::io::Result<std::process::Child> {
+    retry_busy(|| cmd.spawn())
+}
+
 pub fn discover_models(provider: Provider, bin: &Path, timeout: Duration) -> Vec<String> {
     let curated = || {
         provider
@@ -317,17 +335,16 @@ pub fn discover_models(provider: Provider, bin: &Path, timeout: Duration) -> Vec
 pub(crate) fn run_bounded(bin: &Path, args: &[&str], timeout: Duration) -> Option<String> {
     let mut out = unlinked_file()?;
     let err = unlinked_file()?;
-    let mut child = Command::new(bin)
-        .args(args)
+    let mut cmd = Command::new(bin);
+    cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::from(out.try_clone().ok()?))
         .stderr(Stdio::from(err))
         // Claude refuses to start inside another Claude session.
         .env_remove("CLAUDECODE")
         // Its own group: a wrapper script's children die with it.
-        .process_group(0)
-        .spawn()
-        .ok()?;
+        .process_group(0);
+    let mut child = spawn_retry_busy(&mut cmd).ok()?;
     let started = Instant::now();
     let status = loop {
         match child.try_wait() {
@@ -406,9 +423,32 @@ mod tests {
 
     fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
         let p = dir.join(name);
-        fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
-        fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
+        let tmp = dir.join(format!("{name}.tmp"));
+        fs::write(&tmp, format!("#!/bin/sh\n{body}\n")).unwrap();
+        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::rename(&tmp, &p).unwrap();
         p
+    }
+
+    #[test]
+    fn retry_busy_retries_executable_file_busy() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let n = AtomicU32::new(0);
+        let ok = retry_busy(|| {
+            let k = n.fetch_add(1, Ordering::Relaxed);
+            if k == 0 {
+                Err(std::io::Error::new(ErrorKind::ExecutableFileBusy, "busy"))
+            } else {
+                Ok(42)
+            }
+        })
+        .unwrap();
+        assert_eq!(ok, 42);
+        assert_eq!(n.load(Ordering::Relaxed), 2);
+
+        let miss: std::io::Result<i32> =
+            retry_busy(|| Err(std::io::Error::new(ErrorKind::NotFound, "nope")));
+        assert_eq!(miss.unwrap_err().kind(), ErrorKind::NotFound);
     }
 
     #[test]
