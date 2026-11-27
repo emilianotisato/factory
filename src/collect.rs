@@ -64,13 +64,32 @@ fn table_cells(line: &str) -> Option<Vec<String>> {
     if !t.starts_with('|') {
         return None;
     }
-    let cells: Vec<String> = t
-        .trim_start_matches('|')
-        .trim_end_matches('|')
-        .split('|')
-        .map(sanitize_cell)
-        .filter(|c| !c.is_empty())
-        .collect();
+    let inner = t.trim_start_matches('|').trim_end_matches('|');
+    let mut cells = Vec::new();
+    let mut current = String::new();
+    let mut chars = inner.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            if chars.peek() == Some(&'|') {
+                chars.next();
+                current.push('|');
+            } else {
+                current.push('\\');
+            }
+        } else if c == '|' {
+            let cell = sanitize_cell(&current);
+            if !cell.is_empty() {
+                cells.push(cell);
+            }
+            current.clear();
+        } else {
+            current.push(c);
+        }
+    }
+    let cell = sanitize_cell(&current);
+    if !cell.is_empty() {
+        cells.push(cell);
+    }
     if cells.is_empty() {
         return None;
     }
@@ -622,6 +641,17 @@ mod tests {
     }
 
     #[test]
+    fn extract_claims_keeps_pipe_characters_inside_cells() {
+        let loc = cite("src/a.rs", 1);
+        let body = format!(
+            "### Summary\n\n| file:line | severity | claim |\n|---|---|---|\n| {loc} | high | filter \\|c\\| drops empty |\n"
+        );
+        let claims = extract_claims(1, &body);
+        assert_eq!(claims.len(), 1);
+        assert_eq!(claims[0].summary, "filter |c| drops empty");
+    }
+
+    #[test]
     fn extract_claims_reads_stub_shaped_pass_body() {
         let row1 = cite("src/a.rs", 1);
         let row2 = cite("src/b.rs", 2);
@@ -629,6 +659,14 @@ mod tests {
             "Pass one prose.\n\n### Summary\n\n| file:line | severity | claim |\n|---|---|---|\n| {row1} | low | low claim pass1 |\n| {row2} | medium | medium claim pass1 |\n"
         );
         assert_eq!(extract_claims(1, &t).len(), 2);
+    }
+
+    #[test]
+    fn table_cells_respects_escaped_pipes_in_cells() {
+        let row = "| src/a.rs:1 | high | closure \\|p\\| is inverted |";
+        let cells = table_cells(row).expect("row");
+        assert_eq!(cells.len(), 3);
+        assert_eq!(cells[2], "closure |p| is inverted");
     }
 
     #[test]

@@ -96,18 +96,25 @@ fn decisions(dir: &Path) -> Vec<(String, String)> {
                     Some((id, line))
                 }
                 log::Kind::Ask => {
-                    let r = entries.iter().rev().find(|r| {
+                    let answer = entries.iter().rev().find(|r| {
                         r.kind == log::Kind::Answer && r.reference.as_deref() == Some(id.as_str())
-                    })?;
-                    let line = if r.body.trim().is_empty() {
-                        format!("- {id} — {}: answered", e.title.trim())
+                    });
+                    let chose = if let Some(r) = answer {
+                        let t = r.body.trim();
+                        if t.is_empty() {
+                            None
+                        } else {
+                            Some(t.replace('\n', " "))
+                        }
                     } else {
-                        format!(
-                            "- {id} — {}: answered — {}",
-                            e.title.trim(),
-                            r.body.trim().replace('\n', " ")
-                        )
-                    };
+                        e.body
+                            .lines()
+                            .find_map(|l| l.trim().strip_prefix("**Chose:**"))
+                            .map(str::trim)
+                            .filter(|c| !c.is_empty())
+                            .map(str::to_string)
+                    }?;
+                    let line = format!("- {id} — {}: answered — {}", e.title.trim(), chose);
                     Some((id, line))
                 }
                 _ => None,

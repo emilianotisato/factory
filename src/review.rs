@@ -617,6 +617,20 @@ pub fn login_hint(cfg: &ResolvedReview) -> String {
     format!("{} {rest}", binary(cfg, p).1)
 }
 
+fn marker_matches(lower: &str, marker: &str) -> bool {
+    if marker.chars().all(|c| c.is_ascii_digit()) {
+        return lower
+            .split(|c: char| !c.is_ascii_digit())
+            .any(|w| w == marker);
+    }
+    if marker == "login" {
+        return lower.contains("please login")
+            || lower.contains("log in")
+            || lower.contains("login required");
+    }
+    lower.contains(marker)
+}
+
 fn classify_error_text(text: &str) -> Option<&'static str> {
     let lower = text.to_ascii_lowercase();
     const USAGE: &[&str] = &[
@@ -644,13 +658,13 @@ fn classify_error_text(text: &str) -> Option<&'static str> {
         "invalid model",
         "not in --list-models",
     ];
-    if USAGE.iter().any(|m| lower.contains(m)) {
+    if USAGE.iter().any(|m| marker_matches(&lower, m)) {
         return Some("usage limit");
     }
-    if AUTH.iter().any(|m| lower.contains(m)) {
+    if AUTH.iter().any(|m| marker_matches(&lower, m)) {
         return Some("auth");
     }
-    if MODEL.iter().any(|m| lower.contains(m)) {
+    if MODEL.iter().any(|m| marker_matches(&lower, m)) {
         return Some("no such model");
     }
     None
@@ -723,7 +737,11 @@ pub fn first_failure_detail(ran: &[Ran]) -> Option<String> {
                 }),
             _ => None,
         };
-        let Some(mut s) = raw.filter(|t| !t.trim().is_empty()) else {
+        let Some(mut s) = raw
+            .filter(|t| !t.trim().is_empty())
+            .map(|t| t.lines().next().unwrap_or("").trim().to_string())
+            .filter(|t| !t.is_empty())
+        else {
             continue;
         };
         let n: usize = 120;
@@ -1633,6 +1651,25 @@ mod tests {
     fn a_path_stays_on_its_own_line() {
         assert_eq!(one_line("a\n## Leaks\tb.rs"), "a\\n## Leaks\\tb.rs");
         assert_eq!(one_line("dir/é.rs"), "dir/é.rs");
+    }
+
+    #[test]
+    fn classify_error_text_ignores_http_codes_embedded_in_traces() {
+        assert_eq!(classify_error_text("at x.js:1429:7"), None);
+        assert_eq!(classify_error_text("req_4031ab"), None);
+        assert_eq!(
+            classify_error_text("You've hit your usage limit"),
+            Some("usage limit")
+        );
+        assert_eq!(
+            classify_error_text("HTTP 429 Too Many Requests"),
+            Some("usage limit")
+        );
+        assert_eq!(
+            classify_error_text("checking login state without auth"),
+            None
+        );
+        assert_eq!(classify_error_text("Authentication required"), Some("auth"));
     }
 
     const STREAM: &str = include_str!("../tests/stubs/cursor-review.jsonl");

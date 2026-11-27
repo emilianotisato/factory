@@ -141,6 +141,26 @@ fn collect_merges_structured_claims_index_sorted_by_severity() {
     let lows: Vec<&str> = table.lines().filter(|l| l.starts_with("| low")).collect();
     assert_eq!(lows.len(), 2);
 
+    let severities: Vec<&str> = table
+        .lines()
+        .filter_map(|l| {
+            let t = l.trim();
+            if !t.starts_with('|') || t.contains("---") {
+                return None;
+            }
+            let sev = t.split('|').nth(1)?.trim();
+            match sev {
+                "high" | "medium" | "low" => Some(sev),
+                _ => None,
+            }
+        })
+        .collect();
+    assert_eq!(
+        severities,
+        ["high", "medium", "low", "low"],
+        "claims index must sort by severity:\n{table}"
+    );
+
     let packed = factory::pack::collected(&file, Path::new("collect.md"));
     assert!(packed.contains("- Pass 1"));
     assert!(packed.contains("- Pass 2"));

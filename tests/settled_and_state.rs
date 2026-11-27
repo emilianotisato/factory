@@ -106,6 +106,26 @@ fn settled_includes_answered_asks_and_prints_via_cli() {
     )));
     assert!(!want.contains("Still open"));
 
+    log_stdin(
+        &fx,
+        &[
+            "log",
+            "add",
+            "001",
+            "--kind",
+            "ask",
+            "--phase",
+            "preflight",
+            "--title",
+            "Preflight ASK-9: enable CI?",
+            "--body-file",
+            "-",
+        ],
+        "**Chose:** yes\n**Because:** preflight answer without a separate Answer entry.\n",
+    );
+    let preflight = factory::settled::for_feature(fx.path(), "001").expect("settled");
+    assert!(preflight.contains("ASK-9: enable CI?: answered — yes"));
+
     let bad = review_settled(&fx, "999");
     assert_eq!(bad.status.code(), Some(1));
 }

@@ -125,3 +125,10 @@
 - **FR-4**: run `cargo test --test review_claims_and_since settled_includes_answered_asks_prints_via_cli_and_signals_are_unified -- --nocapture` and keep the transcript. Expected: passes proving answered asks in settled block, `factory review settled <NNN>`, `SKILL.md` unique passage, and unified signals wiring.
 
 **Acceptance:** after the checkpoint, the FR-3 and FR-4 rows have transcript evidence in this slice's **Progress**.
+
+**Code-review fixes (2026-11-27).**
+- `src/collect.rs` — split table rows on unescaped `|` only so claims with pipe characters in the claim column stay in `### Claims index`.
+- `src/settled.rs` — treat preflight asks logged as `Kind::Ask` with `**Chose:**` in the body as answered when no `Kind::Answer` exists.
+- `src/review.rs` — tighten failure-cause substring matching for numeric auth/usage codes and bare `login`; truncate `first_failure_detail` to the first line.
+- `tests/review_claims_and_since.rs` — assert severity sort order in the merged claims index.
+- `tests/settled_and_state.rs` — cover preflight ask shape in the settled block.
