@@ -4,7 +4,6 @@ use std::io::Write;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -266,7 +265,7 @@ pub fn numstat(cwd: &Path, range: Range, paths: &[String]) -> Result<Vec<(String
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Skip {
     pub kept: Vec<(String, u64)>,
-    /// Each skipped path with why: `tool-written`, `vendored` or `generated`.
+    /// Each skipped path with why: `tool-written`, `feature-doc`, `vendored`, or `generated`.
     pub skipped: Vec<(String, &'static str)>,
     /// Why vendored and generated files went unchecked, when `git check-attr` failed.
     pub unchecked: Option<String>,
@@ -311,16 +310,33 @@ pub fn skip(root: &Path, files: Vec<(String, u64)>) -> Skip {
             Vec::new()
         })
     };
+    let mut candidates = Vec::new();
     for (path, n) in files {
         if tool_written(&path) {
             out.skipped.push((path, "tool-written"));
         } else if let Some((_, why)) = marked.iter().find(|(p, _)| *p == path) {
             out.skipped.push((path, why));
         } else {
-            out.kept.push((path, n));
+            candidates.push((path, n));
         }
     }
+    let has_non_feature_doc = candidates.iter().any(|(p, _)| !feature_doc(p));
+    if has_non_feature_doc {
+        for (path, n) in candidates {
+            if feature_doc(&path) {
+                out.skipped.push((path, "feature-doc"));
+            } else {
+                out.kept.push((path, n));
+            }
+        }
+    } else {
+        out.kept = candidates;
+    }
     out
+}
+
+fn feature_doc(path: &str) -> bool {
+    path.starts_with("docs/features/")
 }
 
 /// `docs/features/<dir>/log.jsonl` or `state.toml`, one directory level deep.
@@ -467,67 +483,6 @@ pub type Cancel<'a> = Option<&'a (dyn Fn() -> bool + Sync)>;
 
 pub const CANCEL_EVERY: Duration = Duration::from_secs(1);
 
-/// Each running reviewer's own process group: a Ctrl-C reaches factory alone, so the handler must kill them.
-const SLOTS: usize = 256;
-static CHILD_GROUPS: [AtomicI32; SLOTS] = [const { AtomicI32::new(0) }; SLOTS];
-
-/// Holds a slot from before the spawn (as -1, which the handler skips) until the child is done.
-struct Watched(&'static AtomicI32);
-
-impl Watched {
-    fn claim() -> Result<Watched> {
-        CHILD_GROUPS
-            .iter()
-            .find(|s| {
-                s.compare_exchange(0, -1, Ordering::SeqCst, Ordering::SeqCst)
-                    .is_ok()
-            })
-            .map(Watched)
-            .ok_or_else(|| Error::Msg(format!("more than {SLOTS} reviewers at once")))
-    }
-}
-
-impl Drop for Watched {
-    fn drop(&mut self) {
-        self.0.store(0, Ordering::SeqCst);
-    }
-}
-
-extern "C" fn forward(sig: libc::c_int) {
-    // SAFETY: atomics and async-signal-safe calls only; the re-raise under SIG_DFL ends factory as the signal would.
-    unsafe {
-        for slot in &CHILD_GROUPS {
-            let group = slot.load(Ordering::SeqCst);
-            if group > 0 {
-                libc::kill(-group, libc::SIGKILL);
-            }
-        }
-        libc::signal(sig, libc::SIG_DFL);
-        libc::raise(sig);
-    }
-}
-
-/// A signal factory started out ignoring (`nohup`) stays ignored.
-fn forward_signals() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
-            // SAFETY: a zeroed `sigaction` is valid; the handler is async-signal-safe.
-            unsafe {
-                let mut old: libc::sigaction = std::mem::zeroed();
-                libc::sigaction(sig, std::ptr::null(), &mut old);
-                if old.sa_sigaction == libc::SIG_IGN {
-                    continue;
-                }
-                let mut sa: libc::sigaction = std::mem::zeroed();
-                sa.sa_sigaction = forward as extern "C" fn(libc::c_int) as libc::sighandler_t;
-                libc::sigemptyset(&mut sa.sa_mask);
-                libc::sigaction(sig, &sa, std::ptr::null_mut());
-            }
-        }
-    });
-}
-
 /// `stdin` feeds the child a file, never a pipe, so a large prompt cannot block it.
 fn run_logged(
     mut cmd: Command,
@@ -547,8 +502,8 @@ fn run_logged(
         .stderr(Stdio::from(file(err)?))
         // Its own group: a wrapper script's children die with it.
         .process_group(0);
-    forward_signals();
-    let watched = Watched::claim()?;
+    crate::signals::install();
+    let watched = crate::signals::Guard::claim()?;
     let started = Instant::now();
     let mut child = cmd.spawn().map_err(|e| {
         Error::Msg(format!(
@@ -556,7 +511,7 @@ fn run_logged(
             cmd.get_program().to_string_lossy()
         ))
     })?;
-    watched.0.store(child.id() as i32, Ordering::SeqCst);
+    watched.set(child.id() as i32);
     let mut asked: Option<Instant> = None;
     loop {
         if let Some(status) = child.try_wait().map_err(io("poll the reviewer"))? {
@@ -1638,6 +1593,65 @@ mod tests {
             let got = body(&outcome(ended, &stream, "boom"), 9);
             assert_eq!(got, (want.to_string(), counts), "{ended:?} {stream:?}");
         }
+    }
+
+    #[test]
+    fn feature_docs_drop_when_code_changed_but_docs_only_stays_kept() {
+        let root = std::env::current_dir().unwrap();
+        let mixed = skip(
+            &root,
+            vec![
+                ("src/a.rs".into(), 10),
+                ("docs/features/001-x/prd.md".into(), 5),
+                ("docs/features/001-x/slice-01.md".into(), 3),
+                ("docs/features/001-x/log.jsonl".into(), 1),
+            ],
+        );
+        assert_eq!(mixed.kept, vec![("src/a.rs".to_string(), 10)]);
+        assert!(
+            mixed
+                .skipped
+                .iter()
+                .any(|(p, w)| { p == "docs/features/001-x/log.jsonl" && *w == "tool-written" })
+        );
+        assert!(
+            mixed
+                .skipped
+                .iter()
+                .any(|(p, w)| { p == "docs/features/001-x/prd.md" && *w == "feature-doc" })
+        );
+        assert!(
+            mixed
+                .skipped
+                .iter()
+                .any(|(p, w)| { p == "docs/features/001-x/slice-01.md" && *w == "feature-doc" })
+        );
+
+        let docs_only = skip(
+            &root,
+            vec![
+                ("docs/features/001-x/prd.md".into(), 5),
+                ("docs/features/001-x/slice-01.md".into(), 3),
+                ("docs/features/001-x/log.jsonl".into(), 1),
+            ],
+        );
+        assert_eq!(
+            docs_only
+                .kept
+                .iter()
+                .map(|(p, _)| p.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "docs/features/001-x/prd.md",
+                "docs/features/001-x/slice-01.md"
+            ]
+        );
+        assert!(
+            docs_only
+                .skipped
+                .iter()
+                .any(|(p, w)| { p == "docs/features/001-x/log.jsonl" && *w == "tool-written" })
+        );
     }
 
     #[test]

@@ -4,7 +4,6 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicI32, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -32,45 +31,6 @@ use crate::{Result, clock, lanes, metrics, paths};
 
 pub const RED_CAP: u32 = 3;
 pub const GATES_DIR: &str = "gates";
-
-static ACTIVE_GATE_PGID: AtomicI32 = AtomicI32::new(0);
-
-#[cfg(unix)]
-extern "C" fn forward_gate_signal(sig: libc::c_int) {
-    // SAFETY: async-signal-safe only.
-    unsafe {
-        let pgid = ACTIVE_GATE_PGID.load(Ordering::SeqCst);
-        if pgid > 0 {
-            libc::kill(-pgid, libc::SIGKILL);
-        }
-        libc::signal(sig, libc::SIG_DFL);
-        libc::raise(sig);
-    }
-}
-
-fn forward_gate_signals() {
-    #[cfg(unix)]
-    {
-        static ONCE: std::sync::Once = std::sync::Once::new();
-        ONCE.call_once(|| {
-            for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
-                // SAFETY: zeroed `sigaction` is valid.
-                unsafe {
-                    let mut old: libc::sigaction = std::mem::zeroed();
-                    libc::sigaction(sig, std::ptr::null(), &mut old);
-                    if old.sa_sigaction == libc::SIG_IGN {
-                        continue;
-                    }
-                    let mut sa: libc::sigaction = std::mem::zeroed();
-                    sa.sa_sigaction =
-                        forward_gate_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
-                    libc::sigemptyset(&mut sa.sa_mask);
-                    libc::sigaction(sig, &sa, std::ptr::null_mut());
-                }
-            }
-        });
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
@@ -722,16 +682,21 @@ fn gate_once(
         .stdout(Stdio::from(file))
         .stderr(Stdio::from(err));
     #[cfg(unix)]
-    {
-        cmd.process_group(0);
-        forward_gate_signals();
-    }
+    cmd.process_group(0);
+    #[cfg(unix)]
+    crate::signals::install();
+    #[cfg(unix)]
+    let watched = crate::signals::Guard::claim().map_err(|e| crate::Error::Tool {
+        cmd: format!("gate at checkpoint {n}"),
+        detail: e.to_string(),
+    })?;
     let mut child = cmd.spawn().map_err(|e| crate::Error::Tool {
         cmd: format!("gate at checkpoint {n}"),
         detail: format!("could not start the gate: {e}"),
     })?;
     let pid = child.id();
-    ACTIVE_GATE_PGID.store(pid as i32, Ordering::SeqCst);
+    #[cfg(unix)]
+    watched.set(pid as i32);
     if let Err(e) = run.set_active_gate(Some(ActiveGate {
         pid,
         pid_start: crate::run::start_time(pid),
@@ -739,20 +704,17 @@ fn gate_once(
         scope: scope.clone(),
         checkpoint: n,
     })) {
-        ACTIVE_GATE_PGID.store(0, Ordering::SeqCst);
         let _ = child.kill();
         let _ = child.wait();
         return Err(e);
     }
     let status = child.wait().map_err(|e| {
-        ACTIVE_GATE_PGID.store(0, Ordering::SeqCst);
         let _ = run.set_active_gate(None);
         crate::Error::Tool {
             cmd: format!("gate at checkpoint {n}"),
             detail: format!("could not wait on the gate: {e}"),
         }
     })?;
-    ACTIVE_GATE_PGID.store(0, Ordering::SeqCst);
     run.set_active_gate(None)?;
     let minutes = started.elapsed().as_secs_f64() / 60.0;
     let red = !status.success();
