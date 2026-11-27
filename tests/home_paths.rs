@@ -41,8 +41,13 @@ fn home_paths_catch_and_rewrite_no_trailing_slash_wsl_windows_root_and_json() {
     assert_eq!(find_home_path(b"/tmp/home/x/"), None);
     assert_eq!(find_home_path(b"~/home/x/"), None);
     assert_eq!(find_home_path(b"https://example.com/root/a"), None);
+    assert_eq!(find_home_path(b"Route::get('/users/create')"), None);
 
     assert_eq!(home_paths_to_tilde("cd /home/a /home/b"), "cd ~ ~");
+    assert_eq!(
+        home_paths_to_tilde("A note at /home/x before the period."),
+        "A note at ~ before the period."
+    );
     assert_eq!(
         home_paths_to_tilde("/users/x,/mnt/c/users/y,C:\\users\\z"),
         "~,~,~"

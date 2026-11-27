@@ -163,7 +163,9 @@ fn check_or_run(
 }
 
 pub fn upgrade(args: &UpgradeArgs, out: &mut dyn Write) -> Result<i32> {
-    let cfg = config::load(&paths::config_dir())?.config;
+    let cfg = config::load(&paths::config_dir())
+        .map(|l| l.config)
+        .unwrap_or_default();
     let matching = updater();
 
     if cfg.source.is_some() && matching.is_none() && !args.edge {

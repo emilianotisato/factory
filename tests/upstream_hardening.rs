@@ -85,8 +85,7 @@ fn upstream_hardening_host_stdin_remotes_variants_allow_and_hash() {
     assert_eq!(post.status.code(), Some(0), "{}", stdout(&post));
     let argv = fs::read_to_string(&argv_log).unwrap();
     assert!(argv.contains("github.com/emilianotisato/factory"));
-    assert!(argv.contains("--body-file"));
-    assert!(argv.contains("-"));
+    assert!(argv.contains("--body-file -"));
     assert!(!argv.contains("Nothing sensitive"));
     let body = fs::read_to_string(&stdin_log).unwrap();
     assert!(body.contains("Nothing sensitive here."));
@@ -163,8 +162,11 @@ fn upstream_hardening_host_stdin_remotes_variants_allow_and_hash() {
     assert!(!argv.contains("issue create"), "{argv}");
 
     fs::write(&draft_path, "# Hardening draft\n\nEdited body.\n").unwrap();
+    fs::write(&argv_log, "").unwrap();
     let stale = factory_upstream(&fx, &gh_path, &["post", "--hash", hash], &draft_path);
     assert_eq!(stale.status.code(), Some(1), "{}", stdout(&stale));
+    let stale_argv = fs::read_to_string(&argv_log).unwrap();
+    assert!(!stale_argv.contains("issue create"), "{stale_argv}");
 
     let api_repo = fx.path().parent().unwrap().join("api-app");
     fs::create_dir_all(&api_repo).unwrap();
@@ -174,7 +176,22 @@ fn upstream_hardening_host_stdin_remotes_variants_allow_and_hash() {
         &["remote", "add", "github", "git@github.com:acme/api.git"],
     );
     let api_draft = fx.path().parent().unwrap().join("api-draft.md");
-    fs::write(&api_draft, "# Api note\n\nthe api layer\nmail x@y.com\n").unwrap();
+    fs::write(
+        &api_draft,
+        "# Api note\n\nthe api layer\nrun from /home/x\nmail x@y.com\n",
+    )
+    .unwrap();
+    let api_hit = fx
+        .command(BIN)
+        .env("PATH", &gh_path)
+        .current_dir(&api_repo)
+        .env_remove("FACTORY_BOARD")
+        .args(["upstream", "check"])
+        .arg(&api_draft)
+        .output()
+        .unwrap();
+    assert_eq!(api_hit.status.code(), Some(1), "{}", stdout(&api_hit));
+    assert!(stdout(&api_hit).contains("this repo's name: api"));
     let allow_check = fx
         .command(BIN)
         .env("PATH", &gh_path)
@@ -195,6 +212,7 @@ fn upstream_hardening_host_stdin_remotes_variants_allow_and_hash() {
     let allow_out = stdout(&allow_check);
     let allow_hash = allow_out.lines().find_map(|l| l.strip_prefix("hash: "));
     assert!(allow_hash.is_none(), "email hit blocks hash");
+    assert!(stdout(&allow_check).contains("a home path:"));
 
     fs::write(&api_draft, "# Api note\n\nno leaks\n").unwrap();
     let clean_api = fx
@@ -224,6 +242,8 @@ fn upstream_hardening_host_stdin_remotes_variants_allow_and_hash() {
         .unwrap();
     assert_eq!(allow_post.status.code(), Some(0), "{}", stdout(&allow_post));
     assert!(stdout(&allow_post).contains("allowed: api"));
+    let allow_argv = fs::read_to_string(&argv_log).unwrap();
+    assert!(allow_argv.contains("issue create"), "{allow_argv}");
 
     let lines = ["acme_api here", "acme api wins", "just acme", "AcmeApi now"];
     for line in lines {
@@ -352,8 +372,7 @@ fn upstream_pull_lists_and_triages_issues_to_idea_fold_and_drop() {
     assert!(stdout(&status).trim().is_empty(), "{}", stdout(&status));
     let argv = fs::read_to_string(&argv_log).unwrap();
     assert!(argv.contains("issue comment 42"));
-    assert!(argv.contains("--body-file"));
-    assert!(argv.contains("-"));
+    assert!(argv.contains("--body-file -"));
     assert!(!argv.contains("Tracked as"));
     let body = fs::read_to_string(&stdin_log).unwrap();
     assert!(body.contains("Tracked as `docs/ideas/"));
@@ -390,6 +409,13 @@ fn upstream_pull_lists_and_triages_issues_to_idea_fold_and_drop() {
 
     fs::write(&argv_log, "").unwrap();
     fs::write(&stdin_log, "").unwrap();
+    let head_before = fx
+        .command("git")
+        .current_dir(fx.path())
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    assert!(head_before.status.success());
     let drop = factory_pull(
         &fx,
         &gh_path,
@@ -400,13 +426,17 @@ fn upstream_pull_lists_and_triages_issues_to_idea_fold_and_drop() {
     let argv = fs::read_to_string(&argv_log).unwrap();
     assert!(body_comment(&argv, &stdin_log, "44", "Dropped: duplicate"));
     assert!(argv.contains("not planned"));
-    let status = fx
+    let head_after = fx
         .command("git")
         .current_dir(fx.path())
-        .args(["status", "--porcelain"])
+        .args(["rev-parse", "HEAD"])
         .output()
         .unwrap();
-    assert!(stdout(&status).trim().is_empty(), "{}", stdout(&status));
+    assert_eq!(
+        String::from_utf8_lossy(&head_before.stdout).trim(),
+        String::from_utf8_lossy(&head_after.stdout).trim(),
+        "drop must not commit"
+    );
 
     fs::write(&argv_log, "").unwrap();
     let in_run = factory_pull(&fx, &gh_path, &[], &[("FACTORY_BOARD", "016-001")]);
@@ -453,7 +483,7 @@ fn upstream_pull_lists_and_triages_issues_to_idea_fold_and_drop() {
 
 fn body_comment(argv: &str, stdin_log: &Path, number: &str, needle: &str) -> bool {
     argv.contains(&format!("issue comment {number}"))
-        && argv.contains("--body-file")
+        && argv.contains("--body-file -")
         && fs::read_to_string(stdin_log)
             .map(|b| b.contains(needle))
             .unwrap_or(false)

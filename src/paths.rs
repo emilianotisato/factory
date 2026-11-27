@@ -94,10 +94,43 @@ fn in_segment(b: u8) -> bool {
 
 static HOME_PREFIX: LazyLock<regex::bytes::Regex> = LazyLock::new(|| {
     regex::bytes::Regex::new(
-        r"(?i)(?:/(?:home|users)/[A-Za-z0-9._-]+/?|/mnt/[A-Za-z]/users/[A-Za-z0-9._-]+/?|[A-Za-z]:\\users\\[A-Za-z0-9._-]+\\?|/root/|\\/(?:home|users)\\/[A-Za-z0-9._-]+(?:\\/)?)",
+        r"(?:/(?:home|Users)/[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*/?|(?i)/users/[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*/?|(?i)/mnt/[A-Za-z]/users/[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*/?|(?i)[A-Za-z]:\\users\\[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*\\?|/root/|\\/(?:home|users)\\/[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*(?:\\/)?)",
     )
     .expect("home path pattern compiles")
 });
+
+/// REST path segments that look like `/users/<word>` but are not home directories.
+const USERS_ROUTE_SEGMENTS: &[&str] = &[
+    "create", "delete", "destroy", "edit", "index", "login", "logout", "me", "new", "password",
+    "register", "search", "show", "signin", "signup", "update",
+];
+
+fn first_path_segment(matched: &[u8]) -> Option<&[u8]> {
+    let rest = matched
+        .strip_prefix(b"/home/")
+        .or_else(|| matched.strip_prefix(b"/Home/"))
+        .or_else(|| matched.strip_prefix(b"/HOME/"))
+        .or_else(|| matched.strip_prefix(b"/Users/"))
+        .or_else(|| matched.strip_prefix(b"/users/"))
+        .or_else(|| matched.strip_prefix(b"/USERS/"))?;
+    let end = rest
+        .iter()
+        .position(|&b| b == b'/' || b == b'\\')
+        .unwrap_or(rest.len());
+    if end == 0 {
+        return None;
+    }
+    Some(&rest[..end])
+}
+
+fn segment_is_route_word(seg: &[u8]) -> bool {
+    let Ok(word) = std::str::from_utf8(seg) else {
+        return false;
+    };
+    USERS_ROUTE_SEGMENTS
+        .iter()
+        .any(|&w| w.eq_ignore_ascii_case(word))
+}
 
 fn leading_ok(text: &[u8], start: usize, binary: bool) -> bool {
     binary || start == 0 || !in_segment(text[start - 1])
@@ -108,11 +141,30 @@ fn trailing_ok(text: &[u8], m: &regex::bytes::Match<'_>) -> bool {
     if matched.ends_with(b"/") || matched.ends_with(b"\\") {
         return true;
     }
-    m.end() == text.len() || !in_segment(text[m.end()])
+    if m.end() == text.len() {
+        return true;
+    }
+    let next = text[m.end()];
+    if next == b'.' && (m.end() + 1 == text.len() || !in_segment(text[m.end() + 1])) {
+        return true;
+    }
+    !in_segment(next)
 }
 
 fn valid_home_match(text: &[u8], m: &regex::bytes::Match<'_>) -> bool {
-    leading_ok(text, m.start(), text.contains(&0)) && trailing_ok(text, m)
+    if !leading_ok(text, m.start(), text.contains(&0)) || !trailing_ok(text, m) {
+        return false;
+    }
+    let matched = &text[m.start()..m.end()];
+    if matched.ends_with(b".") && !matched.ends_with(b"/.") && !matched.ends_with(b"\\.") {
+        return false;
+    }
+    if let Some(seg) = first_path_segment(matched)
+        && segment_is_route_word(seg)
+    {
+        return false;
+    }
+    true
 }
 
 /// Byte offset of the first home-path prefix that starts a path in `text`.
@@ -220,6 +272,13 @@ pub fn repo_root(from: &Path) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rest_user_routes_and_sentence_periods_are_not_home_paths() {
+        assert_eq!(find_home_path(b"GET /users/create"), None);
+        assert_eq!(find_home_path(b"/users/me/edit"), None);
+        assert_eq!(home_paths_to_tilde("cwd was /home/jdoe."), "cwd was ~.");
+    }
 
     #[test]
     fn a_home_path_is_found_only_where_a_path_starts() {

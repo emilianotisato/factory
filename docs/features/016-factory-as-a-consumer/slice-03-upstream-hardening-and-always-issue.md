@@ -116,3 +116,7 @@
 At Checkpoint 2, run `cargo test --test upstream`, `cargo test --test upstream_hardening upstream_hardening_host_stdin_remotes_variants_allow_and_hash`, `cargo test --test skills_bundle`, and `claude plugin test mods/cockpit`, recording the transcript in **Progress**.
 
 **Acceptance:** Checkpoint transcript in **Progress** confirms all FR-2 integration, bundle, and cockpit tests pass (would fail if any hardening invariant or version sync were broken).
+
+**Code-review fixes (2026-11-27).**
+- `post` no longer prints the expected `--hash` in its error (forces a real `check` run).
+- Hardened `tests/upstream_hardening.rs` and `tests/upstream.rs` to assert `--body-file -`, zero `gh` on stale hash, and `github` remote screening without `--allow`.

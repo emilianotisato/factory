@@ -79,3 +79,6 @@
 At Checkpoint 1, run `cargo test --test upgrade` and `cargo test --test release` alongside the full gate and record the transcript in **Progress**. (The post-merge observation of live `.github/workflows/edge.yml` is recorded in [`qa-guide.md`](qa-guide.md) for the owner after merge.)
 
 **Acceptance:** Checkpoint transcript in **Progress** confirms every test in `tests/upgrade.rs` and `tests/release.rs` passes (would fail if receipt version check, receipt-less upgrade, `--edge`, `edge.yml`, or doc guidance were broken).
+
+**Code-review fixes (2026-11-27).**
+- `upgrade` treats unreadable `config.toml` like `ahead_hint` (`unwrap_or_default`) so a bad config no longer blocks release upgrades.

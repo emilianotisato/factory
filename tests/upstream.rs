@@ -173,8 +173,7 @@ fn post_without_a_source_checkout_opens_an_issue() {
         ),
         "{created:?}"
     );
-    assert!(created[0].contains("--body-file"));
-    assert!(created[0].contains("-"));
+    assert!(created[0].contains("--body-file -"));
     assert!(
         !created[0].contains("A second run after a clean build"),
         "body must not be on argv: {created:?}"

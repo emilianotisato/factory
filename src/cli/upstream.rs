@@ -145,7 +145,7 @@ fn post(
         say(
             out,
             &format!(
-                "not posted: --hash missing or does not match draft — run `factory upstream check {}` and pass --hash {expected}",
+                "not posted: --hash missing or does not match draft — run `factory upstream check {}` and pass the hash it prints",
                 file.display()
             ),
         )?;
@@ -217,9 +217,18 @@ fn pull_idea(repo: &Path, number: u64, out: &mut dyn Write, err: &mut dyn Write)
     let id = ideas::add(repo, &idea)?;
     let rel = format!("{}/{}.md", ideas::DIR, id);
     let commit_msg = format!("docs: add idea {id} from #{number}");
-    if let Err(e) = commit::commit(repo, std::slice::from_ref(&rel), &commit_msg) {
-        let _ = fs::remove_file(repo.join(&rel));
-        return Err(e);
+    match commit::commit(repo, std::slice::from_ref(&rel), &commit_msg) {
+        Ok(None) => {
+            let _ = fs::remove_file(repo.join(&rel));
+            return Err(Error::Msg(format!(
+                "commit refused: nothing staged for {rel}"
+            )));
+        }
+        Ok(Some(_)) => {}
+        Err(e) => {
+            let _ = fs::remove_file(repo.join(&rel));
+            return Err(e);
+        }
     }
     upstream::comment_issue(repo, number, &format!("Tracked as `{rel}`."))?;
     upstream::close_issue(repo, number, "completed")?;
@@ -255,9 +264,18 @@ fn pull_fold(
     next.push_str(&section);
     fs::write(&path, &next).map_err(crate::error::io(format!("write {}", rel)))?;
     let commit_msg = format!("docs: fold #{number} into idea {id}");
-    if let Err(e) = commit::commit(repo, std::slice::from_ref(&rel), &commit_msg) {
-        fs::write(&path, &prev).map_err(crate::error::io(format!("write {}", rel)))?;
-        return Err(e);
+    match commit::commit(repo, std::slice::from_ref(&rel), &commit_msg) {
+        Ok(None) => {
+            fs::write(&path, &prev).map_err(crate::error::io(format!("write {}", rel)))?;
+            return Err(Error::Msg(format!(
+                "commit refused: nothing staged for {rel}"
+            )));
+        }
+        Ok(Some(_)) => {}
+        Err(e) => {
+            fs::write(&path, &prev).map_err(crate::error::io(format!("write {}", rel)))?;
+            return Err(e);
+        }
     }
     upstream::comment_issue(repo, number, &format!("Folded into `{rel}`."))?;
     upstream::close_issue(repo, number, "completed")?;

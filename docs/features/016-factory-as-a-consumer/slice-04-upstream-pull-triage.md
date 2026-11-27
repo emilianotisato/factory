@@ -95,3 +95,7 @@
 At Checkpoint 2, run `cargo test --test upstream_hardening upstream_pull_lists_and_triages_issues_to_idea_fold_and_drop` alongside the full gate and record the transcript in **Progress**.
 
 **Acceptance:** Checkpoint transcript in **Progress** confirms `upstream_pull_lists_and_triages_issues_to_idea_fold_and_drop` passes (would fail if any pull list/json/idea/fold/drop behavior or guardrail were broken).
+
+**Code-review fixes (2026-11-27).**
+- `pull --idea` / `--fold` refuse when `commit` stages nothing instead of closing GitHub anyway.
+- `--drop` test compares `HEAD` before/after; pull triage tests assert stdin comments use `--body-file -`.

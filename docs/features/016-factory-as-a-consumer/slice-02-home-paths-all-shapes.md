@@ -66,3 +66,6 @@
 At Checkpoint 1, run `cargo test --test home_paths home_paths_catch_and_rewrite_no_trailing_slash_wsl_windows_root_and_json` AND `factory docs check` on this repo (confirming `docs check: clean` with 0 errors and 0 `W-HOME-PATH` warnings), recording the transcript in **Progress**.
 
 **Acceptance:** Checkpoint transcript in **Progress** confirms `home_paths_catch_and_rewrite_no_trailing_slash_wsl_windows_root_and_json` passes and `factory docs check` prints `docs check: clean` (would fail if any home-path shape failed to match/rewrite or caused a false positive on tracked `docs/`).
+
+**Code-review fixes (2026-11-27).**
+- Case-insensitive `/users/` had matched REST routes like `/users/create`; tightened Unix matching, added route-segment denylists, and fixed username/dot boundaries so sentence-ending periods rewrite to `~.` not swallowed.
