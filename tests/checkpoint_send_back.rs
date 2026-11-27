@@ -187,6 +187,8 @@ fn checkpoint_send_back_tells_respawn_why_and_rotates_stale_evidence() {
         .filter(|c| c["prompt"] == checkpoint_prompt(1))
         .collect();
     assert_eq!(cp_calls.len(), 2, "{calls:?}");
+    let (_, pack0) = pack_of(cp_calls[0]);
+    assert!(!pack0.contains("# Sent back"), "{pack0}");
     let (_, pack) = pack_of(cp_calls[1]);
     assert!(pack.contains("# Sent back"), "{pack}");
     assert!(pack.contains("Missing slices: 02"), "{pack}");
@@ -216,7 +218,7 @@ fn checkpoint_send_back_tells_respawn_why_and_rotates_stale_evidence() {
     passage::assert_unique_passage(
         "prd",
         &fs::read_to_string(skills.join("prd/SKILL.md")).unwrap(),
-        "external platform behavior",
+        "verify external platform behavior",
     );
     passage::assert_unique_passage(
         "slice",

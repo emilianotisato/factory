@@ -314,7 +314,9 @@ fn expand_rust_brace(vis: &str, prefix: &str, inner: &str) -> Vec<RustImport> {
             let local = parent.rsplit("::").next().unwrap_or(parent).to_string();
             out.push((vis.to_string(), parent.to_string(), local));
         } else if part.contains('{') {
-            let (sub, brace) = part.split_once("::{").unwrap();
+            let Some((sub, brace)) = part.split_once("::{") else {
+                continue;
+            };
             let sub_prefix = if parent.is_empty() {
                 sub.trim().to_string()
             } else {
@@ -396,8 +398,9 @@ fn js_import_items(line: &str) -> Option<Vec<JsImport>> {
 
 fn js_module_spec(raw: &str) -> Option<String> {
     let raw = raw.trim();
-    if (raw.starts_with('\'') && raw.ends_with('\''))
-        || (raw.starts_with('"') && raw.ends_with('"'))
+    if raw.len() >= 2
+        && ((raw.starts_with('\'') && raw.ends_with('\''))
+            || (raw.starts_with('"') && raw.ends_with('"')))
     {
         Some(raw[1..raw.len() - 1].to_string())
     } else {

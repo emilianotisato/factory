@@ -87,3 +87,7 @@ Add `checkpoint_send_back_tells_respawn_why_and_rotates_stale_evidence`:
 - **FR-3**: run `cargo test --test checkpoint_send_back checkpoint_send_back_tells_respawn_why_and_rotates_stale_evidence -- --nocapture && claude plugin validate mods/cockpit` and keep the transcript. Expected: passes proving send-back pack + rotation + skill phrases + zero `TS2345` warnings.
 
 **Acceptance:** after the checkpoint, the FR-3 row has transcript evidence in this slice's **Progress**.
+
+**Code-review fixes (2026-11-27).**
+- `tests/checkpoint_send_back.rs`: first checkpoint pack must not carry `# Sent back`; `/prd` needle includes `verify`.
+- `src/mods.rs`: removed false claim about `include_str!` and rebuilds.

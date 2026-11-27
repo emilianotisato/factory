@@ -47,11 +47,19 @@ static RULES: LazyLock<Vec<(Regex, String)>> = LazyLock::new(|| {
             format!("${{1}}{m}"),
         ),
         (
-            r"(?i)\b((?:set-)?cookie\s*:\s*)[^\r\n;]+",
+            r"(?i)\b((?:set-)?cookie\s*:\s*)[^\r\n]+",
             format!("${{1}}{m}"),
         ),
         (
             r"(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)",
+            m.to_string(),
+        ),
+        (
+            r"(?i)^-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*$",
+            m.to_string(),
+        ),
+        (
+            r"(?i)^-----END [A-Z0-9 ]*PRIVATE KEY-----.*$",
             m.to_string(),
         ),
         (r"\bsk-proj-[A-Za-z0-9_-]+", format!("sk-proj-{m}")),
@@ -115,7 +123,7 @@ fn walk(v: &mut Value, home: &Path, tilde: bool, ctx: WalkCtx, skip_tokens: bool
         }
         Value::Array(a) => {
             for x in a.iter_mut() {
-                walk(x, home, tilde, ctx, false);
+                walk(x, home, tilde, ctx, skip_tokens);
             }
         }
         Value::Object(o) => {
@@ -294,6 +302,10 @@ mod tests {
             format!("PRIVATE-TOKEN: {MARKER}")
         );
         assert_eq!(r("Cookie: session=abc"), format!("Cookie: {MARKER}"));
+        assert_eq!(
+            r("Cookie: theme=dark; session=SECRET"),
+            format!("Cookie: {MARKER}")
+        );
         let pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIE\n-----END RSA PRIVATE KEY-----";
         assert_eq!(r(pem), MARKER);
         for secret in [
@@ -381,7 +393,7 @@ mod tests {
                 }]
             },
             "attention": [{
-                "answer": format!("/bin/run --path /{seg}")
+                "answer": [format!("/bin/run --path /{seg}")]
             }]
         });
         all(&mut v);
@@ -392,7 +404,7 @@ mod tests {
             kept_path.contains(&seg),
             "path must not be mangled by token rules: {kept_path}"
         );
-        let kept_answer = v["attention"][0]["answer"].as_str().unwrap();
+        let kept_answer = v["attention"][0]["answer"][0].as_str().unwrap();
         assert!(
             kept_answer.contains(&seg),
             "answer must stay runnable: {kept_answer}"

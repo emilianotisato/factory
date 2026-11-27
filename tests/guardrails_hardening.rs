@@ -235,10 +235,10 @@ fn testguard_allows_additive_imports_and_denies_removals_and_in_test_edits() {
         .to_string();
     fs::write(
         root.join("tests/sample.rs"),
-        "use foo::a;\n\n#[test]\nfn existing_test() {\n    use bar::y;\n    assert!(true);\n}\n",
+        "use foo::a;\n\n#[test]\nfn existing_test() {\n    use bar::{x, y};\n    assert!(true);\n}\n",
     )
     .unwrap();
-    commit_all(root, "in-test edit");
+    commit_all(root, "in-test merge");
     assert_violation(root, &in_test_mid, "in-test use");
 
     reset_to_base(root, &base);
@@ -312,10 +312,11 @@ fn hook_denies(cmd: &str, repo: &Path, cwd: &Path) {
 fn grep_hook_allows_output_redirects_and_keeps_standalone_denied() {
     let (_d, root) = grep_repo();
     for cmd in [
-        "grep foo src > /tmp/out",
-        "grep foo src 1>> /tmp/out",
-        "grep foo src &> /tmp/out",
-        "grep foo src > /tmp/out && wc -l /tmp/out",
+        "grep -rn foo src > /tmp/out",
+        "grep -rn foo src 1>> /tmp/out",
+        "grep -rn foo src &> /tmp/out",
+        "grep -rn foo src >& /tmp/out",
+        "grep -rn foo src > /tmp/out && wc -l /tmp/out",
     ] {
         hook_allows(cmd, &root, &root);
     }

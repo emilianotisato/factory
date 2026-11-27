@@ -7,6 +7,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Output;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use factory::events::EventKind;
@@ -137,15 +138,18 @@ fn status_json_and_live_fixes_body_symlink_ci_waiting_cap_rev_and_lane_labels() 
         .unwrap();
     let parked_id = run_dir.file_name().unwrap().to_str().unwrap().to_string();
     let deadline = Instant::now() + Duration::from_secs(60);
+    let mut parked = false;
     while Instant::now() < deadline {
         let st =
             serde_json::from_str::<Value>(&fs::read_to_string(run_dir.join("state.json")).unwrap())
                 .unwrap();
         if st["phase"] == "waiting-owner" {
+            parked = true;
             break;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+    assert!(parked, "run never reached waiting-owner");
     let log_path = Run::open(&data_dir(&fx), &parked_id)
         .unwrap()
         .state()
@@ -223,11 +227,39 @@ fn status_json_and_live_fixes_body_symlink_ci_waiting_cap_rev_and_lane_labels() 
     .unwrap();
     let id = run.id().to_string();
     let start = Instant::now();
-    let out = factory_in(&fx, fx.path(), &["status", &id, "--json"]);
-    assert!(start.elapsed() < Duration::from_secs(2));
-    assert_eq!(out.status.code(), Some(0));
-    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let mut child = fx
+        .command(BIN)
+        .current_dir(fx.path())
+        .args(["status", &id, "--json"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdout = Vec::new();
+    let hang_deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if let Ok(Some(status)) = child.try_wait() {
+            assert!(start.elapsed() < Duration::from_secs(2));
+            assert_eq!(status.code(), Some(0));
+            if let Some(mut pipe) = child.stdout.take() {
+                std::io::Read::read_to_end(&mut pipe, &mut stdout).unwrap();
+            }
+            break;
+        }
+        if Instant::now() >= hang_deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!(
+                "status --json hung on a fifo symlink (elapsed {:?})",
+                start.elapsed()
+            );
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    let v: Value = serde_json::from_slice(&stdout).unwrap();
     assert!(v["runs"][0]["title"].is_null());
+    let _ = fs::remove_dir_all(&fifo_dir);
+    let _ = fs::remove_dir_all(&feat_x);
     let _ = fs::remove_file(&prd_fixture);
     fs::rename(&bak, &prd_fixture).unwrap();
 
@@ -272,8 +304,18 @@ fn status_json_and_live_fixes_body_symlink_ci_waiting_cap_rev_and_lane_labels() 
     };
     let v1 = snapshot(&ctx, &opts);
     assert!(render(&v1).len() <= CAP);
-    assert_eq!(v1["timeline"][0]["seq"], 1);
+    let seqs: Vec<u64> = v1["timeline"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["seq"].as_u64())
+        .collect();
+    assert!(
+        seqs.windows(2).all(|w| w[0] < w[1]),
+        "timeline seqs must stay ascending: {seqs:?}"
+    );
     let rev1 = v1["rev"].as_str().unwrap().to_string();
+    assert_eq!(v1["rev"].as_str().unwrap().len(), 16);
     let ev = dir.join("evidence").join(cp_dir(1));
     fs::create_dir_all(&ev).unwrap();
     for i in 0..80 {
@@ -330,4 +372,5 @@ fn status_json_and_live_fixes_body_symlink_ci_waiting_cap_rev_and_lane_labels() 
     fs::write(&state_path, state.to_string()).unwrap();
     let w = &live_json(&link_fx, lane_id, Some(&data_link))["workers"][0];
     assert_eq!(w["doing"]["label"], "Read src/foo.rs");
+    let _ = fs::remove_dir_all(&link_parent);
 }

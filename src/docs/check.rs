@@ -269,7 +269,7 @@ fn read_project(root: &Path, r: &mut Report) -> Option<Option<Project>> {
                                     Ok(re) if re.is_match("") => r.err(
                                         "E-PROJECT-INVALID",
                                         format!(
-                                            "docs/project.toml [docs] gate_failure {item:?} matches the empty string"
+                                            "docs/project.toml [docs] gate_failure {item} matches the empty string"
                                         ),
                                     ),
                                     Ok(_) => {}

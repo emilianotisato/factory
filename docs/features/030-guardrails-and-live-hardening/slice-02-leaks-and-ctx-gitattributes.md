@@ -98,3 +98,7 @@
 - **FR-2**: run `cargo test --test leaks leaks_honors_base_gitattributes_and_blocks_branch_self_silencing -- --nocapture && cargo test --test ctx ctx_refs_honors_gitattributes_generated_unless_vendor_flag_set -- --nocapture` and keep the transcript. Expected: passes proving base `.gitattributes` skipping, branch anti-tampering, and `ctx refs` vs `--vendor`.
 
 **Acceptance:** after the checkpoint, the FR-2 row has transcript evidence in this slice's **Progress**.
+
+**Code-review fixes (2026-11-27).**
+- `src/review.rs`: `check_attr --source` falls back without `--source` on git before 2.40 so `factory leaks` keeps running.
+- `tests/ctx.rs`: integration test uses `fx.command` so global gitconfig cannot flake it.

@@ -175,7 +175,20 @@ pub(crate) fn read_regular_capped(path: &Path, max_bytes: u64) -> Option<String>
     let mut limited = file.take(max_bytes);
     let mut buf = Vec::new();
     limited.read_to_end(&mut buf).ok()?;
-    String::from_utf8(buf).ok()
+    if buf.is_empty() {
+        return Some(String::new());
+    }
+    match String::from_utf8(buf) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            let valid = e.utf8_error().valid_up_to();
+            if valid == 0 {
+                None
+            } else {
+                String::from_utf8(e.into_bytes()[..valid].to_vec()).ok()
+            }
+        }
+    }
 }
 
 /// As `scan_folder`, reading each `state.toml` through `board_dir`.

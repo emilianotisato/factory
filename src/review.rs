@@ -401,9 +401,14 @@ fn check_attr_src(
         .map_err(|e| fail(format!("could not read git: {e}")))?;
     let written = writer.join().expect("the stdin writer does not panic");
     if !out.status.success() {
-        return Err(fail(
-            String::from_utf8_lossy(&out.stderr).trim().to_string(),
-        ));
+        let detail = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        if source.is_some()
+            && (detail.contains("unknown option `source`")
+                || detail.contains("unrecognized option: --source"))
+        {
+            return check_attr_src(root, None, paths);
+        }
+        return Err(fail(detail));
     }
     written.map_err(|e| fail(format!("could not write to git: {e}")))?;
     Ok(parse_check_attr(&String::from_utf8_lossy(&out.stdout)))

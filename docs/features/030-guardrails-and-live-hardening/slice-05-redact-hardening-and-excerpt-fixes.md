@@ -84,3 +84,8 @@ Add `redact_hardening_and_excerpt_gate_failure_edge_cases` proving:
 - **FR-5**: run `cargo test --test redact_and_excerpt redact_hardening_and_excerpt_gate_failure_edge_cases -- --nocapture` and keep the transcript. Expected: passes proving all redactor rules/exemptions, `excerpt` JSON/SGR fixes, and `gate_failure` empty-match rejection.
 
 **Acceptance:** after the checkpoint, the FR-5 row has transcript evidence in this slice's **Progress**.
+
+**Code-review fixes (2026-11-27).**
+- `src/live/redact.rs`: `answer` arrays honor skip_tokens; full `Cookie:` line redacted; PEM BEGIN/END lines redacted per log line.
+- `src/docs/check.rs`: `gate_failure` empty-match error shows the pattern literally, not `Debug`.
+- `src/provider.rs`: `discover_models` doc comment restored.

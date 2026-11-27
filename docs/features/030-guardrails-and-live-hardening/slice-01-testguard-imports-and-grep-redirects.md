@@ -100,3 +100,8 @@
 - **FR-1**: run `cargo test --test guardrails_hardening -- --nocapture` and keep the transcript. Expected: both `testguard_allows_additive_imports_and_denies_removals_and_in_test_edits` and `grep_hook_allows_output_redirects_and_keeps_standalone_denied` pass with full regression-corpus replay.
 
 **Acceptance:** after the checkpoint, the FR-1 row has transcript evidence in this slice's **Progress**.
+
+**Code-review fixes (2026-11-27).**
+- `src/shell.rs`: `>& file` is stdout-to-file, not descriptor duplication.
+- `src/testguard.rs`: nested `use` groups and bogus `js_module_spec` quotes no longer panic.
+- `tests/guardrails_hardening.rs`: hook allow corpus uses `grep -rn`; in-test additive import merge stays denied.

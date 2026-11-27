@@ -131,7 +131,7 @@ pub fn tokens(cmd: &str) -> Vec<Tok> {
     out
 }
 
-/// True for a descriptor duplication (`>&2`): no target word follows.
+/// True only for descriptor duplication (`>&2`, `2>&1`): `&` is followed by a fd number.
 fn redirect(chars: &mut std::iter::Peekable<std::str::Chars>) -> bool {
     while let Some(&n) = chars.peek() {
         if n == '>' || n == '<' {
@@ -142,13 +142,15 @@ fn redirect(chars: &mut std::iter::Peekable<std::str::Chars>) -> bool {
     }
     if chars.peek() == Some(&'&') {
         chars.next();
+        let mut had_fd = false;
         while chars
             .peek()
             .is_some_and(|d| d.is_ascii_digit() || *d == '-')
         {
+            had_fd = true;
             chars.next();
         }
-        return true;
+        return had_fd;
     }
     false
 }
@@ -745,6 +747,7 @@ mod tests {
         assert!(!standalone("grep foo src > /tmp/out"));
         assert!(!standalone("grep foo src 1>> /tmp/out"));
         assert!(!standalone("grep foo src &> /tmp/out"));
+        assert!(!standalone("grep foo src >& /tmp/out"));
         assert!(standalone("grep -rn foo src 2>/dev/null"));
         assert!(standalone("grep foo < /tmp/in"));
         assert!(standalone("grep foo src >&2"));

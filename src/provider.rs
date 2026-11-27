@@ -290,7 +290,6 @@ pub fn detect_installed() -> Vec<Detected> {
     detect_installed_in(&std::env::var_os("PATH").unwrap_or_default())
 }
 
-/// The CLI's own listing when it has one and answers within `timeout`; the curated list otherwise.
 fn retry_busy<T>(mut f: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
     const MAX: u32 = 5;
     for attempt in 0..MAX {
@@ -309,6 +308,7 @@ fn spawn_retry_busy(cmd: &mut Command) -> std::io::Result<std::process::Child> {
     retry_busy(|| cmd.spawn())
 }
 
+/// The CLI's own listing when it has one and answers within `timeout`; the curated list otherwise.
 pub fn discover_models(provider: Provider, bin: &Path, timeout: Duration) -> Vec<String> {
     let curated = || {
         provider

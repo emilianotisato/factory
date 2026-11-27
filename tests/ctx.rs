@@ -893,7 +893,8 @@ fn ctx_refs_honors_gitattributes_generated_unless_vendor_flag_set() {
     commit("main");
 
     let refs = |args: &[&str]| {
-        let out = Command::new(BIN)
+        let out = fx
+            .command(BIN)
             .arg("ctx")
             .args(args)
             .current_dir(root)

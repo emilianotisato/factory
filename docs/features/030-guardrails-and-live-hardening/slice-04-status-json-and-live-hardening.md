@@ -80,3 +80,7 @@ Add `status_json_and_live_fixes_body_symlink_ci_waiting_cap_rev_and_lane_labels`
 - **FR-4**: run `cargo test --test status_and_live_hardening status_json_and_live_fixes_body_symlink_ci_waiting_cap_rev_and_lane_labels -- --nocapture` and keep the transcript. Expected: passes proving `status --json` body/phase + FIFO non-hang, post-fix `ci.state == "waiting"`, `--since` cap + post-cap `rev`, and symlink lane-relative labels.
 
 **Acceptance:** after the checkpoint, the FR-4 row has transcript evidence in this slice's **Progress**.
+
+**Code-review fixes (2026-11-27).**
+- `src/docs/board.rs` / `src/docs/state.rs`: capped regular-file reads for `prd.md` and `state.toml`; invalid UTF-8 at cap boundary truncates safely.
+- `tests/status_and_live_hardening.rs`: FIFO check uses a 2s child timeout; waiting-owner wait asserts; temp dir cleanup.

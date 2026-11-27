@@ -13,7 +13,6 @@ pub const COCKPIT_FILES: &[(&str, &str)] = &[
         "hooks/register.tsx",
         include_str!("../mods/cockpit/hooks/register.tsx"),
     ),
-    // Byte snapshot; `include_str!` does not invalidate this crate when the file changes.
     (
         "tests/cockpit.test.tsx",
         include_str!("../mods/cockpit/tests/cockpit.test.tsx"),
