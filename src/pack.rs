@@ -410,13 +410,14 @@ impl Pack {
             .replace("{NNN}", &feature)
             .replace("{n}", &n.to_string());
 
+        let prefixed = env_prefixed(lane_env, inner.trim());
         let mut body = vec![
             format!(
                 "# Gate failure\n\n<!-- checkpoint {n}, gate attempt {attempt}: {} -->\n\n\
                      Gate command: `{}`\nInner command: `{}`\n\n```\n{}\n```",
                 gate_log.display(),
                 gate.trim(),
-                inner.trim(),
+                prefixed.trim(),
                 tail(&log_text, TAIL_LINES).trim_end()
             ),
             log_section(docs, board)?,
@@ -424,7 +425,7 @@ impl Pack {
             format!("# Autonomy\n\n{}", autonomy()),
         ];
         push_lane_env(&mut body, lane_env);
-        body.push(format!("# Inner loop\n\n{}", inner.trim()));
+        body.push(format!("# Inner loop\n\n{}", prefixed));
         let (text, parts) = assemble("<!-- factory-pack files: -->\n\n".to_string(), body);
 
         fs::create_dir_all(packs_dir).map_err(io(format!("mkdir {}", packs_dir.display())))?;
@@ -704,8 +705,10 @@ impl Pack {
         retro_template: &str,
         packs_dir: &Path,
         spawn: u32,
+        lane_env: &[(String, String)],
     ) -> Result<Pack> {
         let feature = format!("{:03}", board.number);
+        let inner = docs.gate_inner()?;
         let prd_rel = format!("{}/prd.md", board.dir);
         let repo = docs.root();
         let base_ref = crate::commit::resolve_base_ref(repo, Some(default_branch))
@@ -745,21 +748,27 @@ impl Pack {
             PR_BODY.trim_end()
         );
         // Two header lines: the polish stub reads the run dir from the second.
+        let mut sections = vec![
+            branch,
+            format!("# Collected\n\n{}", collected.trim_end()),
+            log_section(docs, board)?,
+            retro,
+            pr_body,
+            format!("# Contract\n\n{}", contract.trim_end()),
+            format!("# Autonomy\n\n{}", autonomy()),
+        ];
+        push_lane_env(&mut sections, lane_env);
+        sections.push(format!(
+            "# Inner loop\n\n{}",
+            env_prefixed(lane_env, inner.trim())
+        ));
         let (text, parts) = assemble(
             format!(
                 "<!-- factory-pack files: {} -->\n<!-- run dir: {} -->\n\n",
                 files.join(","),
                 run_dir.display()
             ),
-            vec![
-                branch,
-                format!("# Collected\n\n{}", collected.trim_end()),
-                log_section(docs, board)?,
-                retro,
-                pr_body,
-                format!("# Contract\n\n{}", contract.trim_end()),
-                format!("# Autonomy\n\n{}", autonomy()),
-            ],
+            sections,
         );
 
         fs::create_dir_all(packs_dir).map_err(io(format!("mkdir {}", packs_dir.display())))?;
@@ -2016,10 +2025,26 @@ mod tests {
             ["slice", "block_and_answer", "prd_sections"]
         );
 
-        let fix = Pack::for_fix(&docs, &board, 1, 1, &log, &packs, 1).unwrap();
+        let lane_env = vec![(
+            "CARGO_TARGET_DIR".to_string(),
+            "/tmp/lane/target".to_string(),
+        )];
+        let fix = Pack::for_fix_env(&docs, &board, 1, 1, &log, &packs, 1, &lane_env).unwrap();
+        let fix_text = fs::read_to_string(&fix.path).unwrap();
+        assert!(
+            fix_text.contains("export CARGO_TARGET_DIR=/tmp/lane/target; ./gate.sh --inner"),
+            "{fix_text}"
+        );
         assert_eq!(
             sections_of(&fix),
-            ["gate_failure", "log", "contract", "autonomy", "inner_loop"]
+            [
+                "gate_failure",
+                "log",
+                "contract",
+                "autonomy",
+                "lane_env",
+                "inner_loop"
+            ]
         );
         let cp = Pack::for_checkpoint(
             &docs,
@@ -2046,6 +2071,10 @@ mod tests {
                 "autonomy"
             ]
         );
+        let polish_env = vec![(
+            "CARGO_TARGET_DIR".to_string(),
+            "/tmp/lane/target".to_string(),
+        )];
         let polish = Pack::for_polish(
             &docs,
             &board,
@@ -2056,8 +2085,14 @@ mod tests {
             "# Retro",
             &packs,
             1,
+            &polish_env,
         )
         .unwrap();
+        let polish_text = fs::read_to_string(&polish.path).unwrap();
+        assert!(polish_text.contains("# Lane env"));
+        assert!(
+            polish_text.contains("export CARGO_TARGET_DIR=/tmp/lane/target; ./gate.sh --inner")
+        );
         assert_eq!(
             sections_of(&polish),
             [
@@ -2067,7 +2102,9 @@ mod tests {
                 "retro",
                 "pr_body",
                 "contract",
-                "autonomy"
+                "autonomy",
+                "lane_env",
+                "inner_loop"
             ]
         );
         let ci = Pack::for_ci_fix(&docs, &board, 1, 1, "test", "red — ✗\n", &packs, 1).unwrap();
@@ -2282,6 +2319,7 @@ mod tests {
                 "# Retro",
                 &packs,
                 1,
+                &[],
             )
             .unwrap(),
             Pack::for_ci_fix(&docs, &board, 1, 1, "test", "red\n", &packs, 1).unwrap(),

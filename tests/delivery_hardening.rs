@@ -385,10 +385,17 @@ fn docs_check_feature_ctx_def_generated_leaks_attributes_and_local_pr_note() {
         &deliver,
         "Also strip any skip-CI lines from GitHub's default squash-merge commit message so `main` workflows still run on merge.",
     );
+    let version = env!("CARGO_PKG_VERSION");
+    let register =
+        fs::read_to_string(crate_root().join("mods/cockpit/hooks/register.tsx")).unwrap();
     assert!(
-        fs::read_to_string(crate_root().join("mods/cockpit/hooks/register.tsx"))
-            .unwrap()
-            .contains("0.20.0")
+        register.contains(&format!("const MOD_VERSION = '{version}'")),
+        "register.tsx must track CARGO_PKG_VERSION"
+    );
+    let lock = fs::read_to_string(crate_root().join("skills/bundle.lock")).unwrap();
+    assert!(
+        lock.contains(version),
+        "skills/bundle.lock should list the crate version after relock"
     );
 }
 

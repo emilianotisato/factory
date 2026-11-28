@@ -1,10 +1,15 @@
 use std::env;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
+
+#[cfg(unix)]
+use std::os::unix::io::AsRawFd;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 
 use clap::Subcommand;
 
@@ -277,19 +282,20 @@ pub fn detect_shell_clobber(
     for (k, _) in &vars {
         script.push_str(&format!("printf '__FACTORY_ENV_{k}__=%s\\n' \"${k}\"; "));
     }
+    let deadline = Instant::now() + CLOBBER_TIMEOUT;
     let mut child = match Command::new(shell)
         .args(["-lic", &script])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .envs(vars.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .process_group(0)
         .spawn()
     {
         Ok(c) => c,
         Err(_) => return Vec::new(),
     };
     let stdout = child.stdout.take();
-    let deadline = Instant::now() + CLOBBER_TIMEOUT;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
@@ -297,6 +303,10 @@ pub fn detect_shell_clobber(
                 thread::sleep(Duration::from_millis(50));
             }
             Ok(None) => {
+                #[cfg(unix)]
+                unsafe {
+                    libc::kill(-(child.id() as i32), libc::SIGKILL);
+                }
                 let _ = child.kill();
                 let _ = child.wait();
                 return Vec::new();
@@ -307,10 +317,7 @@ pub fn detect_shell_clobber(
     if !status.success() {
         return Vec::new();
     }
-    let mut buf = Vec::new();
-    if let Some(mut pipe) = stdout {
-        let _ = pipe.read_to_end(&mut buf);
-    }
+    let buf = stdout.map_or_else(Vec::new, |pipe| read_probe_stdout(pipe, deadline));
     let text = String::from_utf8_lossy(&buf);
     let mut got: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for line in text.lines().rev() {
@@ -331,6 +338,54 @@ pub fn detect_shell_clobber(
         }
     }
     clobbered
+}
+
+#[cfg(unix)]
+fn set_pipe_nonblocking(fd: std::os::fd::RawFd) {
+    unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFL);
+        if flags >= 0 {
+            libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn read_probe_stdout(mut pipe: impl Read + AsRawFd, deadline: Instant) -> Vec<u8> {
+    set_pipe_nonblocking(pipe.as_raw_fd());
+    let mut buf = Vec::new();
+    let mut scratch = [0u8; 4096];
+    loop {
+        if Instant::now() >= deadline {
+            break;
+        }
+        match pipe.read(&mut scratch) {
+            Ok(0) => break,
+            Ok(n) => buf.extend_from_slice(&scratch[..n]),
+            Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(20));
+            }
+            Err(_) => break,
+        }
+    }
+    buf
+}
+
+#[cfg(not(unix))]
+fn read_probe_stdout(mut pipe: impl Read, deadline: Instant) -> Vec<u8> {
+    let mut buf = Vec::new();
+    let mut scratch = [0u8; 4096];
+    loop {
+        if Instant::now() >= deadline {
+            break;
+        }
+        match pipe.read(&mut scratch) {
+            Ok(0) => break,
+            Ok(n) => buf.extend_from_slice(&scratch[..n]),
+            Err(_) => break,
+        }
+    }
+    buf
 }
 
 fn format_bytes(n: u64) -> String {

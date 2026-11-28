@@ -1757,6 +1757,7 @@ fn base_ref_resolver_handles_origin_only_default_branch_across_leaks_review_retr
         "# Retro",
         &packs,
         1,
+        &[],
     )
     .expect("polish pack");
     let text = fs::read_to_string(&pack.path).unwrap();

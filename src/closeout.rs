@@ -260,6 +260,7 @@ fn polish(
             &template,
             &packs,
             spawn,
+            &lane_def.env_for(&lane_dir),
         )?;
         let open_before: HashSet<String> = open_blocks(&feature_dir)?
             .into_iter()

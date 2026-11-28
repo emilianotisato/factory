@@ -62,3 +62,11 @@
 At Checkpoint 2, run `cargo test --test delivery_hardening docs_set_clears_stale_reviewed_head_resolves_head_and_log_add_explains_main_checkout` alongside the full gate and record the transcript in **Progress**.
 
 **Acceptance:** Checkpoint 2 transcript in **Progress** confirms `docs_set_clears_stale_reviewed_head_resolves_head_and_log_add_explains_main_checkout` passes (would fail if `reviewed_head` clearing/resolution, `closeout::ship` write, or `docs log add` lane message were broken).
+
+**Code-review fixes (2026-11-28).**
+
+- Second opinion: `detect_shell_clobber` runs the login shell in its own process group, SIGKILLs the group on timeout, and caps stdout reads inside the same 3 s window so a background job cannot hang `lanes up --prove` or steal Ctrl-C from `factory`.
+- Second opinion: `Pack::for_polish` and `Pack::for_fix_env` carry `# Lane env` and a prefixed `# Inner loop`; `closeout` passes `lane_def.env_for` into polish.
+- Second opinion: `Lane::run_setup_capped` uses `env_for(dir)`; empty `CARGO_TARGET_DIR=` is dropped so cargo does not litter the worktree root.
+- Second opinion: `delivery_hardening` pins cockpit/bundle versions to `CARGO_PKG_VERSION` instead of a literal semver.
+- Second opinion: `settled` unit git fixture isolates global git config and checks commit exit codes.

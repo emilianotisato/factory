@@ -100,13 +100,16 @@ impl Lane {
     pub fn env_for(&self, lane_dir: &Path) -> Vec<(String, String)> {
         self.env()
             .into_iter()
-            .map(|(k, v)| {
+            .filter_map(|(k, v)| {
+                if k == "CARGO_TARGET_DIR" && v.is_empty() {
+                    return None;
+                }
                 if k == "CARGO_TARGET_DIR" && !Path::new(&v).is_absolute() {
                     let resolved = std::path::absolute(lane_dir.join(&v))
                         .unwrap_or_else(|_| lane_dir.join(&v));
-                    (k, resolved.to_string_lossy().into_owned())
+                    Some((k, resolved.to_string_lossy().into_owned()))
                 } else {
-                    (k, v)
+                    Some((k, v))
                 }
             })
             .collect()
@@ -144,7 +147,7 @@ impl Lane {
         let (mut command, _) = crate::memcap::shell_command(cmd, limit, None);
         command
             .current_dir(dir)
-            .envs(self.env())
+            .envs(self.env_for(dir))
             .output()
             .map(Some)
             .map_err(|e| Error::Tool {

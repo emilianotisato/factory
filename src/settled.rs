@@ -413,25 +413,29 @@ mod tests {
 
     #[test]
     fn last_reviewed_advances_when_only_reviewed_head_is_cleared() {
+        use std::path::Path;
         use std::process::Command;
+
+        fn git_cmd(repo: &Path, args: &[&str]) -> Command {
+            let mut cmd = Command::new("git");
+            cmd.args(args)
+                .current_dir(repo)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_SYSTEM", "/dev/null");
+            cmd
+        }
 
         let tmp = tempfile::tempdir().unwrap();
         let repo = tmp.path();
-        Command::new("git")
-            .args(["init", "-q", "-b", "main"])
-            .current_dir(repo)
+        git_cmd(repo, &["init", "-q", "-b", "main"])
             .status()
-            .unwrap();
-        Command::new("git")
-            .args(["config", "user.email", "t@example.invalid"])
-            .current_dir(repo)
+            .expect("git init");
+        git_cmd(repo, &["config", "user.email", "t@example.invalid"])
             .status()
-            .unwrap();
-        Command::new("git")
-            .args(["config", "user.name", "t"])
-            .current_dir(repo)
+            .expect("git config email");
+        git_cmd(repo, &["config", "user.name", "t"])
             .status()
-            .unwrap();
+            .expect("git config name");
         let dir = "docs/features/001-x";
         std::fs::create_dir_all(repo.join(dir)).unwrap();
         std::fs::write(repo.join("docs/project.toml"), "[docs]\nframework = 3\n").unwrap();
@@ -445,37 +449,30 @@ mod tests {
             "status = \"draft\"\nreviewed = \"2026-11-27\"\nreviewed_head = \"abc1234\"\n",
         )
         .unwrap();
-        Command::new("git")
-            .args(["add", "-A"])
-            .current_dir(repo)
+        git_cmd(repo, &["add", "-A"])
             .status()
-            .unwrap();
-        Command::new("git")
-            .args(["commit", "-q", "-m", "seed"])
-            .current_dir(repo)
+            .expect("git add seed");
+        git_cmd(repo, &["commit", "-q", "-m", "seed"])
             .status()
-            .unwrap();
+            .expect("git commit seed");
         std::fs::write(
             repo.join(dir).join("state.toml"),
             "status = \"draft\"\nreviewed = \"2026-11-27\"\n",
         )
         .unwrap();
-        Command::new("git")
-            .args(["add", "-A"])
-            .current_dir(repo)
+        git_cmd(repo, &["add", "-A"])
             .status()
-            .unwrap();
-        Command::new("git")
-            .args(["commit", "-q", "-m", "docs: clear stale reviewed_head"])
-            .current_dir(repo)
-            .status()
-            .unwrap();
+            .expect("git add clear");
+        git_cmd(
+            repo,
+            &["commit", "-q", "-m", "docs: clear stale reviewed_head"],
+        )
+        .status()
+        .expect("git commit clear");
         let head = String::from_utf8(
-            Command::new("git")
-                .args(["rev-parse", "HEAD"])
-                .current_dir(repo)
+            git_cmd(repo, &["rev-parse", "HEAD"])
                 .output()
-                .unwrap()
+                .expect("git rev-parse")
                 .stdout,
         )
         .unwrap()
