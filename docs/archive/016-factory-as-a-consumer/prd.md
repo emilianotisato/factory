@@ -9,6 +9,7 @@ authorized_tests: ["mods/cockpit/tests/cockpit.test.tsx", "tests/upgrade.rs::no_
 summary: |
   Lets the owner run `factory` as a normal consumer: adds a rolling `edge` prerelease workflow on `main` pushes (`factory upgrade --edge`), fixes receipt-vs-source detection and allows `factory upgrade` to install from GitHub Releases even without an existing receipt (stripping `/bin` for cargo-home layout, retiring the `cargo install` rule from `CLAUDE.md`/`AGENTS.md`); makes `factory upstream post` always open a GitHub issue (removing the `[source]` local shortcut) and adds `factory upstream pull` (list/`--json` + `idea`/`fold`/`drop` triage closing issues with comments); hardens `factory upstream` (`github.com/` host, `--body-file -` stdin, all remotes, spelling variants + `--allow`, required `--hash` from `check`, and `skills/harvest/SKILL.md` + `0.19.0` bump); and extends `paths.rs` home-path detection/rewriting to all shapes including no trailing slash.
 ---
+> **History.** The code, `docs/reference` and `docs/decisions.md` win over this document.
 
 # PRD-016 — Factory as a consumer
 

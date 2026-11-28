@@ -8,7 +8,7 @@ Written by `/deliver` in the closeout commit, from the agent's side of the run.
 
 | Step | Cost | Caught | Verdict |
 |---|---|---|---|
-| Inner loop, per slice | | CP-1 mutation on bare `/home/x`; CP-2 mutation on pull list assertion | keep |
+| Inner loop, per slice | | CP-1 mutation on bare `~`; CP-2 mutation on pull list assertion | keep |
 | Checkpoints (full gate) | | nothing at CP-2 after slice-04 | keep |
 | Prove, at checkpoints | | | keep |
 | Polish — local review | | paths `/users/create` false positive; post hash bypass; empty `commit` before `gh` close | tune |
@@ -22,7 +22,7 @@ Written by `/deliver` in the closeout commit, from the agent's side of the run.
 ## Where I guessed
 
 - **Autonomy Never vs edge.yml defect:** Second opinion flagged BSD `sed -i` as ship-blocking on macOS matrix legs; worker contract forbids editing `.github/workflows/**`. Parked as `docs/ideas/2026-11-27-edge-yml-bsd-sed-i-breaks-macos-matrix-legs.md` and listed under **Needs your review** instead of blocking the run.
-- **`/users/ana` on Linux:** PRD wanted case-insensitive `users` on Unix; polish split case on `Users` vs `users` and used a route-segment denylist rather than reopening the interview.
+- **`~` on Linux:** PRD wanted case-insensitive `users` on Unix; polish split case on `Users` vs `users` and used a route-segment denylist rather than reopening the interview.
 - **Pull retry after partial `gh` failure:** Accepted ship-with-documented risk — commit-before-close is intentional; duplicate idea on retry is real but needs a heavier idempotency design.
 
 ## What I wished existed

@@ -9,6 +9,7 @@ authorized_tests: ["mods/cockpit/tests/cockpit.test.tsx"]
 summary: |
   Hardens unattended runs and daily CLI ergonomics: resolves and surfaces lane env (including absolute `CARGO_TARGET_DIR`) in all worker packs (`export K=V;`) and warns in `factory lanes up --prove` when `$SHELL -lic` clobbers declared lane vars; defers checkpoint Prove rows for FRs with pending/building slices (scanning Prove + pre-Depends-on Source), lets clean-tree `run` Prove rows cite the full green gate log, and adds the two UI Prove rules to `skills/slice/SKILL.md`; clears stale `reviewed_head` on `docs set reviewed=<date>` (matching `^reviewed(_head)? =` in `settled::last_reviewed`, resolving `reviewed_head=HEAD` against cwd's repo, and reporting `closeout::ship` write errors), clarifies `docs log add` main-checkout output and worker contracts; adds `factory docs check [FEATURE]`, shared `ctx::def` linguist-generated filtering, `-c core.attributesFile=` isolation in `review::check_attr_src`, a token-free squash-merge skip-CI reminder in `closeout` and `skills/deliver/SKILL.md`, and bumps `0.19.0` → `0.20.0`.
 ---
+> **History.** The code, `docs/reference` and `docs/decisions.md` win over this document.
 
 # PRD-031 — Delivery and lane hardening
 
