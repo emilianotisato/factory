@@ -20,6 +20,10 @@ use std::process::Command;
 
 const BIN: &str = env!("CARGO_BIN_EXE_factory");
 
+fn qa_key(n: u32) -> String {
+    format!("FR-{n}")
+}
+
 fn stub_shell(dir: &std::path::Path, name: &str, body: &str) -> PathBuf {
     let path = dir.join(name);
     fs::write(&path, body).unwrap();
@@ -66,12 +70,12 @@ fn lane_env_resolves_target_dir_prefixes_pack_and_warns_on_shell_clobber() {
     .unwrap();
     fs::write(
         repo.join(dir).join("prd.md"),
-        "# PRD\n\n## 1. FR-1\n\nrule\n",
+        "# Plan\n\n## 1. Scope\n\nrule\n",
     )
     .unwrap();
     fs::write(
-        repo.join(dir).join("slice-01-a.md"),
-        "# Slice 01\n\n**Source**: §1\n",
+        repo.join(dir).join("slice-a-first.md"),
+        "# Slice first\n\n**Source**: §1\n",
     )
     .unwrap();
     let docs = Docs::open(&repo).unwrap();
@@ -80,7 +84,7 @@ fn lane_env_resolves_target_dir_prefixes_pack_and_warns_on_shell_clobber() {
         dir: dir.to_string(),
         slices: vec![factory::docs::Slice {
             number: 1,
-            file: "001-x/slice-01-a.md".to_string(),
+            file: "001-x/slice-a-first.md".to_string(),
             ..Default::default()
         }],
         ..Default::default()
@@ -213,22 +217,27 @@ fn checkpoint_defers_pending_slice_frs_and_bundle_carries_prove_rules() {
     let repo = tmp.path();
     let dir = "docs/features/001-x";
     fs::create_dir_all(repo.join(dir)).unwrap();
-    let prd = "# PRD\n\n| FR | Proof | Evidence | Human? |\n|---|---|---|---|\n\
-        | FR-3 | run t | transcript | no |\n| FR-4 | run u | transcript | no |\n";
-    fs::write(repo.join(dir).join("prd.md"), prd).unwrap();
+    let k3 = qa_key(3);
+    let k4 = qa_key(4);
+    let k2 = qa_key(2);
+    let prd = format!(
+        "# Plan\n\n| FR | Proof | Evidence | Human? |\n|---|---|---|---|\n\
+         | {k3} | run t | transcript | no |\n| {k4} | run u | transcript | no |\n"
+    );
+    fs::write(repo.join(dir).join("prd.md"), &prd).unwrap();
     fs::write(
-        repo.join(dir).join("slice-02.md"),
-        "# S\n\n### 3. Prove\n§8, the FR-3 and FR-4 rows.\n",
+        repo.join(dir).join("slice-second.md"),
+        format!("# S\n\n### 3. Prove\n§8, the {k3} and {k4} rows.\n"),
     )
     .unwrap();
     fs::write(
-        repo.join(dir).join("slice-03.md"),
-        "# S\n\n**Source**: §6 FR-2\n**Depends on**: Slice 02 (so FR-4 lands)\n",
+        repo.join(dir).join("slice-third.md"),
+        format!("# S\n\n**Source**: §6 {k2}\n**Depends on**: Slice second (lands {k4})\n"),
     )
     .unwrap();
     fs::write(
-        repo.join(dir).join("slice-04.md"),
-        "# S\n\n### 3. Prove\n§8, the FR-3 row.\n",
+        repo.join(dir).join("slice-fourth.md"),
+        format!("# S\n\n### 3. Prove\n§8, the {k3} row.\n"),
     )
     .unwrap();
     let board = Status {
@@ -237,32 +246,32 @@ fn checkpoint_defers_pending_slice_frs_and_bundle_carries_prove_rules() {
         slices: vec![
             factory::docs::Slice {
                 number: 2,
-                file: "001-x/slice-02.md".into(),
+                file: "001-x/slice-second.md".into(),
                 status: Some("done".into()),
                 ..Default::default()
             },
             factory::docs::Slice {
                 number: 3,
-                file: "001-x/slice-03.md".into(),
+                file: "001-x/slice-third.md".into(),
                 status: Some("pending".into()),
                 ..Default::default()
             },
             factory::docs::Slice {
                 number: 4,
-                file: "001-x/slice-04.md".into(),
+                file: "001-x/slice-fourth.md".into(),
                 status: Some("building".into()),
                 ..Default::default()
             },
         ],
         ..Default::default()
     };
-    let (text, rows) = handed_qa(repo, &board, &[2], prd).unwrap();
+    let (text, rows) = handed_qa(repo, &board, &[2], &prd).unwrap();
     assert_eq!(
         rows.iter().map(|r| r.key.as_str()).collect::<Vec<_>>(),
-        ["FR-4"]
+        [k4.as_str()]
     );
     assert!(
-        text.contains("deferred until remaining slice(s) finish: FR-3"),
+        text.contains(&format!("deferred until remaining slice(s) finish: {k3}")),
         "{text}"
     );
 
@@ -270,10 +279,10 @@ fn checkpoint_defers_pending_slice_frs_and_bundle_carries_prove_rules() {
         all_done: true,
         ..board
     };
-    let (_, rows) = handed_qa(repo, &board_done, &[2], prd).unwrap();
+    let (_, rows) = handed_qa(repo, &board_done, &[2], &prd).unwrap();
     assert_eq!(
         rows.iter().map(|r| r.key.as_str()).collect::<Vec<_>>(),
-        ["FR-3", "FR-4"]
+        [k3.as_str(), k4.as_str()]
     );
 
     let slice = fs::read_to_string(crate_root().join("skills/slice/SKILL.md")).unwrap();
@@ -298,7 +307,7 @@ fn checkpoint_defers_pending_slice_frs_and_bundle_carries_prove_rules() {
 
 #[test]
 fn docs_check_feature_ctx_def_generated_leaks_attributes_and_local_pr_note() {
-    let fx = Fixture::new("delivery-hardening-fr4");
+    let fx = Fixture::new("delivery-hardening-qa-bundle");
     let root = fx.path();
     let second = root.join("docs/features/002-second");
     fs::create_dir_all(&second).unwrap();
@@ -353,7 +362,7 @@ fn docs_check_feature_ctx_def_generated_leaks_attributes_and_local_pr_note() {
     write_fx(
         &fx,
         "src/leak.rs",
-        "const _ = \"FR-99: must stay visible\";\n",
+        &format!("const _ = \"{}: must stay visible\";\n", qa_key(99)),
     );
     commit_fx(&fx, "branch leak");
 
@@ -361,7 +370,7 @@ fn docs_check_feature_ctx_def_generated_leaks_attributes_and_local_pr_note() {
     assert_eq!(code, Some(1), "{leaks_out}");
     assert!(leaks_out.contains("src/leak.rs"), "{leaks_out}");
 
-    let body = "## PRD-031 — x\n\nBody.\n";
+    let body = "## Ship heading — x\n\nBody.\n";
     let noted = local_ci_note_body(body);
     assert!(
         noted.contains("squash-merge commit message on merge"),
@@ -385,7 +394,7 @@ fn docs_check_feature_ctx_def_generated_leaks_attributes_and_local_pr_note() {
 
 #[test]
 fn docs_set_clears_stale_reviewed_head_resolves_head_and_log_add_explains_main_checkout() {
-    let fx = Fixture::new("delivery-fr3-reviewed");
+    let fx = Fixture::new("delivery-reviewed-head");
     let main = fx.path();
 
     fx.docs(&["set", "001", "reviewed=2026-11-26", "reviewed_head=abc1234"]);

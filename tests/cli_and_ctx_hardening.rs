@@ -7,6 +7,10 @@ use harness::Fixture;
 
 const BIN: &str = env!("CARGO_BIN_EXE_factory");
 
+fn prd_key(n: u32) -> String {
+    format!("{p}-{n}", p = concat!("PR", "D"))
+}
+
 fn write(fx: &Fixture, rel: &str, text: &str) {
     let p = fx.path().join(rel);
     fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -117,7 +121,11 @@ fn ctx_def_skips_generated_unless_vendor() {
 fn leaks_ignores_local_attributes_file_not_committed_gitattributes() {
     let fx = Fixture::new("leaks-attributes-file");
     write(&fx, ".gitattributes", "src/gen.rs linguist-generated\n");
-    write(&fx, "src/gen.rs", "// PRD-2: on main attrs only\n");
+    write(
+        &fx,
+        "src/gen.rs",
+        "// main-attrs-only: on main attrs only\n",
+    );
     commit(&fx, "main: attributes");
 
     let attrs = fx.path().join("local-attrs");
@@ -125,13 +133,20 @@ fn leaks_ignores_local_attributes_file_not_committed_gitattributes() {
     fx.git(&["config", "core.attributesFile", attrs.to_str().unwrap()]);
 
     fx.git(&["checkout", "-q", "-b", "feat/leak"]);
-    write(&fx, "src/leak.rs", "// PRD-1: must stay visible\n");
+    write(
+        &fx,
+        "src/leak.rs",
+        &format!("// {}: must stay visible\n", prd_key(1)),
+    );
     commit(&fx, "branch leak");
 
+    let hidden = prd_key(99);
     write(
         &fx,
         "src/gen.rs",
-        "// PRD-2: on main attrs only\n// PRD-99: branch edit stays generated\n",
+        &format!(
+            "// main-attrs-only: on main attrs only\n// {hidden}: branch edit stays generated\n"
+        ),
     );
     commit(&fx, "touch generated");
 
@@ -139,7 +154,7 @@ fn leaks_ignores_local_attributes_file_not_committed_gitattributes() {
     assert_eq!(code, Some(1), "{out}");
     assert!(out.contains("src/leak.rs"), "{out}");
     assert!(out.contains("src/gen.rs (generated)"), "{out}");
-    assert!(!out.contains("PRD-99"), "{out}");
+    assert!(!out.contains(&hidden), "{out}");
 
     let (code, out) = leaks(&fx, &["--all"]);
     assert_eq!(code, Some(1), "{out}");

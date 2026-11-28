@@ -3,7 +3,7 @@
 **Source**: [`prd.md`](prd.md) → §4 (FR-2) and §6 (FR-4 PR-body note, `skills/deliver/SKILL.md`, `0.20.0` version bump). **Depends on**: Slice 01 (same files: `src/pack.rs`, `src/closeout.rs`, `tests/delivery_hardening.rs`)
 **Created**: 2026-11-27
 
-**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
+**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_ · cp-2/FR-1/transcript.txt · cp-2/FR-2/checkpoint.txt · cp-2/FR-2/skills_bundle.txt · cp-2/FR-4/delivery_hardening.txt · cp-2/FR-4/cockpit.txt
 
 **Slice**: Finishes FR-2 and FR-4: defers checkpoint Prove rows for FRs still owned by incomplete slices (scanning `Prove` + pre-`Depends on` `**Source**:`), lets clean-tree checkpoint `run` Prove rows cite the full green gate log file, adds the two UI Prove rules to `skills/slice/SKILL.md`, adds a token-free squash-merge skip-CI note to `closeout` PR bodies (`ci = local`) and `skills/deliver/SKILL.md`, and bumps `0.19.0` → `0.20.0` with an offline-safe `skills/bundle.lock` relock. Leaves FR-3 (`reviewed_head` & `docs log add`) to Slice 04.
 
