@@ -883,6 +883,14 @@ pub fn progress_line(slice_text: &str) -> Option<&str> {
         .find(|l| l.trim_start().starts_with("**Progress**"))
 }
 
+pub fn source_before_depends(slice_text: &str) -> &str {
+    let end = slice_text
+        .find("**Depends on**")
+        .unwrap_or(slice_text.len());
+    let head = &slice_text[..end];
+    head.find("**Source**:").map(|i| &head[i..]).unwrap_or("")
+}
+
 pub fn fr_ids(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut rest = text;
@@ -922,7 +930,36 @@ pub fn handed_qa(
             }
         }
     }
-    Ok(qa_rows(prd_text, Some(&named[..])))
+    let tail = covers.iter().copied().max().unwrap_or(0);
+    let mut incomplete: Vec<String> = Vec::new();
+    for s in &board.slices {
+        if s.status.as_deref() == Some("done") || s.number <= tail.saturating_add(1) {
+            continue;
+        }
+        let slice_text = read(&repo.join(format!("docs/features/{}", s.file)))?;
+        for id in fr_ids(prove_section(&slice_text))
+            .into_iter()
+            .chain(fr_ids(source_before_depends(&slice_text)))
+        {
+            if !incomplete.contains(&id) {
+                incomplete.push(id);
+            }
+        }
+    }
+    let deferred: Vec<String> = named
+        .iter()
+        .filter(|id| incomplete.contains(id))
+        .cloned()
+        .collect();
+    named.retain(|id| !incomplete.contains(id));
+    let (mut qa_text, rows) = qa_rows(prd_text, Some(&named[..]));
+    if !deferred.is_empty() {
+        qa_text.push_str(&format!(
+            "\n(deferred until remaining slice(s) finish: {})",
+            deferred.join(", ")
+        ));
+    }
+    Ok((qa_text, rows))
 }
 
 /// The QA plan rows handed to a checkpoint, each printed with its key: the rows whose first cell names an id in
@@ -1391,6 +1428,188 @@ mod tests {
         let (text, rows) = qa_rows("# PRD\n\nno table\n", None);
         assert!(rows.is_empty());
         assert_eq!(text, "(the PRD has no QA plan table)");
+    }
+
+    #[test]
+    fn source_before_depends_ignores_fr_ids_after_the_depends_line() {
+        let text = "**Source**: §4 FR-2\n**Depends on**: Slice 02 (so FR-4 ships)\n";
+        assert_eq!(fr_ids(source_before_depends(text)), ["FR-2"]);
+        assert!(fr_ids(prove_section(text)).is_empty());
+    }
+
+    #[test]
+    fn a_pending_slices_prove_defers_the_row_at_an_earlier_checkpoint() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        let dir = "docs/features/001-x";
+        fs::create_dir_all(repo.join(dir)).unwrap();
+        let prd = "# PRD\n\n| FR | Proof | Evidence | Human? |\n|---|---|---|---|\n\
+            | FR-3 | run t | transcript | no |\n";
+        fs::write(repo.join(dir).join("prd.md"), prd).unwrap();
+        fs::write(
+            repo.join(dir).join("slice-02.md"),
+            "# S\n\n### 3. Prove\n§8, the FR-3 row.\n",
+        )
+        .unwrap();
+        fs::write(
+            repo.join(dir).join("slice-04.md"),
+            "# S\n\n**Source**: §4 FR-3\n\n### 3. Prove\n§8, the FR-3 row.\n",
+        )
+        .unwrap();
+        let board = Status {
+            dir: dir.to_string(),
+            all_done: false,
+            slices: vec![
+                crate::docs::Slice {
+                    number: 2,
+                    file: "001-x/slice-02.md".into(),
+                    status: Some("done".into()),
+                    ..Default::default()
+                },
+                crate::docs::Slice {
+                    number: 4,
+                    file: "001-x/slice-04.md".into(),
+                    status: Some("pending".into()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let (text, rows) = handed_qa(repo, &board, &[2], prd).unwrap();
+        assert!(rows.is_empty(), "{rows:?}");
+        assert!(
+            text.contains("(deferred until remaining slice(s) finish: FR-3)"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_pending_slice_mentions_an_fr_only_after_depends_and_does_not_defer_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        let dir = "docs/features/001-x";
+        fs::create_dir_all(repo.join(dir)).unwrap();
+        let prd = "# PRD\n\n| FR | Proof | Evidence | Human? |\n|---|---|---|---|\n\
+            | FR-4 | run t | transcript | no |\n";
+        fs::write(repo.join(dir).join("prd.md"), prd).unwrap();
+        fs::write(
+            repo.join(dir).join("slice-02.md"),
+            "# S\n\n### 3. Prove\n§8, the FR-4 row.\n",
+        )
+        .unwrap();
+        fs::write(
+            repo.join(dir).join("slice-03.md"),
+            "# S\n\n**Source**: §6 FR-2\n**Depends on**: Slice 02 (so FR-4 lands)\n",
+        )
+        .unwrap();
+        let board = Status {
+            dir: dir.to_string(),
+            all_done: false,
+            slices: vec![
+                crate::docs::Slice {
+                    number: 2,
+                    file: "001-x/slice-02.md".into(),
+                    status: Some("done".into()),
+                    ..Default::default()
+                },
+                crate::docs::Slice {
+                    number: 3,
+                    file: "001-x/slice-03.md".into(),
+                    status: Some("pending".into()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let (text, rows) = handed_qa(repo, &board, &[2], prd).unwrap();
+        assert_eq!(keys(&rows), ["FR-4"], "{rows:?}");
+        assert!(!text.contains("deferred until remaining"), "{text}");
+    }
+
+    #[test]
+    fn incomplete_slices_after_the_covers_are_the_ones_that_defer() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        let dir = "docs/features/001-x";
+        fs::create_dir_all(repo.join(dir)).unwrap();
+        let prd = "# PRD\n\n| FR | Proof | Evidence | Human? |\n|---|---|---|---|\n\
+            | FR-1 | run t | transcript | no |\n| FR-2 | run u | transcript | no |\n";
+        fs::write(repo.join(dir).join("prd.md"), prd).unwrap();
+        fs::write(
+            repo.join(dir).join("slice-01.md"),
+            "# S\n\n### 3. Prove\n§8, the FR-1 and FR-2 rows.\n",
+        )
+        .unwrap();
+        fs::write(
+            repo.join(dir).join("slice-03.md"),
+            "# S\n\n**Source**: [`prd.md`](prd.md) → §_(n)_\n",
+        )
+        .unwrap();
+        let board = Status {
+            dir: dir.to_string(),
+            all_done: false,
+            slices: vec![
+                crate::docs::Slice {
+                    number: 1,
+                    file: "001-x/slice-01.md".into(),
+                    status: Some("done".into()),
+                    ..Default::default()
+                },
+                crate::docs::Slice {
+                    number: 3,
+                    file: "001-x/slice-03.md".into(),
+                    status: Some("building".into()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let (text, rows) = handed_qa(repo, &board, &[1], prd).unwrap();
+        assert_eq!(keys(&rows), ["FR-1", "FR-2"], "{text}");
+        assert!(!text.contains("deferred until remaining"), "{text}");
+    }
+
+    #[test]
+    fn the_last_checkpoint_hands_every_row_even_when_slices_still_cite_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        let dir = "docs/features/001-x";
+        fs::create_dir_all(repo.join(dir)).unwrap();
+        let prd = "# PRD\n\n| FR | Proof | Evidence | Human? |\n|---|---|---|---|\n\
+            | FR-3 | run t | transcript | no |\n";
+        fs::write(repo.join(dir).join("prd.md"), prd).unwrap();
+        fs::write(
+            repo.join(dir).join("slice-02.md"),
+            "# S\n\n### 3. Prove\n§8, the FR-3 row.\n",
+        )
+        .unwrap();
+        fs::write(
+            repo.join(dir).join("slice-04.md"),
+            "# S\n\n### 3. Prove\n§8, the FR-3 row.\n",
+        )
+        .unwrap();
+        let board = Status {
+            dir: dir.to_string(),
+            all_done: true,
+            slices: vec![
+                crate::docs::Slice {
+                    number: 2,
+                    file: "001-x/slice-02.md".into(),
+                    status: Some("done".into()),
+                    ..Default::default()
+                },
+                crate::docs::Slice {
+                    number: 4,
+                    file: "001-x/slice-04.md".into(),
+                    status: Some("pending".into()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let (text, rows) = handed_qa(repo, &board, &[2], prd).unwrap();
+        assert_eq!(keys(&rows), ["FR-3"], "{rows:?}");
+        assert!(!text.contains("deferred until remaining"), "{text}");
     }
 
     /// The first slice's Prove section names one row; the second's names none.

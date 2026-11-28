@@ -1,5 +1,7 @@
 #[path = "harness/mod.rs"]
 mod harness;
+#[path = "common/passage.rs"]
+mod passage;
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -7,10 +9,12 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use factory::cli::lanes::detect_shell_clobber;
+use factory::closeout::local_ci_note_body;
 use factory::docs::{Docs, Status};
 use factory::lanes::{self, Lane};
-use factory::pack::{self, Pack};
+use factory::pack::{self, Pack, handed_qa};
 use harness::Fixture;
+use passage::assert_unique_passage;
 
 const BIN: &str = env!("CARGO_BIN_EXE_factory");
 
@@ -50,7 +54,7 @@ fn lane_env_resolves_target_dir_prefixes_pack_and_warns_on_shell_clobber() {
     assert!(prefixed.contains("cargo fmt && cargo test -q"));
 
     let repo = tmp.path().join("repo");
-    let dir = "docs/features/099-fixture";
+    let dir = "docs/features/001-x";
     fs::create_dir_all(repo.join(dir)).unwrap();
     fs::write(repo.join("gate.sh"), "").unwrap();
     fs::write(
@@ -60,12 +64,12 @@ fn lane_env_resolves_target_dir_prefixes_pack_and_warns_on_shell_clobber() {
     .unwrap();
     fs::write(
         repo.join(dir).join("prd.md"),
-        "# Feature\n\n## 1. Rule one\n\nrule\n",
+        "# PRD\n\n## 1. FR-1\n\nrule\n",
     )
     .unwrap();
     fs::write(
-        repo.join(dir).join("slice-alpha.md"),
-        "# Alpha\n\n**Source**: rule one\n",
+        repo.join(dir).join("slice-01-a.md"),
+        "# Slice 01\n\n**Source**: §1\n",
     )
     .unwrap();
     let docs = Docs::open(&repo).unwrap();
@@ -74,7 +78,7 @@ fn lane_env_resolves_target_dir_prefixes_pack_and_warns_on_shell_clobber() {
         dir: dir.to_string(),
         slices: vec![factory::docs::Slice {
             number: 1,
-            file: "099-fixture/slice-alpha.md".to_string(),
+            file: "001-x/slice-01-a.md".to_string(),
             ..Default::default()
         }],
         ..Default::default()
@@ -159,5 +163,220 @@ fn lane_env_resolves_target_dir_prefixes_pack_and_warns_on_shell_clobber() {
     assert!(
         text.contains("! shell") && text.contains("overwrites CARGO_TARGET_DIR"),
         "{text}"
+    );
+}
+
+fn crate_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+fn write_fx(fx: &Fixture, rel: &str, text: &str) {
+    let p = fx.path().join(rel);
+    fs::create_dir_all(p.parent().unwrap()).unwrap();
+    fs::write(p, text).unwrap();
+}
+
+fn commit_fx(fx: &Fixture, msg: &str) {
+    fx.git(&["add", "-A"]);
+    fx.git(&["commit", "-q", "-m", msg]);
+}
+
+fn docs_fx(fx: &Fixture, args: &[&str]) -> (Option<i32>, String, String) {
+    let out = fx.command(BIN).arg("docs").args(args).output().unwrap();
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+fn ctx_fx(fx: &Fixture, args: &[&str]) -> (Option<i32>, String) {
+    let out = fx.command(BIN).arg("ctx").args(args).output().unwrap();
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+    )
+}
+
+fn leaks_fx(fx: &Fixture, args: &[&str]) -> (Option<i32>, String) {
+    let out = fx.command(BIN).arg("leaks").args(args).output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let err = String::from_utf8_lossy(&out.stderr);
+    (out.status.code(), format!("{text}{err}"))
+}
+
+#[test]
+fn checkpoint_defers_pending_slice_frs_and_bundle_carries_prove_rules() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path();
+    let dir = "docs/features/001-x";
+    fs::create_dir_all(repo.join(dir)).unwrap();
+    let prd = "# PRD\n\n| FR | Proof | Evidence | Human? |\n|---|---|---|---|\n\
+        | FR-3 | run t | transcript | no |\n| FR-4 | run u | transcript | no |\n";
+    fs::write(repo.join(dir).join("prd.md"), prd).unwrap();
+    fs::write(
+        repo.join(dir).join("slice-02.md"),
+        "# S\n\n### 3. Prove\n§8, the FR-3 and FR-4 rows.\n",
+    )
+    .unwrap();
+    fs::write(
+        repo.join(dir).join("slice-03.md"),
+        "# S\n\n**Source**: §6 FR-2\n**Depends on**: Slice 02 (so FR-4 lands)\n",
+    )
+    .unwrap();
+    fs::write(
+        repo.join(dir).join("slice-04.md"),
+        "# S\n\n### 3. Prove\n§8, the FR-3 row.\n",
+    )
+    .unwrap();
+    let board = Status {
+        dir: dir.to_string(),
+        all_done: false,
+        slices: vec![
+            factory::docs::Slice {
+                number: 2,
+                file: "001-x/slice-02.md".into(),
+                status: Some("done".into()),
+                ..Default::default()
+            },
+            factory::docs::Slice {
+                number: 3,
+                file: "001-x/slice-03.md".into(),
+                status: Some("pending".into()),
+                ..Default::default()
+            },
+            factory::docs::Slice {
+                number: 4,
+                file: "001-x/slice-04.md".into(),
+                status: Some("building".into()),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let (text, rows) = handed_qa(repo, &board, &[2], prd).unwrap();
+    assert_eq!(
+        rows.iter().map(|r| r.key.as_str()).collect::<Vec<_>>(),
+        ["FR-4"]
+    );
+    assert!(
+        text.contains("deferred until remaining slice(s) finish: FR-3"),
+        "{text}"
+    );
+
+    let board_done = Status {
+        all_done: true,
+        ..board
+    };
+    let (_, rows) = handed_qa(repo, &board_done, &[2], prd).unwrap();
+    assert_eq!(
+        rows.iter().map(|r| r.key.as_str()).collect::<Vec<_>>(),
+        ["FR-3", "FR-4"]
+    );
+
+    let slice = fs::read_to_string(crate_root().join("skills/slice/SKILL.md")).unwrap();
+    assert_unique_passage(
+        "slice/SKILL.md narrow form",
+        &slice,
+        "Each form a slice adds gets one empty submit and one narrow-screen drive (375 px).",
+    );
+    assert_unique_passage(
+        "slice/SKILL.md option seed",
+        &slice,
+        "A Prove row that picks between options seeds a state where the options give different results.",
+    );
+    let checkpoint =
+        fs::read_to_string(crate_root().join("assets/contract-checkpoint.md")).unwrap();
+    assert_unique_passage(
+        "contract-checkpoint gate log",
+        &checkpoint,
+        "you may cite that test from the **full** gate log file named in `# Gate transcript`'s header comment — not only the 200-line tail in the pack",
+    );
+}
+
+#[test]
+fn docs_check_feature_ctx_def_generated_leaks_attributes_and_local_pr_note() {
+    let fx = Fixture::new("delivery-hardening-fr4");
+    let root = fx.path();
+    let second = root.join("docs/features/002-second");
+    fs::create_dir_all(&second).unwrap();
+    fs::write(
+        second.join("prd.md"),
+        "---\nnumber: 2\nslug: second\ntitle: Second\ntype: feature\ncreated: 2026-01-01\nauthor: t\nsummary: |\n  x\n---\n",
+    )
+    .unwrap();
+    fs::write(second.join("state.toml"), "status = \n").unwrap();
+    commit_fx(&fx, "second feature");
+    write_fx(&fx, "docs/ideas/bad name.md", "# bad\n");
+
+    let (code, out, err) = docs_fx(&fx, &["check", "001"]);
+    assert_eq!(code, Some(0), "{out}{err}");
+    assert_eq!(out.trim(), "docs check: clean");
+
+    let (code, _, err) = docs_fx(&fx, &["check"]);
+    assert_eq!(code, Some(1), "{err}");
+    assert!(err.contains("E-STATE-INVALID"), "{err}");
+    assert!(err.contains("E-IDEA-NAME"), "{err}");
+
+    write_fx(
+        &fx,
+        ".gitattributes",
+        "src/hidden_gen.rs linguist-generated\n",
+    );
+    write_fx(&fx, "src/live.rs", "pub fn delivery_hardening_def() {}\n");
+    write_fx(
+        &fx,
+        "src/hidden_gen.rs",
+        "pub fn delivery_hardening_def() {}\n",
+    );
+    commit_fx(&fx, "sources");
+
+    let (_, ctx_out) = ctx_fx(&fx, &["def", "delivery_hardening_def"]);
+    assert!(ctx_out.contains("src/live.rs"), "{ctx_out}");
+    assert!(!ctx_out.contains("hidden_gen.rs"), "{ctx_out}");
+
+    write_fx(&fx, ".gitattributes", "src/gen.rs linguist-generated\n");
+    write_fx(
+        &fx,
+        "src/gen.rs",
+        "// main-attrs-only: on main attrs only\n",
+    );
+    commit_fx(&fx, "main: attributes");
+
+    let attrs = fx.path().join("local-attrs");
+    fs::write(&attrs, "src/leak.rs linguist-generated\n").unwrap();
+    fx.git(&["config", "core.attributesFile", attrs.to_str().unwrap()]);
+
+    fx.git(&["checkout", "-q", "-b", "feat/leak"]);
+    write_fx(
+        &fx,
+        "src/leak.rs",
+        "const _ = \"FR-99: must stay visible\";\n",
+    );
+    commit_fx(&fx, "branch leak");
+
+    let (code, leaks_out) = leaks_fx(&fx, &["--base", "main"]);
+    assert_eq!(code, Some(1), "{leaks_out}");
+    assert!(leaks_out.contains("src/leak.rs"), "{leaks_out}");
+
+    let body = "## PRD-031 — x\n\nBody.\n";
+    let noted = local_ci_note_body(body);
+    assert!(
+        noted.contains("squash-merge commit message on merge"),
+        "{noted}"
+    );
+    assert!(!noted.contains("[skip ci]"), "{noted}");
+    assert_eq!(local_ci_note_body(&noted), noted);
+
+    let deliver = fs::read_to_string(crate_root().join("skills/deliver/SKILL.md")).unwrap();
+    assert_unique_passage(
+        "deliver/SKILL.md squash merge",
+        &deliver,
+        "Also strip any skip-CI lines from GitHub's default squash-merge commit message so `main` workflows still run on merge.",
+    );
+    assert!(
+        fs::read_to_string(crate_root().join("mods/cockpit/hooks/register.tsx"))
+            .unwrap()
+            .contains("0.20.0")
     );
 }

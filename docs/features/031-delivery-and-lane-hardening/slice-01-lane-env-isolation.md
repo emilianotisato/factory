@@ -3,7 +3,7 @@
 **Source**: [`prd.md`](prd.md) → §3 (FR-1). **Depends on**: — (independent; writes no files touched by Slice 02)
 **Created**: 2026-11-27
 
-**Progress**: `Lane::env_for` resolves relative `CARGO_TARGET_DIR`; `pack::env_prefixed` / `# Lane env` on slice-merge-fix-checkpoint-ci-fix packs (`*_env` constructors); `detect_shell_clobber` + prove warning (`FACTORY_PROVE_SHELL`, 3s timeout); `tests/delivery_hardening.rs`. Inner loop: 2 runs (1 red on stale shared `CARGO_TARGET_DIR` artifact), ~3m green isolated target. Deliberate reds: `env_for` passthrough → assert_eq relative path; `env_prefixed` no-op → pack + delivery_hardening prefix/# Lane env asserts. cp-1/FR-1/transcript.txt
+**Progress**: `Lane::env_for` resolves relative `CARGO_TARGET_DIR`; `pack::env_prefixed` / `# Lane env` on slice-merge-fix-checkpoint-ci-fix packs (`*_env` constructors); `detect_shell_clobber` + prove warning (`FACTORY_PROVE_SHELL`, 3s timeout); `tests/delivery_hardening.rs`. Inner loop: 2 runs (1 red on stale shared `CARGO_TARGET_DIR` artifact), ~3m green isolated target. Deliberate reds: `env_for` passthrough → assert_eq relative path; `env_prefixed` no-op → pack + delivery_hardening prefix/# Lane env asserts.
 
 **Slice**: Protects parallel lanes against interactive/login shells that overwrite declared lane variables like `CARGO_TARGET_DIR`: resolves relative `CARGO_TARGET_DIR` to an absolute path inside the lane, surfaces `# Lane env` and `export K=V; <cmd>` prefixes across all worker packs, and adds a timeout-bounded `$SHELL -lic` clobber warning to `factory lanes up --prove`. Leaves checkpoint Prove deferral (Slice 03) and CLI/docs changes (Slices 02, 04) to their own slices.
 

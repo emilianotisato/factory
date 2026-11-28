@@ -1002,6 +1002,29 @@ pub fn flagged(body: &str, line: &str) -> String {
     format!("{line}\n\n{rest}")
 }
 
+const LOCAL_CI_PR_NOTE: &str = "> Local CI mode: remove any skip-CI tags from the squash-merge commit message on merge so `main` workflows still run.";
+
+pub fn local_ci_note_body(text: &str) -> String {
+    if text.contains(LOCAL_CI_PR_NOTE) {
+        return text.to_string();
+    }
+    let trimmed = text.trim_end();
+    if trimmed.is_empty() {
+        format!("{LOCAL_CI_PR_NOTE}\n")
+    } else {
+        format!("{trimmed}\n\n{LOCAL_CI_PR_NOTE}\n")
+    }
+}
+
+fn ensure_local_ci_note(body: &Path) -> Result<()> {
+    let text = fs::read_to_string(body).map_err(io(format!("read {}", body.display())))?;
+    let want = local_ci_note_body(&text);
+    if want != text {
+        scheduler::write_atomic(body, &want)?;
+    }
+    Ok(())
+}
+
 fn flag_body(run: &Run, body: &Path) -> Result<()> {
     let Some(line) = stand_in_line(&run.events()?) else {
         return Ok(());
@@ -1249,6 +1272,9 @@ fn open_pr(
         stood_in(run, STAND_IN_BODY, &body.display().to_string())?;
     }
     flag_body(run, &body)?;
+    if local {
+        ensure_local_ci_note(&body)?;
+    }
     let known = match run.state().pr_url.clone() {
         Some(url) => Some(url),
         None => {
@@ -2691,6 +2717,17 @@ mod tests {
             flagged(&once, "**Template stand-ins:** b"),
             "**Template stand-ins:** b\n\n## PRD-001 — x\n\nBody.\n"
         );
+    }
+
+    #[test]
+    fn local_mode_adds_a_token_free_squash_merge_note_once() {
+        assert!(!LOCAL_CI_PR_NOTE.contains("[skip ci]"));
+        let body = "## PRD-001 — x\n\nBody.\n";
+        let once = local_ci_note_body(body);
+        assert!(once.contains(LOCAL_CI_PR_NOTE), "{once}");
+        assert!(!once.contains("[skip ci]"), "{once}");
+        assert_eq!(local_ci_note_body(&once), once);
+        assert_eq!(local_ci_note_body(""), format!("{LOCAL_CI_PR_NOTE}\n"));
     }
 
     #[test]

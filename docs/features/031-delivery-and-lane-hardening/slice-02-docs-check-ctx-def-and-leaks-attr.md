@@ -3,7 +3,7 @@
 **Source**: [`prd.md`](prd.md) → §6 (FR-4 CLI & code-analysis core). **Depends on**: — (independent; writes no files touched by Slice 01)
 **Created**: 2026-11-27
 
-**Progress**: `docs check [FEATURE]`, `ctx::def` linguist filter, `check_attr_src` `-c core.attributesFile=`; `tests/cli_and_ctx_hardening.rs` (3 tests). Checkpoint 1: gate reused green from driver; leaks id-string scrub in test fixtures. cp-1/FR-4/cli_and_ctx_hardening.txt · cp-1/FR-4/cockpit-validate.txt · cp-1/FR-4/delivery_hardening_fr4_named_test.txt (combined test lands slice 03).
+**Progress**: _(written as it lands — what was built, the gate numbers, what a review caught)_
 
 **Slice**: Delivers the CLI and code-analysis core of FR-4: optional `[FEATURE]` scoping on `factory docs check`, shared `linguist-vendored`/`linguist-generated` filtering for `ctx::def::find`, and `-c core.attributesFile=` isolation in `review::check_attr_src`. Leaves `closeout` local PR-body note, `skills/deliver/SKILL.md`, and the `0.20.0` bump to Slice 03.
 

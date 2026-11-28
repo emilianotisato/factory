@@ -122,7 +122,7 @@ fn qa_plan(fx: &Fixture, table: &[&str], named: &str) {
     fs::write(&p, out.join("\n") + "\n").unwrap();
     let first_row = row_key(1);
     let prove_needle = format!("the {first_row} row.");
-    for n in 1..=3 {
+    for n in 1..=2 {
         let s = fx.slice_path(n);
         let text = fs::read_to_string(&s).unwrap();
         assert!(text.contains(&prove_needle), "{}", s.display());

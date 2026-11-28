@@ -117,11 +117,7 @@ fn ctx_def_skips_generated_unless_vendor() {
 fn leaks_ignores_local_attributes_file_not_committed_gitattributes() {
     let fx = Fixture::new("leaks-attributes-file");
     write(&fx, ".gitattributes", "src/gen.rs linguist-generated\n");
-    write(
-        &fx,
-        "src/gen.rs",
-        "// main-attrs-only: on main attrs only\n",
-    );
+    write(&fx, "src/gen.rs", "// PRD-2: on main attrs only\n");
     commit(&fx, "main: attributes");
 
     let attrs = fx.path().join("local-attrs");
@@ -129,17 +125,13 @@ fn leaks_ignores_local_attributes_file_not_committed_gitattributes() {
     fx.git(&["config", "core.attributesFile", attrs.to_str().unwrap()]);
 
     fx.git(&["checkout", "-q", "-b", "feat/leak"]);
-    write(
-        &fx,
-        "src/leak.rs",
-        "const _ = \"FR-99: must stay visible\";\n",
-    );
+    write(&fx, "src/leak.rs", "// PRD-1: must stay visible\n");
     commit(&fx, "branch leak");
 
     write(
         &fx,
         "src/gen.rs",
-        "// main-attrs-only: on main attrs only\nconst _ = \"FR-88: branch edit stays generated\";\n",
+        "// PRD-2: on main attrs only\n// PRD-99: branch edit stays generated\n",
     );
     commit(&fx, "touch generated");
 
@@ -147,7 +139,7 @@ fn leaks_ignores_local_attributes_file_not_committed_gitattributes() {
     assert_eq!(code, Some(1), "{out}");
     assert!(out.contains("src/leak.rs"), "{out}");
     assert!(out.contains("src/gen.rs (generated)"), "{out}");
-    assert!(!out.contains("FR-88"), "{out}");
+    assert!(!out.contains("PRD-99"), "{out}");
 
     let (code, out) = leaks(&fx, &["--all"]);
     assert_eq!(code, Some(1), "{out}");
