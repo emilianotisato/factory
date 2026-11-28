@@ -13,8 +13,10 @@ use factory::closeout::local_ci_note_body;
 use factory::docs::{Docs, Status};
 use factory::lanes::{self, Lane};
 use factory::pack::{self, Pack, handed_qa};
+use harness::FEATURE_DIR;
 use harness::Fixture;
 use passage::assert_unique_passage;
+use std::process::Command;
 
 const BIN: &str = env!("CARGO_BIN_EXE_factory");
 
@@ -379,4 +381,124 @@ fn docs_check_feature_ctx_def_generated_leaks_attributes_and_local_pr_note() {
             .unwrap()
             .contains("0.20.0")
     );
+}
+
+#[test]
+fn docs_set_clears_stale_reviewed_head_resolves_head_and_log_add_explains_main_checkout() {
+    let fx = Fixture::new("delivery-fr3-reviewed");
+    let main = fx.path();
+
+    fx.docs(&["set", "001", "reviewed=2026-11-26", "reviewed_head=abc1234"]);
+    fx.docs(&["set", "001", "reviewed=2026-11-27"]);
+    let state = fs::read_to_string(main.join(FEATURE_DIR).join("state.toml")).unwrap();
+    assert!(state.contains("reviewed = \"2026-11-27\""));
+    assert!(!state.contains("reviewed_head"));
+    fx.git(&["add", "-A"]);
+    fx.git(&["commit", "-q", "-m", "docs: clear stale reviewed_head"]);
+    let cleared = fx.git(&["rev-parse", "HEAD"]).trim().to_string();
+    assert_eq!(factory::settled::last_reviewed(main, "001"), Some(cleared));
+
+    fx.docs(&["set", "001", "reviewed_head=beef123", "reviewed=2026-11-28"]);
+    let pinned = fs::read_to_string(main.join(FEATURE_DIR).join("state.toml")).unwrap();
+    assert!(pinned.contains("reviewed_head = \"beef123\""));
+
+    fx.git(&["checkout", "-q", "-b", "feat/lane-tip"]);
+    write_fx(&fx, "lane-only.txt", "lane\n");
+    commit_fx(&fx, "feat: lane-only");
+    let lane_sha = fx.git(&["rev-parse", "HEAD"]).trim().to_string();
+
+    fx.git(&["checkout", "-q", "main"]);
+    write_fx(&fx, "main-only.txt", "main\n");
+    commit_fx(&fx, "chore: main-only");
+    let main_sha = fx.git(&["rev-parse", "HEAD"]).trim().to_string();
+    assert_ne!(lane_sha, main_sha);
+
+    let lane_dir = fx.stub_dir().join("lane-wt");
+    fx.git(&[
+        "worktree",
+        "add",
+        "-q",
+        lane_dir.to_str().unwrap(),
+        "feat/lane-tip",
+    ]);
+    let out = fx
+        .command(BIN)
+        .current_dir(&lane_dir)
+        .env("FACTORY_BOARD", main)
+        .args(["docs", "set", "001", "reviewed_head=HEAD"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let state = fs::read_to_string(main.join(FEATURE_DIR).join("state.toml")).unwrap();
+    assert!(
+        state.contains(&format!("reviewed_head = \"{lane_sha}\"")),
+        "{state}"
+    );
+
+    let (code, _, err) = {
+        let out = fx
+            .command(BIN)
+            .current_dir(&lane_dir)
+            .env("FACTORY_BOARD", main)
+            .args([
+                "docs",
+                "log",
+                "add",
+                "001",
+                "--kind",
+                "note",
+                "--title",
+                "lane note",
+                "--body-file",
+                "-",
+            ])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut child = out;
+        use std::io::Write;
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"lane body\n")
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    assert_eq!(code, Some(0), "{err}");
+    assert!(
+        err.contains(
+            "main checkout; the driver commits the log, so this lane's git status stays clean"
+        ),
+        "{err}"
+    );
+    let lane_porcelain = Command::new("git")
+        .current_dir(&lane_dir)
+        .args(["status", "--porcelain"])
+        .output()
+        .unwrap();
+    assert!(
+        lane_porcelain.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&lane_porcelain.stdout)
+    );
+
+    let slice_contract = fs::read_to_string(crate_root().join("assets/contract-slice.md")).unwrap();
+    let polish_contract =
+        fs::read_to_string(crate_root().join("assets/contract-polish.md")).unwrap();
+    let note = "write to the main checkout (the driver commits them, so this lane's `git status` stays clean)";
+    assert_eq!(slice_contract.matches(note).count(), 1);
+    assert_eq!(polish_contract.matches(note).count(), 1);
 }

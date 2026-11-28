@@ -138,8 +138,17 @@ pub fn set(dir: &Path, pairs: &[(&str, &str)]) -> Result<State> {
     // Read inside the lock: two lanes set their own slice at the same time.
     let mut s = read(dir)?.unwrap_or_default();
     let files = slice_files(dir)?;
+    let stamps_reviewed_head = pairs.iter().any(|(k, _)| *k == "reviewed_head");
+    let mut clear_stale_reviewed_head = false;
     for (key, value) in pairs {
-        apply(&mut s, &files, key, value.trim())?;
+        let value = value.trim();
+        apply(&mut s, &files, key, value)?;
+        if *key == "reviewed" && !value.is_empty() && !stamps_reviewed_head {
+            clear_stale_reviewed_head = true;
+        }
+    }
+    if clear_stale_reviewed_head {
+        s.reviewed_head = None;
     }
     validate(&s)?;
     write_atomic(&path(dir), &render(&s))?;
@@ -193,7 +202,7 @@ fn apply(s: &mut State, files: &[u32], key: &str, value: &str) -> Result<()> {
             } else if is_sha(value) {
                 Some(value.to_string())
             } else {
-                return refuse(format!("{key}={value}: not a commit sha (7-40 hex chars)"));
+                return refuse(format!("{key}={value}: not a commit sha (7-64 hex chars)"));
             }
         }
         "shipped" => s.shipped = date(value)?,
@@ -267,7 +276,7 @@ fn validate(s: &State) -> Result<()> {
 }
 
 pub fn is_sha(v: &str) -> bool {
-    (7..=40).contains(&v.len()) && v.bytes().all(|b| b.is_ascii_hexdigit())
+    (7..=64).contains(&v.len()) && v.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 pub fn is_date(v: &str) -> bool {
@@ -396,5 +405,42 @@ mod tests {
             assert!(e.contains("not a commit sha"), "{e}");
         }
         assert_eq!(text(&d), before);
+    }
+
+    #[test]
+    fn setting_reviewed_alone_clears_a_stale_reviewed_head() {
+        let d = feature(&["slice-01-a.md"]);
+        set(
+            d.path(),
+            &[("reviewed", "2026-11-26"), ("reviewed_head", "abc1234")],
+        )
+        .unwrap();
+        let s = set(d.path(), &[("reviewed", "2026-11-27")]).unwrap();
+        assert_eq!(s.reviewed.as_deref(), Some("2026-11-27"));
+        assert_eq!(s.reviewed_head, None);
+        assert!(!text(&d).contains("reviewed_head"));
+    }
+
+    #[test]
+    fn reviewed_and_reviewed_head_in_one_call_keeps_the_sha() {
+        let d = feature(&["slice-01-a.md"]);
+        for pairs in [
+            &[("reviewed", "2026-11-27"), ("reviewed_head", "abc1234")][..],
+            &[("reviewed_head", "beef123"), ("reviewed", "2026-11-27")][..],
+        ] {
+            let s = set(d.path(), pairs).unwrap();
+            assert_eq!(s.reviewed.as_deref(), Some("2026-11-27"));
+            assert_eq!(
+                s.reviewed_head.as_deref(),
+                Some(pairs.iter().find(|(k, _)| *k == "reviewed_head").unwrap().1)
+            );
+        }
+    }
+
+    #[test]
+    fn is_sha_accepts_a_64_char_hex_digest() {
+        let sha256 = "a".repeat(64);
+        assert!(is_sha(&sha256));
+        assert!(!is_sha(&format!("{sha256}x")));
     }
 }

@@ -39,7 +39,14 @@ pub fn last_reviewed(checkout: &Path, feature: &str) -> Option<String> {
     let file = dir.join(state::FILE);
     let file = file.strip_prefix(checkout).unwrap_or(&file);
     let out = Command::new("git")
-        .args(["log", "-1", "--format=%H", "-G", "^reviewed =", "--"])
+        .args([
+            "log",
+            "-1",
+            "--format=%H",
+            "-G",
+            "^reviewed(_head)? =",
+            "--",
+        ])
         .arg(file)
         .current_dir(checkout)
         .stdin(Stdio::null())
@@ -402,5 +409,78 @@ mod tests {
     fn last_reviewed_is_none_outside_a_feature() {
         let tmp = tempfile::tempdir().unwrap();
         assert_eq!(last_reviewed(tmp.path(), "001"), None);
+    }
+
+    #[test]
+    fn last_reviewed_advances_when_only_reviewed_head_is_cleared() {
+        use std::process::Command;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        Command::new("git")
+            .args(["init", "-q", "-b", "main"])
+            .current_dir(repo)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "t@example.invalid"])
+            .current_dir(repo)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "t"])
+            .current_dir(repo)
+            .status()
+            .unwrap();
+        let dir = "docs/features/001-x";
+        std::fs::create_dir_all(repo.join(dir)).unwrap();
+        std::fs::write(repo.join("docs/project.toml"), "[docs]\nframework = 3\n").unwrap();
+        std::fs::write(
+            repo.join(dir).join("prd.md"),
+            "---\nnumber: 1\nslug: x\ntitle: T\ntype: feature\ncreated: 2026-01-01\nauthor: t\nsummary: |\n  x\n---\n",
+        )
+        .unwrap();
+        std::fs::write(
+            repo.join(dir).join("state.toml"),
+            "status = \"draft\"\nreviewed = \"2026-11-27\"\nreviewed_head = \"abc1234\"\n",
+        )
+        .unwrap();
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(repo)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-q", "-m", "seed"])
+            .current_dir(repo)
+            .status()
+            .unwrap();
+        std::fs::write(
+            repo.join(dir).join("state.toml"),
+            "status = \"draft\"\nreviewed = \"2026-11-27\"\n",
+        )
+        .unwrap();
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(repo)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-q", "-m", "docs: clear stale reviewed_head"])
+            .current_dir(repo)
+            .status()
+            .unwrap();
+        let head = String::from_utf8(
+            Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(repo)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        assert_eq!(last_reviewed(repo, "001"), Some(head));
     }
 }

@@ -1099,8 +1099,9 @@ fn ship(
             .ok()
             .flatten()
             .is_some_and(|s| s.reviewed.is_some())
+        && let Err(e) = docs.set(&feature, &[("reviewed_head", head)])
     {
-        let _ = docs.set(&feature, &[("reviewed_head", head)]);
+        say(out, &format!("ship: could not record reviewed_head — {e}"))?;
     }
     let shipped = match docs.ship(&feature)? {
         Ship::Done(stdout) => stdout,
@@ -2717,6 +2718,66 @@ mod tests {
             flagged(&once, "**Template stand-ins:** b"),
             "**Template stand-ins:** b\n\n## PRD-001 — x\n\nBody.\n"
         );
+    }
+
+    #[test]
+    fn ship_stamps_reviewed_head_from_collect() {
+        use std::process::Command;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        Command::new("git")
+            .args(["init", "-q", "-b", "main"])
+            .current_dir(repo)
+            .status()
+            .unwrap();
+        for (k, v) in [("user.email", "t@example.invalid"), ("user.name", "t")] {
+            Command::new("git")
+                .args(["config", k, v])
+                .current_dir(repo)
+                .status()
+                .unwrap();
+        }
+        let dir = "docs/features/001-x";
+        fs::create_dir_all(repo.join(dir)).unwrap();
+        fs::write(repo.join("docs/project.toml"), "[docs]\nframework = 3\n").unwrap();
+        fs::write(
+            repo.join(dir).join("prd.md"),
+            "---\nnumber: 1\nslug: x\ntitle: T\ntype: feature\ncreated: 2026-01-01\nauthor: t\nsummary: |\n  x\n---\n",
+        )
+        .unwrap();
+        fs::write(
+            repo.join(dir).join("state.toml"),
+            "status = \"draft\"\nreviewed = \"2026-11-27\"\n",
+        )
+        .unwrap();
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(repo)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-q", "-m", "seed"])
+            .current_dir(repo)
+            .status()
+            .unwrap();
+        let run = tmp.path().join("run");
+        fs::create_dir_all(&run).unwrap();
+        let stamp = "dec0ded";
+        fs::write(run.join(COLLECT_FILE), format!("<!-- head: {stamp} -->\n")).unwrap();
+        let docs = Docs::open(repo).unwrap();
+        let feature_dir = repo.join(dir);
+        let text = fs::read_to_string(run.join(COLLECT_FILE)).unwrap();
+        if let Some(head) = collect::head_of(&text)
+            && crate::docs::state::read(&feature_dir)
+                .ok()
+                .flatten()
+                .is_some_and(|s| s.reviewed.is_some())
+        {
+            docs.set("001", &[("reviewed_head", head)]).unwrap();
+        }
+        let state = fs::read_to_string(feature_dir.join("state.toml")).unwrap();
+        assert!(state.contains(&format!("reviewed_head = \"{stamp}\"")));
     }
 
     #[test]

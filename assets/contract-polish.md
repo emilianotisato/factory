@@ -6,7 +6,7 @@ Read first, in order:
 3. the `# Collected` section below — the plan, the leaks verdict and the second opinion the driver collected before you spawned; polish §1 starts from it
 4. the `# Log` section below, its `## Notes` and `## Decisions` first, and `prd.md`
 
-The feature's `state.toml` and `log.jsonl` are written through the tool only, never by hand. Each command below is one shell line; a body goes on stdin (`--body-file -`).
+The feature's `state.toml` and `log.jsonl` are written through the tool only, never by hand. `docs log add` and `docs set` write to the main checkout (the driver commits them, so this lane's `git status` stays clean). Each command below is one shell line; a body goes on stdin (`--body-file -`).
 
 Do:
 - run `/polish` **Unattended** on this branch, in full: the local review, the security and UX passes where they apply, the second opinion, the fixes. The `# Autonomy` section below is the only copy of the unattended rules; no step waits for a human.
