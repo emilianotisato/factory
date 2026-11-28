@@ -1,4 +1,5 @@
 //! `--vendor` also lifts `.gitignore`, since a vendor tree is usually gitignored; files sort by path so threads never reorder output.
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -87,6 +88,34 @@ pub fn walk(root: &Path, opts: &WalkOpts) -> Walk {
     Walk {
         files,
         too_large: too_large.into_inner(),
+    }
+}
+
+pub(super) fn repo_relative(file: &Path, repo_root: &Path) -> Option<String> {
+    let root = repo_root.canonicalize().ok()?;
+    let file = file.canonicalize().ok()?;
+    file.strip_prefix(&root)
+        .ok()
+        .map(|r| r.to_string_lossy().replace('\\', "/"))
+}
+
+pub(super) fn drop_generated(root: &Path, files: &mut Vec<(PathBuf, Lang)>, opts: &WalkOpts) {
+    if opts.vendor || files.is_empty() {
+        return;
+    }
+    let Ok(repo_root) = crate::paths::repo_root(root) else {
+        return;
+    };
+    let rels: Vec<String> = files
+        .iter()
+        .filter_map(|(path, _)| repo_relative(path, &repo_root))
+        .collect();
+    let rel_refs: Vec<&str> = rels.iter().map(String::as_str).collect();
+    if let Ok(marked) = crate::review::check_attr(&repo_root, &rel_refs) {
+        let skip: HashSet<&str> = marked.iter().map(|(p, _)| p.as_str()).collect();
+        files.retain(|(path, _)| {
+            repo_relative(path, &repo_root).is_none_or(|rel| !skip.contains(rel.as_str()))
+        });
     }
 }
 

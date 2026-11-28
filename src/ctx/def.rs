@@ -149,7 +149,8 @@ pub fn find(
             matcher(&joined).map(|m| (*t, m))
         })
         .collect::<Result<Vec<_>>>()?;
-    let walked = walk::walk(root, opts);
+    let mut walked = walk::walk(root, opts);
+    walk::drop_generated(root, &mut walked.files, opts);
     let (per_file, binary) = walk::scan(&walked.files, |path, lang, bytes| {
         let table = Table::of(lang);
         let (_, m) = matchers.iter().find(|(t, _)| *t == table)?;
@@ -504,5 +505,44 @@ mod tests {
     fn metacharacters_in_a_name_are_escaped() {
         assert_eq!(escape("a.b$c"), r"a\.b\$c");
         assert_eq!(escape("plain_name1"), "plain_name1");
+    }
+
+    #[test]
+    fn generated_files_are_skipped_unless_vendor() {
+        use std::process::Command;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let git = |args: &[&str]| {
+            let out = Command::new("git")
+                .args(["-c", "user.name=T", "-c", "user.email=t@example.invalid"])
+                .args(args)
+                .current_dir(root)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        git(&["init", "-q", "-b", "main"]);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/gen.rs"), "pub fn gen_marker() {}\n").unwrap();
+        std::fs::write(
+            root.join(".gitattributes"),
+            "src/gen.rs linguist-generated\n",
+        )
+        .unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "init"]);
+        let empty = super::find(root, root, "gen_marker", None, &WalkOpts::default()).unwrap();
+        assert!(empty.hits.is_empty(), "{:?}", empty.hits);
+        let with_vendor =
+            super::find(root, root, "gen_marker", None, &WalkOpts { vendor: true }).unwrap();
+        assert_eq!(with_vendor.hits.len(), 1);
+        assert!(with_vendor.hits[0].path.ends_with("src/gen.rs"));
     }
 }

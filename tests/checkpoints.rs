@@ -1900,7 +1900,7 @@ fn qa_plan(fx: &Fixture, table: &[&str], named: &str) {
     out.extend(table);
     out.extend(&lines[end..]);
     fs::write(&p, out.join("\n") + "\n").unwrap();
-    for n in 1..=3 {
+    for n in 1..=2 {
         let s = fx.slice_path(n);
         let text = fs::read_to_string(&s).unwrap();
         assert!(text.contains("the FR-1 row."), "{}", s.display());

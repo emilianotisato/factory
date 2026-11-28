@@ -260,6 +260,7 @@ fn polish(
             &template,
             &packs,
             spawn,
+            &lane_def.env_for(&lane_dir),
         )?;
         let open_before: HashSet<String> = open_blocks(&feature_dir)?
             .into_iter()
@@ -272,7 +273,7 @@ fn polish(
             Job::Polish { attempt },
             &pack,
             &resolved,
-            &lane_def.env(),
+            &lane_def.env_for(&lane_dir),
             &lane_dir,
             Some(lane),
         )?;
@@ -1002,6 +1003,29 @@ pub fn flagged(body: &str, line: &str) -> String {
     format!("{line}\n\n{rest}")
 }
 
+const LOCAL_CI_PR_NOTE: &str = "> Local CI mode: remove any skip-CI tags from the squash-merge commit message on merge so `main` workflows still run.";
+
+pub fn local_ci_note_body(text: &str) -> String {
+    if text.contains(LOCAL_CI_PR_NOTE) {
+        return text.to_string();
+    }
+    let trimmed = text.trim_end();
+    if trimmed.is_empty() {
+        format!("{LOCAL_CI_PR_NOTE}\n")
+    } else {
+        format!("{trimmed}\n\n{LOCAL_CI_PR_NOTE}\n")
+    }
+}
+
+fn ensure_local_ci_note(body: &Path) -> Result<()> {
+    let text = fs::read_to_string(body).map_err(io(format!("read {}", body.display())))?;
+    let want = local_ci_note_body(&text);
+    if want != text {
+        scheduler::write_atomic(body, &want)?;
+    }
+    Ok(())
+}
+
 fn flag_body(run: &Run, body: &Path) -> Result<()> {
     let Some(line) = stand_in_line(&run.events()?) else {
         return Ok(());
@@ -1076,8 +1100,9 @@ fn ship(
             .ok()
             .flatten()
             .is_some_and(|s| s.reviewed.is_some())
+        && let Err(e) = docs.set(&feature, &[("reviewed_head", head)])
     {
-        let _ = docs.set(&feature, &[("reviewed_head", head)]);
+        say(out, &format!("ship: could not record reviewed_head — {e}"))?;
     }
     let shipped = match docs.ship(&feature)? {
         Ship::Done(stdout) => stdout,
@@ -1249,6 +1274,9 @@ fn open_pr(
         stood_in(run, STAND_IN_BODY, &body.display().to_string())?;
     }
     flag_body(run, &body)?;
+    if local {
+        ensure_local_ci_note(&body)?;
+    }
     let known = match run.state().pr_url.clone() {
         Some(url) => Some(url),
         None => {
@@ -2151,13 +2179,16 @@ fn fix_round(
         let attempt = run.state().workers.iter().filter(|w| mine(w)).count() as u32 + 1;
         let spawn = run.state().workers.len() as u32 + 1;
         let packs = scheduler::packs_dir(run.dir());
-        let pack = Pack::for_ci_fix(docs, board, round, attempt, check, log, &packs, spawn)?;
+        let lane = closeout_lane(board);
+        let (lane_dir, lane_def) = scheduler::prepare_lane(run, lane, attempt == 1, out)?;
+        let lane_env = lane_def.env_for(&lane_dir);
+        let pack = Pack::for_ci_fix_env(
+            docs, board, round, attempt, check, log, &packs, spawn, &lane_env,
+        )?;
         let open_before: HashSet<String> = open_blocks(&feature_dir)?
             .into_iter()
             .map(|b| b.id)
             .collect();
-        let lane = closeout_lane(board);
-        let (lane_dir, lane_def) = scheduler::prepare_lane(run, lane, attempt == 1, out)?;
         let who = Closer::CiFix { round, check };
         drop_ref(run, board, &who)?;
         let resolved = worker::effective_worker(run, cfg, "fix");
@@ -2166,7 +2197,7 @@ fn fix_round(
             Job::CiFix { round, attempt },
             &pack,
             &resolved,
-            &lane_def.env(),
+            &lane_env,
             &lane_dir,
             Some(lane),
         )?;
@@ -2688,6 +2719,77 @@ mod tests {
             flagged(&once, "**Template stand-ins:** b"),
             "**Template stand-ins:** b\n\n## PRD-001 — x\n\nBody.\n"
         );
+    }
+
+    #[test]
+    fn ship_stamps_reviewed_head_from_collect() {
+        use std::process::Command;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        Command::new("git")
+            .args(["init", "-q", "-b", "main"])
+            .current_dir(repo)
+            .status()
+            .unwrap();
+        for (k, v) in [("user.email", "t@example.invalid"), ("user.name", "t")] {
+            Command::new("git")
+                .args(["config", k, v])
+                .current_dir(repo)
+                .status()
+                .unwrap();
+        }
+        let dir = "docs/features/001-x";
+        fs::create_dir_all(repo.join(dir)).unwrap();
+        fs::write(repo.join("docs/project.toml"), "[docs]\nframework = 3\n").unwrap();
+        fs::write(
+            repo.join(dir).join("prd.md"),
+            "---\nnumber: 1\nslug: x\ntitle: T\ntype: feature\ncreated: 2026-01-01\nauthor: t\nsummary: |\n  x\n---\n",
+        )
+        .unwrap();
+        fs::write(
+            repo.join(dir).join("state.toml"),
+            "status = \"draft\"\nreviewed = \"2026-11-27\"\n",
+        )
+        .unwrap();
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(repo)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-q", "-m", "seed"])
+            .current_dir(repo)
+            .status()
+            .unwrap();
+        let run = tmp.path().join("run");
+        fs::create_dir_all(&run).unwrap();
+        let stamp = "dec0ded";
+        fs::write(run.join(COLLECT_FILE), format!("<!-- head: {stamp} -->\n")).unwrap();
+        let docs = Docs::open(repo).unwrap();
+        let feature_dir = repo.join(dir);
+        let text = fs::read_to_string(run.join(COLLECT_FILE)).unwrap();
+        if let Some(head) = collect::head_of(&text)
+            && crate::docs::state::read(&feature_dir)
+                .ok()
+                .flatten()
+                .is_some_and(|s| s.reviewed.is_some())
+        {
+            docs.set("001", &[("reviewed_head", head)]).unwrap();
+        }
+        let state = fs::read_to_string(feature_dir.join("state.toml")).unwrap();
+        assert!(state.contains(&format!("reviewed_head = \"{stamp}\"")));
+    }
+
+    #[test]
+    fn local_mode_adds_a_token_free_squash_merge_note_once() {
+        assert!(!LOCAL_CI_PR_NOTE.contains("[skip ci]"));
+        let body = "## PRD-001 — x\n\nBody.\n";
+        let once = local_ci_note_body(body);
+        assert!(once.contains(LOCAL_CI_PR_NOTE), "{once}");
+        assert!(!once.contains("[skip ci]"), "{once}");
+        assert_eq!(local_ci_note_body(&once), once);
+        assert_eq!(local_ci_note_body(""), format!("{LOCAL_CI_PR_NOTE}\n"));
     }
 
     #[test]

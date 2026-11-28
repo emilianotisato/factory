@@ -116,7 +116,15 @@ pub fn run(
         }
         // Reset before every run: the cache key counts untracked files, so only a clean lane keys on HEAD's tree.
         let (lane_dir, lane_def) = scheduler::prepare_lane(run, lane, true, out)?;
-        let result = gate_once(run, &lane_dir, &lane_def.env(), &gate, n, ran_red, out)?;
+        let result = gate_once(
+            run,
+            &lane_dir,
+            &lane_def.env_for(&lane_dir),
+            &gate,
+            n,
+            ran_red,
+            out,
+        )?;
         if !result.red {
             green_log = result.log;
             green_cached = result.cached;
@@ -302,7 +310,9 @@ pub fn run(
         let attempt = run.state().workers.iter().filter(|w| mine(w)).count() as u32 + 1;
         let spawn = run.state().workers.len() as u32 + 1;
         let packs = scheduler::packs_dir(run.dir());
-        let pack = Pack::for_checkpoint(
+        let (lane_dir, lane_def) = scheduler::prepare_lane(run, lane, true, out)?;
+        let lane_env = lane_def.env_for(&lane_dir);
+        let pack = Pack::for_checkpoint_env(
             docs,
             board,
             n,
@@ -313,12 +323,12 @@ pub fn run(
             &packs,
             spawn,
             sent_back.as_ref(),
+            &lane_env,
         )?;
         let open_before: HashSet<String> = open_checkpoint_blocks(&feature_dir)?
             .into_iter()
             .map(|(id, _)| id)
             .collect();
-        let (lane_dir, lane_def) = scheduler::prepare_lane(run, lane, true, out)?;
         drop_ref(run, board, n, "checkpoint")?;
         let resolved = worker::effective_worker(run, cfg, "checkpoint");
         let worker = Worker::spawn(
@@ -326,7 +336,7 @@ pub fn run(
             Job::Checkpoint { n, attempt },
             &pack,
             &resolved,
-            &lane_def.env(),
+            &lane_env,
             &lane_dir,
             Some(lane),
         )?;
@@ -880,8 +890,9 @@ fn fix_once(
 ) -> Result<Fixed> {
     let spawn = run.state().workers.len() as u32 + 1;
     let packs = scheduler::packs_dir(run.dir());
-    let pack = Pack::for_fix(docs, board, n, attempt, gate_log, &packs, spawn)?;
     let (lane_dir, lane_def) = scheduler::prepare_lane(run, lane, true, out)?;
+    let lane_env = lane_def.env_for(&lane_dir);
+    let pack = Pack::for_fix_env(docs, board, n, attempt, gate_log, &packs, spawn, &lane_env)?;
     drop_ref(run, board, n, "fix")?;
     let resolved = worker::effective_worker(run, cfg, "fix");
     let worker = Worker::spawn(
@@ -892,7 +903,7 @@ fn fix_once(
         },
         &pack,
         &resolved,
-        &lane_def.env(),
+        &lane_env,
         &lane_dir,
         Some(lane),
     )?;

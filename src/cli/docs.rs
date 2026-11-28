@@ -62,7 +62,10 @@ enum Verb {
         set: Option<String>,
     },
     /// Validate the board; exits 1 on any error
-    Check,
+    Check {
+        #[arg(value_name = "FEATURE")]
+        feature: Option<String>,
+    },
     /// Which framework version the repo is on, and what `check` would say
     Doctor,
     /// The feature's append-only log.jsonl
@@ -294,8 +297,11 @@ fn native(root: &Path, args: &[String], out: &mut dyn Write, err: &mut dyn Write
     };
     match cli.verb {
         Verb::Retro { feature, set } => retro(root, &feature, set.as_deref(), out, err),
-        Verb::Check => {
-            let report = check::run_on(root, board_tree(root).as_deref());
+        Verb::Check { feature } => {
+            let report = match feature.as_deref() {
+                Some(f) => check::run_feature_on(root, board_tree(root).as_deref(), f)?,
+                None => check::run_on(root, board_tree(root).as_deref()),
+            };
             if report.is_clean() {
                 print(out, "docs check: clean")?;
             } else {
@@ -382,7 +388,7 @@ fn dispatch(root: &Path, verb: Verb, out: &mut dyn Write, err: &mut dyn Write) -
         Verb::Status { feature, json } => status(root, feature.as_deref(), json, out),
         Verb::Set { feature, pairs } => set(root, &feature, &pairs, out),
         Verb::Retro { .. }
-        | Verb::Check
+        | Verb::Check { .. }
         | Verb::Doctor
         | Verb::Gate { .. }
         | Verb::Preflight { .. } => {
@@ -430,7 +436,11 @@ fn dispatch(root: &Path, verb: Verb, out: &mut dyn Write, err: &mut dyn Write) -
                 let dir = live_dir(root, &feature)?;
                 let id = log::add(&dir, entry)?;
                 if let Some(path) = outside_cwd(&dir.join(log::FILE)) {
-                    writeln!(err, "{path} updated").map_err(io("write stderr"))?;
+                    writeln!(
+                        err,
+                        "{path} updated (main checkout; the driver commits the log, so this lane's git status stays clean)"
+                    )
+                    .map_err(io("write stderr"))?;
                 }
                 match id {
                     Some(id) => print(out, &id),
@@ -736,13 +746,22 @@ fn live_dir(root: &Path, feature: &str) -> Result<PathBuf> {
 
 fn set(root: &Path, feature: &str, pairs: &[String], out: &mut dyn Write) -> Result<()> {
     let dir = live_dir(root, feature)?;
-    let mut kv = Vec::new();
+    let cwd_repo = paths::repo_root(Path::new(".")).unwrap_or_else(|_| PathBuf::from("."));
+    let mut resolved = Vec::new();
     for p in pairs {
-        let Some(pair) = p.split_once('=') else {
+        let Some((key, value)) = p.split_once('=') else {
             return Err(Error::Msg(format!("\"{p}\" is not key=value")));
         };
-        kv.push(pair);
+        if key == "reviewed_head" && value == "HEAD" {
+            resolved.push((key.to_string(), crate::ci::head(&cwd_repo)?));
+        } else {
+            resolved.push((key.to_string(), value.to_string()));
+        }
     }
+    let kv: Vec<(&str, &str)> = resolved
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
     state::set(&dir, &kv)?;
     let shown = outside_cwd(&dir.join(state::FILE)).unwrap_or_else(|| {
         let name = dir.file_name().unwrap_or_default().to_string_lossy();

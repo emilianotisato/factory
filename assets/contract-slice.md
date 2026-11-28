@@ -6,7 +6,7 @@ Read first, in order:
 3. the `# PRD sections` below — the sections the slice cites — and the § QA plan rows its Prove task names
 4. the `# Log` section below, its `## Notes` first: what earlier builders learned the hard way
 
-The feature's `state.toml` and `log.jsonl` are written through the tool only, never by hand. Each command below is one shell line; a body goes on stdin (`--body-file -`).
+The feature's `state.toml` and `log.jsonl` are written through the tool only, never by hand. `docs log add` and `docs set` write to the main checkout (the driver commits them, so this lane's `git status` stays clean). Each command below is one shell line; a body goes on stdin (`--body-file -`).
 
 Do:
 - the tasks, in order, working by the Autonomy § Tokens rules: batch lookups, read each file once, keep command output small

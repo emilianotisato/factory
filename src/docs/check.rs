@@ -161,8 +161,8 @@ pub fn run_on(root: &Path, board: Option<&Path>) -> Report {
         }
     }
     archive_frozen(root, &mut r);
-    home_paths(root, &mut r);
-    links(root, &mut r);
+    home_paths(root, None, &mut r);
+    links(root, None, &mut r);
     ideas(root, &mut r);
     for dir in [root.to_path_buf(), docs] {
         for name in SECOND_BOARD_NAMES {
@@ -189,6 +189,98 @@ pub fn run_on(root: &Path, board: Option<&Path>) -> Report {
         }
     }
     r
+}
+
+pub fn run_feature_on(root: &Path, board: Option<&Path>, query: &str) -> Result<Report> {
+    let mut r = Report::default();
+    let rel = |p: &Path| p.strip_prefix(root).unwrap_or(p).display().to_string();
+    let docs = root.join("docs");
+    let board_features = board.map(|b| b.join("docs/features"));
+    let live = match board::scan_folder_on(
+        &docs.join("features"),
+        Kind::Live,
+        board_features.as_deref(),
+    ) {
+        Ok(f) => f,
+        Err(e) => {
+            r.err("E-FM-INVALID", format!("docs/features: {e}"));
+            Vec::new()
+        }
+    };
+    let archived = match board::scan_folder_on(&docs.join("archive"), Kind::Archive, None) {
+        Ok(f) => f,
+        Err(e) => {
+            r.err("E-FM-INVALID", format!("docs/archive: {e}"));
+            Vec::new()
+        }
+    };
+    let partial = board::Board {
+        root: root.to_path_buf(),
+        project: project::load(root).ok().flatten(),
+        live,
+        archived,
+    };
+    let target = partial.resolve(query)?;
+    let mut first: Option<&str> = None;
+    for f in partial.live.iter().chain(&partial.archived) {
+        if f.number != target.number {
+            continue;
+        }
+        match first {
+            Some(dir) => {
+                r.err(
+                    "E-NUM-DUPLICATE",
+                    format!(
+                        "PRD {:03} claimed by both {dir} and {}",
+                        f.number, f.dir_name
+                    ),
+                );
+                break;
+            }
+            None => first = Some(&f.dir_name),
+        }
+    }
+    if target.kind == Kind::Archive {
+        let own = target.state().map(|s| s.status.clone()).or_else(|| {
+            target
+                .prd
+                .as_ref()
+                .and_then(|(fm, _)| fm.get("status"))
+                .and_then(Value::text)
+        });
+        if let Some(st) = own
+            && st != "archived"
+            && st != "retired"
+        {
+            r.err(
+                "E-STATUS-PLACE",
+                format!(
+                    "{} is under archive/ but its status is \"{st}\"",
+                    rel(&target.dir)
+                ),
+            );
+        }
+        return Ok(r);
+    }
+    let project = read_project(root, &mut r);
+    let limits = project.flatten().unwrap_or(Project {
+        framework: 3,
+        gate: None,
+        inner: None,
+        lanes: 1,
+        gate_parallel: None,
+        checkpoint_every: 2,
+        prd_max_kb: 120.0,
+        slice_max_kb: 30.0,
+        gate_failure: Vec::new(),
+        gate_memory_max: None,
+    });
+    let board_dir = board::board_dir(board_features.as_deref(), &target.dir);
+    feature(root, &board_dir, &limits, target, &mut r);
+    let target_rel = rel(&target.dir);
+    home_paths(root, Some(&target_rel), &mut r);
+    links(root, Some(&target_rel), &mut r);
+    Ok(r)
 }
 
 /// `ideas::read` is the reader `idea list` uses, so what passes here lists.
@@ -805,7 +897,7 @@ fn git(root: &Path, args: &[&str]) -> Option<String> {
 }
 
 /// Bytes, not text: a tracked `.pyc` holds home paths too. `docs/archive/` is frozen, so a hit there cannot be fixed.
-fn home_paths(root: &Path, r: &mut Report) {
+fn home_paths(root: &Path, only_under: Option<&str>, r: &mut Report) {
     if git(root, &["rev-parse", "--is-inside-work-tree"])
         .as_deref()
         .map(str::trim)
@@ -816,7 +908,19 @@ fn home_paths(root: &Path, r: &mut Report) {
     let Some(tracked) = git(root, &["ls-files", "-z", "--", "docs"]) else {
         return;
     };
+    let prefix = only_under.map(|p| {
+        let mut s = p.to_string();
+        if !s.ends_with('/') {
+            s.push('/');
+        }
+        s
+    });
     for rel in tracked.split('\0').filter(|p| !p.is_empty()) {
+        if let Some(ref pre) = prefix
+            && !rel.starts_with(pre.as_str())
+        {
+            continue;
+        }
         if rel.starts_with("docs/archive/") {
             continue;
         }
@@ -880,11 +984,18 @@ fn walk_md(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 /// The archive is skipped: a link that went stale when a folder moved in is the rule working.
-fn links(root: &Path, r: &mut Report) {
+fn links(root: &Path, only_under: Option<&str>, r: &mut Report) {
     let docs = root.join("docs");
     let archive = docs.join("archive");
     let mut files = Vec::new();
-    walk_md(&docs, &mut files);
+    if let Some(prefix) = only_under {
+        let sub = root.join(prefix.trim_end_matches('/'));
+        if sub.is_dir() {
+            walk_md(&sub, &mut files);
+        }
+    } else {
+        walk_md(&docs, &mut files);
+    }
     for file in files.iter().filter(|f| !f.starts_with(&archive)) {
         let Ok(text) = fs::read_to_string(file) else {
             continue;
@@ -1434,5 +1545,49 @@ mod tests {
         )
         .unwrap();
         assert_eq!(codes(d.path()), ["W-NO-GATE"]);
+    }
+
+    #[test]
+    fn scoped_check_ignores_a_broken_sibling_and_bad_ideas() {
+        let d = tree();
+        let root = d.path();
+        scaffold::new(root, "second", None, &mut Vec::new()).unwrap();
+        fs::write(
+            root.join("docs/features/002-second/state.toml"),
+            "status = \n",
+        )
+        .unwrap();
+        drop_summary(&root.join("docs/features/002-second"));
+        write(root, "docs/ideas/bad name.md", "# bad\n");
+        assert!(
+            run(root).codes().contains(&"E-STATE-INVALID"),
+            "full board should see the sibling"
+        );
+        assert!(
+            run(root).codes().contains(&"E-IDEA-NAME"),
+            "full board should see the idea"
+        );
+        let r = run_feature_on(root, None, "001").unwrap();
+        assert!(r.is_clean(), "{:?}", r.lines());
+    }
+
+    #[test]
+    fn scoped_check_flags_archive_status_placement() {
+        let d = tree();
+        let root = d.path();
+        write(
+            root,
+            "docs/archive/005-old/prd.md",
+            "---\nnumber: 5\nslug: old\nstatus: ready\n---\n",
+        );
+        let r = run_feature_on(root, None, "005").unwrap();
+        assert_eq!(r.codes(), ["E-STATUS-PLACE"]);
+    }
+
+    #[test]
+    fn scoped_check_refuses_an_unknown_feature() {
+        let d = tree();
+        let err = run_feature_on(d.path(), None, "999").unwrap_err();
+        assert!(err.to_string().contains("no feature matching"));
     }
 }

@@ -300,7 +300,11 @@ impl Fixture {
             let text = fs::read_to_string(&p).expect("fixture slice");
             let prove = "### 3. Prove — at the checkpoint — blocked by: 2\n";
             assert!(text.contains(prove), "{}", p.display());
-            let named = format!("{prove}`prd.md` §8, the FR-1 row.\n\n");
+            let named = if n <= 2 {
+                format!("{prove}`prd.md` §8, the FR-1 row.\n\n")
+            } else {
+                format!("{prove}none.\n\n")
+            };
             fs::write(&p, text.replacen(prove, &named, 1)).unwrap();
         }
         self.docs(&["set", FEATURE, "status=ready"]);

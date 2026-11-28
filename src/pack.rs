@@ -5,8 +5,48 @@ use std::path::{Path, PathBuf};
 use crate::ctx::{def, outline, print, walk};
 use crate::docs::{Docs, Status, log};
 use crate::error::io;
+use crate::lanes;
+use crate::paths;
 use crate::scheduler::pad_list;
 use crate::{Error, Result};
+
+fn custom_lane_env(env: &[(String, String)]) -> impl Iterator<Item = &(String, String)> {
+    env.iter().filter(|(k, _)| k.as_str() != lanes::ENV_LANE)
+}
+
+fn lane_export_assignments(env: &[(String, String)]) -> Option<String> {
+    let v: Vec<_> = custom_lane_env(env).collect();
+    if v.is_empty() {
+        return None;
+    }
+    Some(
+        v.iter()
+            .map(|(k, val)| format!("{k}={}", paths::shell_word(val)))
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
+}
+
+pub fn env_prefixed(env: &[(String, String)], cmd: &str) -> String {
+    match lane_export_assignments(env) {
+        Some(a) => format!("export {a}; {cmd}"),
+        None => cmd.to_string(),
+    }
+}
+
+fn lane_env_section(env: &[(String, String)]) -> Option<String> {
+    let assignments = lane_export_assignments(env)?;
+    Some(format!(
+        "# Lane env\n\nexport {assignments}\n\n\
+         Keep these exports active when running build/test commands in interactive shells."
+    ))
+}
+
+fn push_lane_env(sections: &mut Vec<String>, lane_env: &[(String, String)]) {
+    if let Some(s) = lane_env_section(lane_env) {
+        sections.push(s);
+    }
+}
 
 pub const CONTRACT: &str = include_str!("../assets/contract-slice.md");
 pub const CONTRACT_FIX: &str = include_str!("../assets/contract-fix.md");
@@ -226,6 +266,18 @@ impl Pack {
         spawn: u32,
         block: Option<&BlockSection>,
     ) -> Result<Pack> {
+        Self::for_slice_with_env(docs, board, slice, packs_dir, spawn, block, &[])
+    }
+
+    pub fn for_slice_with_env(
+        docs: &Docs,
+        board: &Status,
+        slice: u32,
+        packs_dir: &Path,
+        spawn: u32,
+        block: Option<&BlockSection>,
+        lane_env: &[(String, String)],
+    ) -> Result<Pack> {
         let entry = board
             .slices
             .iter()
@@ -299,7 +351,11 @@ impl Pack {
         sections.push(format!("# Lookup\n\n{}", lookup()));
         sections.push(format!("# Contract\n\n{}", contract.trim_end()));
         sections.push(format!("# Autonomy\n\n{}", builder_autonomy()));
-        sections.push(format!("# Inner loop\n\n{}", inner.trim()));
+        push_lane_env(&mut sections, lane_env);
+        sections.push(format!(
+            "# Inner loop\n\n{}",
+            env_prefixed(lane_env, inner.trim())
+        ));
         let (text, parts) = assemble(
             format!("<!-- factory-pack files: {} -->\n\n", files.join(",")),
             sections,
@@ -332,6 +388,20 @@ impl Pack {
         packs_dir: &Path,
         spawn: u32,
     ) -> Result<Pack> {
+        Self::for_fix_env(docs, board, n, attempt, gate_log, packs_dir, spawn, &[])
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn for_fix_env(
+        docs: &Docs,
+        board: &Status,
+        n: u32,
+        attempt: u32,
+        gate_log: &Path,
+        packs_dir: &Path,
+        spawn: u32,
+        lane_env: &[(String, String)],
+    ) -> Result<Pack> {
         let feature = format!("{:03}", board.number);
         let gate = docs.gate()?;
         let inner = docs.gate_inner()?;
@@ -340,23 +410,23 @@ impl Pack {
             .replace("{NNN}", &feature)
             .replace("{n}", &n.to_string());
 
-        let (text, parts) = assemble(
-            "<!-- factory-pack files: -->\n\n".to_string(),
-            vec![
-                format!(
-                    "# Gate failure\n\n<!-- checkpoint {n}, gate attempt {attempt}: {} -->\n\n\
+        let prefixed = env_prefixed(lane_env, inner.trim());
+        let mut body = vec![
+            format!(
+                "# Gate failure\n\n<!-- checkpoint {n}, gate attempt {attempt}: {} -->\n\n\
                      Gate command: `{}`\nInner command: `{}`\n\n```\n{}\n```",
-                    gate_log.display(),
-                    gate.trim(),
-                    inner.trim(),
-                    tail(&log_text, TAIL_LINES).trim_end()
-                ),
-                log_section(docs, board)?,
-                format!("# Contract\n\n{}", contract.trim_end()),
-                format!("# Autonomy\n\n{}", autonomy()),
-                format!("# Inner loop\n\n{}", inner.trim()),
-            ],
-        );
+                gate_log.display(),
+                gate.trim(),
+                prefixed.trim(),
+                tail(&log_text, TAIL_LINES).trim_end()
+            ),
+            log_section(docs, board)?,
+            format!("# Contract\n\n{}", contract.trim_end()),
+            format!("# Autonomy\n\n{}", autonomy()),
+        ];
+        push_lane_env(&mut body, lane_env);
+        body.push(format!("# Inner loop\n\n{}", prefixed));
+        let (text, parts) = assemble("<!-- factory-pack files: -->\n\n".to_string(), body);
 
         fs::create_dir_all(packs_dir).map_err(io(format!("mkdir {}", packs_dir.display())))?;
         let path = packs_dir.join(format!("fix-{n}-{spawn}.md"));
@@ -384,6 +454,31 @@ impl Pack {
         packs_dir: &Path,
         spawn: u32,
         block: Option<&BlockSection>,
+    ) -> Result<Pack> {
+        Self::for_merge_env(
+            docs,
+            board,
+            slice,
+            conflicted,
+            sha,
+            packs_dir,
+            spawn,
+            block,
+            &[],
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn for_merge_env(
+        docs: &Docs,
+        board: &Status,
+        slice: u32,
+        conflicted: &[String],
+        sha: &str,
+        packs_dir: &Path,
+        spawn: u32,
+        block: Option<&BlockSection>,
+        lane_env: &[(String, String)],
     ) -> Result<Pack> {
         let entry = board
             .slices
@@ -434,7 +529,11 @@ impl Pack {
         sections.push(log_section(docs, board)?);
         sections.push(format!("# Contract\n\n{}", contract.trim_end()));
         sections.push(format!("# Autonomy\n\n{}", autonomy()));
-        sections.push(format!("# Inner loop\n\n{}", inner.trim()));
+        push_lane_env(&mut sections, lane_env);
+        sections.push(format!(
+            "# Inner loop\n\n{}",
+            env_prefixed(lane_env, inner.trim())
+        ));
         let (text, parts) = assemble(
             format!("<!-- factory-pack files: {} -->\n\n", files.join(",")),
             sections,
@@ -467,6 +566,35 @@ impl Pack {
         packs_dir: &Path,
         spawn: u32,
         sent_back: Option<&SentBack>,
+    ) -> Result<Pack> {
+        Self::for_checkpoint_env(
+            docs,
+            board,
+            n,
+            covers,
+            gate_log,
+            cached,
+            leaks,
+            packs_dir,
+            spawn,
+            sent_back,
+            &[],
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn for_checkpoint_env(
+        docs: &Docs,
+        board: &Status,
+        n: u32,
+        covers: &[u32],
+        gate_log: &Path,
+        cached: bool,
+        leaks: &str,
+        packs_dir: &Path,
+        spawn: u32,
+        sent_back: Option<&SentBack>,
+        lane_env: &[(String, String)],
     ) -> Result<Pack> {
         let feature = format!("{:03}", board.number);
         let prd_rel = format!("{}/prd.md", board.dir);
@@ -542,6 +670,7 @@ impl Pack {
         }
         sections.push(log_section(docs, board)?);
         sections.push(format!("# Contract\n\n{}", contract.trim_end()));
+        push_lane_env(&mut sections, lane_env);
         sections.push(format!("# Autonomy\n\n{}", autonomy()));
 
         let (text, parts) = assemble(
@@ -576,8 +705,10 @@ impl Pack {
         retro_template: &str,
         packs_dir: &Path,
         spawn: u32,
+        lane_env: &[(String, String)],
     ) -> Result<Pack> {
         let feature = format!("{:03}", board.number);
+        let inner = docs.gate_inner()?;
         let prd_rel = format!("{}/prd.md", board.dir);
         let repo = docs.root();
         let base_ref = crate::commit::resolve_base_ref(repo, Some(default_branch))
@@ -617,21 +748,27 @@ impl Pack {
             PR_BODY.trim_end()
         );
         // Two header lines: the polish stub reads the run dir from the second.
+        let mut sections = vec![
+            branch,
+            format!("# Collected\n\n{}", collected.trim_end()),
+            log_section(docs, board)?,
+            retro,
+            pr_body,
+            format!("# Contract\n\n{}", contract.trim_end()),
+            format!("# Autonomy\n\n{}", autonomy()),
+        ];
+        push_lane_env(&mut sections, lane_env);
+        sections.push(format!(
+            "# Inner loop\n\n{}",
+            env_prefixed(lane_env, inner.trim())
+        ));
         let (text, parts) = assemble(
             format!(
                 "<!-- factory-pack files: {} -->\n<!-- run dir: {} -->\n\n",
                 files.join(","),
                 run_dir.display()
             ),
-            vec![
-                branch,
-                format!("# Collected\n\n{}", collected.trim_end()),
-                log_section(docs, board)?,
-                retro,
-                pr_body,
-                format!("# Contract\n\n{}", contract.trim_end()),
-                format!("# Autonomy\n\n{}", autonomy()),
-            ],
+            sections,
         );
 
         fs::create_dir_all(packs_dir).map_err(io(format!("mkdir {}", packs_dir.display())))?;
@@ -658,6 +795,31 @@ impl Pack {
         packs_dir: &Path,
         spawn: u32,
     ) -> Result<Pack> {
+        Self::for_ci_fix_env(
+            docs,
+            board,
+            round,
+            attempt,
+            check,
+            log_text,
+            packs_dir,
+            spawn,
+            &[],
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn for_ci_fix_env(
+        docs: &Docs,
+        board: &Status,
+        round: u32,
+        attempt: u32,
+        check: &str,
+        log_text: &str,
+        packs_dir: &Path,
+        spawn: u32,
+        lane_env: &[(String, String)],
+    ) -> Result<Pack> {
         let feature = format!("{:03}", board.number);
         let gate = docs.gate()?;
         let inner = docs.gate_inner()?;
@@ -666,22 +828,24 @@ impl Pack {
             .replace("{round}", &round.to_string())
             .replace("{check}", check);
 
-        let (text, parts) = assemble(
-            "<!-- factory-pack files: -->\n\n".to_string(),
-            vec![
-                format!(
-                    "# CI failure\n\n<!-- round {round}, attempt {attempt}, check: {check} -->\n\n\
+        let mut body = vec![
+            format!(
+                "# CI failure\n\n<!-- round {round}, attempt {attempt}, check: {check} -->\n\n\
                      Failing check: `{check}`\nGate command: `{}`\nInner command: `{}`\n\n```\n{}\n```",
-                    gate.trim(),
-                    inner.trim(),
-                    tail(log_text, TAIL_LINES).trim_end()
-                ),
-                log_section(docs, board)?,
-                format!("# Contract\n\n{}", contract.trim_end()),
-                format!("# Autonomy\n\n{}", autonomy()),
-                format!("# Inner loop\n\n{}", inner.trim()),
-            ],
-        );
+                gate.trim(),
+                inner.trim(),
+                tail(log_text, TAIL_LINES).trim_end()
+            ),
+            log_section(docs, board)?,
+            format!("# Contract\n\n{}", contract.trim_end()),
+            format!("# Autonomy\n\n{}", autonomy()),
+        ];
+        push_lane_env(&mut body, lane_env);
+        body.push(format!(
+            "# Inner loop\n\n{}",
+            env_prefixed(lane_env, inner.trim())
+        ));
+        let (text, parts) = assemble("<!-- factory-pack files: -->\n\n".to_string(), body);
 
         fs::create_dir_all(packs_dir).map_err(io(format!("mkdir {}", packs_dir.display())))?;
         let path = packs_dir.join(format!("ci-fix-{round}-{spawn}.md"));
@@ -728,6 +892,14 @@ pub fn progress_line(slice_text: &str) -> Option<&str> {
         .find(|l| l.trim_start().starts_with("**Progress**"))
 }
 
+pub fn source_before_depends(slice_text: &str) -> &str {
+    let end = slice_text
+        .find("**Depends on**")
+        .unwrap_or(slice_text.len());
+    let head = &slice_text[..end];
+    head.find("**Source**:").map(|i| &head[i..]).unwrap_or("")
+}
+
 pub fn fr_ids(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut rest = text;
@@ -767,7 +939,35 @@ pub fn handed_qa(
             }
         }
     }
-    Ok(qa_rows(prd_text, Some(&named[..])))
+    let mut incomplete: Vec<String> = Vec::new();
+    for s in &board.slices {
+        if s.status.as_deref() == Some("done") {
+            continue;
+        }
+        let slice_text = read(&repo.join(format!("docs/features/{}", s.file)))?;
+        for id in fr_ids(prove_section(&slice_text))
+            .into_iter()
+            .chain(fr_ids(source_before_depends(&slice_text)))
+        {
+            if !incomplete.contains(&id) {
+                incomplete.push(id);
+            }
+        }
+    }
+    let deferred: Vec<String> = named
+        .iter()
+        .filter(|id| incomplete.contains(id))
+        .cloned()
+        .collect();
+    named.retain(|id| !incomplete.contains(id));
+    let (mut qa_text, rows) = qa_rows(prd_text, Some(&named[..]));
+    if !deferred.is_empty() {
+        qa_text.push_str(&format!(
+            "\n(deferred until remaining slice(s) finish: {})",
+            deferred.join(", ")
+        ));
+    }
+    Ok((qa_text, rows))
 }
 
 /// The QA plan rows handed to a checkpoint, each printed with its key: the rows whose first cell names an id in
@@ -1238,6 +1438,245 @@ mod tests {
         assert_eq!(text, "(the PRD has no QA plan table)");
     }
 
+    #[test]
+    fn source_before_depends_ignores_fr_ids_after_the_depends_line() {
+        let text = "**Source**: §4 FR-2\n**Depends on**: Slice 02 (so FR-4 ships)\n";
+        assert_eq!(fr_ids(source_before_depends(text)), ["FR-2"]);
+        assert!(fr_ids(prove_section(text)).is_empty());
+    }
+
+    #[test]
+    fn a_pending_slices_prove_defers_the_row_at_an_earlier_checkpoint() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        let dir = "docs/features/001-x";
+        fs::create_dir_all(repo.join(dir)).unwrap();
+        let prd = "# PRD\n\n| FR | Proof | Evidence | Human? |\n|---|---|---|---|\n\
+            | FR-3 | run t | transcript | no |\n";
+        fs::write(repo.join(dir).join("prd.md"), prd).unwrap();
+        fs::write(
+            repo.join(dir).join("slice-02.md"),
+            "# S\n\n### 3. Prove\n§8, the FR-3 row.\n",
+        )
+        .unwrap();
+        fs::write(
+            repo.join(dir).join("slice-04.md"),
+            "# S\n\n**Source**: §4 FR-3\n\n### 3. Prove\n§8, the FR-3 row.\n",
+        )
+        .unwrap();
+        let board = Status {
+            dir: dir.to_string(),
+            all_done: false,
+            slices: vec![
+                crate::docs::Slice {
+                    number: 2,
+                    file: "001-x/slice-02.md".into(),
+                    status: Some("done".into()),
+                    ..Default::default()
+                },
+                crate::docs::Slice {
+                    number: 4,
+                    file: "001-x/slice-04.md".into(),
+                    status: Some("pending".into()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let (text, rows) = handed_qa(repo, &board, &[2], prd).unwrap();
+        assert!(rows.is_empty(), "{rows:?}");
+        assert!(
+            text.contains("(deferred until remaining slice(s) finish: FR-3)"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_pending_slice_mentions_an_fr_only_after_depends_and_does_not_defer_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        let dir = "docs/features/001-x";
+        fs::create_dir_all(repo.join(dir)).unwrap();
+        let prd = "# PRD\n\n| FR | Proof | Evidence | Human? |\n|---|---|---|---|\n\
+            | FR-4 | run t | transcript | no |\n";
+        fs::write(repo.join(dir).join("prd.md"), prd).unwrap();
+        fs::write(
+            repo.join(dir).join("slice-02.md"),
+            "# S\n\n### 3. Prove\n§8, the FR-4 row.\n",
+        )
+        .unwrap();
+        fs::write(
+            repo.join(dir).join("slice-03.md"),
+            "# S\n\n**Source**: §6 FR-2\n**Depends on**: Slice 02 (so FR-4 lands)\n",
+        )
+        .unwrap();
+        let board = Status {
+            dir: dir.to_string(),
+            all_done: false,
+            slices: vec![
+                crate::docs::Slice {
+                    number: 2,
+                    file: "001-x/slice-02.md".into(),
+                    status: Some("done".into()),
+                    ..Default::default()
+                },
+                crate::docs::Slice {
+                    number: 3,
+                    file: "001-x/slice-03.md".into(),
+                    status: Some("pending".into()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let (text, rows) = handed_qa(repo, &board, &[2], prd).unwrap();
+        assert_eq!(keys(&rows), ["FR-4"], "{rows:?}");
+        assert!(!text.contains("deferred until remaining"), "{text}");
+    }
+
+    #[test]
+    fn an_incomplete_slice_immediately_after_covers_also_defers_its_fr() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        let dir = "docs/features/001-x";
+        fs::create_dir_all(repo.join(dir)).unwrap();
+        let prd = "# PRD\n\n| FR | Proof | Evidence | Human? |\n|---|---|---|---|\n\
+            | FR-1 | run a | transcript | no |\n| FR-2 | run b | transcript | no |\n";
+        fs::write(repo.join(dir).join("prd.md"), prd).unwrap();
+        fs::write(
+            repo.join(dir).join("slice-01.md"),
+            "# S\n\n### 3. Prove\n§8, the FR-1 row.\n",
+        )
+        .unwrap();
+        fs::write(
+            repo.join(dir).join("slice-02.md"),
+            "# S\n\n### 3. Prove\n§8, the FR-2 row.\n",
+        )
+        .unwrap();
+        fs::write(
+            repo.join(dir).join("slice-03.md"),
+            "# S\n\n**Source**: [`prd.md`](prd.md) → §4 (FR-2). **Depends on**: Slice 02.\n",
+        )
+        .unwrap();
+        let board = Status {
+            dir: dir.to_string(),
+            all_done: false,
+            slices: vec![
+                crate::docs::Slice {
+                    number: 1,
+                    file: "001-x/slice-01.md".into(),
+                    status: Some("done".into()),
+                    ..Default::default()
+                },
+                crate::docs::Slice {
+                    number: 2,
+                    file: "001-x/slice-02.md".into(),
+                    status: Some("done".into()),
+                    ..Default::default()
+                },
+                crate::docs::Slice {
+                    number: 3,
+                    file: "001-x/slice-03.md".into(),
+                    status: Some("pending".into()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let (text, rows) = handed_qa(repo, &board, &[1, 2], prd).unwrap();
+        assert_eq!(keys(&rows), ["FR-1"], "{text}");
+        assert!(
+            text.contains("(deferred until remaining slice(s) finish: FR-2)"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn incomplete_slices_after_the_covers_are_the_ones_that_defer() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        let dir = "docs/features/001-x";
+        fs::create_dir_all(repo.join(dir)).unwrap();
+        let prd = "# PRD\n\n| FR | Proof | Evidence | Human? |\n|---|---|---|---|\n\
+            | FR-1 | run t | transcript | no |\n| FR-2 | run u | transcript | no |\n";
+        fs::write(repo.join(dir).join("prd.md"), prd).unwrap();
+        fs::write(
+            repo.join(dir).join("slice-01.md"),
+            "# S\n\n### 3. Prove\n§8, the FR-1 and FR-2 rows.\n",
+        )
+        .unwrap();
+        fs::write(
+            repo.join(dir).join("slice-03.md"),
+            "# S\n\n**Source**: [`prd.md`](prd.md) → §_(n)_\n",
+        )
+        .unwrap();
+        let board = Status {
+            dir: dir.to_string(),
+            all_done: false,
+            slices: vec![
+                crate::docs::Slice {
+                    number: 1,
+                    file: "001-x/slice-01.md".into(),
+                    status: Some("done".into()),
+                    ..Default::default()
+                },
+                crate::docs::Slice {
+                    number: 3,
+                    file: "001-x/slice-03.md".into(),
+                    status: Some("building".into()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let (text, rows) = handed_qa(repo, &board, &[1], prd).unwrap();
+        assert_eq!(keys(&rows), ["FR-1", "FR-2"], "{text}");
+        assert!(!text.contains("deferred until remaining"), "{text}");
+    }
+
+    #[test]
+    fn the_last_checkpoint_hands_every_row_even_when_slices_still_cite_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        let dir = "docs/features/001-x";
+        fs::create_dir_all(repo.join(dir)).unwrap();
+        let prd = "# PRD\n\n| FR | Proof | Evidence | Human? |\n|---|---|---|---|\n\
+            | FR-3 | run t | transcript | no |\n";
+        fs::write(repo.join(dir).join("prd.md"), prd).unwrap();
+        fs::write(
+            repo.join(dir).join("slice-02.md"),
+            "# S\n\n### 3. Prove\n§8, the FR-3 row.\n",
+        )
+        .unwrap();
+        fs::write(
+            repo.join(dir).join("slice-04.md"),
+            "# S\n\n### 3. Prove\n§8, the FR-3 row.\n",
+        )
+        .unwrap();
+        let board = Status {
+            dir: dir.to_string(),
+            all_done: true,
+            slices: vec![
+                crate::docs::Slice {
+                    number: 2,
+                    file: "001-x/slice-02.md".into(),
+                    status: Some("done".into()),
+                    ..Default::default()
+                },
+                crate::docs::Slice {
+                    number: 4,
+                    file: "001-x/slice-04.md".into(),
+                    status: Some("pending".into()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let (text, rows) = handed_qa(repo, &board, &[2], prd).unwrap();
+        assert_eq!(keys(&rows), ["FR-3"], "{rows:?}");
+        assert!(!text.contains("deferred until remaining"), "{text}");
+    }
+
     /// The first slice's Prove section names one row; the second's names none.
     fn checkpoint_rows(all_done: bool, covers: &[u32]) -> (Vec<QaRow>, String) {
         let tmp = tempfile::tempdir().unwrap();
@@ -1513,6 +1952,74 @@ mod tests {
     }
 
     #[test]
+    fn env_prefixed_export_prefixes_custom_lane_vars_and_skips_factory_lane_only() {
+        let env = vec![
+            (lanes::ENV_LANE.to_string(), "2".to_string()),
+            (
+                "CARGO_TARGET_DIR".to_string(),
+                "/abs/lane-2/target".to_string(),
+            ),
+        ];
+        let cmd = "cargo test -q";
+        let got = env_prefixed(&env, cmd);
+        assert!(got.starts_with("export CARGO_TARGET_DIR=/abs/lane-2/target; "));
+        assert_eq!(
+            got,
+            format!("export CARGO_TARGET_DIR=/abs/lane-2/target; {cmd}")
+        );
+        let lane_only = vec![(lanes::ENV_LANE.to_string(), "1".to_string())];
+        assert_eq!(env_prefixed(&lane_only, cmd), cmd);
+    }
+
+    #[test]
+    fn slice_pack_carries_lane_env_and_prefixed_inner_loop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        let dir = "docs/features/001-x";
+        fs::create_dir_all(repo.join(dir)).unwrap();
+        fs::write(repo.join("gate.sh"), "").unwrap();
+        fs::write(
+            repo.join("docs/project.toml"),
+            "[docs]\nframework = 3\ngate = \"./gate.sh\"\ninner = \"./gate.sh --inner\"\n",
+        )
+        .unwrap();
+        fs::write(
+            repo.join(dir).join("prd.md"),
+            "# PRD\n\n## 1. FR-1\n\nrule\n",
+        )
+        .unwrap();
+        fs::write(
+            repo.join(dir).join("slice-01-a.md"),
+            "# Slice 01\n\n**Source**: §1\n",
+        )
+        .unwrap();
+        let docs = Docs::open(repo).unwrap();
+        let board = Status {
+            number: 1,
+            dir: dir.to_string(),
+            slices: vec![crate::docs::Slice {
+                number: 1,
+                file: "001-x/slice-01-a.md".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let lane_env = vec![
+            (lanes::ENV_LANE.to_string(), "2".to_string()),
+            (
+                "CARGO_TARGET_DIR".to_string(),
+                "/tmp/lane-2/target".to_string(),
+            ),
+        ];
+        let pack =
+            Pack::for_slice_with_env(&docs, &board, 1, &repo.join("packs"), 1, None, &lane_env)
+                .unwrap();
+        let text = fs::read_to_string(&pack.path).unwrap();
+        assert!(text.contains("# Lane env\n\nexport CARGO_TARGET_DIR=/tmp/lane-2/target"));
+        assert!(text.contains("export CARGO_TARGET_DIR=/tmp/lane-2/target; ./gate.sh --inner"));
+    }
+
+    #[test]
     fn every_pack_kind_measures_the_sections_it_wrote() {
         let tmp = tempfile::tempdir().unwrap();
         let repo = tmp.path();
@@ -1574,10 +2081,26 @@ mod tests {
             ["slice", "block_and_answer", "prd_sections"]
         );
 
-        let fix = Pack::for_fix(&docs, &board, 1, 1, &log, &packs, 1).unwrap();
+        let lane_env = vec![(
+            "CARGO_TARGET_DIR".to_string(),
+            "/tmp/lane/target".to_string(),
+        )];
+        let fix = Pack::for_fix_env(&docs, &board, 1, 1, &log, &packs, 1, &lane_env).unwrap();
+        let fix_text = fs::read_to_string(&fix.path).unwrap();
+        assert!(
+            fix_text.contains("export CARGO_TARGET_DIR=/tmp/lane/target; ./gate.sh --inner"),
+            "{fix_text}"
+        );
         assert_eq!(
             sections_of(&fix),
-            ["gate_failure", "log", "contract", "autonomy", "inner_loop"]
+            [
+                "gate_failure",
+                "log",
+                "contract",
+                "autonomy",
+                "lane_env",
+                "inner_loop"
+            ]
         );
         let cp = Pack::for_checkpoint(
             &docs,
@@ -1604,6 +2127,10 @@ mod tests {
                 "autonomy"
             ]
         );
+        let polish_env = vec![(
+            "CARGO_TARGET_DIR".to_string(),
+            "/tmp/lane/target".to_string(),
+        )];
         let polish = Pack::for_polish(
             &docs,
             &board,
@@ -1614,8 +2141,14 @@ mod tests {
             "# Retro",
             &packs,
             1,
+            &polish_env,
         )
         .unwrap();
+        let polish_text = fs::read_to_string(&polish.path).unwrap();
+        assert!(polish_text.contains("# Lane env"));
+        assert!(
+            polish_text.contains("export CARGO_TARGET_DIR=/tmp/lane/target; ./gate.sh --inner")
+        );
         assert_eq!(
             sections_of(&polish),
             [
@@ -1625,7 +2158,9 @@ mod tests {
                 "retro",
                 "pr_body",
                 "contract",
-                "autonomy"
+                "autonomy",
+                "lane_env",
+                "inner_loop"
             ]
         );
         let ci = Pack::for_ci_fix(&docs, &board, 1, 1, "test", "red — ✗\n", &packs, 1).unwrap();
@@ -1840,6 +2375,7 @@ mod tests {
                 "# Retro",
                 &packs,
                 1,
+                &[],
             )
             .unwrap(),
             Pack::for_ci_fix(&docs, &board, 1, 1, "test", "red\n", &packs, 1).unwrap(),

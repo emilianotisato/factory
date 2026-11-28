@@ -612,6 +612,41 @@ fn guard_loosening_acceptance_lines_occur_once_in_prd_and_slice_skills() {
 }
 
 #[test]
+fn checkpoint_contract_allows_clean_tree_gate_log_citation() {
+    let text = fs::read_to_string(root().join("assets/contract-checkpoint.md")).unwrap();
+    assert_unique_passage(
+        "contract-checkpoint Prove",
+        &text,
+        "you may cite that test from the **full** gate log file named in `# Gate transcript`'s header comment — not only the 200-line tail in the pack",
+    );
+}
+
+#[test]
+fn slice_skill_carries_ui_prove_rules() {
+    let text = fs::read_to_string(root().join("skills/slice/SKILL.md")).unwrap();
+    assert_unique_passage(
+        "slice/SKILL.md narrow form",
+        &text,
+        "Each form a slice adds gets one empty submit and one narrow-screen drive (375 px).",
+    );
+    assert_unique_passage(
+        "slice/SKILL.md option seed",
+        &text,
+        "A Prove row that picks between options seeds a state where the options give different results.",
+    );
+}
+
+#[test]
+fn deliver_skill_reminds_to_strip_squash_merge_skip_ci() {
+    let text = fs::read_to_string(root().join("skills/deliver/SKILL.md")).unwrap();
+    assert_unique_passage(
+        "deliver/SKILL.md squash merge",
+        &text,
+        "Also strip any skip-CI lines from GitHub's default squash-merge commit message so `main` workflows still run on merge.",
+    );
+}
+
+#[test]
 fn harvest_upstream_post_names_the_hash_flag() {
     let text = fs::read_to_string(root().join("skills/harvest/SKILL.md")).unwrap();
     assert_unique_passage(

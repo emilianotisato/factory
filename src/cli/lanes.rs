@@ -1,8 +1,15 @@
+use std::env;
 use std::fs;
-use std::io::Write;
+use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::Instant;
+use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
+
+#[cfg(unix)]
+use std::os::unix::io::AsRawFd;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 
 use clap::Subcommand;
 
@@ -149,6 +156,30 @@ pub fn prove(data: &Path, main: &Path, out: &mut dyn Write) -> Result<i32> {
     if code != 0 {
         return Ok(code);
     }
+    let prove_shell = env::var("FACTORY_PROVE_SHELL").ok();
+    if prove_shell.as_deref() != Some("off") {
+        let shell_override = prove_shell
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty() && *s != "off");
+        let allow_any = shell_override.is_some();
+        let shell = shell_override
+            .map(PathBuf::from)
+            .or_else(|| env::var_os("SHELL").map(PathBuf::from));
+        if let Some(shell) = shell {
+            let lane_dir = lanes::dir(data, main, 1);
+            let lane_env = lanes::load(main, 1)?.env_for(&lane_dir);
+            for (k, want, got) in detect_shell_clobber(&shell, &lane_env, allow_any) {
+                say(
+                    out,
+                    &format!(
+                        "! shell {} -lic overwrites {k} ({want} → {got}) — guard it in your shell profile with export {k}=\"${{{k}:-{got}}}\"",
+                        shell.display()
+                    ),
+                )?;
+            }
+        }
+    }
     let inner = match Docs::open(main).and_then(|d| d.gate_inner()) {
         Ok(cmd) => cmd,
         Err(e) => {
@@ -171,7 +202,7 @@ pub fn prove(data: &Path, main: &Path, out: &mut dyn Write) -> Result<i32> {
                         .arg("-c")
                         .arg(inner)
                         .current_dir(dir)
-                        .envs(lane.env())
+                        .envs(lane.env_for(dir))
                         .output();
                     (lane.n, res, start.elapsed().as_secs_f64())
                 })
@@ -214,6 +245,148 @@ pub fn prove(data: &Path, main: &Path, out: &mut dyn Write) -> Result<i32> {
 }
 
 const TAIL: usize = 20;
+const CLOBBER_TIMEOUT: Duration = Duration::from_secs(3);
+
+fn posix_ident(k: &str) -> bool {
+    let mut chars = k.chars();
+    let Some(c) = chars.next() else {
+        return false;
+    };
+    (c.is_ascii_alphabetic() || c == '_') && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+}
+
+fn known_login_shell(name: &std::ffi::OsStr) -> bool {
+    matches!(
+        name.to_str(),
+        Some("sh" | "bash" | "zsh" | "dash" | "ash" | "ksh")
+    )
+}
+
+pub fn detect_shell_clobber(
+    shell: &Path,
+    env: &[(String, String)],
+    allow_any_basename: bool,
+) -> Vec<(String, String, String)> {
+    let vars: Vec<(String, String)> = env
+        .iter()
+        .filter(|(k, _)| k.as_str() != lanes::ENV_LANE && posix_ident(k))
+        .cloned()
+        .collect();
+    if vars.is_empty() || !shell.is_file() {
+        return Vec::new();
+    }
+    if !allow_any_basename && shell.file_name().is_none_or(|n| !known_login_shell(n)) {
+        return Vec::new();
+    }
+    let mut script = String::new();
+    for (k, _) in &vars {
+        script.push_str(&format!("printf '__FACTORY_ENV_{k}__=%s\\n' \"${k}\"; "));
+    }
+    let deadline = Instant::now() + CLOBBER_TIMEOUT;
+    let mut child = match Command::new(shell)
+        .args(["-lic", &script])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .envs(vars.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .process_group(0)
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let stdout = child.stdout.take();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(50));
+            }
+            Ok(None) => {
+                #[cfg(unix)]
+                unsafe {
+                    libc::kill(-(child.id() as i32), libc::SIGKILL);
+                }
+                let _ = child.kill();
+                let _ = child.wait();
+                return Vec::new();
+            }
+            Err(_) => return Vec::new(),
+        }
+    };
+    if !status.success() {
+        return Vec::new();
+    }
+    let buf = stdout.map_or_else(Vec::new, |pipe| read_probe_stdout(pipe, deadline));
+    let text = String::from_utf8_lossy(&buf);
+    let mut got: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for line in text.lines().rev() {
+        let Some(rest) = line.strip_prefix("__FACTORY_ENV_") else {
+            continue;
+        };
+        let Some((k, val)) = rest.split_once("__=") else {
+            continue;
+        };
+        got.entry(k.to_string()).or_insert_with(|| val.to_string());
+    }
+    let mut clobbered = Vec::new();
+    for (k, want) in vars {
+        if let Some(g) = got.get(&k)
+            && g != &want
+        {
+            clobbered.push((k, want, g.clone()));
+        }
+    }
+    clobbered
+}
+
+#[cfg(unix)]
+fn set_pipe_nonblocking(fd: std::os::fd::RawFd) {
+    unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFL);
+        if flags >= 0 {
+            libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn read_probe_stdout(mut pipe: impl Read + AsRawFd, deadline: Instant) -> Vec<u8> {
+    set_pipe_nonblocking(pipe.as_raw_fd());
+    let mut buf = Vec::new();
+    let mut scratch = [0u8; 4096];
+    loop {
+        if Instant::now() >= deadline {
+            break;
+        }
+        match pipe.read(&mut scratch) {
+            Ok(0) => break,
+            Ok(n) => buf.extend_from_slice(&scratch[..n]),
+            Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(20));
+            }
+            Err(_) => break,
+        }
+    }
+    buf
+}
+
+#[cfg(not(unix))]
+fn read_probe_stdout(mut pipe: impl Read, deadline: Instant) -> Vec<u8> {
+    let mut buf = Vec::new();
+    let mut scratch = [0u8; 4096];
+    loop {
+        if Instant::now() >= deadline {
+            break;
+        }
+        match pipe.read(&mut scratch) {
+            Ok(0) => break,
+            Ok(n) => buf.extend_from_slice(&scratch[..n]),
+            Err(_) => break,
+        }
+    }
+    buf
+}
 
 fn format_bytes(n: u64) -> String {
     const KIB: f64 = 1024.0;

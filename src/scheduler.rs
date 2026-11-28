@@ -718,6 +718,7 @@ fn spawn_on(
         None => None,
     };
     let spawn_n = run.state().workers.len() as u32 + 1;
+    let lane_env = lane_def.env_for(&lane_dir);
     let (pack, job) = if merge {
         let events = run.events()?;
         let paths = last_conflict(&events, slice).map_or_else(Vec::new, |(_, p)| p);
@@ -728,7 +729,7 @@ fn spawn_on(
             .filter(|e| matches!(e.kind, EventKind::MergeSpawned { slice: s, .. } if s == slice))
             .count() as u32
             + 1;
-        let pack = Pack::for_merge(
+        let pack = Pack::for_merge_env(
             docs,
             board,
             slice,
@@ -737,16 +738,18 @@ fn spawn_on(
             &packs_dir(run.dir()),
             spawn_n,
             block.as_ref(),
+            &lane_env,
         )?;
         (pack, Job::Merge { slice, attempt })
     } else {
-        let pack = Pack::for_slice_with(
+        let pack = Pack::for_slice_with_env(
             docs,
             board,
             slice,
             &packs_dir(run.dir()),
             spawn_n,
             block.as_ref(),
+            &lane_env,
         )?;
         (pack, Job::Build { slice })
     };
@@ -761,15 +764,7 @@ fn spawn_on(
         )?;
     }
     let resolved = worker::effective_worker(run, cfg, job.role());
-    let w = Worker::spawn(
-        run,
-        job,
-        &pack,
-        &resolved,
-        &lane_def.env(),
-        &lane_dir,
-        Some(lane),
-    )?;
+    let w = Worker::spawn(run, job, &pack, &resolved, &lane_env, &lane_dir, Some(lane))?;
     let line = format!(
         "slice {slice:02} → {}worker {} (pid {}), lane {lane}{}, pack {}",
         if merge { "merge " } else { "" },
