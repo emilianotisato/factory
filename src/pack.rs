@@ -939,10 +939,9 @@ pub fn handed_qa(
             }
         }
     }
-    let tail = covers.iter().copied().max().unwrap_or(0);
     let mut incomplete: Vec<String> = Vec::new();
     for s in &board.slices {
-        if s.status.as_deref() == Some("done") || s.number <= tail.saturating_add(1) {
+        if s.status.as_deref() == Some("done") {
             continue;
         }
         let slice_text = read(&repo.join(format!("docs/features/{}", s.file)))?;
@@ -1533,6 +1532,63 @@ mod tests {
         let (text, rows) = handed_qa(repo, &board, &[2], prd).unwrap();
         assert_eq!(keys(&rows), ["FR-4"], "{rows:?}");
         assert!(!text.contains("deferred until remaining"), "{text}");
+    }
+
+    #[test]
+    fn an_incomplete_slice_immediately_after_covers_also_defers_its_fr() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        let dir = "docs/features/001-x";
+        fs::create_dir_all(repo.join(dir)).unwrap();
+        let prd = "# PRD\n\n| FR | Proof | Evidence | Human? |\n|---|---|---|---|\n\
+            | FR-1 | run a | transcript | no |\n| FR-2 | run b | transcript | no |\n";
+        fs::write(repo.join(dir).join("prd.md"), prd).unwrap();
+        fs::write(
+            repo.join(dir).join("slice-01.md"),
+            "# S\n\n### 3. Prove\n§8, the FR-1 row.\n",
+        )
+        .unwrap();
+        fs::write(
+            repo.join(dir).join("slice-02.md"),
+            "# S\n\n### 3. Prove\n§8, the FR-2 row.\n",
+        )
+        .unwrap();
+        fs::write(
+            repo.join(dir).join("slice-03.md"),
+            "# S\n\n**Source**: [`prd.md`](prd.md) → §4 (FR-2). **Depends on**: Slice 02.\n",
+        )
+        .unwrap();
+        let board = Status {
+            dir: dir.to_string(),
+            all_done: false,
+            slices: vec![
+                crate::docs::Slice {
+                    number: 1,
+                    file: "001-x/slice-01.md".into(),
+                    status: Some("done".into()),
+                    ..Default::default()
+                },
+                crate::docs::Slice {
+                    number: 2,
+                    file: "001-x/slice-02.md".into(),
+                    status: Some("done".into()),
+                    ..Default::default()
+                },
+                crate::docs::Slice {
+                    number: 3,
+                    file: "001-x/slice-03.md".into(),
+                    status: Some("pending".into()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let (text, rows) = handed_qa(repo, &board, &[1, 2], prd).unwrap();
+        assert_eq!(keys(&rows), ["FR-1"], "{text}");
+        assert!(
+            text.contains("(deferred until remaining slice(s) finish: FR-2)"),
+            "{text}"
+        );
     }
 
     #[test]
