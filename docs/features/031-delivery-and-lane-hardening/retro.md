@@ -42,3 +42,31 @@ Written by `/deliver` in the closeout commit, from the agent's side of the run.
 ## Score
 
 4/5 — feature delivery was solid; second opinion paid for itself on pack/shell gaps slice tests did not fully lock, but deferral integration and `collect --since` after manual `reviewed_head` clear remain known edges.
+
+## Numbers
+
+<!-- factory:numbers -->
+| role | workers | own | subagents | weighted | minutes | turns |
+|---|---:|---:|---:|---:|---:|---:|
+| build | 4 | 3791260 | — | 3791260 | 165 | — |
+| checkpoint | 2 | 800909 | — | 800909 | 12 | — |
+| polish | 1 | 636232 | — | 636232 | 6 | — |
+| total | 7 | 5228400 | — | 5228400 | 183 | — |
+
+Knobs: build cursor:composer-2.5 user/default · fix cursor:composer-2.5 user/default · checkpoint cursor:composer-2.5 user/default · polish cursor:composer-2.5 user/default · budget 30000000 default · lanes 4 · factory 0.19.0-edge.2 · cursor 2026.11.22-e9042b2
+
+Hypothesis: none
+
+quality: gate_red 0 · worker_gate_red 0 · fix_commits 0 · ci_red_rounds 0 · ci_reruns 0 · findings high=0 medium=6 low=7 fixed=7 parked=4 · decisions 2 decide 0 blocks 1
+
+Pack (build): slice 10002 · prd_sections 6692 · log 873 · outline 9127 · lookup 1115 · contract 3685 · autonomy 10282 · inner_loop 86 · total 41861 · start_context —
+
+Compared with:
+
+| run | feature | weighted | slices | per slice | lines changed | per line | comment share | id hits |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 031-20261127-a312 (this run) | 031 | 5228400 | 4 | 1307100 | 2748 | 1903 | 0.0% | 0 |
+| 030-20261127-4dbf | 030 | 9266309 | 5 | 1853262 | 3582 | 2587 | 0.5% | 0 |
+| 029-20261127-4c0a | 029 | 4454535 | 4 | 1113634 | 2815 | 1582 | 1.0% | 2 |
+| 016-20261127-dca0 | 016 | 3399075 | 4 | 849769 | 2670 | 1273 | 0.4% | 0 |
+<!-- /factory:numbers -->

@@ -1,5 +1,7 @@
-status = "ready"
+status = "shipped"
 reviewed = "2026-11-28"
+reviewed_head = "9de610062188d3f8d473c16a97beb82c863dba25"
+shipped = "2026-11-28"
 
 [slices.1]
 status = "done"
