@@ -24,7 +24,7 @@
 
 A slice is `pending → building → done`, or `blocked` while it waits on the owner.
 
-**Build order:** 001 to 015, 017 to 030 are archived (harvested 2026-11-27). 016 (factory-as-a-consumer) is shipped on `main`, awaiting `/harvest`. Next up: **031** (delivery-and-lane-hardening). When more than one feature is live, state the order here and say why: shared files, migration risk, whichever ships second eats the merge.
+**Build order:** 001 to 031 are archived (harvested 2026-11-28). No feature live. When more than one feature is live, state the order here and say why: shared files, migration risk, whichever ships second eats the merge.
 
 **Retired numbers — never reused:** _(none yet)_
 
